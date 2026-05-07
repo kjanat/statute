@@ -32,24 +32,28 @@ func (s *stats) Observe(status int, dur time.Duration) {
 }
 
 func (s *stats) WritePrometheus(w io.Writer) {
-	fmt.Fprintln(w, "# HELP statute_requests_total Total HTTP requests handled.")
-	fmt.Fprintln(w, "# TYPE statute_requests_total counter")
-	fmt.Fprintf(w, "statute_requests_total %d\n", s.requests.Load())
+	pf := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(w, format, args...)
+	}
 
-	fmt.Fprintln(w, "# HELP statute_requests_by_status_total HTTP requests by response status.")
-	fmt.Fprintln(w, "# TYPE statute_requests_by_status_total counter")
+	pf("# HELP statute_requests_total Total HTTP requests handled.\n")
+	pf("# TYPE statute_requests_total counter\n")
+	pf("statute_requests_total %d\n", s.requests.Load())
+
+	pf("# HELP statute_requests_by_status_total HTTP requests by response status.\n")
+	pf("# TYPE statute_requests_by_status_total counter\n")
 	s.requestsByStatus.Range(func(k, v any) bool {
-		fmt.Fprintf(w, "statute_requests_by_status_total{status=\"%d\"} %d\n", k.(int), v.(*atomic.Uint64).Load())
+		pf("statute_requests_by_status_total{status=\"%d\"} %d\n", k.(int), v.(*atomic.Uint64).Load())
 		return true
 	})
 
-	fmt.Fprintln(w, "# HELP statute_request_duration_microseconds_sum Sum of request durations in microseconds.")
-	fmt.Fprintln(w, "# TYPE statute_request_duration_microseconds_sum counter")
-	fmt.Fprintf(w, "statute_request_duration_microseconds_sum %d\n", s.durationSum.Load())
+	pf("# HELP statute_request_duration_microseconds_sum Sum of request durations in microseconds.\n")
+	pf("# TYPE statute_request_duration_microseconds_sum counter\n")
+	pf("statute_request_duration_microseconds_sum %d\n", s.durationSum.Load())
 
-	fmt.Fprintln(w, "# HELP statute_request_duration_microseconds_count Count of observed requests.")
-	fmt.Fprintln(w, "# TYPE statute_request_duration_microseconds_count counter")
-	fmt.Fprintf(w, "statute_request_duration_microseconds_count %d\n", s.durationCount.Load())
+	pf("# HELP statute_request_duration_microseconds_count Count of observed requests.\n")
+	pf("# TYPE statute_request_duration_microseconds_count counter\n")
+	pf("statute_request_duration_microseconds_count %d\n", s.durationCount.Load())
 }
 
 // metricsMiddleware wraps a handler and observes status + duration into stats.

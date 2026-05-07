@@ -7,48 +7,89 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/andybalholm/brotli"
 	"github.com/kjanat/statute/resolved"
 )
 
 // compressHandler negotiates response compression based on the request's
-// Accept-Encoding. Only gzip is implemented in this MVP; brotli is recognised
-// but degrades to gzip when listed alongside it, otherwise to identity.
+// Accept-Encoding. Brotli is preferred when both client and server advertise
+// support; otherwise gzip is chosen. Identity (no compression) is the fallback.
 func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Handler {
-	wantGzip := false
+	wantGzip, wantBrotli := false, false
 	for _, a := range algos {
-		if a == resolved.Gzip {
+		switch a {
+		case resolved.Gzip:
 			wantGzip = true
+		case resolved.Brotli:
+			wantBrotli = true
 		}
 	}
-	if !wantGzip {
+	if !wantGzip && !wantBrotli {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		ae := r.Header.Get("Accept-Encoding")
+		switch {
+		case wantBrotli && strings.Contains(ae, "br"):
+			serveBrotli(w, r, next)
+		case wantGzip && strings.Contains(ae, "gzip"):
+			serveGzip(w, r, next)
+		default:
 			next.ServeHTTP(w, r)
-			return
 		}
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Add("Vary", "Accept-Encoding")
-		w.Header().Del("Content-Length")
-		gz := gzipPool.Get().(*gzip.Writer)
-		gz.Reset(w)
-		defer func() {
-			gz.Close()
-			gzipPool.Put(gz)
-		}()
-		gw := &gzipResponseWriter{ResponseWriter: w, w: gz}
-		next.ServeHTTP(gw, r)
 	})
 }
 
-var gzipPool = sync.Pool{
-	New: func() any { return gzip.NewWriter(io.Discard) },
+func serveGzip(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Add("Vary", "Accept-Encoding")
+	w.Header().Del("Content-Length")
+	gz := gzipPool.Get().(*gzip.Writer)
+	gz.Reset(w)
+	defer func() {
+		_ = gz.Close()
+		gzipPool.Put(gz)
+	}()
+	next.ServeHTTP(&compressResponseWriter{ResponseWriter: w, w: gz}, r)
 }
 
-type gzipResponseWriter struct {
+func serveBrotli(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	w.Header().Set("Content-Encoding", "br")
+	w.Header().Add("Vary", "Accept-Encoding")
+	w.Header().Del("Content-Length")
+	br := brotliPool.Get().(*brotli.Writer)
+	br.Reset(w)
+	defer func() {
+		_ = br.Close()
+		brotliPool.Put(br)
+	}()
+	next.ServeHTTP(&compressResponseWriter{ResponseWriter: w, w: br}, r)
+}
+
+var (
+	gzipPool = sync.Pool{
+		New: func() any { return gzip.NewWriter(io.Discard) },
+	}
+	brotliPool = sync.Pool{
+		New: func() any { return brotli.NewWriterLevel(io.Discard, brotli.DefaultCompression) },
+	}
+)
+
+// compressResponseWriter forwards Write into the compressor while preserving
+// access to the underlying ResponseWriter for headers and status. Flush is
+// propagated through the compressor when supported.
+type compressResponseWriter struct {
 	http.ResponseWriter
 	w io.Writer
 }
 
-func (g *gzipResponseWriter) Write(b []byte) (int, error) { return g.w.Write(b) }
+func (c *compressResponseWriter) Write(b []byte) (int, error) { return c.w.Write(b) }
+
+func (c *compressResponseWriter) Flush() {
+	if f, ok := c.w.(interface{ Flush() error }); ok {
+		_ = f.Flush()
+	}
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

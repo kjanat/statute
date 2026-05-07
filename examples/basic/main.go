@@ -3,7 +3,7 @@ package main
 import "github.com/kjanat/statute"
 
 func main() {
-	statute.Run(statute.Config{
+	statute.Main(statute.Config{
 		Listeners: statute.Listeners{
 			statute.HTTP(":80").RedirectTo("https"),
 			statute.HTTPS(":443",

@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"path"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/kjanat/statute/resolved"
 )
@@ -21,10 +22,13 @@ type server struct {
 
 	listeners     []*http.Server // content + redirect listeners
 	metricsServer *http.Server
+	http3Servers  []*http3Listener
 
 	pools map[string]*poolHandler
 
 	stats *stats
+
+	autocertMgr *autocert.Manager
 
 	mu      sync.Mutex
 	started bool
@@ -36,6 +40,12 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		pools: make(map[string]*poolHandler, len(cfg.Upstreams)),
 		stats: newStats(),
 	}
+
+	mgr, err := buildAutocertManager(cfg.Listeners)
+	if err != nil {
+		return nil, err
+	}
+	s.autocertMgr = mgr
 
 	for name, p := range cfg.Upstreams {
 		ph, err := newPoolHandler(p)
@@ -53,6 +63,14 @@ func newServer(cfg *resolved.Config) (*server, error) {
 			return nil, fmt.Errorf("listener %s: %w", l.Addr, err)
 		}
 		s.listeners = append(s.listeners, hs)
+
+		if l.HTTP3Addr != "" {
+			h3, err := s.buildHTTP3Server(l, mux)
+			if err != nil {
+				return nil, fmt.Errorf("listener %s http3: %w", l.Addr, err)
+			}
+			s.http3Servers = append(s.http3Servers, h3)
+		}
 	}
 
 	if cfg.Observability.Metrics.Enabled {
@@ -68,6 +86,20 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 		handler = redirectHandler(l.Redirect)
 	} else {
 		handler = content
+	}
+
+	// When AutoTLS is configured anywhere, the plain-HTTP listener must serve
+	// /.well-known/acme-challenge/* so HTTP-01 can complete. autocert.HTTPHandler
+	// transparently passes other paths through to the wrapped handler.
+	if l.Scheme == "http" && s.autocertMgr != nil {
+		handler = s.autocertMgr.HTTPHandler(handler)
+	}
+
+	// When HTTP/3 is enabled on a sibling listener, advertise it via Alt-Svc
+	// so compatible clients upgrade. Browsers need this header on the HTTPS
+	// response that introduces the origin.
+	if l.Scheme == "https" && l.HTTP3Addr != "" {
+		handler = altSvcHandler(l.HTTP3Addr, handler)
 	}
 
 	if s.cfg.Observability.AccessLog.Enabled {
@@ -86,17 +118,17 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 	}
 
 	if l.Scheme == "https" && l.Redirect == "" {
-		if l.AutoTLS != nil {
-			return nil, errors.New("AutoTLS is wired through the surface API but the runtime needs golang.org/x/crypto/acme/autocert to actually provision certs; configure StaticTLS for now or vendor autocert")
-		}
-		if l.StaticTLS == nil {
+		switch {
+		case l.AutoTLS != nil:
+			if s.autocertMgr == nil {
+				return nil, errors.New("auto_tls: manager not initialised")
+			}
+			hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2)
+		case l.StaticTLS != nil:
+			// TLS config left to ServeTLS; cert/key paths are passed at start.
+		default:
 			return nil, errors.New("https listener has no TLS material")
 		}
-	}
-	if l.HTTP3Addr != "" {
-		// HTTP/3 requires quic-go; not yet linked. Surfacing as a clear error
-		// keeps deployments honest rather than silently degrading.
-		return nil, fmt.Errorf("HTTP/3 listener %s: quic-go is not yet linked; remove HTTP3() to start", l.HTTP3Addr)
 	}
 	return hs, nil
 }
@@ -107,6 +139,7 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		s.stats.WritePrometheus(w)
 	})
+	registerPprof(mux)
 	return &http.Server{
 		Addr:              m.Addr,
 		Handler:           mux,
@@ -126,13 +159,23 @@ func (s *server) Start() error {
 		if err != nil {
 			return fmt.Errorf("listen %s: %w", hs.Addr, err)
 		}
+		l, _ := findListener(s.cfg.Listeners, hs.Addr)
 		go func() {
-			if l, ok := findListener(s.cfg.Listeners, hs.Addr); ok && l.Scheme == "https" && l.Redirect == "" && l.StaticTLS != nil {
+			switch {
+			case l != nil && l.Scheme == "https" && l.Redirect == "" && l.StaticTLS != nil:
 				_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
-				return
+			case l != nil && l.Scheme == "https" && l.Redirect == "" && l.AutoTLS != nil:
+				// TLSConfig (set on the http.Server) carries autocert's
+				// GetCertificate; ServeTLS with empty cert/key paths uses it.
+				_ = hs.ServeTLS(ln, "", "")
+			default:
+				_ = hs.Serve(ln)
 			}
-			_ = hs.Serve(ln)
 		}()
+	}
+	for _, h3 := range s.http3Servers {
+		h3 := h3
+		go func() { _ = h3.Serve() }()
 	}
 	if s.metricsServer != nil {
 		ms := s.metricsServer
@@ -151,7 +194,7 @@ func (s *server) Shutdown() error {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	errs := make(chan error, len(s.listeners)+1)
+	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+1)
 
 	for _, hs := range s.listeners {
 		wg.Add(1)
@@ -172,7 +215,24 @@ func (s *server) Shutdown() error {
 			}
 		}()
 	}
+	for _, h3 := range s.http3Servers {
+		wg.Add(1)
+		h3 := h3
+		go func() {
+			defer wg.Done()
+			if err := h3.Shutdown(ctx); err != nil {
+				errs <- err
+			}
+		}()
+	}
 	wg.Wait()
+
+	// Stop health checkers after listeners drain so probes do not race
+	// shutdown of the metrics server.
+	for _, ph := range s.pools {
+		ph.shutdown()
+	}
+
 	close(errs)
 	return joinErrors(errs)
 }
@@ -275,17 +335,19 @@ func redirectHandler(scheme string) http.Handler {
 	})
 }
 
-// poolHandler proxies requests to an upstream pool.
+// poolHandler proxies requests to an upstream pool. It owns a per-backend
+// reverse proxy, a strategy-driven picker, and an active health checker that
+// runs in the background while the pool is live.
 type poolHandler struct {
-	pool       *resolved.Pool
-	rp         *httputil.ReverseProxy
-	round      uint64
-	mu         sync.Mutex
-	roundIndex int
+	pool      *resolved.Pool
+	primary   []*backendState
+	backup    []*backendState
+	transport *http.Transport
+	picker    picker
+	hc        *healthChecker
 }
 
 func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
-	ph := &poolHandler{pool: p}
 	transport := &http.Transport{
 		MaxIdleConnsPerHost: p.Transport.MaxIdleConnsPerHost,
 		IdleConnTimeout:     p.Transport.IdleConnTimeout,
@@ -296,19 +358,41 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 		}).DialContext,
 		ForceAttemptHTTP2: true,
 	}
-	ph.rp = &httputil.ReverseProxy{
+
+	ph := &poolHandler{
+		pool:      p,
+		transport: transport,
+		picker:    newPicker(p.Strategy),
+	}
+
+	for i := range p.Backends {
+		b := &p.Backends[i]
+		target, err := backendURL(b)
+		if err != nil {
+			return nil, fmt.Errorf("backend %s: %w", b.Address, err)
+		}
+		bs := &backendState{backend: b}
+		// Backends start healthy; the prober demotes them as it observes failures.
+		bs.markHealthy(true)
+		bs.rp = newBackendProxy(target, transport)
+		if b.Backup {
+			ph.backup = append(ph.backup, bs)
+		} else {
+			ph.primary = append(ph.primary, bs)
+		}
+	}
+
+	all := append(append([]*backendState{}, ph.primary...), ph.backup...)
+	ph.hc = newHealthChecker(p.HealthCheck, all)
+	ph.hc.start()
+	return ph, nil
+}
+
+func newBackendProxy(target *url.URL, transport *http.Transport) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			b := ph.pickBackend()
-			if b == nil {
-				return
-			}
-			target, err := backendURL(b)
-			if err != nil {
-				return
-			}
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host
-			// X-Forwarded-* headers
 			pr.SetXForwarded()
 		},
 		Transport: transport,
@@ -316,7 +400,6 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		},
 	}
-	return ph, nil
 }
 
 func backendURL(b *resolved.Backend) (*url.URL, error) {
@@ -327,37 +410,41 @@ func backendURL(b *resolved.Backend) (*url.URL, error) {
 	return url.Parse(addr)
 }
 
-// pickBackend selects a backend per the pool's strategy. MVP: round-robin
-// across primary backends; backups are reserved for failover and currently
-// unused (failover would require live health-check state, which is stubbed).
-func (ph *poolHandler) pickBackend() *resolved.Backend {
-	primary := primaryBackends(ph.pool.Backends)
-	if len(primary) == 0 {
-		return nil
+// candidates returns the active backend set: healthy primaries when any are
+// healthy, else healthy backups, else all primaries (degraded mode — better
+// to attempt a probably-failing dial than to flat-out 503).
+func (ph *poolHandler) candidates() []*backendState {
+	if c := healthy(ph.primary); len(c) > 0 {
+		return c
 	}
-	switch ph.pool.Strategy {
-	case resolved.IPHash, resolved.LeastConnections, resolved.RoundRobin, resolved.Weighted:
-		// All strategies fall back to round-robin in this MVP.
+	if c := healthy(ph.backup); len(c) > 0 {
+		return c
 	}
-	ph.mu.Lock()
-	idx := ph.roundIndex % len(primary)
-	ph.roundIndex++
-	ph.mu.Unlock()
-	return &primary[idx]
-}
-
-func primaryBackends(all []resolved.Backend) []resolved.Backend {
-	out := make([]resolved.Backend, 0, len(all))
-	for _, b := range all {
-		if !b.Backup {
-			out = append(out, b)
-		}
-	}
-	return out
+	return ph.primary
 }
 
 func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ph.rp.ServeHTTP(w, r)
+	candidates := ph.candidates()
+	if len(candidates) == 0 {
+		http.Error(w, "no backends available", http.StatusServiceUnavailable)
+		return
+	}
+	bs := ph.picker.pick(candidates, clientIP(r))
+	if bs == nil {
+		http.Error(w, "no backends available", http.StatusServiceUnavailable)
+		return
+	}
+	bs.inFlight.Add(1)
+	defer bs.inFlight.Add(-1)
+	bs.rp.ServeHTTP(w, r)
+}
+
+// shutdown stops the health checker and idle connections.
+func (ph *poolHandler) shutdown() {
+	if ph.hc != nil {
+		ph.hc.stop()
+	}
+	ph.transport.CloseIdleConnections()
 }
 
 // wrapMiddleware wraps the base handler with each middleware in declaration
@@ -382,21 +469,14 @@ func applyMiddleware(m resolved.Middleware, next http.Handler) http.Handler {
 	case resolved.MWRateLimit:
 		return rateLimitHandler(m, next)
 	case resolved.MWRetry:
-		// Retry on non-2xx responses requires intercepting the response
-		// before headers are committed; that is non-trivial against
-		// httputil.ReverseProxy and is left for a real implementation. Pass
-		// through for now so the surface API works end-to-end.
-		return next
+		return retryHandler(m, next)
 	case resolved.MWCache:
-		return next
+		return cacheHandler(m, next)
 	case resolved.MWCompress:
 		return compressHandler(m.CompressAlgos, next)
 	case resolved.MWETag:
-		return next
+		return etagHandler(next)
 	default:
 		return next
 	}
 }
-
-// keep this import used even if path-based code is removed during edits
-var _ = path.Clean
