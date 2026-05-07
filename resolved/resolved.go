@@ -1,0 +1,192 @@
+// Package resolved is the canonical, fully-validated schema that the statute
+// runtime operates on. It is produced by statute.Resolve from a surface Config.
+//
+// All durations are time.Duration. All upstream references are pointers. All
+// optional fields have been filled with their resolved defaults. There are no
+// string-encoded values.
+//
+// Tooling (validators, dashboards, doc generators) should target this package.
+// End-user configurations should not — they should use the surface API in the
+// statute package.
+package resolved
+
+import (
+	"io"
+	"time"
+)
+
+// Config is the resolved top-level configuration.
+type Config struct {
+	Listeners     []*Listener
+	Upstreams     map[string]*Pool
+	Routes        []*Route
+	Defaults      Defaults
+	Observability Observability
+	Shutdown      Shutdown
+}
+
+// Listener is a resolved listener.
+type Listener struct {
+	Addr     string
+	Scheme   string // "http" or "https"
+	Redirect string // non-empty: this listener is a redirect-only listener
+
+	AutoTLS     *AutoTLS   // nil unless this is an HTTPS listener with ACME
+	StaticTLS   *StaticTLS // nil unless this is an HTTPS listener with static certs
+	EnableHTTP2 bool
+	HTTP3Addr   string // empty unless HTTP/3 is enabled
+}
+
+// AutoTLS is the resolved ACME configuration.
+type AutoTLS struct {
+	Domains []string
+	Email   string
+	Storage string
+}
+
+// StaticTLS is the resolved static-cert configuration.
+type StaticTLS struct {
+	CertFile string
+	KeyFile  string
+}
+
+// Pool is a resolved upstream pool.
+type Pool struct {
+	Name        string
+	Backends    []Backend
+	Strategy    Strategy
+	HealthCheck HealthCheck
+	Transport   Transport
+}
+
+// Backend is a resolved backend target.
+type Backend struct {
+	Address string
+	Weight  int
+	Backup  bool
+}
+
+// Strategy mirrors the surface Strategy enum.
+type Strategy int
+
+const (
+	RoundRobin Strategy = iota
+	LeastConnections
+	IPHash
+	Weighted
+)
+
+// HealthCheck is a resolved active health check.
+type HealthCheck struct {
+	Enabled   bool
+	Path      string
+	Interval  time.Duration
+	Timeout   time.Duration
+	Healthy   int
+	Unhealthy int
+}
+
+// Transport is a resolved transport configuration.
+type Transport struct {
+	MaxIdleConnsPerHost int
+	IdleConnTimeout     time.Duration
+	DialTimeout         time.Duration
+	TLSHandshakeTimeout time.Duration
+}
+
+// Route is a resolved route.
+type Route struct {
+	Pattern    string
+	Host       string
+	Upstream   *Pool  // nil for static-file routes
+	StaticDir  string // empty for proxy routes
+	Middleware []Middleware
+}
+
+// Middleware identifies a single resolved middleware. The Type discriminator
+// drives runtime behaviour; only fields relevant to that type are populated.
+type Middleware struct {
+	Type MiddlewareType
+
+	// Timeout
+	Timeout time.Duration
+
+	// RateLimit
+	RateLimitPerSecond float64
+	RateLimitKey       RateLimitKey
+
+	// Retry
+	RetryMax        int
+	RetryOnStatuses []int
+
+	// Cache
+	CacheTTL time.Duration
+
+	// Compress
+	CompressAlgos []CompressAlgo
+}
+
+// MiddlewareType discriminates resolved middleware values.
+type MiddlewareType int
+
+const (
+	MWTimeout MiddlewareType = iota
+	MWRateLimit
+	MWRetry
+	MWCache
+	MWCompress
+	MWETag
+)
+
+// RateLimitKey mirrors the surface key.
+type RateLimitKey int
+
+const (
+	KeyClientIP RateLimitKey = iota
+	KeyHostHeader
+)
+
+// CompressAlgo mirrors the surface algorithm enum.
+type CompressAlgo int
+
+const (
+	Gzip CompressAlgo = iota
+	Brotli
+)
+
+// Defaults is the resolved server defaults.
+type Defaults struct {
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	MaxHeaderBytes    int
+}
+
+// Observability is the resolved observability configuration.
+type Observability struct {
+	AccessLog AccessLog
+	Metrics   Metrics
+}
+
+// AccessLog is the resolved access log configuration.
+type AccessLog struct {
+	Enabled bool
+	Format  string // "json"
+	Writer  io.Writer
+	Name    string // human label for the writer
+}
+
+// Metrics is the resolved metrics configuration.
+type Metrics struct {
+	Enabled bool
+	Kind    string // "prometheus"
+	Addr    string
+	Path    string
+}
+
+// Shutdown is the resolved shutdown configuration.
+type Shutdown struct {
+	GracePeriod    time.Duration
+	DrainListeners bool
+}
