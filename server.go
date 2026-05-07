@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/kjanat/statute/resolved"
@@ -28,7 +30,9 @@ type server struct {
 
 	stats *stats
 
-	autocertMgr *autocert.Manager
+	autocertMgr     *autocert.Manager
+	dns01Managers   map[string]*dns01Manager // keyed by listener address
+	tracingShutdown func(context.Context) error
 
 	mu      sync.Mutex
 	started bool
@@ -46,6 +50,24 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		return nil, err
 	}
 	s.autocertMgr = mgr
+
+	s.dns01Managers = make(map[string]*dns01Manager)
+	for _, l := range cfg.Listeners {
+		if l.AutoTLS == nil || l.AutoTLS.DNS01 == nil {
+			continue
+		}
+		dm, err := newDNS01Manager(l.AutoTLS)
+		if err != nil {
+			return nil, fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
+		}
+		s.dns01Managers[l.Addr] = dm
+	}
+
+	tracingShutdown, err := initTracing(cfg.Observability.Tracing)
+	if err != nil {
+		return nil, fmt.Errorf("tracing: %w", err)
+	}
+	s.tracingShutdown = tracingShutdown
 
 	for name, p := range cfg.Upstreams {
 		ph, err := newPoolHandler(p)
@@ -107,6 +129,20 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 	}
 	handler = metricsMiddleware(s.stats, handler)
 
+	// Tracing wraps last among observability so spans cover the full request
+	// — including access-log writes and metric updates — and so downstream
+	// handlers can read the active span from the context.
+	if s.cfg.Observability.Tracing.Enabled {
+		handler = tracingMiddleware(s.cfg.Observability.Tracing, handler)
+	}
+
+	// Tag the request context so downstream handlers know they can trust
+	// Cloudflare-injected headers. Must wrap last so the tag is present
+	// when middleware (access log, rate limit) inspects the request.
+	if l.BehindCloudflare {
+		handler = behindCloudflareMiddleware(handler)
+	}
+
 	hs := &http.Server{
 		Addr:              l.Addr,
 		Handler:           handler,
@@ -119,11 +155,17 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 
 	if l.Scheme == "https" && l.Redirect == "" {
 		switch {
+		case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
+			dm := s.dns01Managers[l.Addr]
+			if dm == nil {
+				return nil, errors.New("auto_tls: dns01 manager not initialised")
+			}
+			hs.TLSConfig = dns01TLSConfig(dm, l.EnableHTTP2)
 		case l.AutoTLS != nil:
 			if s.autocertMgr == nil {
 				return nil, errors.New("auto_tls: manager not initialised")
 			}
-			hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2)
+			hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2, l.BehindCloudflare)
 		case l.StaticTLS != nil:
 			// TLS config left to ServeTLS; cert/key paths are passed at start.
 		default:
@@ -153,6 +195,11 @@ func (s *server) Start() error {
 	if s.started {
 		return errors.New("already started")
 	}
+	for addr, dm := range s.dns01Managers {
+		if err := dm.start(); err != nil {
+			return fmt.Errorf("dns01 manager %s: %w", addr, err)
+		}
+	}
 	for _, hs := range s.listeners {
 		hs := hs
 		ln, err := net.Listen("tcp", hs.Addr)
@@ -165,8 +212,9 @@ func (s *server) Start() error {
 			case l != nil && l.Scheme == "https" && l.Redirect == "" && l.StaticTLS != nil:
 				_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
 			case l != nil && l.Scheme == "https" && l.Redirect == "" && l.AutoTLS != nil:
-				// TLSConfig (set on the http.Server) carries autocert's
-				// GetCertificate; ServeTLS with empty cert/key paths uses it.
+				// TLSConfig (set on the http.Server) carries the cert source
+				// — autocert.Manager.GetCertificate or our dns01Manager
+				// equivalent. ServeTLS with empty paths uses it.
 				_ = hs.ServeTLS(ln, "", "")
 			default:
 				_ = hs.Serve(ln)
@@ -231,6 +279,16 @@ func (s *server) Shutdown() error {
 	// shutdown of the metrics server.
 	for _, ph := range s.pools {
 		ph.shutdown()
+	}
+	for _, dm := range s.dns01Managers {
+		dm.stop()
+	}
+
+	// Flush pending spans last so traces produced during shutdown still ship.
+	if s.tracingShutdown != nil {
+		if err := s.tracingShutdown(ctx); err != nil {
+			errs <- err
+		}
 	}
 
 	close(errs)
@@ -394,6 +452,11 @@ func newBackendProxy(target *url.URL, transport *http.Transport) *httputil.Rever
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host
 			pr.SetXForwarded()
+			// Inject W3C trace context so the upstream sees traceparent /
+			// tracestate headers and joins the same trace. Safe to call
+			// regardless of whether tracing is configured: when no provider
+			// is registered, the propagator is a no-op.
+			otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

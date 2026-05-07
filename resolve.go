@@ -194,11 +194,12 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		return nil, errors.New("address is empty")
 	}
 	rl := &resolved.Listener{
-		Addr:        l.addr,
-		Scheme:      l.scheme,
-		Redirect:    l.redirect,
-		EnableHTTP2: l.enableHTTP2,
-		HTTP3Addr:   l.http3Addr,
+		Addr:             l.addr,
+		Scheme:           l.scheme,
+		Redirect:         l.redirect,
+		EnableHTTP2:      l.enableHTTP2,
+		HTTP3Addr:        l.http3Addr,
+		BehindCloudflare: l.behindCF,
 	}
 	if l.scheme == "https" && l.redirect == "" {
 		if l.autoTLS == nil && l.staticTLS == nil {
@@ -219,6 +220,15 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 			Domains: append([]string(nil), l.autoTLS.Domains...),
 			Email:   l.autoTLS.email,
 			Storage: l.autoTLS.storage,
+		}
+		if l.autoTLS.dns01 != nil {
+			if l.autoTLS.dns01.apiToken == "" {
+				return nil, errors.New("auto_tls.cloudflare_dns01: api token is required")
+			}
+			rl.AutoTLS.DNS01 = &resolved.CloudflareDNS01{
+				APIToken: l.autoTLS.dns01.apiToken,
+				ZoneID:   l.autoTLS.dns01.zoneID,
+			}
 		}
 	}
 	if l.staticTLS != nil {
@@ -323,12 +333,13 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 	out := resolved.Observability{}
 	if o.AccessLog != nil {
 		switch al := o.AccessLog.(type) {
-		case jsonLog:
+		case *jsonLog:
 			out.AccessLog = resolved.AccessLog{
-				Enabled: true,
-				Format:  "json",
-				Writer:  al.dest.Writer(),
-				Name:    al.dest.Name(),
+				Enabled:    true,
+				Format:     "json",
+				Writer:     al.dest.Writer(),
+				Name:       al.dest.Name(),
+				SampleRate: al.sampleRate,
 			}
 		default:
 			return resolved.Observability{}, fmt.Errorf("unknown access log type %T", o.AccessLog)
@@ -352,6 +363,24 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 			}
 		default:
 			return resolved.Observability{}, fmt.Errorf("unknown metrics type %T", o.Metrics)
+		}
+	}
+	if o.Tracing != nil {
+		switch t := o.Tracing.(type) {
+		case *otlpTracing:
+			if t.endpoint == "" {
+				return resolved.Observability{}, errors.New("tracing: endpoint required")
+			}
+			out.Tracing = resolved.Tracing{
+				Enabled:     true,
+				Kind:        "otlp",
+				Endpoint:    t.endpoint,
+				ServiceName: t.serviceName,
+				Insecure:    t.insecure,
+				SampleRate:  t.sampleRate,
+			}
+		default:
+			return resolved.Observability{}, fmt.Errorf("unknown tracing type %T", o.Tracing)
 		}
 	}
 	return out, nil

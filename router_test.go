@@ -1,6 +1,7 @@
 package statute
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -59,5 +60,35 @@ func TestClientIPXFF(t *testing.T) {
 	r2.RemoteAddr = "10.0.0.2:5678"
 	if got := clientIP(r2); got != "10.0.0.2:5678" {
 		t.Errorf("no XFF: got %q, want %q", got, "10.0.0.2:5678")
+	}
+}
+
+func TestClientIPCloudflare(t *testing.T) {
+	// Without the BehindCloudflare flag in context, CF-Connecting-IP must
+	// not be trusted — that header is forgeable from arbitrary clients.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("CF-Connecting-IP", "203.0.113.5")
+	r.Header.Set("X-Forwarded-For", "198.51.100.1")
+	if got := clientIP(r); got != "198.51.100.1" {
+		t.Errorf("untrusted: got %q, want XFF first entry", got)
+	}
+
+	// Wrap the request in the BehindCloudflare middleware; CF header is now trusted.
+	called := false
+	h := behindCloudflareMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		called = true
+		if got := clientIP(r); got != "203.0.113.5" {
+			t.Errorf("trusted: got %q, want CF-Connecting-IP", got)
+		}
+	}))
+	rec := httptest.NewRecorder()
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "10.0.0.1:1234"
+	r2.Header.Set("CF-Connecting-IP", "203.0.113.5")
+	r2.Header.Set("X-Forwarded-For", "198.51.100.1")
+	h.ServeHTTP(rec, r2)
+	if !called {
+		t.Fatal("middleware did not call inner handler")
 	}
 }

@@ -4,20 +4,38 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/kjanat/statute/resolved"
 )
 
+// maxRetryBufferBytes caps the request body size that retry will buffer in
+// memory. Bodies larger than this skip retry — the handler streams the
+// request straight through and responds with whatever the upstream returns.
+// The cap exists because retry buffers the body to replay it on each attempt,
+// and unbounded buffering is a memory denial-of-service vector for proxies
+// that accept user uploads.
+const maxRetryBufferBytes = 1 << 20 // 1 MiB
+
 // retryHandler retries the wrapped handler up to max times when the response
 // status matches one of the configured codes.
 //
-// Only idempotent methods are retried. Non-idempotent methods (POST, PATCH,
-// CONNECT) are passed through with no retry, because retrying them risks
-// double-executing a side effect on the upstream.
+// Retry is skipped — and the request is forwarded as a single attempt — when
+// any of the following is true:
 //
-// When the request has a body, the body is buffered into memory so it can be
-// replayed for each attempt. This is unsuitable for very large uploads; in
-// practice retry should not be configured on routes that accept large bodies.
+//   - The request method is not idempotent (POST, PATCH, CONNECT, etc.).
+//     Retrying these risks double-executing a side effect on the upstream.
+//   - The request is gRPC (Content-Type starts with "application/grpc").
+//     gRPC carries semantics — including streaming — that this naive retry
+//     cannot observe. Retry is the gRPC layer's responsibility, not ours.
+//   - The request advertises a streaming or upgraded protocol (WebSocket,
+//     SSE via text/event-stream). Buffering would break the stream.
+//   - The request body exceeds maxRetryBufferBytes. We cannot buffer it
+//     without becoming a memory exhaustion target.
+//
+// In all other cases the body is buffered once and replayed for each
+// attempt. The response is buffered until a non-retryable status arrives or
+// the attempt budget is exhausted, then committed to the wire.
 func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	max := m.RetryMax
 	statuses := m.RetryOnStatuses
@@ -25,17 +43,24 @@ func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isIdempotent(r.Method) {
+		if !isRetryable(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		var bodyBytes []byte
 		if r.Body != nil && r.Body != http.NoBody {
-			b, err := io.ReadAll(r.Body)
+			limited := io.LimitReader(r.Body, maxRetryBufferBytes+1)
+			b, err := io.ReadAll(limited)
 			_ = r.Body.Close()
 			if err != nil {
 				http.Error(w, "could not buffer request body for retry: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(b) > maxRetryBufferBytes {
+				// Body too large to buffer; do a single-shot pass without retry.
+				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
+				next.ServeHTTP(w, r)
 				return
 			}
 			bodyBytes = b
@@ -53,6 +78,25 @@ func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			}
 		}
 	})
+}
+
+// isRetryable returns true when the request meets the safety preconditions
+// for retry. See retryHandler's doc comment for the full rationale.
+func isRetryable(r *http.Request) bool {
+	if !isIdempotent(r.Method) {
+		return false
+	}
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "application/grpc") {
+		return false
+	}
+	if strings.HasPrefix(ct, "text/event-stream") {
+		return false
+	}
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	return true
 }
 
 func isIdempotent(method string) bool {

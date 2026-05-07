@@ -10,6 +10,7 @@ type Listener struct {
 	staticTLS   *StaticTLSConfig
 	enableHTTP2 bool
 	http3Addr   string
+	behindCF    bool
 }
 
 // HTTP starts an HTTP/1.1 listener declaration on the given address.
@@ -44,6 +45,7 @@ type AutoTLSConfig struct {
 	Domains []string
 	email   string
 	storage string
+	dns01   *cloudflareDNS01Config
 }
 
 // AutoTLS configures ACME auto-provisioning for the given domains.
@@ -64,7 +66,43 @@ func (a *AutoTLSConfig) Storage(path string) *AutoTLSConfig {
 	return a
 }
 
+// CloudflareDNS01 switches the ACME challenge from HTTP-01 to DNS-01 using
+// Cloudflare's DNS API. Required for wildcard certificates and useful when
+// :80 is not reachable from the public internet (private networks,
+// Cloudflare-only origins, etc.).
+//
+// The token must be a Cloudflare API Token (not the legacy Global API Key)
+// with the Zone.DNS:Edit permission for the zone(s) covering the listener's
+// domains. Generate one at https://dash.cloudflare.com/profile/api-tokens.
+//
+// The zone is auto-discovered from each domain by walking the DNS labels
+// against the account's zone list. Use Zone() to pin a specific zone ID and
+// skip discovery.
+//
+// Returns the parent AutoTLSConfig so the call chain remains a single
+// ListenerOption value usable as an argument to HTTPS.
+func (a *AutoTLSConfig) CloudflareDNS01(apiToken string) *AutoTLSConfig {
+	a.dns01 = &cloudflareDNS01Config{apiToken: apiToken}
+	return a
+}
+
+// Zone pins the Cloudflare zone ID for DNS-01 challenges. Must be called
+// after CloudflareDNS01. When unset the zone is discovered by querying
+// Cloudflare for the zone whose name is a suffix of each domain.
+func (a *AutoTLSConfig) Zone(id string) *AutoTLSConfig {
+	if a.dns01 != nil {
+		a.dns01.zoneID = id
+	}
+	return a
+}
+
 func (a *AutoTLSConfig) applyListener(l *Listener) { l.autoTLS = a }
+
+// cloudflareDNS01Config carries the resolved-stage data for DNS-01.
+type cloudflareDNS01Config struct {
+	apiToken string
+	zoneID   string
+}
 
 // StaticTLSConfig declares pre-provisioned TLS material.
 type StaticTLSConfig struct {
@@ -94,3 +132,24 @@ type http3Option struct{ addr string }
 func HTTP3(addr string) ListenerOption { return http3Option{addr: addr} }
 
 func (h http3Option) applyListener(l *Listener) { l.http3Addr = h.addr }
+
+type behindCloudflareOption struct{}
+
+// BehindCloudflare marks the listener as sitting behind a Cloudflare proxy.
+// This affects two things:
+//
+// First, when AutoTLS is configured on the listener, the TLS-ALPN-01 challenge
+// is suppressed (the "acme-tls/1" entry is dropped from ALPN). Cloudflare
+// terminates TLS at its edge and does not forward custom ALPN protocols, so
+// TLS-ALPN-01 cannot succeed. Provisioning falls back to HTTP-01, which is
+// served by the redirect listener on :80 — Cloudflare proxies that path
+// transparently provided "Always Use HTTPS" is disabled for
+// /.well-known/acme-challenge/*.
+//
+// Second, the request handling path trusts the CF-Connecting-IP and
+// True-Client-IP headers as the originating client address. Other proxy
+// headers (X-Forwarded-For) remain available but Cloudflare's are preferred
+// because they are populated by the proxy and not user-controllable.
+func BehindCloudflare() ListenerOption { return behindCloudflareOption{} }
+
+func (behindCloudflareOption) applyListener(l *Listener) { l.behindCF = true }

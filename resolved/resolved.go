@@ -35,6 +35,11 @@ type Listener struct {
 	StaticTLS   *StaticTLS // nil unless this is an HTTPS listener with static certs
 	EnableHTTP2 bool
 	HTTP3Addr   string // empty unless HTTP/3 is enabled
+
+	// BehindCloudflare indicates the listener is fronted by Cloudflare. The
+	// runtime suppresses TLS-ALPN-01 challenges (HTTP-01 only) and trusts
+	// CF-Connecting-IP / True-Client-IP for client IP attribution.
+	BehindCloudflare bool
 }
 
 // AutoTLS is the resolved ACME configuration.
@@ -42,6 +47,14 @@ type AutoTLS struct {
 	Domains []string
 	Email   string
 	Storage string
+	DNS01   *CloudflareDNS01
+}
+
+// CloudflareDNS01 is the resolved DNS-01 configuration. When non-nil, the
+// runtime uses Cloudflare's DNS API to satisfy challenges instead of HTTP-01.
+type CloudflareDNS01 struct {
+	APIToken string
+	ZoneID   string // optional; empty means auto-discover
 }
 
 // StaticTLS is the resolved static-cert configuration.
@@ -167,6 +180,17 @@ type Defaults struct {
 type Observability struct {
 	AccessLog AccessLog
 	Metrics   Metrics
+	Tracing   Tracing
+}
+
+// Tracing is the resolved distributed-tracing configuration.
+type Tracing struct {
+	Enabled     bool
+	Kind        string // "otlp"
+	Endpoint    string
+	ServiceName string
+	Insecure    bool
+	SampleRate  float64
 }
 
 // AccessLog is the resolved access log configuration.
@@ -175,6 +199,11 @@ type AccessLog struct {
 	Format  string // "json"
 	Writer  io.Writer
 	Name    string // human label for the writer
+
+	// SampleRate is the fraction of successful requests to record, in (0,1].
+	// Errors (status >= 500) and client errors (4xx) are logged regardless;
+	// sampling only suppresses successful requests at high volume.
+	SampleRate float64
 }
 
 // Metrics is the resolved metrics configuration.

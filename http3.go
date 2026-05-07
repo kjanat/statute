@@ -35,11 +35,17 @@ func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler) (*
 
 	var tlsCfg *tls.Config
 	switch {
+	case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
+		dm := s.dns01Managers[l.Addr]
+		if dm == nil {
+			return nil, fmt.Errorf("auto_tls: dns01 manager not initialised")
+		}
+		tlsCfg = dns01TLSConfig(dm, true)
 	case l.AutoTLS != nil:
 		if s.autocertMgr == nil {
 			return nil, fmt.Errorf("auto_tls: manager not initialised")
 		}
-		tlsCfg = autocertTLSConfig(s.autocertMgr, true)
+		tlsCfg = autocertTLSConfig(s.autocertMgr, true, l.BehindCloudflare)
 	case l.StaticTLS != nil:
 		cert, err := tls.LoadX509KeyPair(l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
 		if err != nil {
