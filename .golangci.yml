@@ -17,67 +17,6 @@ run:
   tests: true
   modules-download-mode: readonly
 
-linters:
-  default: standard
-  enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - gocritic
-    - revive
-    - misspell
-    - unparam
-    - prealloc
-    - bodyclose
-    - nilerr
-    - errorlint
-    - unconvert
-    - goconst
-    - nakedret
-    - tagalign
-  settings:
-    errcheck:
-      check-type-assertions: false
-      check-blank: false
-    govet:
-      enable-all: true
-      disable:
-        - fieldalignment
-        - shadow
-    revive:
-      rules:
-        - name: var-naming
-        - name: package-comments
-        - name: exported
-          severity: warning
-      # unexported-return is disabled. Many builder constructors (RateLimit,
-      # Retry, Timeout, JSONLog, OTLP, ...) intentionally return unexported
-      # pointer types: the user only chains methods on the result and never
-      # names the type. Suppressing the warning is consistent with the
-      # config-as-code style the framework targets.
-    gocritic:
-      disabled-checks:
-        - ifElseChain
-  exclusions:
-    rules:
-      - path: _test\.go
-        linters:
-          - errcheck
-          - bodyclose
-          - revive
-          - goconst
-      - path: examples/
-        linters:
-          - revive
-          - errcheck
-      - path: dns01\.go
-        linters:
-          - bodyclose
-        # quic-go and acme close response bodies via internal helpers that
-        # the linter can't see through.
-
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
@@ -85,6 +24,44 @@ issues:
 formatters:
   enable: [gci, gofumpt, gofmt, goimports]
   settings:
-    goimports: { local-prefixes: [statute.kjanat.dev] }
     gci: { sections: [standard, default, localmodule] }
+    goimports: { local-prefixes: [statute.kjanat.dev] }
     gofumpt: { module-path: statute.kjanat.dev, extra-rules: true }
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - goconst
+    - gocritic
+    - gocyclo
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - nilerr
+    - prealloc
+    - revive
+    - staticcheck
+    - tagalign
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    govet:
+      enable-all: true
+      disable: [fieldalignment, shadow]
+    revive:
+      rules: [name: var-naming, name: package-comments, { name: exported, severity: warning }]
+    gocritic: { disabled-checks: [ifElseChain] }
+    gocyclo: { min-complexity: 10 }
+  exclusions:
+    rules:
+      - { path: _test\.go, linters: [errcheck, bodyclose, revive, goconst] }
+      - { path: examples/, linters: [revive, errcheck] }
+      - { path: dns01\.go, linters: [bodyclose] }
