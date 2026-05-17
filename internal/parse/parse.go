@@ -221,10 +221,9 @@ const bytePrefixes = "kmgtpezyrq"
 // (kib, mib, gib, …) use powers of 1024. The bare unit "b" (or "") is 1.
 // Case is irrelevant here because callers lower-case the unit before this
 // sees it; this is byte-size parsing, not general SI (where m=milli≠M=mega).
+// The unit arrives already trimmed and lower-cased from splitSizeUnit, so
+// this does no further normalization.
 func sizeMultiplier(unit string) (float64, error) {
-	original := unit
-	unit = strings.ToLower(strings.TrimSpace(unit))
-
 	if unit == "" || unit == "b" {
 		return 1, nil
 	}
@@ -240,11 +239,11 @@ func sizeMultiplier(unit string) (float64, error) {
 	}
 
 	if len(prefix) != 1 {
-		return 0, fmt.Errorf("unknown unit %q", original)
+		return 0, fmt.Errorf("unknown unit %q", unit)
 	}
 	idx := strings.IndexByte(bytePrefixes, prefix[0])
 	if idx == -1 {
-		return 0, fmt.Errorf("unknown unit %q", original)
+		return 0, fmt.Errorf("unknown unit %q", unit)
 	}
 	return math.Pow(base, float64(idx+1)), nil
 }

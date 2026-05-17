@@ -185,3 +185,30 @@ func TestCloudflareAPI_AuthFailure(t *testing.T) {
 		t.Fatal("want error for bad token")
 	}
 }
+
+func TestCloudflareAPI_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	srv, _ := newCFStub(t)
+	c := New("test-token")
+	c.base = srv.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the call
+
+	if _, err := c.AddTXTRecord(ctx, "zone-example", "name", "val"); err == nil {
+		t.Fatal("want error from cancelled context")
+	}
+}
+
+func TestCloudflareAPI_NetworkError(t *testing.T) {
+	t.Parallel()
+	c := New("test-token")
+	c.base = "http://127.0.0.1:1" // nothing listens here; connection refused
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := c.FindZoneID(ctx, "foo.example.com"); err == nil {
+		t.Fatal("want error when the API is unreachable")
+	}
+}
