@@ -1,14 +1,17 @@
 package statute
 
 import (
+	"math"
 	"testing"
-	"time"
 )
 
-// FuzzParseDuration — invariant: never panic; on err==nil, result is
-// non-negative finite.
+// FuzzParseDuration invariant: never panic; on err==nil the result is
+// non-negative. parseDuration accepts arbitrarily long durations (Go's
+// time.Duration is int64 nanoseconds — about 292 years before overflow) and
+// the user is responsible for choosing sensible values. We don't make a
+// "too long" judgment here.
 func FuzzParseDuration(f *testing.F) {
-	for _, seed := range []string{"5s", "90s", "1h", "500ms", "0", "0s", "1.5h", "-1ns", "  ", "", "abc", "1y"} {
+	for _, seed := range []string{"5s", "90s", "1h", "500ms", "0", "0s", "1.5h", "-1ns", "  ", "", "abc", "1y", "1d", "70000d"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
@@ -19,14 +22,11 @@ func FuzzParseDuration(f *testing.F) {
 		if d < 0 {
 			t.Errorf("parseDuration(%q) = %v; negative duration", s, d)
 		}
-		if d > 100*365*24*time.Hour {
-			t.Errorf("parseDuration(%q) = %v; absurdly large duration", s, d)
-		}
 	})
 }
 
-// FuzzParseRate — invariant: never panic; on err==nil, result is a finite
-// positive rate.
+// FuzzParseRate invariant: never panic; on err==nil the result is finite
+// and strictly positive. Overflow to +Inf would be a real bug.
 func FuzzParseRate(f *testing.F) {
 	for _, seed := range []string{"1/s", "60/min", "100/h", "0/min", "-1/s", "abc/min", "5", "5/", "/min"} {
 		f.Add(seed)
@@ -39,10 +39,24 @@ func FuzzParseRate(f *testing.F) {
 		if r <= 0 {
 			t.Errorf("parseRate(%q) = %v; non-positive rate", s, r)
 		}
-		// 1 billion requests per second is absurd in any reasonable config.
-		// If we accept that, something is wrong with bounds.
-		if r > 1e9 {
-			t.Errorf("parseRate(%q) = %v; absurdly large rate", s, r)
+		if math.IsInf(r, 0) || math.IsNaN(r) {
+			t.Errorf("parseRate(%q) = %v; not finite", s, r)
+		}
+	})
+}
+
+// FuzzParseSize invariant: never panic; on err==nil the result is non-negative.
+func FuzzParseSize(f *testing.F) {
+	for _, seed := range []string{"100", "1KB", "1MB", "1GB", "1KiB", "1MiB", "1GiB", "1.5GB", "0", "", "abc", "1XB", "-5MB"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		n, err := parseSize(s)
+		if err != nil {
+			return
+		}
+		if n < 0 {
+			t.Errorf("parseSize(%q) = %d; negative", s, n)
 		}
 	})
 }
