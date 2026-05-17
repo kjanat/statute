@@ -81,9 +81,12 @@ jobs:
       - name: run fuzz targets
         run: |
           [ -f .fuzz-targets ] || exit 0
+          # -fuzz cannot target multiple packages in one invocation; we run
+          # against the root package where every Fuzz* lives. If the framework
+          # grows fuzz targets in other packages, this loop must be expanded.
           while read -r target; do
             echo "::group::$target"
-            go test -run=^$ -fuzz="^${target}$" -fuzztime=30s ./...
+            go test -run=^$ -fuzz="^${target}$" -fuzztime=30s .
             echo "::endgroup::"
           done < .fuzz-targets
 

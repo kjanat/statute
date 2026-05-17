@@ -4,80 +4,80 @@ A comparison of statute against the three reverse proxies it most often shares a
 
 ## Headline differences
 
-|                                  | statute                                       | nginx                          | Caddy                              | Traefik                                |
-|----------------------------------|-----------------------------------------------|--------------------------------|------------------------------------|----------------------------------------|
-| Configuration language           | Go code                                       | nginx.conf                     | Caddyfile / JSON                   | YAML / TOML / file or label discovery  |
-| Configuration loaded at          | Compile time                                  | Process start / SIGHUP         | Process start / API                | Continuous (file or service discovery) |
-| Hot reload                       | No (recompile + deploy)                       | Yes (SIGHUP / -s reload)       | Yes (built-in)                     | Yes (continuous)                       |
-| Binary                           | Single static                                 | Single binary + modules        | Single static                      | Single static                          |
-| Plugin / module loading          | No                                            | Compile-time modules           | Custom modules (recompile)         | Yes (provider plugins)                 |
-| Admin API                        | No                                            | nginx-plus / stub_status only  | Yes (REST)                         | Yes (REST)                             |
-| Distributed coordination         | No                                            | No                             | No                                 | Yes (with KV store)                    |
+|                          | statute                 | nginx                         | Caddy                      | Traefik                                |
+| ------------------------ | ----------------------- | ----------------------------- | -------------------------- | -------------------------------------- |
+| Configuration language   | Go code                 | nginx.conf                    | Caddyfile / JSON           | YAML / TOML / file or label discovery  |
+| Configuration loaded at  | Compile time            | Process start / SIGHUP        | Process start / API        | Continuous (file or service discovery) |
+| Hot reload               | No (recompile + deploy) | Yes (SIGHUP / -s reload)      | Yes (built-in)             | Yes (continuous)                       |
+| Binary                   | Single static           | Single binary + modules       | Single static              | Single static                          |
+| Plugin / module loading  | No                      | Compile-time modules          | Custom modules (recompile) | Yes (provider plugins)                 |
+| Admin API                | No                      | nginx-plus / stub_status only | Yes (REST)                 | Yes (REST)                             |
+| Distributed coordination | No                      | No                            | No                         | Yes (with KV store)                    |
 
 ## Protocols and transport
 
-|                                  | statute                                       | nginx                          | Caddy                              | Traefik                                |
-|----------------------------------|-----------------------------------------------|--------------------------------|------------------------------------|----------------------------------------|
-| HTTP/1.1                         | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| HTTP/2                           | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| HTTP/3                           | ✅ (quic-go)                                  | ✅ (since 1.25)                | ✅                                 | ✅                                     |
-| WebSocket pass-through           | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| gRPC                             | ✅ (pass-through, gRPC-aware retry)           | ✅                             | ✅                                 | ✅                                     |
-| L4 (TCP/UDP)                     | ❌                                            | ✅ (stream module)             | ❌ (HTTP only)                     | ✅                                     |
-| SNI routing                      | ✅ (via host matching)                        | ✅                             | ✅                                 | ✅                                     |
+|                        | statute                             | nginx              | Caddy          | Traefik |
+| ---------------------- | ----------------------------------- | ------------------ | -------------- | ------- |
+| HTTP/1.1               | ✅                                  | ✅                 | ✅             | ✅      |
+| HTTP/2                 | ✅                                  | ✅                 | ✅             | ✅      |
+| HTTP/3                 | ✅ (quic-go)                        | ✅ (since 1.25)    | ✅             | ✅      |
+| WebSocket pass-through | ✅                                  | ✅                 | ✅             | ✅      |
+| gRPC                   | ✅ (pass-through, gRPC-aware retry) | ✅                 | ✅             | ✅      |
+| L4 (TCP/UDP)           | ❌                                  | ✅ (stream module) | ❌ (HTTP only) | ✅      |
+| SNI routing            | ✅ (via host matching)              | ✅                 | ✅             | ✅      |
 
 ## TLS
 
-|                                  | statute                                       | nginx                          | Caddy                              | Traefik                                |
-|----------------------------------|-----------------------------------------------|--------------------------------|------------------------------------|----------------------------------------|
-| Static certs                     | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| ACME HTTP-01                     | ✅ (autocert)                                 | ❌ (external — certbot)        | ✅                                 | ✅                                     |
-| ACME TLS-ALPN-01                 | ✅                                            | ❌                             | ✅                                 | ✅                                     |
-| ACME DNS-01                      | ✅ (Cloudflare only, built-in)                | ❌                             | ✅ (many providers)                | ✅ (many providers)                    |
-| Wildcard certs                   | ✅ (via DNS-01)                               | ❌ built-in                    | ✅                                 | ✅                                     |
-| OCSP stapling                    | (autocert default)                            | ✅                             | ✅                                 | ✅                                     |
+|                  | statute                        | nginx                   | Caddy               | Traefik             |
+| ---------------- | ------------------------------ | ----------------------- | ------------------- | ------------------- |
+| Static certs     | ✅                             | ✅                      | ✅                  | ✅                  |
+| ACME HTTP-01     | ✅ (autocert)                  | ❌ (external — certbot) | ✅                  | ✅                  |
+| ACME TLS-ALPN-01 | ✅                             | ❌                      | ✅                  | ✅                  |
+| ACME DNS-01      | ✅ (Cloudflare only, built-in) | ❌                      | ✅ (many providers) | ✅ (many providers) |
+| Wildcard certs   | ✅ (via DNS-01)                | ❌ built-in             | ✅                  | ✅                  |
+| OCSP stapling    | (autocert default)             | ✅                      | ✅                  | ✅                  |
 
 ## Routing and balancing
 
-|                                  | statute                                       | nginx                          | Caddy                              | Traefik                                |
-|----------------------------------|-----------------------------------------------|--------------------------------|------------------------------------|----------------------------------------|
-| Path / host / method match       | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| Regex path patterns              | ❌ (prefix wildcard only)                     | ✅                             | ✅                                 | ✅                                     |
-| Round-robin                      | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| Least-connections                | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| IP-hash                          | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| Smooth weighted RR               | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| Backup tier failover             | ✅                                            | ✅ (`backup`)                  | ❌ (manual)                        | ❌ (sticky / mirroring)                |
-| Active health checks             | ✅                                            | nginx-plus (commercial)        | ✅                                 | ✅                                     |
-| Passive health checks            | ❌                                            | ✅                             | ✅                                 | ✅                                     |
+|                            | statute                   | nginx                   | Caddy       | Traefik                 |
+| -------------------------- | ------------------------- | ----------------------- | ----------- | ----------------------- |
+| Path / host / method match | ✅                        | ✅                      | ✅          | ✅                      |
+| Regex path patterns        | ❌ (prefix wildcard only) | ✅                      | ✅          | ✅                      |
+| Round-robin                | ✅                        | ✅                      | ✅          | ✅                      |
+| Least-connections          | ✅                        | ✅                      | ✅          | ✅                      |
+| IP-hash                    | ✅                        | ✅                      | ✅          | ✅                      |
+| Smooth weighted RR         | ✅                        | ✅                      | ✅          | ✅                      |
+| Backup tier failover       | ✅                        | ✅ (`backup`)           | ❌ (manual) | ❌ (sticky / mirroring) |
+| Active health checks       | ✅                        | nginx-plus (commercial) | ✅          | ✅                      |
+| Passive health checks      | ❌                        | ✅                      | ✅          | ✅                      |
 
 ## Middleware
 
-|                                  | statute                                       | nginx                          | Caddy                              | Traefik                                |
-|----------------------------------|-----------------------------------------------|--------------------------------|------------------------------------|----------------------------------------|
-| Timeout (per route)              | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| Rate limit (per key)             | ✅ (token bucket; ClientIP/Host)              | ✅                             | ✅                                 | ✅                                     |
-| Retry on status                  | ✅ (idempotent + gRPC-aware)                  | ✅                             | ✅                                 | ✅                                     |
-| Cache                            | ✅ (in-process TTL)                           | ✅                             | ✅                                 | ❌ (delegates to upstream)             |
-| Gzip / Brotli compression        | ✅                                            | ✅ / ✅ (with module)          | ✅                                 | ✅                                     |
-| ETag                             | ✅                                            | ✅                             | ✅                                 | ❌                                     |
-| Body size limit                  | ✅                                            | ✅ (`client_max_body_size`)    | ✅                                 | ✅                                     |
-| Basic auth (bcrypt)              | ✅                                            | ✅                             | ✅                                 | ✅                                     |
-| IP allow / deny                  | ✅ (CIDR)                                     | ✅                             | ✅                                 | ✅                                     |
-| CORS                             | ✅ (preflight, credentialed-wildcard reject)  | ✅                             | ✅ (handler)                       | ✅                                     |
-| Security headers                 | ✅                                            | ✅ (manual)                    | ✅                                 | ✅                                     |
-| Request ID propagation           | ✅                                            | ✅ (manual)                    | ✅                                 | ✅                                     |
-| JWT validation                   | ❌                                            | ✅ (nginx-plus or auth_request)| ✅ (jwt module)                    | ✅ (middleware)                        |
+|                           | statute                                      | nginx                           | Caddy           | Traefik                    |
+| ------------------------- | -------------------------------------------- | ------------------------------- | --------------- | -------------------------- |
+| Timeout (per route)       | ✅                                           | ✅                              | ✅              | ✅                         |
+| Rate limit (per key)      | ✅ (token bucket; ClientIP/Host)             | ✅                              | ✅              | ✅                         |
+| Retry on status           | ✅ (idempotent + gRPC-aware)                 | ✅                              | ✅              | ✅                         |
+| Cache                     | ✅ (in-process TTL)                          | ✅                              | ✅              | ❌ (delegates to upstream) |
+| Gzip / Brotli compression | ✅                                           | ✅ / ✅ (with module)           | ✅              | ✅                         |
+| ETag                      | ✅                                           | ✅                              | ✅              | ❌                         |
+| Body size limit           | ✅                                           | ✅ (`client_max_body_size`)     | ✅              | ✅                         |
+| Basic auth (bcrypt)       | ✅                                           | ✅                              | ✅              | ✅                         |
+| IP allow / deny           | ✅ (CIDR)                                    | ✅                              | ✅              | ✅                         |
+| CORS                      | ✅ (preflight, credentialed-wildcard reject) | ✅                              | ✅ (handler)    | ✅                         |
+| Security headers          | ✅                                           | ✅ (manual)                     | ✅              | ✅                         |
+| Request ID propagation    | ✅                                           | ✅ (manual)                     | ✅              | ✅                         |
+| JWT validation            | ❌                                           | ✅ (nginx-plus or auth_request) | ✅ (jwt module) | ✅ (middleware)            |
 
 ## Observability
 
-|                                  | statute                                       | nginx                          | Caddy                              | Traefik                                |
-|----------------------------------|-----------------------------------------------|--------------------------------|------------------------------------|----------------------------------------|
-| Structured (JSON) access log     | ✅                                            | ✅ (custom log_format)         | ✅                                 | ✅                                     |
-| Sampled access log               | ✅                                            | ❌ (manual)                    | ❌                                 | ✅ (filters)                           |
-| Prometheus metrics               | ✅                                            | nginx-plus / exporter          | ✅                                 | ✅                                     |
-| OpenTelemetry tracing            | ✅ (OTLP/gRPC)                                | ✅ (1.27+)                     | ✅                                 | ✅                                     |
-| pprof                            | ✅ (on metrics listener)                      | ❌                             | ❌                                 | ❌                                     |
+|                              | statute                  | nginx                  | Caddy | Traefik      |
+| ---------------------------- | ------------------------ | ---------------------- | ----- | ------------ |
+| Structured (JSON) access log | ✅                       | ✅ (custom log_format) | ✅    | ✅           |
+| Sampled access log           | ✅                       | ❌ (manual)            | ❌    | ✅ (filters) |
+| Prometheus metrics           | ✅                       | nginx-plus / exporter  | ✅    | ✅           |
+| OpenTelemetry tracing        | ✅ (OTLP/gRPC)           | ✅ (1.27+)             | ✅    | ✅           |
+| pprof                        | ✅ (on metrics listener) | ❌                     | ❌    | ❌           |
 
 ## When to choose statute
 
