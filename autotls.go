@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // buildAutocertManager scans all HTTPS listeners with HTTP-01 AutoTLS and

@@ -1,7 +1,7 @@
 package statute_test
 
 import (
-	"github.com/kjanat/statute"
+	"statute.kjanat.dev"
 )
 
 // ExampleHTTP shows the minimal config: one HTTP listener proxying to an

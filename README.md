@@ -3,8 +3,8 @@
 > Config-as-code reverse proxy in Go. The binary _is_ the configuration.
 
 [![ci](https://github.com/kjanat/statute/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kjanat/statute/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/kjanat/statute.svg)](https://pkg.go.dev/github.com/kjanat/statute)
-[![Go Report Card](https://goreportcard.com/badge/github.com/kjanat/statute)](https://goreportcard.com/report/github.com/kjanat/statute)
+[![Go Reference](https://pkg.go.dev/badge/statute.kjanat.dev.svg)](https://pkg.go.dev/statute.kjanat.dev)
+[![Go Report Card](https://goreportcard.com/badge/statute.kjanat.dev)](https://goreportcard.com/report/statute.kjanat.dev)
 [![Release](https://img.shields.io/github/v/release/kjanat/statute?sort=semver)](https://github.com/kjanat/statute/releases)
 [![License](https://img.shields.io/github/license/kjanat/statute)](LICENSE)
 
@@ -13,7 +13,7 @@ statute is a reverse proxy framework where your routing topology, TLS material, 
 ```go
 package main
 
-import "github.com/kjanat/statute"
+import "statute.kjanat.dev"
 
 func main() {
     statute.Main(statute.Config{
@@ -75,7 +75,7 @@ What's implemented:
 ## Install
 
 ```sh
-go get github.com/kjanat/statute
+go get statute.kjanat.dev
 ```
 
 Requires Go 1.26 or newer.
@@ -103,8 +103,8 @@ Helper functions (`HTTP`, `HTTPS`, `Match`, `RateLimit`, …) construct the valu
 
 statute has two type packages:
 
-- `github.com/kjanat/statute` is the **surface** API. It is what you write. It optimises for readability and ergonomic chaining.
-- `github.com/kjanat/statute/resolved` is the **resolved** schema. It is what the runtime executes against. It optimises for invariants: durations are `time.Duration`, upstream references are `*Pool` pointers, optional fields are filled with their canonical defaults, no string-encoded values remain.
+- `statute.kjanat.dev` is the **surface** API. It is what you write. It optimises for readability and ergonomic chaining.
+- `statute.kjanat.dev/resolved` is the **resolved** schema. It is what the runtime executes against. It optimises for invariants: durations are `time.Duration`, upstream references are `*Pool` pointers, optional fields are filled with their canonical defaults, no string-encoded values remain.
 
 Tooling (validators, exporters, dashboards) targets the resolved schema. End users target the surface API. They are connected by a single `Resolve(cfg) (*resolved.Config, error)` function.
 

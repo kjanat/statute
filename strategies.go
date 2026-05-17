@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // backendState carries runtime state for a single backend: in-flight counter,

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestRequestID_GeneratedWhenAbsent(t *testing.T) {

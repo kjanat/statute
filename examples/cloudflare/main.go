@@ -18,7 +18,7 @@
 //   - WAF rule that does not block requests to the same path.
 package main
 
-import "github.com/kjanat/statute"
+import "statute.kjanat.dev"
 
 func main() {
 	statute.Main(statute.Config{

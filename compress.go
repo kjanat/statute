@@ -9,7 +9,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // compressHandler negotiates response compression based on the request's

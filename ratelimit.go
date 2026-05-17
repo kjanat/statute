@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // rateLimitHandler is a simple per-key token bucket. Buckets are kept in a

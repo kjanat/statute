@@ -9,7 +9,7 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // http3Listener wraps a quic-go http3.Server with a Serve/Shutdown interface

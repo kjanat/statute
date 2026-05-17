@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // TestHealthCheck_RecordTransitions exercises the threshold logic: a

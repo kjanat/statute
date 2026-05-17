@@ -20,7 +20,7 @@ import (
 
 	"golang.org/x/crypto/acme"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // dns01Manager is a minimal cert manager that satisfies ACME DNS-01

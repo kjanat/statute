@@ -11,7 +11,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestCompress_GzipNegotiation(t *testing.T) {

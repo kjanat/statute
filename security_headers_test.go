@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestSecurityHeaders_Defaults(t *testing.T) {

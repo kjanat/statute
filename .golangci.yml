@@ -85,6 +85,6 @@ issues:
 formatters:
   enable: [gci, gofumpt, gofmt, goimports]
   settings:
-    goimports: { local-prefixes: [github.com/kjanat/statute] }
+    goimports: { local-prefixes: [statute.kjanat.dev] }
     gci: { sections: [standard, default, localmodule] }
-    gofumpt: { module-path: github.com/kjanat/statute, extra-rules: true }
+    gofumpt: { module-path: statute.kjanat.dev, extra-rules: true }

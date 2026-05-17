@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/kjanat/statute/security/policy
     about: Please do not file security issues publicly. Use private vulnerability reporting per SECURITY.md.
   - name: Documentation
-    url: https://pkg.go.dev/github.com/kjanat/statute
+    url: https://pkg.go.dev/statute.kjanat.dev
     about: API reference and godoc.

@@ -9,7 +9,7 @@
 // briefly until the health check demotes the dead backend).
 package main
 
-import "github.com/kjanat/statute"
+import "statute.kjanat.dev"
 
 func main() {
 	statute.Main(statute.Config{

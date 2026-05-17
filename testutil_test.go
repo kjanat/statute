@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // echoRequest is what newEchoBackend returns as a JSON body for every

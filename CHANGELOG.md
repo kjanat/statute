@@ -76,7 +76,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `OTLP(endpoint).ServiceName(...).Insecure().Sample(rate)` distributed tracing via gRPC, with W3C trace-context propagation to upstream backends.
 - `Defaults` block: `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`. `ReadHeaderTimeout` defaults to `5s` (Slowloris mitigation).
 - `Shutdown` block: `GracePeriod`, `DrainListeners`. Signal handlers for SIGINT/SIGTERM with parallel listener drain and OTel span flush.
-- Two-layer architecture: surface API (`github.com/kjanat/statute`) and resolved schema (`github.com/kjanat/statute/resolved`).
+- Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
 [Unreleased]: https://github.com/kjanat/statute/compare/v0.2.0...HEAD

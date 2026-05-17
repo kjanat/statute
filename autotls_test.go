@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestBuildAutocertManager_None(t *testing.T) {

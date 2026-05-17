@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestCacheHandler_HitMiss(t *testing.T) {

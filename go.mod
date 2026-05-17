@@ -1,4 +1,4 @@
-module github.com/kjanat/statute
+module statute.kjanat.dev
 
 go 1.26.3
 

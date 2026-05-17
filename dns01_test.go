@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // TestDNS01_CoversHost exercises the wildcard-vs-exact match table without

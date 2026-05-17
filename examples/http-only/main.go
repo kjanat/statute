@@ -1,6 +1,6 @@
 package main
 
-import "github.com/kjanat/statute"
+import "statute.kjanat.dev"
 
 func main() {
 	statute.Run(statute.Config{

@@ -60,7 +60,7 @@ jobs:
       - name: warm proxy.golang.org
         run: |
           for i in 1 2 3 4 5; do
-            if curl --fail --silent --show-error "https://proxy.golang.org/github.com/kjanat/statute/@v/${GITHUB_REF_NAME}.info" > /dev/null; then
+            if curl --fail --silent --show-error "https://proxy.golang.org/statute.kjanat.dev/@v/${GITHUB_REF_NAME}.info" > /dev/null; then
               echo "proxy indexed $GITHUB_REF_NAME"
               exit 0
             fi

@@ -3,7 +3,7 @@ package statute
 import (
 	"net/http"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 type bodyLimitMW struct{ size string }

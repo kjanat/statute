@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // healthChecker probes each backend on an interval and toggles its healthy

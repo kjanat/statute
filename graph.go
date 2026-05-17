@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // GraphDOT writes a Graphviz DOT representation of the resolved config to w.

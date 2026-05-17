@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // TestEndToEndProxy spins up a tiny upstream and exercises the resolved

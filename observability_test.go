@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestJSONLog_SampleClamps(t *testing.T) {

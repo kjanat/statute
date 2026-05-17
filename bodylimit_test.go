@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestBodyLimit_AllowsWithinLimit(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/kjanat/statute"
+	"statute.kjanat.dev"
 )
 
 func main() {

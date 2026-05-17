@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"net/netip"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 type allowIPsMW struct{ cidrs []string }

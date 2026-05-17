@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // Resolve validates the surface configuration, fills defaults, and produces

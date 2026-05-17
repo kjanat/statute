@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // cacheHandler is a tiny in-process response cache. It stores 2xx GET/HEAD

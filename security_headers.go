@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 type securityHeadersMW struct {

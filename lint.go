@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // Severity of a lint finding.

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kjanat/statute/resolved"
+	"statute.kjanat.dev/resolved"
 )
 
 // accessLogMiddleware writes a single JSON line per request to the configured
