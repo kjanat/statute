@@ -15,21 +15,19 @@ jobs:
           cat <<EOF > dist/index.html
           <!DOCTYPE html>
           <html>
-          <head>
-          <meta name="go-import" content="${HOST} git https://github.com/${GITHUB_REPOSITORY}">
-          <meta name="go-source" content="${HOST} https://github.com/${GITHUB_REPOSITORY} https://github.com/${GITHUB_REPOSITORY}/tree/master{/dir}
-          https://github.com/${GITHUB_REPOSITORY}/blob/master{/dir}/{file}#L{line}">
-          <meta http-equiv="refresh" content="0; url=https://pkg.go.dev/${HOST}">
-          </head>
-          <body>Redirecting to <a href="https://pkg.go.dev/${HOST}">pkg.go.dev</a></body>
+            <head>
+              <meta name="go-import" content="${HOST} git https://github.com/${GITHUB_REPOSITORY}">
+              <meta name="go-source" content="${HOST} https://github.com/${GITHUB_REPOSITORY} https://github.com/${GITHUB_REPOSITORY}/tree/master{/dir} https://github.com/${GITHUB_REPOSITORY}/blob/master{/dir}/{file}#L{line}">
+              <meta http-equiv="refresh" content="0; url=https://pkg.go.dev/${HOST}">
+            </head>
+            <body>Redirecting to <a href="https://pkg.go.dev/${HOST}">pkg.go.dev</a></body>
           </html>
           EOF
-      - uses: actions/upload-pages-artifact@v5
-        with: { path: dist }
+      - { uses: actions/upload-pages-artifact@v5, with: { path: dist } }
   deploy:
     needs: build
     runs-on: ubuntu-slim
-    environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps: [{ id: deployment, uses: actions/deploy-pages@v5 }]
