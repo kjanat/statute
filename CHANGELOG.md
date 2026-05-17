@@ -37,6 +37,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Cloudflare `FindZoneID` no longer swallows API/auth/network errors
   during the zone-label walk and misreport them as "no zone found"; the
   underlying error now propagates.
+- OpenTelemetry traces reported a hardcoded `statute.version` of
+  `0.1.0`. It is now derived from `debug.ReadBuildInfo()` — the pinned
+  module version when imported, the VCS revision for a local statute
+  checkout, else `unknown` — with no hand-maintained constant. A
+  `(devel)` statute dependency no longer borrows the host app's VCS
+  stamp. The module path is derived via `reflect.TypeFor`, so it tracks
+  module renames automatically.
 
 ## [0.3.0] — 2026-05-17
 

@@ -51,8 +51,8 @@ func TestResolveVersion(t *testing.T) {
 		bi := &debug.BuildInfo{
 			Main: debug.Module{Path: statuteModulePath, Version: goDevelVersion},
 			Settings: []debug.BuildSetting{
-				{Key: "vcs.revision", Value: "9263409a1b2c3d4e5f6071829304a5b6c7d8e9f0"},
-				{Key: "vcs.modified", Value: "true"},
+				{Key: vcsRevisionKey, Value: "9263409a1b2c3d4e5f6071829304a5b6c7d8e9f0"},
+				{Key: vcsModifiedKey, Value: "true"},
 			},
 		}
 		if got := resolveVersion(bi, true); got != "9263409a1b2c-dirty" {
@@ -64,6 +64,41 @@ func TestResolveVersion(t *testing.T) {
 		bi := &debug.BuildInfo{Main: debug.Module{Path: statuteModulePath, Version: goDevelVersion}}
 		if got := resolveVersion(bi, true); got != enumUnknown {
 			t.Errorf("got %q, want %q", got, enumUnknown)
+		}
+	})
+
+	// Regression: statute as a (devel) dependency must NOT borrow the
+	// host app's VCS revision from bi.Settings.
+	t.Run("devel dependency ignores host VCS revision", func(t *testing.T) {
+		bi := &debug.BuildInfo{
+			Main: debug.Module{Path: "example.com/user/app", Version: goDevelVersion},
+			Deps: []*debug.Module{
+				{Path: statuteModulePath, Version: goDevelVersion},
+			},
+			Settings: []debug.BuildSetting{
+				{Key: vcsRevisionKey, Value: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+				{Key: vcsModifiedKey, Value: "true"},
+			},
+		}
+		if got := resolveVersion(bi, true); got != enumUnknown {
+			t.Errorf("got %q, want %q", got, enumUnknown)
+		}
+	})
+
+	// A local `replace` to a versioned module surfaces that version.
+	t.Run("replaced dependency uses replacement version", func(t *testing.T) {
+		bi := &debug.BuildInfo{
+			Main: debug.Module{Path: "example.com/user/app", Version: goDevelVersion},
+			Deps: []*debug.Module{
+				{
+					Path:    statuteModulePath,
+					Version: goDevelVersion,
+					Replace: &debug.Module{Path: statuteModulePath, Version: "v0.6.0"},
+				},
+			},
+		}
+		if got := resolveVersion(bi, true); got != "0.6.0" {
+			t.Errorf("got %q, want 0.6.0", got)
 		}
 	})
 }

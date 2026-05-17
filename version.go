@@ -3,7 +3,14 @@ package statute
 import (
 	"reflect"
 	"runtime/debug"
+	"strconv"
 	"strings"
+)
+
+// Build-setting keys stamped by the Go toolchain for VCS-tracked builds.
+const (
+	vcsRevisionKey = "vcs.revision"
+	vcsModifiedKey = "vcs.modified"
 )
 
 // statuteModulePath is statute's module path, used to locate statute's
@@ -37,25 +44,43 @@ func version() string {
 
 // resolveVersion is the pure core of version, separated for testing.
 func resolveVersion(bi *debug.BuildInfo, ok bool) string {
-	if ok && bi != nil {
-		// statute as the main module (its own examples/binaries).
-		if bi.Main.Path == statuteModulePath {
-			if v := cleanVersion(bi.Main.Version); v != "" {
-				return v
-			}
+	if !ok || bi == nil {
+		return enumUnknown
+	}
+	// statute as the main module (its own examples/binaries). The VCS
+	// stamp lives in bi.Settings and describes the main module, so it is
+	// only statute's revision in this branch.
+	if bi.Main.Path == statuteModulePath {
+		if v := cleanVersion(bi.Main.Version); v != "" {
+			return v
 		}
-		// statute as a dependency of the embedding binary.
-		for _, d := range bi.Deps {
-			if d != nil && d.Path == statuteModulePath {
-				if v := cleanVersion(d.Version); v != "" {
-					return v
-				}
-			}
-		}
-		// Local checkout with no module version: use the VCS stamp.
 		if rev := vcsRevision(bi); rev != "" {
 			return rev
 		}
+		return enumUnknown
+	}
+	// statute as a dependency of the embedding binary. Deliberately does
+	// NOT fall back to bi.Settings: that is the host app's VCS, not
+	// statute's, and would mis-stamp statute.version.
+	return versionFromDeps(bi.Deps)
+}
+
+// versionFromDeps resolves statute's version from the dependency list,
+// honouring a local `replace`, or enumUnknown when it cannot be told.
+func versionFromDeps(deps []*debug.Module) string {
+	for _, d := range deps {
+		if d == nil || d.Path != statuteModulePath {
+			continue
+		}
+		if v := cleanVersion(d.Version); v != "" {
+			return v
+		}
+		if d.Replace != nil {
+			if v := cleanVersion(d.Replace.Version); v != "" {
+				return v
+			}
+		}
+		return enumUnknown
 	}
 	return enumUnknown
 }
@@ -76,10 +101,10 @@ func vcsRevision(bi *debug.BuildInfo) string {
 	var dirty bool
 	for _, s := range bi.Settings {
 		switch s.Key {
-		case "vcs.revision":
+		case vcsRevisionKey:
 			rev = s.Value
-		case "vcs.modified":
-			dirty = s.Value == "true"
+		case vcsModifiedKey:
+			dirty, _ = strconv.ParseBool(s.Value)
 		}
 	}
 	if rev == "" {

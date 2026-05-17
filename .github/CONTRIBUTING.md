@@ -73,6 +73,16 @@ If the middleware changes the access-log shape, the change must be **additive** 
 - No `// TODO` or `// FIXME` comments in committed code. If something is genuinely deferred, open an issue and reference it from a code comment.
 - Errors include a path-style context: `fmt.Errorf("upstream %q: %w", name, err)`.
 
+## Versioning
+
+statute follows [Semantic Versioning](https://semver.org/) and is pre-1.0
+(minor releases may include breaking surface-API changes). The version is
+**the git tag** (`vX.Y.Z`) plus a matching `CHANGELOG.md` section — there
+is deliberately no `VERSION` file or in-source version constant. Go
+modules have no version field in `go.mod`; the module version *is* the
+tag, and `debug.ReadBuildInfo()` surfaces it at runtime. PRs do not bump
+a version; releases are cut by tagging.
+
 ## Reporting security issues
 
 Don't open a public issue. See [SECURITY.md](SECURITY.md).
