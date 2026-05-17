@@ -84,8 +84,11 @@ type compressResponseWriter struct {
 	w io.Writer
 }
 
+// Write forwards bytes to the underlying compressing writer.
 func (c *compressResponseWriter) Write(b []byte) (int, error) { return c.w.Write(b) }
 
+// Flush flushes the underlying compression writer when it supports it,
+// so streaming responses are not buffered indefinitely.
 func (c *compressResponseWriter) Flush() {
 	if f, ok := c.w.(interface{ Flush() error }); ok {
 		_ = f.Flush()

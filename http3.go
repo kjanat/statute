@@ -19,10 +19,12 @@ type http3Listener struct {
 	addr string
 }
 
+// Serve starts the HTTP/3 (QUIC) listener and blocks until it stops.
 func (h *http3Listener) Serve() error {
 	return h.srv.ListenAndServe()
 }
 
+// Shutdown gracefully stops the HTTP/3 listener.
 func (h *http3Listener) Shutdown(ctx context.Context) error {
 	return h.srv.Shutdown(ctx)
 }

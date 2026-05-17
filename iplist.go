@@ -165,4 +165,5 @@ var (
 
 type errIPListLookup string
 
+// Error implements error; the underlying string is the message.
 func (e errIPListLookup) Error() string { return string(e) }

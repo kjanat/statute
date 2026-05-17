@@ -76,6 +76,8 @@ func newSafeEncoder(w jsonWriter) *safeEncoder {
 	return &safeEncoder{enc: json.NewEncoder(w)}
 }
 
+// Encode serialises v as one JSON line under a mutex so concurrent
+// requests cannot interleave access-log entries.
 func (s *safeEncoder) Encode(v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
