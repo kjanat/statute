@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Extracted the pure config-string parsers (`Duration`, `DurationOr`,
+  `Rate`, `Size`) out of `resolve.go` into a new internal package
+  `internal/parse`; `resolve.go` calls them via `parse.*` and no longer
+  imports `strconv`/`math`. `sizeMultiplier` reworked to a prefix-index
+  form, extending accepted byte-size units to t/p/e/z/y/r/q. No public
+  API change.
+- Extracted the Cloudflare DNS-01 API client out of `cloudflare_api.go`
+  into a new internal package `internal/cloudflare` (`cloudflare.Client`,
+  `New`, `FindZoneID`, `AddTXTRecord`, `DeleteRecord`); `dns01.go`
+  rewired accordingly. No public API change.
 - Vanity host (`statute.kjanat.dev`) now also publishes a `404.html`
   carrying the same `go-import`/`go-source` meta, so every subpackage
   resolves directly for `go get` instead of relying on prefix fallback;
@@ -21,6 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added package doc comments to the `basic` and `http-only` examples;
   pkg.go.dev rendered "There is no documentation for this package" for
   them. Enforced going forward by `revive`'s `package-comments` rule.
+- `Rate` (rate-limit parser) now rejects non-finite counts:
+  `strconv.ParseFloat` accepts `"NaN"`/`"Inf"`, which slipped past the
+  positivity check and produced non-finite rates.
+- Cloudflare `FindZoneID` no longer swallows API/auth/network errors
+  during the zone-label walk and misreport them as "no zone found"; the
+  underlying error now propagates.
 
 ## [0.3.0] — 2026-05-17
 

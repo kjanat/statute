@@ -36,17 +36,22 @@ func New(token string) *Client {
 	}
 }
 
+// cfAPIResponse is the envelope every Cloudflare v4 endpoint returns;
+// Result is decoded into the caller's target only when Success is true.
 type cfAPIResponse struct {
 	Success bool            `json:"success"`
 	Errors  []cfError       `json:"errors"`
 	Result  json.RawMessage `json:"result"`
 }
 
+// cfError is a single Cloudflare API error entry. It implements error so
+// the first entry can be returned directly.
 type cfError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
 
+// Error implements the error interface for cfError.
 func (e cfError) Error() string {
 	return fmt.Sprintf("cloudflare api: %d %s", e.Code, e.Message)
 }
@@ -73,6 +78,8 @@ func (c *Client) FindZoneID(ctx context.Context, domain string) (string, error) 
 	return "", fmt.Errorf("cloudflare: no zone found for %q (token must have access to the zone)", domain)
 }
 
+// getZoneByName returns the ID of the active zone with exactly this name,
+// or ("", nil) when no such zone exists (a not-found is not an error).
 func (c *Client) getZoneByName(ctx context.Context, name string) (string, error) {
 	q := url.Values{"name": {name}, "status": {"active"}}
 	var zones []struct {
@@ -114,6 +121,9 @@ func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) erro
 	return c.do(ctx, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+recordID, nil, nil)
 }
 
+// do issues a single authenticated request, decoding the response
+// envelope. It returns the first API error when Success is false and
+// unmarshals Result into out only on success.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var bodyR io.Reader
 	if body != nil {
