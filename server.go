@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,16 +52,8 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	}
 	s.autocertMgr = mgr
 
-	s.dns01Managers = make(map[string]*dns01Manager)
-	for _, l := range cfg.Listeners {
-		if l.AutoTLS == nil || l.AutoTLS.DNS01 == nil {
-			continue
-		}
-		dm, err := newDNS01Manager(l.AutoTLS)
-		if err != nil {
-			return nil, fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
-		}
-		s.dns01Managers[l.Addr] = dm
+	if err := s.initDNS01Managers(cfg.Listeners); err != nil {
+		return nil, err
 	}
 
 	tracingShutdown, err := initTracing(cfg.Observability.Tracing)
@@ -68,41 +61,104 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		return nil, fmt.Errorf("tracing: %w", err)
 	}
 	s.tracingShutdown = tracingShutdown
-
-	for name, p := range cfg.Upstreams {
-		ph, err := newPoolHandler(p)
-		if err != nil {
-			return nil, fmt.Errorf("upstream %q: %w", name, err)
+	// If a later init step fails the caller never gets a *server to call
+	// Shutdown on, so flush the tracing provider here on the error path.
+	ok := false
+	defer func() {
+		if !ok && tracingShutdown != nil {
+			_ = tracingShutdown(context.Background())
 		}
-		s.pools[name] = ph
+	}()
+
+	if err := s.initPools(cfg.Upstreams); err != nil {
+		return nil, err
 	}
-
-	mux := s.buildRouter()
-
-	for _, l := range cfg.Listeners {
-		hs, err := s.buildHTTPServer(l, mux)
-		if err != nil {
-			return nil, fmt.Errorf("listener %s: %w", l.Addr, err)
-		}
-		s.listeners = append(s.listeners, hs)
-
-		if l.HTTP3Addr != "" {
-			h3, err := s.buildHTTP3Server(l, mux)
-			if err != nil {
-				return nil, fmt.Errorf("listener %s http3: %w", l.Addr, err)
-			}
-			s.http3Servers = append(s.http3Servers, h3)
-		}
+	if err := s.initListeners(cfg.Listeners, s.buildRouter()); err != nil {
+		return nil, err
 	}
 
 	if cfg.Observability.Metrics.Enabled {
 		s.metricsServer = s.buildMetricsServer(cfg.Observability.Metrics)
 	}
 
+	ok = true
 	return s, nil
 }
 
+// initDNS01Managers builds a dns01Manager for every listener configured
+// with Cloudflare DNS-01, keyed by listener address.
+func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
+	s.dns01Managers = make(map[string]*dns01Manager)
+	for _, l := range listeners {
+		if l.AutoTLS == nil || l.AutoTLS.DNS01 == nil {
+			continue
+		}
+		dm, err := newDNS01Manager(l.AutoTLS)
+		if err != nil {
+			return fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
+		}
+		s.dns01Managers[l.Addr] = dm
+	}
+	return nil
+}
+
+// initPools builds a poolHandler for every resolved upstream.
+func (s *server) initPools(upstreams map[string]*resolved.Pool) error {
+	for name, p := range upstreams {
+		ph, err := newPoolHandler(p)
+		if err != nil {
+			return fmt.Errorf("upstream %q: %w", name, err)
+		}
+		s.pools[name] = ph
+	}
+	return nil
+}
+
+// initListeners builds the HTTP (and, where configured, HTTP/3) servers
+// for every resolved listener, sharing the given handler.
+func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler) error {
+	for _, l := range listeners {
+		hs, err := s.buildHTTPServer(l, mux)
+		if err != nil {
+			return fmt.Errorf("listener %s: %w", l.Addr, err)
+		}
+		s.listeners = append(s.listeners, hs)
+
+		if l.HTTP3Addr == "" {
+			continue
+		}
+		h3, err := s.buildHTTP3Server(l, mux)
+		if err != nil {
+			return fmt.Errorf("listener %s http3: %w", l.Addr, err)
+		}
+		s.http3Servers = append(s.http3Servers, h3)
+	}
+	return nil
+}
+
 func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*http.Server, error) {
+	hs := &http.Server{
+		Addr:              l.Addr,
+		Handler:           s.buildListenerHandler(l, content),
+		ReadHeaderTimeout: s.cfg.Defaults.ReadHeaderTimeout,
+		ReadTimeout:       s.cfg.Defaults.ReadTimeout,
+		WriteTimeout:      s.cfg.Defaults.WriteTimeout,
+		IdleTimeout:       s.cfg.Defaults.IdleTimeout,
+		MaxHeaderBytes:    s.cfg.Defaults.MaxHeaderBytes,
+	}
+
+	if l.Scheme == schemeHTTPS && l.Redirect == "" {
+		if err := s.applyListenerTLS(hs, l); err != nil {
+			return nil, err
+		}
+	}
+	return hs, nil
+}
+
+// buildListenerHandler assembles the middleware chain for a listener. The
+// wrapping order is deliberate: each block comments why it must sit where it
+// does relative to the others.
+func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler) http.Handler {
 	var handler http.Handler
 	if l.Redirect != "" {
 		handler = redirectHandler(l.Redirect)
@@ -142,37 +198,31 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 	if l.BehindCloudflare {
 		handler = behindCloudflareMiddleware(handler)
 	}
+	return handler
+}
 
-	hs := &http.Server{
-		Addr:              l.Addr,
-		Handler:           handler,
-		ReadHeaderTimeout: s.cfg.Defaults.ReadHeaderTimeout,
-		ReadTimeout:       s.cfg.Defaults.ReadTimeout,
-		WriteTimeout:      s.cfg.Defaults.WriteTimeout,
-		IdleTimeout:       s.cfg.Defaults.IdleTimeout,
-		MaxHeaderBytes:    s.cfg.Defaults.MaxHeaderBytes,
-	}
-
-	if l.Scheme == schemeHTTPS && l.Redirect == "" {
-		switch {
-		case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
-			dm := s.dns01Managers[l.Addr]
-			if dm == nil {
-				return nil, errors.New("auto_tls: dns01 manager not initialised")
-			}
-			hs.TLSConfig = dns01TLSConfig(dm, l.EnableHTTP2)
-		case l.AutoTLS != nil:
-			if s.autocertMgr == nil {
-				return nil, errors.New("auto_tls: manager not initialised")
-			}
-			hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2, l.BehindCloudflare)
-		case l.StaticTLS != nil:
-			// TLS config left to ServeTLS; cert/key paths are passed at start.
-		default:
-			return nil, errors.New("https listener has no TLS material")
+// applyListenerTLS selects the TLS source for an HTTPS content listener and
+// installs it on hs. StaticTLS is intentionally a no-op here: its cert/key
+// paths are passed to ServeTLS at start time instead.
+func (s *server) applyListenerTLS(hs *http.Server, l *resolved.Listener) error {
+	switch {
+	case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
+		dm := s.dns01Managers[l.Addr]
+		if dm == nil {
+			return errors.New("auto_tls: dns01 manager not initialised")
 		}
+		hs.TLSConfig = dns01TLSConfig(dm, l.EnableHTTP2)
+	case l.AutoTLS != nil:
+		if s.autocertMgr == nil {
+			return errors.New("auto_tls: manager not initialised")
+		}
+		hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2, l.BehindCloudflare)
+	case l.StaticTLS != nil:
+		// TLS config left to ServeTLS; cert/key paths are passed at start.
+	default:
+		return errors.New("https listener has no TLS material")
 	}
-	return hs, nil
+	return nil
 }
 
 func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
@@ -201,33 +251,19 @@ func (s *server) Start() error {
 		}
 	}
 	for _, hs := range s.listeners {
-		hs := hs
-		ln, err := net.Listen("tcp", hs.Addr)
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
 		if err != nil {
 			return fmt.Errorf("listen %s: %w", hs.Addr, err)
 		}
 		l, _ := findListener(s.cfg.Listeners, hs.Addr)
-		go func() {
-			switch {
-			case l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" && l.StaticTLS != nil:
-				_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
-			case l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" && l.AutoTLS != nil:
-				// TLSConfig (set on the http.Server) carries the cert source
-				// — autocert.Manager.GetCertificate or our dns01Manager
-				// equivalent. ServeTLS with empty paths uses it.
-				_ = hs.ServeTLS(ln, "", "")
-			default:
-				_ = hs.Serve(ln)
-			}
-		}()
+		go serveListener(hs, l, ln)
 	}
 	for _, h3 := range s.http3Servers {
-		h3 := h3
 		go func() { _ = h3.Serve() }()
 	}
 	if s.metricsServer != nil {
 		ms := s.metricsServer
-		ln, err := net.Listen("tcp", ms.Addr)
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", ms.Addr)
 		if err != nil {
 			return fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
 		}
@@ -235,6 +271,33 @@ func (s *server) Start() error {
 	}
 	s.started = true
 	return nil
+}
+
+// serveListener runs hs on ln, picking ServeTLS vs Serve based on the
+// resolved listener's TLS material. For AutoTLS the cert source lives on
+// hs.TLSConfig (autocert.Manager.GetCertificate or the dns01Manager
+// equivalent), so ServeTLS is called with empty paths.
+func serveListener(hs *http.Server, l *resolved.Listener, ln net.Listener) {
+	isContentHTTPS := l != nil && l.Scheme == schemeHTTPS && l.Redirect == ""
+	switch {
+	case isContentHTTPS && l.StaticTLS != nil:
+		_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
+	case isContentHTTPS && l.AutoTLS != nil:
+		_ = hs.ServeTLS(ln, "", "")
+	default:
+		_ = hs.Serve(ln)
+	}
+}
+
+// goShutdown runs fn(ctx) in a WaitGroup-tracked goroutine, forwarding any
+// error to errs. errs must be buffered enough to hold one error per call so
+// the sends never block before wg.Wait returns.
+func goShutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error, fn func(context.Context) error) {
+	wg.Go(func() {
+		if err := fn(ctx); err != nil {
+			errs <- err
+		}
+	})
 }
 
 func (s *server) Shutdown() error {
@@ -245,33 +308,13 @@ func (s *server) Shutdown() error {
 	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+1)
 
 	for _, hs := range s.listeners {
-		wg.Add(1)
-		hs := hs
-		go func() {
-			defer wg.Done()
-			if err := hs.Shutdown(ctx); err != nil {
-				errs <- err
-			}
-		}()
+		goShutdown(ctx, &wg, errs, hs.Shutdown)
 	}
 	if s.metricsServer != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := s.metricsServer.Shutdown(ctx); err != nil {
-				errs <- err
-			}
-		}()
+		goShutdown(ctx, &wg, errs, s.metricsServer.Shutdown)
 	}
 	for _, h3 := range s.http3Servers {
-		wg.Add(1)
-		h3 := h3
-		go func() {
-			defer wg.Done()
-			if err := h3.Shutdown(ctx); err != nil {
-				errs <- err
-			}
-		}()
+		goShutdown(ctx, &wg, errs, h3.Shutdown)
 	}
 	wg.Wait()
 
@@ -365,8 +408,8 @@ func stripPort(hostport string) string {
 // matchPattern matches a path against a pattern. A trailing /* matches any
 // suffix; otherwise the match is exact.
 func matchPattern(pattern, path string) bool {
-	if strings.HasSuffix(pattern, "/*") {
-		prefix := strings.TrimSuffix(pattern, "/*")
+	if before, ok := strings.CutSuffix(pattern, "/*"); ok {
+		prefix := before
 		if prefix == "" {
 			return true
 		}
@@ -389,7 +432,7 @@ func redirectHandler(scheme string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := stripPort(r.Host)
 		target := scheme + "://" + host + r.URL.RequestURI()
-		http.Redirect(w, r, target, http.StatusMovedPermanently)
+		http.Redirect(w, r, target, http.StatusMovedPermanently) //nolint:gosec // G710: intentional same-host HTTP→HTTPS upgrade; redirecting to the requested host+path is the required behavior
 	})
 }
 
@@ -519,41 +562,50 @@ func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
 		})
 	}
 	h := base
-	for i := len(mws) - 1; i >= 0; i-- {
-		h = applyMiddleware(mws[i], h)
+	for _, mw := range slices.Backward(mws) {
+		h = applyMiddleware(mw, h)
 	}
 	return h
 }
 
+// middlewareBuilders maps each resolved middleware type to the constructor
+// that wraps the next handler. Constructors with a non-uniform signature
+// (timeout, compress, etag) are bridged by small adapters below. An unknown
+// type falls through applyMiddleware to a pass-through.
+var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, http.Handler) http.Handler{
+	resolved.MWTimeout:         buildTimeout,
+	resolved.MWRateLimit:       rateLimitHandler,
+	resolved.MWRetry:           retryHandler,
+	resolved.MWCache:           cacheHandler,
+	resolved.MWCompress:        buildCompress,
+	resolved.MWETag:            buildETag,
+	resolved.MWBodyLimit:       bodyLimitHandler,
+	resolved.MWRequestID:       requestIDHandler,
+	resolved.MWSecurityHeaders: securityHeadersHandler,
+	resolved.MWCORS:            corsHandler,
+	resolved.MWBasicAuth:       basicAuthHandler,
+	resolved.MWAllowIPs:        allowIPsHandler,
+	resolved.MWDenyIPs:         denyIPsHandler,
+}
+
+// buildTimeout adapts http.TimeoutHandler to the middlewareBuilders signature.
+func buildTimeout(m resolved.Middleware, next http.Handler) http.Handler {
+	return http.TimeoutHandler(next, m.Timeout, "request timed out")
+}
+
+// buildCompress adapts compressHandler to the middlewareBuilders signature.
+func buildCompress(m resolved.Middleware, next http.Handler) http.Handler {
+	return compressHandler(m.CompressAlgos, next)
+}
+
+// buildETag adapts etagHandler to the middlewareBuilders signature.
+func buildETag(_ resolved.Middleware, next http.Handler) http.Handler {
+	return etagHandler(next)
+}
+
 func applyMiddleware(m resolved.Middleware, next http.Handler) http.Handler {
-	switch m.Type {
-	case resolved.MWTimeout:
-		return http.TimeoutHandler(next, m.Timeout, "request timed out")
-	case resolved.MWRateLimit:
-		return rateLimitHandler(m, next)
-	case resolved.MWRetry:
-		return retryHandler(m, next)
-	case resolved.MWCache:
-		return cacheHandler(m, next)
-	case resolved.MWCompress:
-		return compressHandler(m.CompressAlgos, next)
-	case resolved.MWETag:
-		return etagHandler(next)
-	case resolved.MWBodyLimit:
-		return bodyLimitHandler(m, next)
-	case resolved.MWRequestID:
-		return requestIDHandler(m, next)
-	case resolved.MWSecurityHeaders:
-		return securityHeadersHandler(m, next)
-	case resolved.MWCORS:
-		return corsHandler(m, next)
-	case resolved.MWBasicAuth:
-		return basicAuthHandler(m, next)
-	case resolved.MWAllowIPs:
-		return allowIPsHandler(m, next)
-	case resolved.MWDenyIPs:
-		return denyIPsHandler(m, next)
-	default:
-		return next
+	if build, ok := middlewareBuilders[m.Type]; ok {
+		return build(m, next)
 	}
+	return next
 }

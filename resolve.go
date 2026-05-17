@@ -26,28 +26,14 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 	}
 	out.Defaults = defaults
 
-	for name, pool := range cfg.Upstreams {
-		rp, err := resolvePool(name, pool)
-		if err != nil {
-			return nil, fmt.Errorf("upstream %q: %w", name, err)
-		}
-		out.Upstreams[name] = rp
+	if err := resolveUpstreams(cfg.Upstreams, out.Upstreams); err != nil {
+		return nil, err
 	}
-
-	for i, l := range cfg.Listeners {
-		rl, err := resolveListener(l)
-		if err != nil {
-			return nil, fmt.Errorf("listener[%d]: %w", i, err)
-		}
-		out.Listeners = append(out.Listeners, rl)
+	if err := resolveListeners(cfg.Listeners, out); err != nil {
+		return nil, err
 	}
-
-	for i, r := range cfg.Routes {
-		rr, err := resolveRoute(r, out.Upstreams)
-		if err != nil {
-			return nil, fmt.Errorf("route[%d] %q: %w", i, r.pattern, err)
-		}
-		out.Routes = append(out.Routes, rr)
+	if err := resolveRoutes(cfg.Routes, out); err != nil {
+		return nil, err
 	}
 
 	obs, err := resolveObservability(cfg.Observability)
@@ -66,6 +52,44 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// resolveUpstreams resolves every surface pool into out, keyed by name.
+func resolveUpstreams(in map[string]Pool, out map[string]*resolved.Pool) error {
+	for name, pool := range in {
+		rp, err := resolvePool(name, pool)
+		if err != nil {
+			return fmt.Errorf("upstream %q: %w", name, err)
+		}
+		out[name] = rp
+	}
+	return nil
+}
+
+// resolveListeners resolves every surface listener and appends it to out.
+func resolveListeners(in []*Listener, out *resolved.Config) error {
+	for i, l := range in {
+		rl, err := resolveListener(l)
+		if err != nil {
+			return fmt.Errorf("listener[%d]: %w", i, err)
+		}
+		out.Listeners = append(out.Listeners, rl)
+	}
+	return nil
+}
+
+// resolveRoutes resolves every surface route and appends it to out.
+// Upstream references are looked up in out.Upstreams, so resolveUpstreams
+// must run first.
+func resolveRoutes(in []*Route, out *resolved.Config) error {
+	for i, r := range in {
+		rr, err := resolveRoute(r, out.Upstreams)
+		if err != nil {
+			return fmt.Errorf("route[%d] %q: %w", i, r.pattern, err)
+		}
+		out.Routes = append(out.Routes, rr)
+	}
+	return nil
 }
 
 func resolveDefaults(d Defaults) (resolved.Defaults, error) {
@@ -203,46 +227,74 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		HTTP3Addr:        l.http3Addr,
 		BehindCloudflare: l.behindCF,
 	}
-	if l.scheme == schemeHTTPS && l.redirect == "" {
-		if l.autoTLS == nil && l.staticTLS == nil {
-			return nil, errors.New("https listener requires AutoTLS or StaticTLS")
-		}
+	if err := validateListenerTLSPresence(l); err != nil {
+		return nil, err
 	}
 	if l.autoTLS != nil {
-		if len(l.autoTLS.Domains) == 0 {
-			return nil, errors.New("auto_tls: at least one domain required")
+		at, err := resolveAutoTLS(l.autoTLS)
+		if err != nil {
+			return nil, err
 		}
-		if l.autoTLS.email == "" {
-			return nil, errors.New("auto_tls: email required for ACME registration")
-		}
-		if l.autoTLS.storage == "" {
-			return nil, errors.New("auto_tls: storage path required for cert persistence")
-		}
-		rl.AutoTLS = &resolved.AutoTLS{
-			Domains: append([]string(nil), l.autoTLS.Domains...),
-			Email:   l.autoTLS.email,
-			Storage: l.autoTLS.storage,
-		}
-		if l.autoTLS.dns01 != nil {
-			if l.autoTLS.dns01.apiToken == "" {
-				return nil, errors.New("auto_tls.cloudflare_dns01: api token is required")
-			}
-			rl.AutoTLS.DNS01 = &resolved.CloudflareDNS01{
-				APIToken: l.autoTLS.dns01.apiToken,
-				ZoneID:   l.autoTLS.dns01.zoneID,
-			}
-		}
+		rl.AutoTLS = at
 	}
 	if l.staticTLS != nil {
-		if l.staticTLS.CertFile == "" || l.staticTLS.KeyFile == "" {
-			return nil, errors.New("static_tls: cert_file and key_file required")
+		st, err := resolveStaticTLS(l.staticTLS)
+		if err != nil {
+			return nil, err
 		}
-		rl.StaticTLS = &resolved.StaticTLS{
-			CertFile: l.staticTLS.CertFile,
-			KeyFile:  l.staticTLS.KeyFile,
-		}
+		rl.StaticTLS = st
 	}
 	return rl, nil
+}
+
+// validateListenerTLSPresence rejects an HTTPS content listener that carries
+// no TLS material. Redirect-only listeners and plain HTTP need none.
+func validateListenerTLSPresence(l *Listener) error {
+	if l.scheme == schemeHTTPS && l.redirect == "" && l.autoTLS == nil && l.staticTLS == nil {
+		return errors.New("https listener requires AutoTLS or StaticTLS")
+	}
+	return nil
+}
+
+// resolveAutoTLS validates an AutoTLS surface config (domains, email,
+// storage, optional Cloudflare DNS-01) and produces its resolved form.
+func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
+	if len(a.Domains) == 0 {
+		return nil, errors.New("auto_tls: at least one domain required")
+	}
+	if a.email == "" {
+		return nil, errors.New("auto_tls: email required for ACME registration")
+	}
+	if a.storage == "" {
+		return nil, errors.New("auto_tls: storage path required for cert persistence")
+	}
+	at := &resolved.AutoTLS{
+		Domains: append([]string(nil), a.Domains...),
+		Email:   a.email,
+		Storage: a.storage,
+	}
+	if a.dns01 != nil {
+		if a.dns01.apiToken == "" {
+			return nil, errors.New("auto_tls.cloudflare_dns01: api token is required")
+		}
+		at.DNS01 = &resolved.CloudflareDNS01{
+			APIToken: a.dns01.apiToken,
+			ZoneID:   a.dns01.zoneID,
+		}
+	}
+	return at, nil
+}
+
+// resolveStaticTLS validates that both cert and key paths are set and
+// produces the resolved StaticTLS form.
+func resolveStaticTLS(s *StaticTLSConfig) (*resolved.StaticTLS, error) {
+	if s.CertFile == "" || s.KeyFile == "" {
+		return nil, errors.New("static_tls: cert_file and key_file required")
+	}
+	return &resolved.StaticTLS{
+		CertFile: s.CertFile,
+		KeyFile:  s.KeyFile,
+	}, nil
 }
 
 func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, error) {
@@ -257,180 +309,256 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 		Host:      r.host,
 		StaticDir: r.staticDir,
 	}
+	if err := resolveRouteTarget(r, pools, rr); err != nil {
+		return nil, err
+	}
+	mws, err := resolveMiddlewares(r.middleware)
+	if err != nil {
+		return nil, err
+	}
+	rr.Middleware = mws
+	return rr, nil
+}
+
+// resolveRouteTarget validates the ProxyTo/Serve choice and, for a proxy
+// route, dereferences the named upstream into rr.Upstream.
+func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.Route) error {
 	switch {
 	case r.upstream != "" && r.staticDir != "":
-		return nil, errors.New("route has both ProxyTo and Serve; pick one")
+		return errors.New("route has both ProxyTo and Serve; pick one")
 	case r.upstream == "" && r.staticDir == "":
-		return nil, errors.New("route has neither ProxyTo nor Serve")
+		return errors.New("route has neither ProxyTo nor Serve")
 	case r.upstream != "":
 		pool, ok := pools[r.upstream]
 		if !ok {
-			return nil, fmt.Errorf("unknown upstream %q", r.upstream)
+			return fmt.Errorf("unknown upstream %q", r.upstream)
 		}
 		rr.Upstream = pool
 	}
-	for i, mw := range r.middleware {
+	return nil
+}
+
+// resolveMiddlewares resolves a route's middleware list in order,
+// returning nil for an empty list so an unmiddlewared route stays nil.
+func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
+	if len(mws) == 0 {
+		return nil, nil
+	}
+	out := make([]resolved.Middleware, 0, len(mws))
+	for i, mw := range mws {
 		rmw, err := resolveMiddleware(mw)
 		if err != nil {
 			return nil, fmt.Errorf("middleware[%d]: %w", i, err)
 		}
-		rr.Middleware = append(rr.Middleware, rmw)
+		out = append(out, rmw)
 	}
-	return rr, nil
+	return out, nil
+}
+
+// resolvableMiddleware is implemented by every surface middleware type. The
+// per-type resolution lives in each type's resolve method (defined alongside
+// the resolveXxxMW helpers below), so dispatch is a single assertion rather
+// than a large type switch.
+type resolvableMiddleware interface {
+	resolve() (resolved.Middleware, error)
 }
 
 func resolveMiddleware(mw Middleware) (resolved.Middleware, error) {
-	switch m := mw.(type) {
-	case *timeoutMW:
-		d, err := parseDuration(m.dur)
-		if err != nil {
-			return resolved.Middleware{}, fmt.Errorf("timeout: %w", err)
-		}
-		return resolved.Middleware{Type: resolved.MWTimeout, Timeout: d}, nil
-
-	case *rateLimitMW:
-		rate, err := parseRate(m.rate)
-		if err != nil {
-			return resolved.Middleware{}, fmt.Errorf("rate_limit: %w", err)
-		}
-		return resolved.Middleware{
-			Type:               resolved.MWRateLimit,
-			RateLimitPerSecond: rate,
-			RateLimitKey:       resolved.RateLimitKey(m.key),
-		}, nil
-
-	case *retryMW:
-		if m.max < 1 {
-			return resolved.Middleware{}, errors.New("retry: max must be >= 1")
-		}
-		return resolved.Middleware{
-			Type:            resolved.MWRetry,
-			RetryMax:        m.max,
-			RetryOnStatuses: append([]int(nil), m.onStatuses...),
-		}, nil
-
-	case *cacheMW:
-		d, err := parseDuration(m.ttl)
-		if err != nil {
-			return resolved.Middleware{}, fmt.Errorf("cache: %w", err)
-		}
-		return resolved.Middleware{Type: resolved.MWCache, CacheTTL: d}, nil
-
-	case *compressMW:
-		algos := make([]resolved.CompressAlgo, 0, len(m.algos))
-		for _, a := range m.algos {
-			algos = append(algos, resolved.CompressAlgo(a))
-		}
-		return resolved.Middleware{Type: resolved.MWCompress, CompressAlgos: algos}, nil
-
-	case *etagMW:
-		return resolved.Middleware{Type: resolved.MWETag}, nil
-
-	case *bodyLimitMW:
-		n, err := parseSize(m.size)
-		if err != nil {
-			return resolved.Middleware{}, fmt.Errorf("body_limit: %w", err)
-		}
-		if n <= 0 {
-			return resolved.Middleware{}, errors.New("body_limit: size must be positive")
-		}
-		return resolved.Middleware{Type: resolved.MWBodyLimit, BodyLimitBytes: n}, nil
-
-	case *requestIDMW:
-		return resolved.Middleware{
-			Type:                resolved.MWRequestID,
-			RequestIDHeader:     m.header,
-			RequestIDFromHeader: m.fromHeader,
-		}, nil
-
-	case *securityHeadersMW:
-		hstsHeader := ""
-		if m.hsts != "" {
-			d, err := parseDuration(m.hsts)
-			if err != nil {
-				return resolved.Middleware{}, fmt.Errorf("security_headers.hsts: %w", err)
-			}
-			hstsHeader = formatHSTS(d)
-		}
-		return resolved.Middleware{
-			Type:                  resolved.MWSecurityHeaders,
-			SecHSTS:               hstsHeader,
-			SecCSP:                m.csp,
-			SecFrameOptions:       m.frameOptions,
-			SecContentTypeOptions: m.contentTypeOptions,
-			SecReferrerPolicy:     m.referrerPolicy,
-			SecPermissionsPolicy:  m.permissionsPolicy,
-		}, nil
-
-	case *allowIPsMW:
-		canon, err := resolveCIDRs(m.cidrs)
-		if err != nil {
-			return resolved.Middleware{}, fmt.Errorf("allow_ips: %w", err)
-		}
-		return resolved.Middleware{Type: resolved.MWAllowIPs, IPCIDRs: canon}, nil
-
-	case *denyIPsMW:
-		canon, err := resolveCIDRs(m.cidrs)
-		if err != nil {
-			return resolved.Middleware{}, fmt.Errorf("deny_ips: %w", err)
-		}
-		return resolved.Middleware{Type: resolved.MWDenyIPs, IPCIDRs: canon}, nil
-
-	case *basicAuthMW:
-		if len(m.users) == 0 {
-			return resolved.Middleware{}, errors.New("basic_auth: users map is empty")
-		}
-		users := make(map[string]string, len(m.users))
-		for name, hash := range m.users {
-			if !isBCryptHash(hash) {
-				return resolved.Middleware{}, fmt.Errorf("basic_auth: user %q: value is not a bcrypt hash (must be $2a$/$2b$/$2y$ prefixed)", name)
-			}
-			users[name] = hash
-		}
-		return resolved.Middleware{
-			Type:           resolved.MWBasicAuth,
-			BasicAuthRealm: m.realm,
-			BasicAuthUsers: users,
-		}, nil
-
-	case *corsMW:
-		if len(m.origins) == 0 {
-			return resolved.Middleware{}, errors.New("cors: at least one Origin must be configured")
-		}
-		allowAll := false
-		var explicit []string
-		for _, o := range m.origins {
-			if o == "*" {
-				allowAll = true
-				continue
-			}
-			explicit = append(explicit, o)
-		}
-		if allowAll && m.credentials {
-			return resolved.Middleware{}, errors.New("cors: wildcard origin '*' is incompatible with Credentials() per the CORS spec")
-		}
-		maxAge := time.Duration(0)
-		if m.maxAge != "" {
-			d, err := parseDuration(m.maxAge)
-			if err != nil {
-				return resolved.Middleware{}, fmt.Errorf("cors.max_age: %w", err)
-			}
-			maxAge = d
-		}
-		return resolved.Middleware{
-			Type:               resolved.MWCORS,
-			CORSAllowAllOrigin: allowAll,
-			CORSOrigins:        explicit,
-			CORSMethods:        append([]string(nil), m.methods...),
-			CORSHeaders:        append([]string(nil), m.headers...),
-			CORSExposeHeaders:  append([]string(nil), m.exposeHeaders...),
-			CORSCredentials:    m.credentials,
-			CORSMaxAge:         maxAge,
-		}, nil
-
-	default:
+	rm, ok := mw.(resolvableMiddleware)
+	if !ok {
 		return resolved.Middleware{}, fmt.Errorf("unknown middleware type %T", mw)
 	}
+	return rm.resolve()
+}
+
+func (m *timeoutMW) resolve() (resolved.Middleware, error)   { return resolveTimeoutMW(m) }
+func (m *rateLimitMW) resolve() (resolved.Middleware, error) { return resolveRateLimitMW(m) }
+func (m *retryMW) resolve() (resolved.Middleware, error)     { return resolveRetryMW(m) }
+func (m *cacheMW) resolve() (resolved.Middleware, error)     { return resolveCacheMW(m) }
+func (m *compressMW) resolve() (resolved.Middleware, error)  { return resolveCompressMW(m), nil }
+func (*etagMW) resolve() (resolved.Middleware, error) {
+	return resolved.Middleware{Type: resolved.MWETag}, nil
+}
+func (m *bodyLimitMW) resolve() (resolved.Middleware, error) { return resolveBodyLimitMW(m) }
+func (m *requestIDMW) resolve() (resolved.Middleware, error) {
+	return resolved.Middleware{
+		Type:                resolved.MWRequestID,
+		RequestIDHeader:     m.header,
+		RequestIDFromHeader: m.fromHeader,
+	}, nil
+}
+
+func (m *securityHeadersMW) resolve() (resolved.Middleware, error) {
+	return resolveSecurityHeadersMW(m)
+}
+func (m *allowIPsMW) resolve() (resolved.Middleware, error)  { return resolveAllowIPsMW(m) }
+func (m *denyIPsMW) resolve() (resolved.Middleware, error)   { return resolveDenyIPsMW(m) }
+func (m *basicAuthMW) resolve() (resolved.Middleware, error) { return resolveBasicAuthMW(m) }
+func (m *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(m) }
+
+// resolveTimeoutMW parses the timeout duration string.
+func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
+	d, err := parseDuration(m.dur)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("timeout: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWTimeout, Timeout: d}, nil
+}
+
+// resolveRateLimitMW parses the rate string into requests/second and
+// carries the rate-limit key.
+func resolveRateLimitMW(m *rateLimitMW) (resolved.Middleware, error) {
+	rate, err := parseRate(m.rate)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("rate_limit: %w", err)
+	}
+	return resolved.Middleware{
+		Type:               resolved.MWRateLimit,
+		RateLimitPerSecond: rate,
+		RateLimitKey:       resolved.RateLimitKey(m.key),
+	}, nil
+}
+
+// resolveRetryMW validates that max attempts is >= 1 and copies the
+// retry-on-status list.
+func resolveRetryMW(m *retryMW) (resolved.Middleware, error) {
+	if m.max < 1 {
+		return resolved.Middleware{}, errors.New("retry: max must be >= 1")
+	}
+	return resolved.Middleware{
+		Type:            resolved.MWRetry,
+		RetryMax:        m.max,
+		RetryOnStatuses: append([]int(nil), m.onStatuses...),
+	}, nil
+}
+
+// resolveCacheMW parses the cache TTL duration string.
+func resolveCacheMW(m *cacheMW) (resolved.Middleware, error) {
+	d, err := parseDuration(m.ttl)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("cache: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWCache, CacheTTL: d}, nil
+}
+
+// resolveCompressMW maps the requested compression algorithms to their
+// resolved form. It cannot fail.
+func resolveCompressMW(m *compressMW) resolved.Middleware {
+	algos := make([]resolved.CompressAlgo, 0, len(m.algos))
+	for _, a := range m.algos {
+		algos = append(algos, resolved.CompressAlgo(a))
+	}
+	return resolved.Middleware{Type: resolved.MWCompress, CompressAlgos: algos}
+}
+
+// resolveBodyLimitMW parses the size string and requires a positive limit.
+func resolveBodyLimitMW(m *bodyLimitMW) (resolved.Middleware, error) {
+	n, err := parseSize(m.size)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("body_limit: %w", err)
+	}
+	if n <= 0 {
+		return resolved.Middleware{}, errors.New("body_limit: size must be positive")
+	}
+	return resolved.Middleware{Type: resolved.MWBodyLimit, BodyLimitBytes: n}, nil
+}
+
+// resolveSecurityHeadersMW formats the optional HSTS duration and copies
+// the remaining header policy values.
+func resolveSecurityHeadersMW(m *securityHeadersMW) (resolved.Middleware, error) {
+	hstsHeader := ""
+	if m.hsts != "" {
+		d, err := parseDuration(m.hsts)
+		if err != nil {
+			return resolved.Middleware{}, fmt.Errorf("security_headers.hsts: %w", err)
+		}
+		hstsHeader = formatHSTS(d)
+	}
+	return resolved.Middleware{
+		Type:                  resolved.MWSecurityHeaders,
+		SecHSTS:               hstsHeader,
+		SecCSP:                m.csp,
+		SecFrameOptions:       m.frameOptions,
+		SecContentTypeOptions: m.contentTypeOptions,
+		SecReferrerPolicy:     m.referrerPolicy,
+		SecPermissionsPolicy:  m.permissionsPolicy,
+	}, nil
+}
+
+// resolveAllowIPsMW canonicalises the allow-list CIDRs.
+func resolveAllowIPsMW(m *allowIPsMW) (resolved.Middleware, error) {
+	canon, err := resolveCIDRs(m.cidrs)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("allow_ips: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWAllowIPs, IPCIDRs: canon}, nil
+}
+
+// resolveDenyIPsMW canonicalises the deny-list CIDRs.
+func resolveDenyIPsMW(m *denyIPsMW) (resolved.Middleware, error) {
+	canon, err := resolveCIDRs(m.cidrs)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("deny_ips: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWDenyIPs, IPCIDRs: canon}, nil
+}
+
+// resolveBasicAuthMW requires a non-empty user map and verifies every
+// value is a bcrypt hash.
+func resolveBasicAuthMW(m *basicAuthMW) (resolved.Middleware, error) {
+	if len(m.users) == 0 {
+		return resolved.Middleware{}, errors.New("basic_auth: users map is empty")
+	}
+	users := make(map[string]string, len(m.users))
+	for name, hash := range m.users {
+		if !isBCryptHash(hash) {
+			return resolved.Middleware{}, fmt.Errorf("basic_auth: user %q: value is not a bcrypt hash (must be $2a$/$2b$/$2y$ prefixed)", name)
+		}
+		users[name] = hash
+	}
+	return resolved.Middleware{
+		Type:           resolved.MWBasicAuth,
+		BasicAuthRealm: m.realm,
+		BasicAuthUsers: users,
+	}, nil
+}
+
+// resolveCORSMW splits explicit origins from the wildcard, rejects a
+// credentialed wildcard, and parses the optional max-age.
+func resolveCORSMW(m *corsMW) (resolved.Middleware, error) {
+	if len(m.origins) == 0 {
+		return resolved.Middleware{}, errors.New("cors: at least one Origin must be configured")
+	}
+	allowAll := false
+	var explicit []string
+	for _, o := range m.origins {
+		if o == "*" {
+			allowAll = true
+			continue
+		}
+		explicit = append(explicit, o)
+	}
+	if allowAll && m.credentials {
+		return resolved.Middleware{}, errors.New("cors: wildcard origin '*' is incompatible with Credentials() per the CORS spec")
+	}
+	maxAge := time.Duration(0)
+	if m.maxAge != "" {
+		d, err := parseDuration(m.maxAge)
+		if err != nil {
+			return resolved.Middleware{}, fmt.Errorf("cors.max_age: %w", err)
+		}
+		maxAge = d
+	}
+	return resolved.Middleware{
+		Type:               resolved.MWCORS,
+		CORSAllowAllOrigin: allowAll,
+		CORSOrigins:        explicit,
+		CORSMethods:        append([]string(nil), m.methods...),
+		CORSHeaders:        append([]string(nil), m.headers...),
+		CORSExposeHeaders:  append([]string(nil), m.exposeHeaders...),
+		CORSCredentials:    m.credentials,
+		CORSMaxAge:         maxAge,
+	}, nil
 }
 
 func resolveObservability(o Observability) (resolved.Observability, error) {
@@ -557,47 +685,91 @@ func expandDayWeekUnits(s string) (string, error) {
 	for i < len(s) {
 		c := s[i]
 		// Capture a number prefix (with optional sign + fractional part).
-		if c == '-' || c == '+' || (c >= '0' && c <= '9') {
-			j := i
-			if c == '-' || c == '+' {
-				j++
+		if isSign(c) || isDigit(c) {
+			next, err := expandNumberAt(s, i, &b)
+			if err != nil {
+				return "", err
 			}
-			for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == '.') {
-				j++
-			}
-			if j == i || (j == i+1 && (s[i] == '-' || s[i] == '+')) {
-				// Not actually a number; fall through to default copy.
-				b.WriteByte(c)
-				i++
-				continue
-			}
-			// Check the unit suffix.
-			if j < len(s) && (s[j] == 'd' || s[j] == 'w') {
-				num := s[i:j]
-				hours := 24
-				if s[j] == 'w' {
-					hours = 24 * 7
-				}
-				n, err := strconv.ParseFloat(num, 64)
-				if err != nil {
-					return "", fmt.Errorf("duration %q: invalid number %q: %w", s, num, err)
-				}
-				h := n * float64(hours)
-				// Emit as "<h>h" so time.ParseDuration handles it.
-				b.WriteString(strconv.FormatFloat(h, 'f', -1, 64))
-				b.WriteByte('h')
-				i = j + 1
-				continue
-			}
-			// No d/w suffix — copy the captured number verbatim.
-			b.WriteString(s[i:j])
-			i = j
+			i = next
 			continue
 		}
 		b.WriteByte(c)
 		i++
 	}
 	return b.String(), nil
+}
+
+// isDigit reports whether c is an ASCII digit.
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// isSign reports whether c is an ASCII plus or minus sign.
+func isSign(c byte) bool { return c == '-' || c == '+' }
+
+// expandNumberAt processes the token beginning at s[i] (a digit or sign),
+// appending the rewritten form to b, and returns the index just past the
+// consumed bytes. A trailing d/w unit is expanded to hours; any other number
+// is copied verbatim. If s[i] does not actually begin a number, the single
+// byte is copied and i+1 is returned.
+func expandNumberAt(s string, i int, b *strings.Builder) (int, error) {
+	j := i
+	if isSign(s[i]) {
+		j++
+	}
+	j = scanDigits(s, j)
+	if !isNumberToken(s, i, j) {
+		// Not actually a number; copy the single byte.
+		b.WriteByte(s[i])
+		return i + 1, nil
+	}
+	if j < len(s) && isDayWeekUnit(s[j]) {
+		return expandDayWeek(s, i, j, b)
+	}
+	// No d/w suffix — copy the captured number verbatim.
+	b.WriteString(s[i:j])
+	return j, nil
+}
+
+// scanDigits returns the index past the run of digits and dots starting at j.
+func scanDigits(s string, j int) int {
+	for j < len(s) && (isDigit(s[j]) || s[j] == '.') {
+		j++
+	}
+	return j
+}
+
+// isNumberToken reports whether s[i:j] is a real number rather than a lone
+// sign that was never followed by digits.
+func isNumberToken(s string, i, j int) bool {
+	if j == i {
+		return false
+	}
+	if j == i+1 && isSign(s[i]) {
+		return false
+	}
+	return true
+}
+
+// isDayWeekUnit reports whether c is the 'd' (day) or 'w' (week) suffix.
+func isDayWeekUnit(c byte) bool { return c == 'd' || c == 'w' }
+
+// expandDayWeek rewrites the number s[i:j] followed by the unit at s[j]
+// ('d' → 24h, 'w' → 168h) into an "<hours>h" string appended to b. It
+// returns the index just past the consumed unit byte.
+func expandDayWeek(s string, i, j int, b *strings.Builder) (int, error) {
+	num := s[i:j]
+	hours := 24
+	if s[j] == 'w' {
+		hours = 24 * 7
+	}
+	n, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0, fmt.Errorf("duration %q: invalid number %q: %w", s, num, err)
+	}
+	h := n * float64(hours)
+	// Emit as "<h>h" so time.ParseDuration handles it.
+	b.WriteString(strconv.FormatFloat(h, 'f', -1, 64))
+	b.WriteByte('h')
+	return j + 1, nil
 }
 
 // parseRate parses a rate of the form "N/unit" into requests per second.
@@ -654,18 +826,7 @@ func parseSize(s string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("size: empty")
 	}
-	// Walk to the boundary between digits/dot and unit.
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+' {
-			i++
-			continue
-		}
-		break
-	}
-	numStr := strings.TrimSpace(s[:i])
-	unit := strings.ToLower(strings.TrimSpace(s[i:]))
+	numStr, unit := splitSizeUnit(s)
 	if numStr == "" {
 		return 0, fmt.Errorf("size %q: missing number", s)
 	}
@@ -676,23 +837,8 @@ func parseSize(s string) (int64, error) {
 	if n < 0 {
 		return 0, fmt.Errorf("size %q: negative", s)
 	}
-	var mult float64
-	switch unit {
-	case "", "b":
-		mult = 1
-	case "k", "kb":
-		mult = 1000
-	case "m", "mb":
-		mult = 1000 * 1000
-	case "g", "gb":
-		mult = 1000 * 1000 * 1000
-	case "kib":
-		mult = 1024
-	case "mib":
-		mult = 1024 * 1024
-	case "gib":
-		mult = 1024 * 1024 * 1024
-	default:
+	mult, err := sizeMultiplier(unit)
+	if err != nil {
 		return 0, fmt.Errorf("size %q: unknown unit %q", s, unit)
 	}
 	bytes := n * mult
@@ -700,4 +846,44 @@ func parseSize(s string) (int64, error) {
 		return 0, fmt.Errorf("size %q: too large", s)
 	}
 	return int64(bytes), nil
+}
+
+// splitSizeUnit splits a trimmed size string at the boundary between the
+// leading numeric run (digits, dot, sign) and the trailing unit. The unit is
+// returned lower-cased so the multiplier lookup is case-insensitive.
+func splitSizeUnit(s string) (numStr, unit string) {
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if isDigit(c) || c == '.' || isSign(c) {
+			i++
+			continue
+		}
+		break
+	}
+	return strings.TrimSpace(s[:i]), strings.ToLower(strings.TrimSpace(s[i:]))
+}
+
+// sizeMultiplier maps a lower-cased byte-size unit to its multiplier.
+// Decimal units (kb/mb/gb) use powers of 1000; binary units (kib/mib/gib)
+// use powers of 1024.
+func sizeMultiplier(unit string) (float64, error) {
+	switch unit {
+	case "", "b":
+		return 1, nil
+	case "k", "kb":
+		return 1000, nil
+	case "m", "mb":
+		return 1000 * 1000, nil
+	case "g", "gb":
+		return 1000 * 1000 * 1000, nil
+	case "kib":
+		return 1024, nil
+	case "mib":
+		return 1024 * 1024, nil
+	case "gib":
+		return 1024 * 1024 * 1024, nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q", unit)
+	}
 }

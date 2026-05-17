@@ -38,6 +38,7 @@ func TestBuildAutocertManager_SingleListener(t *testing.T) {
 	}
 	if m == nil {
 		t.Fatal("want manager, got nil")
+		return
 	}
 	if m.Email != "ops@example.com" {
 		t.Errorf("email: got %q", m.Email)

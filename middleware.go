@@ -69,8 +69,8 @@ func OnStatus(codes ...int) RetryOption {
 }
 
 // Retry returns a retry middleware with the given maximum attempts and options.
-func Retry(max int, opts ...RetryOption) *retryMW {
-	r := &retryMW{max: max}
+func Retry(maxAttempts int, opts ...RetryOption) *retryMW {
+	r := &retryMW{max: maxAttempts}
 	for _, o := range opts {
 		o.applyRetry(r)
 	}

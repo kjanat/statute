@@ -194,29 +194,48 @@ func (m *dns01Manager) issue(ctx context.Context, host string) (*tls.Certificate
 		return nil, fmt.Errorf("authorize order: %w", err)
 	}
 
+	if err := m.solveAuthorizations(ctx, host, order); err != nil {
+		return nil, err
+	}
+	return m.finalizeOrder(ctx, host, order)
+}
+
+// solveAuthorizations satisfies the dns-01 challenge for every pending
+// authorization in the order. Authorizations already valid are skipped.
+func (m *dns01Manager) solveAuthorizations(ctx context.Context, host string, order *acme.Order) error {
 	for _, authzURL := range order.AuthzURLs {
 		authz, err := m.acmeClient.GetAuthorization(ctx, authzURL)
 		if err != nil {
-			return nil, fmt.Errorf("get authorization: %w", err)
+			return fmt.Errorf("get authorization: %w", err)
 		}
 		if authz.Status == acme.StatusValid {
 			continue
 		}
-		var dns01 *acme.Challenge
-		for _, ch := range authz.Challenges {
-			if ch.Type == "dns-01" {
-				dns01 = ch
-				break
-			}
-		}
+		dns01 := findDNS01Challenge(authz.Challenges)
 		if dns01 == nil {
-			return nil, fmt.Errorf("no dns-01 challenge offered for %s", host)
+			return fmt.Errorf("no dns-01 challenge offered for %s", host)
 		}
 		if err := m.satisfyDNS01(ctx, host, dns01); err != nil {
-			return nil, fmt.Errorf("dns-01: %w", err)
+			return fmt.Errorf("dns-01: %w", err)
 		}
 	}
+	return nil
+}
 
+// findDNS01Challenge returns the dns-01 challenge from an authorization's
+// challenge list, or nil if none is offered.
+func findDNS01Challenge(challenges []*acme.Challenge) *acme.Challenge {
+	for _, ch := range challenges {
+		if ch.Type == "dns-01" {
+			return ch
+		}
+	}
+	return nil
+}
+
+// finalizeOrder generates a key + CSR, finalizes the ACME order, and
+// best-effort persists the issued certificate.
+func (m *dns01Manager) finalizeOrder(ctx context.Context, host string, order *acme.Order) (*tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("cert key: %w", err)
@@ -257,7 +276,7 @@ func (m *dns01Manager) satisfyDNS01(ctx context.Context, host string, ch *acme.C
 	if err != nil {
 		return fmt.Errorf("add TXT record: %w", err)
 	}
-	defer func() {
+	defer func() { //nolint:contextcheck // detached ctx on purpose: best-effort cleanup must run even after the parent ctx is cancelled
 		// Cleanup is best-effort. Cloudflare's free-tier 60s TTL means a
 		// stale record is harmless after a couple of minutes.
 		dctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -290,13 +309,16 @@ func (m *dns01Manager) satisfyDNS01(ctx context.Context, host string, ch *acme.C
 func (m *dns01Manager) loadOrCreateAccount() error {
 	keyPath := filepath.Join(m.storage, "account.key")
 	var key *ecdsa.PrivateKey
-	if pemBytes, err := os.ReadFile(keyPath); err == nil {
+	pemBytes, err := os.ReadFile(keyPath) //nolint:gosec // G304: fixed filename under the operator-configured storage dir
+	switch {
+	case err == nil:
 		k, err := parseECPrivateKey(pemBytes)
 		if err != nil {
 			return fmt.Errorf("parse account key: %w", err)
 		}
 		key = k
-	} else {
+	case os.IsNotExist(err):
+		// No account yet — mint one and persist it.
 		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			return fmt.Errorf("generate account key: %w", err)
@@ -305,6 +327,10 @@ func (m *dns01Manager) loadOrCreateAccount() error {
 		if err := writeECPrivateKey(keyPath, k); err != nil {
 			return fmt.Errorf("write account key: %w", err)
 		}
+	default:
+		// An existing key we cannot read (permissions, I/O). Do NOT mint a
+		// new one — that would desync the ACME account. Surface the error.
+		return fmt.Errorf("read account key: %w", err)
 	}
 	m.accountKey = key
 	m.acmeClient = &acme.Client{
@@ -323,11 +349,13 @@ func (m *dns01Manager) loadOrCreateAccount() error {
 }
 
 func (m *dns01Manager) loadCert(host string) *tls.Certificate {
-	certPEM, err := os.ReadFile(filepath.Join(m.storage, host+".crt"))
+	// host is gated by coversHost against the configured domain allowlist
+	// before any call reaches loadCert, so it cannot contain path traversal.
+	certPEM, err := os.ReadFile(filepath.Join(m.storage, host+".crt")) //nolint:gosec // G304: see above
 	if err != nil {
 		return nil
 	}
-	keyPEM, err := os.ReadFile(filepath.Join(m.storage, host+".key"))
+	keyPEM, err := os.ReadFile(filepath.Join(m.storage, host+".key")) //nolint:gosec // G304: host allowlist-gated by coversHost (see loadCert above)
 	if err != nil {
 		return nil
 	}

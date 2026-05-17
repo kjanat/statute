@@ -63,7 +63,7 @@ func shouldLog(status int, rate float64) bool {
 	if rate >= 1 {
 		return true
 	}
-	return rand.Float64() < rate
+	return rand.Float64() < rate //nolint:gosec // G404: log sampling is not security-sensitive; math/rand is intentional here
 }
 
 // safeEncoder serializes JSON writes so multiple goroutines do not interleave.
@@ -79,7 +79,7 @@ func newSafeEncoder(w jsonWriter) *safeEncoder {
 func (s *safeEncoder) Encode(v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = s.enc.Encode(v)
+	_ = s.enc.Encode(v) //nolint:errchkjson // best-effort access-log write; v is always the internal log entry and a failed line must not fail the request
 }
 
 // jsonWriter is satisfied by io.Writer; aliased for clarity at call site.

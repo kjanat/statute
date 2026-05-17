@@ -3,6 +3,7 @@ package statute
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
 	"net/http"
 )
 
@@ -23,9 +24,7 @@ func etagHandler(next http.Handler) http.Handler {
 			etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 			buf.header.Set("ETag", etag)
 			if r.Header.Get("If-None-Match") == etag {
-				for k, v := range buf.header {
-					w.Header()[k] = v
-				}
+				maps.Copy(w.Header(), buf.header)
 				w.Header().Del("Content-Length")
 				w.WriteHeader(http.StatusNotModified)
 				return

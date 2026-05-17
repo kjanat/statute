@@ -4,5 +4,14 @@
 // see the documentation: https://zed.dev/docs/configuring-zed#settings-files
 {
   "formatter": [{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } }],
-  "prettier": { "allowed": false }
+  "prettier": { "allowed": false },
+  "languages": { "Go": { "language_servers": ["gopls", "golangci-lint-langserver"] } },
+  "lsp": {
+    "golangci-lint-langserver": {
+      "binary": {
+        "path": "golangci-lint",
+        "arguments": ["run", "--output.json.path", "stdout", "--show-stats=false", "--issues-exit-code=1"]
+      }
+    }
+  }
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"statute.kjanat.dev/resolved"
@@ -37,9 +38,9 @@ const maxRetryBufferBytes = 1 << 20 // 1 MiB
 // attempt. The response is buffered until a non-retryable status arrives or
 // the attempt budget is exhausted, then committed to the wire.
 func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
-	max := m.RetryMax
+	maxAttempts := m.RetryMax
 	statuses := m.RetryOnStatuses
-	if max < 1 {
+	if maxAttempts < 1 {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,37 +49,69 @@ func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			return
 		}
 
-		var bodyBytes []byte
-		if r.Body != nil && r.Body != http.NoBody {
-			limited := io.LimitReader(r.Body, maxRetryBufferBytes+1)
-			b, err := io.ReadAll(limited)
-			_ = r.Body.Close()
-			if err != nil {
-				http.Error(w, "could not buffer request body for retry: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			if len(b) > maxRetryBufferBytes {
-				// Body too large to buffer; do a single-shot pass without retry.
-				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
-				next.ServeHTTP(w, r)
-				return
-			}
-			bodyBytes = b
+		bodyBytes, ok := bufferRetryBody(w, r, next)
+		if !ok {
+			return
 		}
 
-		for attempt := 1; attempt <= max; attempt++ {
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			if bodyBytes != nil {
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
 			buf := newResponseBuffer()
 			next.ServeHTTP(buf, r)
-			if attempt == max || !statusMatches(buf.status, statuses) {
+			if attempt == maxAttempts || !statusMatches(buf.status, statuses) {
 				buf.replay(w)
 				return
 			}
 		}
 	})
 }
+
+// bufferRetryBody reads and buffers the request body so it can be replayed
+// across attempts. ok is false when the caller must return without retrying:
+// either buffering failed (a 400 was already written) or the body exceeded
+// maxRetryBufferBytes (a single-shot pass was already served via next).
+func bufferRetryBody(w http.ResponseWriter, r *http.Request, next http.Handler) (body []byte, ok bool) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, true
+	}
+	limited := io.LimitReader(r.Body, maxRetryBufferBytes+1)
+	b, err := io.ReadAll(limited)
+	if err != nil {
+		_ = r.Body.Close()
+		http.Error(w, "could not buffer request body for retry: "+err.Error(), http.StatusBadRequest)
+		return nil, false
+	}
+	if len(b) > maxRetryBufferBytes {
+		// Body too large to buffer; do a single-shot pass without retry.
+		// The new body replays the buffered prefix then continues from the
+		// original stream; its Close closes the original so the underlying
+		// body is not leaked when the server/downstream closes r.Body.
+		r.Body = &multiReadCloser{
+			r:    io.MultiReader(bytes.NewReader(b), r.Body),
+			orig: r.Body,
+		}
+		next.ServeHTTP(w, r)
+		return nil, false
+	}
+	// The whole body fit in the buffer (LimitReader hit EOF before the
+	// cap), so the original stream is drained and safe to close.
+	_ = r.Body.Close()
+	return b, true
+}
+
+// multiReadCloser concatenates a buffered prefix with the original request
+// body and closes that original body on Close, so swapping it into r.Body
+// does not leak the underlying stream.
+type multiReadCloser struct {
+	r    io.Reader
+	orig io.Closer
+}
+
+func (m *multiReadCloser) Read(p []byte) (int, error) { return m.r.Read(p) }
+
+func (m *multiReadCloser) Close() error { return m.orig.Close() }
 
 // isRetryable returns true when the request meets the safety preconditions
 // for retry. See retryHandler's doc comment for the full rationale.
@@ -109,10 +142,5 @@ func isIdempotent(method string) bool {
 }
 
 func statusMatches(status int, codes []int) bool {
-	for _, c := range codes {
-		if c == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(codes, status)
 }

@@ -27,7 +27,10 @@ func (s *stats) Observe(status int, dur time.Duration) {
 	s.requests.Add(1)
 	v, _ := s.requestsByStatus.LoadOrStore(status, &atomic.Uint64{})
 	v.(*atomic.Uint64).Add(1)
-	s.durationSum.Add(uint64(dur / time.Microsecond))
+	// Monotonic-clock durations are never negative in practice; clamp
+	// defensively so the uint64 conversion can never wrap.
+	us := max(dur/time.Microsecond, 0)
+	s.durationSum.Add(uint64(us))
 	s.durationCount.Add(1)
 }
 

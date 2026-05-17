@@ -6,7 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [v0.2.0] — 2026-05-17
+### Added
+
+- `FuzzParseSize` fuzz target; loosened the `parseDuration` / `parseRate`
+  / `parseSize` fuzz invariants to cut false failures.
+
+### Changed
+
+#### Breaking
+
+- Module path renamed to `statute.kjanat.dev`. Importers must update
+  their import paths. `.editorconfig` removed.
+
+#### Repository & CI
+
+- Moved `CODEOWNERS`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, and
+  `SECURITY.md` under `.github/`; `SECURITY.md` rewritten and
+  `CODE_OF_CONDUCT.md` condensed; `CONTRIBUTING.md` reframed (dropped the
+  clustering non-goal, allow L4 SNI / PROXY-protocol passthrough).
+- Pages workflow heredoc fix; CI fuzz step fixed (`-fuzz` cannot target
+  multiple packages in one invocation); formatter/linter config tidied.
+
+#### Complexity refactor (no behaviour change)
+
+- Brought every function to cyclomatic complexity ≤ 10 (Go Report Card
+  `gocyclo > 15`, then the repo's stricter `min-complexity: 10`). Large
+  functions split into focused helpers across `server.go` (`newServer`,
+  `Start`, `Shutdown`, `buildHTTPServer`), `resolve.go` (`Resolve`,
+  `resolveListener`, `resolveRoute`, `resolveMiddleware`, `parseSize`,
+  `expandDayWeekUnits`), `cors.go` (`corsHandler`), `graph.go`
+  (`graphResolved`), `dns01.go` (`issue`), `export.go` (`Main`), and
+  `retry.go` (`retryHandler`).
+- `resolveMiddleware`'s type switch replaced by a `resolvableMiddleware`
+  interface with per-type `resolve()` methods; `applyMiddleware`'s value
+  switch replaced by a `middlewareBuilders` dispatch map.
+- `graphResolved` now uses an error-accumulating `dotWriter`, removing
+  the repeated `if err != nil` ladder.
+
+#### Modernization
+
+- Adopted stdlib helpers via the `modernize` analyzer: `maps.Copy`,
+  `slices.Backward`, `strings.CutSuffix`, `sync.WaitGroup.Go`, removed
+  redundant Go 1.22+ loop-variable copies.
+
+#### Tooling
+
+- Expanded the `golangci-lint` set: added `modernize`, `gosec`, `noctx`,
+  `contextcheck`, `fatcontext`, `errchkjson`, `exhaustive`,
+  `predeclared`, `usestdlibvars`, `usetesting`, `copyloopvar`,
+  `reassign`, `wastedassign`, `gocheckcompilerdirectives`. Set
+  `exhaustive.default-signifies-exhaustive: true`; extended the
+  documented `_test.go` relaxation to `noctx`/`errchkjson`/
+  `usestdlibvars` (httptest noise).
+- Hardening surfaced by the new linters: clamp negative durations before
+  the `uint64` Prometheus conversion (gosec G115); switch `net.Listen`
+  to `net.ListenConfig.Listen(ctx)` (noctx); rename the `max`-shadowing
+  identifiers to `maxAttempts` (predeclared). Verified-intentional
+  findings (best-effort cleanup context, log sampling RNG,
+  allowlist-gated cert paths, same-host HTTP→HTTPS redirect) are
+  suppressed with rationale.
+- CI uploads coverage to Codecov from the existing `cover.out` profile.
+
+### Fixed
+
+- `parseSize` no longer overflows `int64` on very large inputs.
+- Retry middleware: the large-body single-shot pass-through built its
+  fallback `io.MultiReader` from `r.Body` _after_ closing it, so reads
+  past the buffered prefix failed with `ErrBodyReadAfterClose`. The body
+  is now closed only once the stream is drained or has errored.
+- Latent `staticcheck` SA5011 (possible nil dereference) in
+  `TestBuildAutocertManager_SingleListener`.
+- `unparam` finding: `resolveCompressMW` no longer returns an
+  always-nil error.
+
+## [0.2.0] — 2026-05-17
 
 ### Added
 
@@ -55,7 +128,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
-## [v0.1.0] — 2026-05-07
+## [0.1.0] — 2026-05-07
 
 ### Added
 
@@ -80,5 +153,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
 [Unreleased]: https://github.com/kjanat/statute/compare/v0.2.0...HEAD
-[v0.2.0]: https://github.com/kjanat/statute/compare/v0.1.0...v0.2.0
-[v0.1.0]: https://github.com/kjanat/statute/releases/tag/v0.1.0
+[0.2.0]: https://github.com/kjanat/statute/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/kjanat/statute/releases/tag/v0.1.0
