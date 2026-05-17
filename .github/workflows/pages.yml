@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
-      - run: mkdir -p dist; cat <<EOF > dist/index.html
+      - run: |
+          mkdir -p dist
+          cat <<EOF > dist/index.html
           <!DOCTYPE html>
           <html>
           <head>
