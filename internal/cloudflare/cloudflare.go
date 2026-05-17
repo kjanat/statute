@@ -60,7 +60,9 @@ func (e cfError) Error() string {
 // given domain. The lookup walks the DNS labels from most-specific to least
 // (a record at sub.example.com tries sub.example.com, then example.com).
 func (c *Client) FindZoneID(ctx context.Context, domain string) (string, error) {
-	domain = strings.TrimPrefix(domain, "*.")
+	// Normalise a wildcard prefix and an absolute-FQDN trailing dot;
+	// Cloudflare zone names carry neither.
+	domain = strings.TrimSuffix(strings.TrimPrefix(domain, "*."), ".")
 	labels := strings.Split(domain, ".")
 	for i := 0; i < len(labels)-1; i++ {
 		candidate := strings.Join(labels[i:], ".")

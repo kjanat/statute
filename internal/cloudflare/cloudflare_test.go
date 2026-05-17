@@ -165,6 +165,24 @@ func TestCloudflareAPI_FindZoneIDWalk(t *testing.T) {
 		t.Errorf("wildcard zone: got %q", id)
 	}
 
+	// Absolute FQDN (trailing dot) must normalise to the same zone.
+	id, err = c.FindZoneID(ctx, "foo.example.com.")
+	if err != nil {
+		t.Fatalf("trailing-dot FindZoneID: %v", err)
+	}
+	if id != "zone-example" {
+		t.Errorf("trailing-dot zone: got %q", id)
+	}
+
+	// Wildcard + trailing dot combined.
+	id, err = c.FindZoneID(ctx, "*.example.com.")
+	if err != nil {
+		t.Fatalf("wildcard+dot FindZoneID: %v", err)
+	}
+	if id != "zone-example" {
+		t.Errorf("wildcard+dot zone: got %q", id)
+	}
+
 	// No matching zone.
 	if _, err := c.FindZoneID(ctx, "nowhere.invalid"); err == nil {
 		t.Errorf("want error for missing zone")
