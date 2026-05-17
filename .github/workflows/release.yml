@@ -33,9 +33,9 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           if [[ "${use_generated}" == "true" ]]; then
-            gh release create "${TAG}" --verify-tag --generate-notes
+            gh release create "${TAG}" --verify-tag --title "${TAG}" --generate-notes
           else
-            gh release create "${TAG}" --verify-tag --notes-file .release-notes.md
+            gh release create "${TAG}" --verify-tag --title "${TAG}" --notes-file .release-notes.md
           fi
       - name: warm proxy.golang.org
         run: |
