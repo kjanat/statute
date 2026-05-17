@@ -49,8 +49,12 @@ func expandDayWeekUnits(s string) (string, error) {
 	i := 0
 	for i < len(s) {
 		c := s[i]
-		// Capture a number prefix (with optional sign + fractional part).
-		if isSign(c) || isDigit(c) {
+		// Capture a number prefix (optional sign, then digits and/or a
+		// fractional part). A leading '.' counts only when a digit
+		// follows, so ".5d" expands like "0.5d" while a lone '.' does
+		// not start a number.
+		leadingDot := c == '.' && i+1 < len(s) && isDigit(s[i+1])
+		if isSign(c) || isDigit(c) || leadingDot {
 			next, err := expandNumberAt(s, i, &b)
 			if err != nil {
 				return "", err

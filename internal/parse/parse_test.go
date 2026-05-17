@@ -21,8 +21,14 @@ func TestParseDuration(t *testing.T) {
 		{"1w2d", 9 * 24 * time.Hour, false},
 		{"1w2d3h", 9*24*time.Hour + 3*time.Hour, false},
 		{"1.5d", 36 * time.Hour, false},
+		{".5d", 12 * time.Hour, false},   // leading-dot day, like 0.5d
+		{".5w", 84 * time.Hour, false},   // 0.5 * 168h
+		{"+.5d", 12 * time.Hour, false},  // signed leading-dot
+		{".5h", 30 * time.Minute, false}, // leading dot, non-d/w unit
 		{"0d", 0, false},
 		{"-1d", 0, true},
+		{".", 0, true},      // lone dot is not a number
+		{".d", 0, true},     // dot not followed by digit
 		{"1.2.3d", 0, true}, // bad float before the d/w unit
 		{"+s", 0, true},     // lone sign, not a number token
 		{"-1s", 0, true},
