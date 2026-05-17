@@ -102,16 +102,13 @@ func scanDigits(s string, j int) int {
 	return j
 }
 
-// isNumberToken reports whether s[i:j] is a real number rather than a lone
-// sign that was never followed by digits.
+// isNumberToken reports whether s[i:j] is a real number rather than an
+// empty span or a lone sign that was never followed by digits. (The
+// empty-span case, j == i, is unreachable from expandNumberAt — which
+// only runs on a sign or digit — but the j > i guard keeps the helper
+// correct in isolation without an uncoverable branch.)
 func isNumberToken(s string, i, j int) bool {
-	if j == i {
-		return false
-	}
-	if j == i+1 && isSign(s[i]) {
-		return false
-	}
-	return true
+	return j > i && !(j == i+1 && isSign(s[i]))
 }
 
 // isDayWeekUnit reports whether c is the 'd' (day) or 'w' (week) suffix.
