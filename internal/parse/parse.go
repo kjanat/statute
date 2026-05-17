@@ -108,7 +108,7 @@ func scanDigits(s string, j int) int {
 // only runs on a sign or digit — but the j > i guard keeps the helper
 // correct in isolation without an uncoverable branch.)
 func isNumberToken(s string, i, j int) bool {
-	return j > i && !(j == i+1 && isSign(s[i]))
+	return j > i && (j != i+1 || !isSign(s[i]))
 }
 
 // isDayWeekUnit reports whether c is the 'd' (day) or 'w' (week) suffix.
