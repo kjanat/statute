@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   carrying the same `go-import`/`go-source` meta, so every subpackage
   resolves directly for `go get` instead of relying on prefix fallback;
   browsers get a path-aware redirect to the exact pkg.go.dev page.
+- CI `lint`, `fuzz`, and `examples` jobs moved to the lighter
+  `ubuntu-slim` runner. `test` stays on `ubuntu-latest` because
+  `go test -race` needs a C toolchain (cgo) that slim does not ship.
 
 ### Fixed
 

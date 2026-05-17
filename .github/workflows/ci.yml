@@ -1,81 +1,50 @@
 name: ci
-
 on:
-  push:
-    branches: [master, main]
+  push: { branches: [master] }
   pull_request:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
+permissions: { contents: read }
+concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
 jobs:
   test:
     name: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: setup go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: vet
-        run: go vet ./...
-
-      - name: build
-        run: go build ./...
-
-      - name: test
-        run: go test -race -coverprofile=cover.out -covermode=atomic ./...
-
-      - name: coverage summary
-        run: go tool cover -func=cover.out | tail -1
-
-      - name: upload coverage reports to codecov
-        uses: codecov/codecov-action@v6
+      - uses: actions/setup-go@v6
+        with: { go-version-file: go.mod, cache: true }
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test -race -coverprofile=cover.out -covermode=atomic ./...
+      - run: go tool cover -func=cover.out | tail -1
+      - uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: kjanat/statute
           files: ./cover.out
           fail_ci_if_error: false
-
-      - name: upload coverage
+      - name: upload coverage artifact
         uses: actions/upload-artifact@v7
         with:
           name: cover.out
           path: cover.out
           if-no-files-found: error
           retention-days: 14
-
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+        with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@v9
-        with:
-          version: latest
-          args: --timeout=5m
-
+        with: { version: latest, args: --timeout=5m }
   fuzz:
     name: fuzz (30s/target)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+        with: { go-version-file: go.mod, cache: true }
       - name: list fuzz targets
         id: targets
         run: |
@@ -88,7 +57,7 @@ jobs:
           cat .fuzz-targets
       - name: run fuzz targets
         run: |
-          [ -f .fuzz-targets ] || exit 0
+          [[ -f .fuzz-targets ]] || exit 0
           # -fuzz cannot target multiple packages in one invocation; we run
           # against the root package where every Fuzz* lives. If the framework
           # grows fuzz targets in other packages, this loop must be expanded.
@@ -97,14 +66,11 @@ jobs:
             go test -run=^$ -fuzz="^${target}$" -fuzztime=30s .
             echo "::endgroup::"
           done < .fuzz-targets
-
   examples:
     name: build examples
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+        with: { go-version-file: go.mod, cache: true }
       - run: go build ./examples/...
