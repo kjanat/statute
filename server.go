@@ -61,6 +61,14 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		return nil, fmt.Errorf("tracing: %w", err)
 	}
 	s.tracingShutdown = tracingShutdown
+	// If a later init step fails the caller never gets a *server to call
+	// Shutdown on, so flush the tracing provider here on the error path.
+	ok := false
+	defer func() {
+		if !ok && tracingShutdown != nil {
+			_ = tracingShutdown(context.Background())
+		}
+	}()
 
 	if err := s.initPools(cfg.Upstreams); err != nil {
 		return nil, err
@@ -73,6 +81,7 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		s.metricsServer = s.buildMetricsServer(cfg.Observability.Metrics)
 	}
 
+	ok = true
 	return s, nil
 }
 

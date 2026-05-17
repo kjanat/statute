@@ -74,7 +74,10 @@ func (s *cfStub) handleCreateRecord(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Type, Name, Content string
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.write(w, false, nil, &cfError{Code: 9020, Message: "invalid JSON body: " + err.Error()})
+		return
+	}
 	if s.records[zone] == nil {
 		s.records[zone] = map[string]string{}
 	}

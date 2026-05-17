@@ -309,13 +309,16 @@ func (m *dns01Manager) satisfyDNS01(ctx context.Context, host string, ch *acme.C
 func (m *dns01Manager) loadOrCreateAccount() error {
 	keyPath := filepath.Join(m.storage, "account.key")
 	var key *ecdsa.PrivateKey
-	if pemBytes, err := os.ReadFile(keyPath); err == nil { //nolint:gosec // G304: fixed filename under the operator-configured storage dir
+	pemBytes, err := os.ReadFile(keyPath) //nolint:gosec // G304: fixed filename under the operator-configured storage dir
+	switch {
+	case err == nil:
 		k, err := parseECPrivateKey(pemBytes)
 		if err != nil {
 			return fmt.Errorf("parse account key: %w", err)
 		}
 		key = k
-	} else {
+	case os.IsNotExist(err):
+		// No account yet — mint one and persist it.
 		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			return fmt.Errorf("generate account key: %w", err)
@@ -324,6 +327,10 @@ func (m *dns01Manager) loadOrCreateAccount() error {
 		if err := writeECPrivateKey(keyPath, k); err != nil {
 			return fmt.Errorf("write account key: %w", err)
 		}
+	default:
+		// An existing key we cannot read (permissions, I/O). Do NOT mint a
+		// new one — that would desync the ACME account. Surface the error.
+		return fmt.Errorf("read account key: %w", err)
 	}
 	m.accountKey = key
 	m.acmeClient = &acme.Client{

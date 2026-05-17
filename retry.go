@@ -85,10 +85,13 @@ func bufferRetryBody(w http.ResponseWriter, r *http.Request, next http.Handler) 
 	}
 	if len(b) > maxRetryBufferBytes {
 		// Body too large to buffer; do a single-shot pass without retry.
-		// r.Body is left open on purpose: the new body wraps it to supply
-		// the bytes past the buffered prefix, and closing it here would
-		// make those reads fail with ErrBodyReadAfterClose.
-		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
+		// The new body replays the buffered prefix then continues from the
+		// original stream; its Close closes the original so the underlying
+		// body is not leaked when the server/downstream closes r.Body.
+		r.Body = &multiReadCloser{
+			r:    io.MultiReader(bytes.NewReader(b), r.Body),
+			orig: r.Body,
+		}
 		next.ServeHTTP(w, r)
 		return nil, false
 	}
@@ -97,6 +100,18 @@ func bufferRetryBody(w http.ResponseWriter, r *http.Request, next http.Handler) 
 	_ = r.Body.Close()
 	return b, true
 }
+
+// multiReadCloser concatenates a buffered prefix with the original request
+// body and closes that original body on Close, so swapping it into r.Body
+// does not leak the underlying stream.
+type multiReadCloser struct {
+	r    io.Reader
+	orig io.Closer
+}
+
+func (m *multiReadCloser) Read(p []byte) (int, error) { return m.r.Read(p) }
+
+func (m *multiReadCloser) Close() error { return m.orig.Close() }
 
 // isRetryable returns true when the request meets the safety preconditions
 // for retry. See retryHandler's doc comment for the full rationale.
