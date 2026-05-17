@@ -61,6 +61,7 @@ func Main(cfg Config) {
 	}
 }
 
+// countTrue returns how many of the given bool flags are set.
 func countTrue(flags ...*bool) int {
 	count := 0
 	for _, b := range flags {

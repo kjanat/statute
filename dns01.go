@@ -222,6 +222,8 @@ func (m *dns01Manager) solveAuthorizations(ctx context.Context, host string, ord
 	return nil
 }
 
+// findDNS01Challenge returns the dns-01 challenge from an authorization's
+// challenge list, or nil if none is offered.
 func findDNS01Challenge(challenges []*acme.Challenge) *acme.Challenge {
 	for _, ch := range challenges {
 		if ch.Type == "dns-01" {

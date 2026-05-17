@@ -76,6 +76,8 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	return s, nil
 }
 
+// initDNS01Managers builds a dns01Manager for every listener configured
+// with Cloudflare DNS-01, keyed by listener address.
 func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
 	s.dns01Managers = make(map[string]*dns01Manager)
 	for _, l := range listeners {
@@ -91,6 +93,7 @@ func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
 	return nil
 }
 
+// initPools builds a poolHandler for every resolved upstream.
 func (s *server) initPools(upstreams map[string]*resolved.Pool) error {
 	for name, p := range upstreams {
 		ph, err := newPoolHandler(p)
@@ -102,6 +105,8 @@ func (s *server) initPools(upstreams map[string]*resolved.Pool) error {
 	return nil
 }
 
+// initListeners builds the HTTP (and, where configured, HTTP/3) servers
+// for every resolved listener, sharing the given handler.
 func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler) error {
 	for _, l := range listeners {
 		hs, err := s.buildHTTPServer(l, mux)
@@ -574,14 +579,17 @@ var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, h
 	resolved.MWDenyIPs:         denyIPsHandler,
 }
 
+// buildTimeout adapts http.TimeoutHandler to the middlewareBuilders signature.
 func buildTimeout(m resolved.Middleware, next http.Handler) http.Handler {
 	return http.TimeoutHandler(next, m.Timeout, "request timed out")
 }
 
+// buildCompress adapts compressHandler to the middlewareBuilders signature.
 func buildCompress(m resolved.Middleware, next http.Handler) http.Handler {
 	return compressHandler(m.CompressAlgos, next)
 }
 
+// buildETag adapts etagHandler to the middlewareBuilders signature.
 func buildETag(_ resolved.Middleware, next http.Handler) http.Handler {
 	return etagHandler(next)
 }

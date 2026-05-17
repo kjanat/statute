@@ -54,6 +54,7 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 	return out, nil
 }
 
+// resolveUpstreams resolves every surface pool into out, keyed by name.
 func resolveUpstreams(in map[string]Pool, out map[string]*resolved.Pool) error {
 	for name, pool := range in {
 		rp, err := resolvePool(name, pool)
@@ -65,6 +66,7 @@ func resolveUpstreams(in map[string]Pool, out map[string]*resolved.Pool) error {
 	return nil
 }
 
+// resolveListeners resolves every surface listener and appends it to out.
 func resolveListeners(in []*Listener, out *resolved.Config) error {
 	for i, l := range in {
 		rl, err := resolveListener(l)
@@ -76,6 +78,9 @@ func resolveListeners(in []*Listener, out *resolved.Config) error {
 	return nil
 }
 
+// resolveRoutes resolves every surface route and appends it to out.
+// Upstream references are looked up in out.Upstreams, so resolveUpstreams
+// must run first.
 func resolveRoutes(in []*Route, out *resolved.Config) error {
 	for i, r := range in {
 		rr, err := resolveRoute(r, out.Upstreams)
@@ -251,6 +256,8 @@ func validateListenerTLSPresence(l *Listener) error {
 	return nil
 }
 
+// resolveAutoTLS validates an AutoTLS surface config (domains, email,
+// storage, optional Cloudflare DNS-01) and produces its resolved form.
 func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	if len(a.Domains) == 0 {
 		return nil, errors.New("auto_tls: at least one domain required")
@@ -278,6 +285,8 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	return at, nil
 }
 
+// resolveStaticTLS validates that both cert and key paths are set and
+// produces the resolved StaticTLS form.
 func resolveStaticTLS(s *StaticTLSConfig) (*resolved.StaticTLS, error) {
 	if s.CertFile == "" || s.KeyFile == "" {
 		return nil, errors.New("static_tls: cert_file and key_file required")
@@ -329,6 +338,8 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 	return nil
 }
 
+// resolveMiddlewares resolves a route's middleware list in order,
+// returning nil for an empty list so an unmiddlewared route stays nil.
 func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 	if len(mws) == 0 {
 		return nil, nil
@@ -385,6 +396,7 @@ func (m *denyIPsMW) resolve() (resolved.Middleware, error)   { return resolveDen
 func (m *basicAuthMW) resolve() (resolved.Middleware, error) { return resolveBasicAuthMW(m) }
 func (m *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(m) }
 
+// resolveTimeoutMW parses the timeout duration string.
 func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 	d, err := parseDuration(m.dur)
 	if err != nil {
@@ -393,6 +405,8 @@ func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 	return resolved.Middleware{Type: resolved.MWTimeout, Timeout: d}, nil
 }
 
+// resolveRateLimitMW parses the rate string into requests/second and
+// carries the rate-limit key.
 func resolveRateLimitMW(m *rateLimitMW) (resolved.Middleware, error) {
 	rate, err := parseRate(m.rate)
 	if err != nil {
@@ -405,6 +419,8 @@ func resolveRateLimitMW(m *rateLimitMW) (resolved.Middleware, error) {
 	}, nil
 }
 
+// resolveRetryMW validates that max attempts is >= 1 and copies the
+// retry-on-status list.
 func resolveRetryMW(m *retryMW) (resolved.Middleware, error) {
 	if m.max < 1 {
 		return resolved.Middleware{}, errors.New("retry: max must be >= 1")
@@ -416,6 +432,7 @@ func resolveRetryMW(m *retryMW) (resolved.Middleware, error) {
 	}, nil
 }
 
+// resolveCacheMW parses the cache TTL duration string.
 func resolveCacheMW(m *cacheMW) (resolved.Middleware, error) {
 	d, err := parseDuration(m.ttl)
 	if err != nil {
@@ -424,6 +441,8 @@ func resolveCacheMW(m *cacheMW) (resolved.Middleware, error) {
 	return resolved.Middleware{Type: resolved.MWCache, CacheTTL: d}, nil
 }
 
+// resolveCompressMW maps the requested compression algorithms to their
+// resolved form. It cannot fail.
 func resolveCompressMW(m *compressMW) resolved.Middleware {
 	algos := make([]resolved.CompressAlgo, 0, len(m.algos))
 	for _, a := range m.algos {
@@ -432,6 +451,7 @@ func resolveCompressMW(m *compressMW) resolved.Middleware {
 	return resolved.Middleware{Type: resolved.MWCompress, CompressAlgos: algos}
 }
 
+// resolveBodyLimitMW parses the size string and requires a positive limit.
 func resolveBodyLimitMW(m *bodyLimitMW) (resolved.Middleware, error) {
 	n, err := parseSize(m.size)
 	if err != nil {
@@ -443,6 +463,8 @@ func resolveBodyLimitMW(m *bodyLimitMW) (resolved.Middleware, error) {
 	return resolved.Middleware{Type: resolved.MWBodyLimit, BodyLimitBytes: n}, nil
 }
 
+// resolveSecurityHeadersMW formats the optional HSTS duration and copies
+// the remaining header policy values.
 func resolveSecurityHeadersMW(m *securityHeadersMW) (resolved.Middleware, error) {
 	hstsHeader := ""
 	if m.hsts != "" {
@@ -463,6 +485,7 @@ func resolveSecurityHeadersMW(m *securityHeadersMW) (resolved.Middleware, error)
 	}, nil
 }
 
+// resolveAllowIPsMW canonicalises the allow-list CIDRs.
 func resolveAllowIPsMW(m *allowIPsMW) (resolved.Middleware, error) {
 	canon, err := resolveCIDRs(m.cidrs)
 	if err != nil {
@@ -471,6 +494,7 @@ func resolveAllowIPsMW(m *allowIPsMW) (resolved.Middleware, error) {
 	return resolved.Middleware{Type: resolved.MWAllowIPs, IPCIDRs: canon}, nil
 }
 
+// resolveDenyIPsMW canonicalises the deny-list CIDRs.
 func resolveDenyIPsMW(m *denyIPsMW) (resolved.Middleware, error) {
 	canon, err := resolveCIDRs(m.cidrs)
 	if err != nil {
@@ -479,6 +503,8 @@ func resolveDenyIPsMW(m *denyIPsMW) (resolved.Middleware, error) {
 	return resolved.Middleware{Type: resolved.MWDenyIPs, IPCIDRs: canon}, nil
 }
 
+// resolveBasicAuthMW requires a non-empty user map and verifies every
+// value is a bcrypt hash.
 func resolveBasicAuthMW(m *basicAuthMW) (resolved.Middleware, error) {
 	if len(m.users) == 0 {
 		return resolved.Middleware{}, errors.New("basic_auth: users map is empty")
@@ -497,6 +523,8 @@ func resolveBasicAuthMW(m *basicAuthMW) (resolved.Middleware, error) {
 	}, nil
 }
 
+// resolveCORSMW splits explicit origins from the wildcard, rejects a
+// credentialed wildcard, and parses the optional max-age.
 func resolveCORSMW(m *corsMW) (resolved.Middleware, error) {
 	if len(m.origins) == 0 {
 		return resolved.Middleware{}, errors.New("cors: at least one Origin must be configured")
@@ -671,8 +699,10 @@ func expandDayWeekUnits(s string) (string, error) {
 	return b.String(), nil
 }
 
+// isDigit reports whether c is an ASCII digit.
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
+// isSign reports whether c is an ASCII plus or minus sign.
 func isSign(c byte) bool { return c == '-' || c == '+' }
 
 // expandNumberAt processes the token beginning at s[i] (a digit or sign),
@@ -719,6 +749,7 @@ func isNumberToken(s string, i, j int) bool {
 	return true
 }
 
+// isDayWeekUnit reports whether c is the 'd' (day) or 'w' (week) suffix.
 func isDayWeekUnit(c byte) bool { return c == 'd' || c == 'w' }
 
 // expandDayWeek rewrites the number s[i:j] followed by the unit at s[j]
