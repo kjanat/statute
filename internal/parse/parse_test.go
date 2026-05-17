@@ -78,6 +78,10 @@ func TestParseRate(t *testing.T) {
 		{"abc/min", 0, true},
 		{"-5/min", 0, true},
 		{"5", 0, true},
+		{"NaN/s", 0, true},
+		{"Inf/s", 0, true},
+		{"+Inf/min", 0, true},
+		{"-Inf/s", 0, true},
 	}
 	for _, c := range cases {
 		got, err := Rate(c.in)

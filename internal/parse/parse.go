@@ -148,6 +148,11 @@ func Rate(s string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("rate %q: invalid count: %w", s, err)
 	}
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		// strconv.ParseFloat accepts "NaN"/"Inf"; NaN also slips past the
+		// n <= 0 check below since all NaN comparisons are false.
+		return 0, fmt.Errorf("rate %q: count must be finite", s)
+	}
 	if n <= 0 {
 		return 0, fmt.Errorf("rate %q: count must be positive", s)
 	}
