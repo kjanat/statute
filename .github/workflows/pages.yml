@@ -1,5 +1,5 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+---
 name: pages
-on: {push: {branches: [master]}}
-permissions: {id: write, contents: read, pages: write}
-jobs
-  pages:
+on: { push: { branches: [master] } }
+permissions: { id: write, contents: read, pages: write }

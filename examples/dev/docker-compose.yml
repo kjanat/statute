@@ -1,0 +1,48 @@
+# Local development environment: three echo backends behind a statute proxy.
+#
+# Usage:
+#   cd examples/dev
+#   docker compose up --build
+#   curl http://localhost:8080/         # round-robins across echo-{1,2,3}
+#   curl http://localhost:9090/metrics  # Prometheus metrics
+#   docker compose stop echo-2          # watch failover in the access log
+
+services:
+  echo-1:
+    image: hashicorp/http-echo:1.0.0
+    command: ["-listen", ":5678", "-text", "hello from echo-1"]
+    expose:
+      - "5678"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/"]
+      interval: 5s
+
+  echo-2:
+    image: hashicorp/http-echo:1.0.0
+    command: ["-listen", ":5678", "-text", "hello from echo-2"]
+    expose:
+      - "5678"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/"]
+      interval: 5s
+
+  echo-3:
+    image: hashicorp/http-echo:1.0.0
+    command: ["-listen", ":5678", "-text", "hello from echo-3"]
+    expose:
+      - "5678"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/"]
+      interval: 5s
+
+  proxy:
+    build:
+      context: ../..
+      dockerfile: examples/dev/Dockerfile
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      - echo-1
+      - echo-2
+      - echo-3
