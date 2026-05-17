@@ -38,9 +38,9 @@ const maxRetryBufferBytes = 1 << 20 // 1 MiB
 // attempt. The response is buffered until a non-retryable status arrives or
 // the attempt budget is exhausted, then committed to the wire.
 func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
-	max := m.RetryMax
+	maxAttempts := m.RetryMax
 	statuses := m.RetryOnStatuses
-	if max < 1 {
+	if maxAttempts < 1 {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,13 +54,13 @@ func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			return
 		}
 
-		for attempt := 1; attempt <= max; attempt++ {
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			if bodyBytes != nil {
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
 			buf := newResponseBuffer()
 			next.ServeHTTP(buf, r)
-			if attempt == max || !statusMatches(buf.status, statuses) {
+			if attempt == maxAttempts || !statusMatches(buf.status, statuses) {
 				buf.replay(w)
 				return
 			}
@@ -78,17 +78,23 @@ func bufferRetryBody(w http.ResponseWriter, r *http.Request, next http.Handler) 
 	}
 	limited := io.LimitReader(r.Body, maxRetryBufferBytes+1)
 	b, err := io.ReadAll(limited)
-	_ = r.Body.Close()
 	if err != nil {
+		_ = r.Body.Close()
 		http.Error(w, "could not buffer request body for retry: "+err.Error(), http.StatusBadRequest)
 		return nil, false
 	}
 	if len(b) > maxRetryBufferBytes {
 		// Body too large to buffer; do a single-shot pass without retry.
+		// r.Body is left open on purpose: the new body wraps it to supply
+		// the bytes past the buffered prefix, and closing it here would
+		// make those reads fail with ErrBodyReadAfterClose.
 		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
 		next.ServeHTTP(w, r)
 		return nil, false
 	}
+	// The whole body fit in the buffer (LimitReader hit EOF before the
+	// cap), so the original stream is drained and safe to close.
+	_ = r.Body.Close()
 	return b, true
 }
 

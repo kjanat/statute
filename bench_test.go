@@ -41,7 +41,7 @@ func BenchmarkResponseBufferReplay(b *testing.B) {
 			for b.Loop() {
 				buf := newResponseBuffer()
 				buf.Header().Set("Content-Type", "text/plain")
-				buf.WriteHeader(200)
+				buf.WriteHeader(http.StatusOK)
 				_, _ = buf.Write(payload)
 				rec := httptest.NewRecorder()
 				buf.replay(rec)

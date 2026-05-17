@@ -274,7 +274,7 @@ func (m *dns01Manager) satisfyDNS01(ctx context.Context, host string, ch *acme.C
 	if err != nil {
 		return fmt.Errorf("add TXT record: %w", err)
 	}
-	defer func() {
+	defer func() { //nolint:contextcheck // detached ctx on purpose: best-effort cleanup must run even after the parent ctx is cancelled
 		// Cleanup is best-effort. Cloudflare's free-tier 60s TTL means a
 		// stale record is harmless after a couple of minutes.
 		dctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -307,7 +307,7 @@ func (m *dns01Manager) satisfyDNS01(ctx context.Context, host string, ch *acme.C
 func (m *dns01Manager) loadOrCreateAccount() error {
 	keyPath := filepath.Join(m.storage, "account.key")
 	var key *ecdsa.PrivateKey
-	if pemBytes, err := os.ReadFile(keyPath); err == nil {
+	if pemBytes, err := os.ReadFile(keyPath); err == nil { //nolint:gosec // G304: fixed filename under the operator-configured storage dir
 		k, err := parseECPrivateKey(pemBytes)
 		if err != nil {
 			return fmt.Errorf("parse account key: %w", err)
@@ -340,11 +340,13 @@ func (m *dns01Manager) loadOrCreateAccount() error {
 }
 
 func (m *dns01Manager) loadCert(host string) *tls.Certificate {
-	certPEM, err := os.ReadFile(filepath.Join(m.storage, host+".crt"))
+	// host is gated by coversHost against the configured domain allowlist
+	// before any call reaches loadCert, so it cannot contain path traversal.
+	certPEM, err := os.ReadFile(filepath.Join(m.storage, host+".crt")) //nolint:gosec // G304: see above
 	if err != nil {
 		return nil
 	}
-	keyPEM, err := os.ReadFile(filepath.Join(m.storage, host+".key"))
+	keyPEM, err := os.ReadFile(filepath.Join(m.storage, host+".key")) //nolint:gosec // G304: host allowlist-gated by coversHost (see loadCert above)
 	if err != nil {
 		return nil
 	}

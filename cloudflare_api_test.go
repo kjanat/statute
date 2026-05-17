@@ -41,15 +41,15 @@ func (s *cfStub) handle(w http.ResponseWriter, r *http.Request) {
 		s.write(w, false, nil, &cfError{Code: 9103, Message: "unauthorized"})
 		return
 	}
-	isCreate := r.Method == "POST" &&
+	isCreate := r.Method == http.MethodPost &&
 		strings.HasPrefix(r.URL.Path, "/zones/") &&
 		strings.HasSuffix(r.URL.Path, "/dns_records")
 	switch {
-	case r.Method == "GET" && r.URL.Path == "/zones":
+	case r.Method == http.MethodGet && r.URL.Path == "/zones":
 		s.handleListZones(w, r)
 	case isCreate:
 		s.handleCreateRecord(w, r)
-	case r.Method == "DELETE":
+	case r.Method == http.MethodDelete:
 		s.handleDeleteRecord(w, r)
 	default:
 		http.NotFound(w, r)

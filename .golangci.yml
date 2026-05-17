@@ -32,24 +32,37 @@ linters:
   default: standard
   enable:
     - bodyclose
+    - contextcheck
+    - copyloopvar
     - errcheck
+    - errchkjson
     - errorlint
+    - exhaustive
+    - fatcontext
+    - gocheckcompilerdirectives
     - goconst
     - gocritic
     - gocyclo
+    - gosec
     - govet
     - ineffassign
     - misspell
     - modernize
     - nakedret
     - nilerr
+    - noctx
+    - predeclared
     - prealloc
+    - reassign
     - revive
     - staticcheck
     - tagalign
     - unconvert
     - unparam
     - unused
+    - usestdlibvars
+    - usetesting
+    - wastedassign
   settings:
     errcheck:
       check-type-assertions: false
@@ -61,8 +74,14 @@ linters:
       rules: [name: var-naming, name: package-comments, { name: exported, severity: warning }]
     gocritic: { disabled-checks: [ifElseChain] }
     gocyclo: { min-complexity: 10 }
+    # A switch whose default branch deliberately handles the remaining enum
+    # values (e.g. RateLimitKey defaulting to ClientIP) is exhaustive.
+    exhaustive: { default-signifies-exhaustive: true }
   exclusions:
     rules:
-      - { path: _test\.go, linters: [errcheck, bodyclose, revive, goconst] }
+      # Test relaxation: noctx on every httptest call, error-checking every
+      # stub Encode, and http.MethodGet over "GET" in table tests all waste
+      # everyone's afternoon. usestdlibvars/noctx still apply to prod code.
+      - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, usestdlibvars] }
       - { path: examples/, linters: [revive, errcheck] }
       - { path: dns01\.go, linters: [bodyclose] }

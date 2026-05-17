@@ -237,7 +237,7 @@ func (s *server) Start() error {
 		}
 	}
 	for _, hs := range s.listeners {
-		ln, err := net.Listen("tcp", hs.Addr)
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
 		if err != nil {
 			return fmt.Errorf("listen %s: %w", hs.Addr, err)
 		}
@@ -249,7 +249,7 @@ func (s *server) Start() error {
 	}
 	if s.metricsServer != nil {
 		ms := s.metricsServer
-		ln, err := net.Listen("tcp", ms.Addr)
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", ms.Addr)
 		if err != nil {
 			return fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
 		}
@@ -418,7 +418,7 @@ func redirectHandler(scheme string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := stripPort(r.Host)
 		target := scheme + "://" + host + r.URL.RequestURI()
-		http.Redirect(w, r, target, http.StatusMovedPermanently)
+		http.Redirect(w, r, target, http.StatusMovedPermanently) //nolint:gosec // G710: intentional same-host HTTP→HTTPS upgrade; redirecting to the requested host+path is the required behavior
 	})
 }
 
