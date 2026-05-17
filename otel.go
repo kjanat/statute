@@ -45,7 +45,7 @@ func initTracing(cfg resolved.Tracing) (shutdown func(context.Context) error, er
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(cfg.ServiceName),
-			attribute.String("statute.version", "0.1.0"),
+			attribute.String("statute.version", version()),
 		),
 		resource.WithFromEnv(),
 		resource.WithProcess(),
