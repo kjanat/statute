@@ -1,4 +1,4 @@
-package statute
+package cloudflare
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 )
 
 // newCFStub returns an httptest.Server that mimics the small subset of the
-// Cloudflare API used by addTXTRecord / deleteRecord / findZoneID. It tracks
+// Cloudflare API used by AddTXTRecord / DeleteRecord / FindZoneID. It tracks
 // every request for assertions.
 func newCFStub(t *testing.T) (*httptest.Server, *cfStub) {
 	t.Helper()
@@ -113,25 +113,25 @@ func (s *cfStub) write(w http.ResponseWriter, success bool, result any, e *cfErr
 func TestCloudflareAPI_AddDeleteRecord(t *testing.T) {
 	t.Parallel()
 	srv, st := newCFStub(t)
-	c := newCloudflareAPI("test-token")
+	c := New("test-token")
 	c.base = srv.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	id, err := c.addTXTRecord(ctx, "zone-example", "_acme-challenge.example.com", "abc123")
+	id, err := c.AddTXTRecord(ctx, "zone-example", "_acme-challenge.example.com", "abc123")
 	if err != nil {
-		t.Fatalf("addTXTRecord: %v", err)
+		t.Fatalf("AddTXTRecord: %v", err)
 	}
 	if id == "" {
-		t.Fatal("addTXTRecord returned empty id")
+		t.Fatal("AddTXTRecord returned empty id")
 	}
 	if st.records["zone-example"][id] != "abc123" {
 		t.Errorf("record content: got %q", st.records["zone-example"][id])
 	}
 
-	if err := c.deleteRecord(ctx, "zone-example", id); err != nil {
-		t.Fatalf("deleteRecord: %v", err)
+	if err := c.DeleteRecord(ctx, "zone-example", id); err != nil {
+		t.Fatalf("DeleteRecord: %v", err)
 	}
 	if _, exists := st.records["zone-example"][id]; exists {
 		t.Errorf("record still present after delete")
@@ -141,32 +141,32 @@ func TestCloudflareAPI_AddDeleteRecord(t *testing.T) {
 func TestCloudflareAPI_FindZoneIDWalk(t *testing.T) {
 	t.Parallel()
 	srv, _ := newCFStub(t)
-	c := newCloudflareAPI("test-token")
+	c := New("test-token")
 	c.base = srv.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// findZoneID should walk labels: foo.example.com → example.com (match)
-	id, err := c.findZoneID(ctx, "foo.example.com")
+	// FindZoneID should walk labels: foo.example.com → example.com (match)
+	id, err := c.FindZoneID(ctx, "foo.example.com")
 	if err != nil {
-		t.Fatalf("findZoneID: %v", err)
+		t.Fatalf("FindZoneID: %v", err)
 	}
 	if id != "zone-example" {
 		t.Errorf("zone: got %q", id)
 	}
 
 	// Wildcard-stripped lookup: *.example.com → example.com
-	id, err = c.findZoneID(ctx, "*.example.com")
+	id, err = c.FindZoneID(ctx, "*.example.com")
 	if err != nil {
-		t.Fatalf("wildcard findZoneID: %v", err)
+		t.Fatalf("wildcard FindZoneID: %v", err)
 	}
 	if id != "zone-example" {
 		t.Errorf("wildcard zone: got %q", id)
 	}
 
 	// No matching zone.
-	if _, err := c.findZoneID(ctx, "nowhere.invalid"); err == nil {
+	if _, err := c.FindZoneID(ctx, "nowhere.invalid"); err == nil {
 		t.Errorf("want error for missing zone")
 	}
 }
@@ -174,13 +174,13 @@ func TestCloudflareAPI_FindZoneIDWalk(t *testing.T) {
 func TestCloudflareAPI_AuthFailure(t *testing.T) {
 	t.Parallel()
 	srv, _ := newCFStub(t)
-	c := newCloudflareAPI("wrong-token")
+	c := New("wrong-token")
 	c.base = srv.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := c.addTXTRecord(ctx, "zone-example", "name", "val")
+	_, err := c.AddTXTRecord(ctx, "zone-example", "name", "val")
 	if err == nil {
 		t.Fatal("want error for bad token")
 	}

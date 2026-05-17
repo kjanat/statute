@@ -1,4 +1,4 @@
-package statute
+package parse
 
 import (
 	"math"
@@ -6,7 +6,7 @@ import (
 )
 
 // FuzzParseDuration invariant: never panic; on err==nil the result is
-// non-negative. parseDuration accepts arbitrarily long durations (Go's
+// non-negative. Duration accepts arbitrarily long durations (Go's
 // time.Duration is int64 nanoseconds — about 292 years before overflow) and
 // the user is responsible for choosing sensible values. We don't make a
 // "too long" judgment here.
@@ -15,12 +15,12 @@ func FuzzParseDuration(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		d, err := parseDuration(s)
+		d, err := Duration(s)
 		if err != nil {
 			return
 		}
 		if d < 0 {
-			t.Errorf("parseDuration(%q) = %v; negative duration", s, d)
+			t.Errorf("Duration(%q) = %v; negative duration", s, d)
 		}
 	})
 }
@@ -32,15 +32,15 @@ func FuzzParseRate(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		r, err := parseRate(s)
+		r, err := Rate(s)
 		if err != nil {
 			return
 		}
 		if r <= 0 {
-			t.Errorf("parseRate(%q) = %v; non-positive rate", s, r)
+			t.Errorf("Rate(%q) = %v; non-positive rate", s, r)
 		}
 		if math.IsInf(r, 0) || math.IsNaN(r) {
-			t.Errorf("parseRate(%q) = %v; not finite", s, r)
+			t.Errorf("Rate(%q) = %v; not finite", s, r)
 		}
 	})
 }
@@ -51,12 +51,12 @@ func FuzzParseSize(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		n, err := parseSize(s)
+		n, err := Size(s)
 		if err != nil {
 			return
 		}
 		if n < 0 {
-			t.Errorf("parseSize(%q) = %d; negative", s, n)
+			t.Errorf("Size(%q) = %d; negative", s, n)
 		}
 	})
 }

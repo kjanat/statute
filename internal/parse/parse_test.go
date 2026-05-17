@@ -1,4 +1,4 @@
-package statute
+package parse
 
 import (
 	"testing"
@@ -20,32 +20,32 @@ func TestParseDuration(t *testing.T) {
 		{"", 0, true},
 	}
 	for _, c := range cases {
-		got, err := parseDuration(c.in)
+		got, err := Duration(c.in)
 		if c.err {
 			if err == nil {
-				t.Errorf("parseDuration(%q) = %v, want error", c.in, got)
+				t.Errorf("Duration(%q) = %v, want error", c.in, got)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("parseDuration(%q) error: %v", c.in, err)
+			t.Errorf("Duration(%q) error: %v", c.in, err)
 			continue
 		}
 		if got != c.want {
-			t.Errorf("parseDuration(%q) = %v, want %v", c.in, got, c.want)
+			t.Errorf("Duration(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }
 
 func TestParseDurationOr(t *testing.T) {
-	got, err := parseDurationOr("", 7*time.Second)
+	got, err := DurationOr("", 7*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != 7*time.Second {
 		t.Errorf("empty fallback: got %v, want 7s", got)
 	}
-	got, err = parseDurationOr("250ms", time.Hour)
+	got, err = DurationOr("250ms", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,19 +72,58 @@ func TestParseRate(t *testing.T) {
 		{"5", 0, true},
 	}
 	for _, c := range cases {
-		got, err := parseRate(c.in)
+		got, err := Rate(c.in)
 		if c.err {
 			if err == nil {
-				t.Errorf("parseRate(%q) = %v, want error", c.in, got)
+				t.Errorf("Rate(%q) = %v, want error", c.in, got)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("parseRate(%q) error: %v", c.in, err)
+			t.Errorf("Rate(%q) error: %v", c.in, err)
 			continue
 		}
 		if got < c.want-1e-9 || got > c.want+1e-9 {
-			t.Errorf("parseRate(%q) = %v, want %v", c.in, got, c.want)
+			t.Errorf("Rate(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want int64
+		err  bool
+	}{
+		{"1", 1, false},
+		{"100", 100, false},
+		{"1KB", 1000, false},
+		{"1KiB", 1024, false},
+		{"2MB", 2_000_000, false},
+		{"2MiB", 2 * 1024 * 1024, false},
+		{"1.5GB", 1_500_000_000, false},
+		{"512B", 512, false},
+		{"  10kb  ", 10_000, false},
+		{"abc", 0, true},
+		{"-1MB", 0, true},
+		{"1XB", 0, true},
+		{"", 0, true},
+	}
+	for _, c := range cases {
+		got, err := Size(c.in)
+		if c.err {
+			if err == nil {
+				t.Errorf("Size(%q) = %d, want error", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("Size(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("Size(%q) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
