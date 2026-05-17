@@ -1,0 +1,172 @@
+package statute
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// newCFStub returns an httptest.Server that mimics the small subset of the
+// Cloudflare API used by addTXTRecord / deleteRecord / findZoneID. It tracks
+// every request for assertions.
+func newCFStub(t *testing.T) (*httptest.Server, *cfStub) {
+	t.Helper()
+	st := &cfStub{
+		zones: map[string]string{
+			"example.com": "zone-example",
+			"sub.test":    "zone-sub-test",
+		},
+		records: map[string]map[string]string{},
+		expect:  "Bearer test-token",
+	}
+	srv := httptest.NewServer(http.HandlerFunc(st.handle))
+	t.Cleanup(srv.Close)
+	return srv, st
+}
+
+type cfStub struct {
+	zones   map[string]string            // name -> id
+	records map[string]map[string]string // zoneID -> recordID -> value
+	expect  string                       // expected Authorization header
+	calls   int
+}
+
+func (s *cfStub) handle(w http.ResponseWriter, r *http.Request) {
+	s.calls++
+	if r.Header.Get("Authorization") != s.expect {
+		s.write(w, false, nil, &cfError{Code: 9103, Message: "unauthorized"})
+		return
+	}
+	switch {
+	case r.Method == "GET" && r.URL.Path == "/zones":
+		name := r.URL.Query().Get("name")
+		if id, ok := s.zones[name]; ok {
+			type zone struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}
+			s.write(w, true, []zone{{ID: id, Name: name}}, nil)
+			return
+		}
+		s.write(w, true, []any{}, nil)
+
+	case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/zones/") && strings.HasSuffix(r.URL.Path, "/dns_records"):
+		zone := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/zones/"), "/dns_records")
+		var body struct {
+			Type, Name, Content string
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if s.records[zone] == nil {
+			s.records[zone] = map[string]string{}
+		}
+		recID := "rec-" + body.Name
+		s.records[zone][recID] = body.Content
+		s.write(w, true, map[string]string{"id": recID}, nil)
+
+	case r.Method == "DELETE":
+		// /zones/{zone}/dns_records/{rec}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) == 4 && parts[0] == "zones" && parts[2] == "dns_records" {
+			delete(s.records[parts[1]], parts[3])
+			s.write(w, true, map[string]string{"id": parts[3]}, nil)
+			return
+		}
+		http.NotFound(w, r)
+
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *cfStub) write(w http.ResponseWriter, success bool, result any, e *cfError) {
+	resp := struct {
+		Success bool      `json:"success"`
+		Errors  []cfError `json:"errors"`
+		Result  any       `json:"result"`
+	}{Success: success, Result: result}
+	if e != nil {
+		resp.Errors = []cfError{*e}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func TestCloudflareAPI_AddDeleteRecord(t *testing.T) {
+	t.Parallel()
+	srv, st := newCFStub(t)
+	c := newCloudflareAPI("test-token")
+	c.base = srv.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	id, err := c.addTXTRecord(ctx, "zone-example", "_acme-challenge.example.com", "abc123")
+	if err != nil {
+		t.Fatalf("addTXTRecord: %v", err)
+	}
+	if id == "" {
+		t.Fatal("addTXTRecord returned empty id")
+	}
+	if st.records["zone-example"][id] != "abc123" {
+		t.Errorf("record content: got %q", st.records["zone-example"][id])
+	}
+
+	if err := c.deleteRecord(ctx, "zone-example", id); err != nil {
+		t.Fatalf("deleteRecord: %v", err)
+	}
+	if _, exists := st.records["zone-example"][id]; exists {
+		t.Errorf("record still present after delete")
+	}
+}
+
+func TestCloudflareAPI_FindZoneIDWalk(t *testing.T) {
+	t.Parallel()
+	srv, _ := newCFStub(t)
+	c := newCloudflareAPI("test-token")
+	c.base = srv.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// findZoneID should walk labels: foo.example.com → example.com (match)
+	id, err := c.findZoneID(ctx, "foo.example.com")
+	if err != nil {
+		t.Fatalf("findZoneID: %v", err)
+	}
+	if id != "zone-example" {
+		t.Errorf("zone: got %q", id)
+	}
+
+	// Wildcard-stripped lookup: *.example.com → example.com
+	id, err = c.findZoneID(ctx, "*.example.com")
+	if err != nil {
+		t.Fatalf("wildcard findZoneID: %v", err)
+	}
+	if id != "zone-example" {
+		t.Errorf("wildcard zone: got %q", id)
+	}
+
+	// No matching zone.
+	if _, err := c.findZoneID(ctx, "nowhere.invalid"); err == nil {
+		t.Errorf("want error for missing zone")
+	}
+}
+
+func TestCloudflareAPI_AuthFailure(t *testing.T) {
+	t.Parallel()
+	srv, _ := newCFStub(t)
+	c := newCloudflareAPI("wrong-token")
+	c.base = srv.URL
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := c.addTXTRecord(ctx, "zone-example", "name", "val")
+	if err == nil {
+		t.Fatal("want error for bad token")
+	}
+}
