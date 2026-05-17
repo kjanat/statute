@@ -194,29 +194,46 @@ func (m *dns01Manager) issue(ctx context.Context, host string) (*tls.Certificate
 		return nil, fmt.Errorf("authorize order: %w", err)
 	}
 
+	if err := m.solveAuthorizations(ctx, host, order); err != nil {
+		return nil, err
+	}
+	return m.finalizeOrder(ctx, host, order)
+}
+
+// solveAuthorizations satisfies the dns-01 challenge for every pending
+// authorization in the order. Authorizations already valid are skipped.
+func (m *dns01Manager) solveAuthorizations(ctx context.Context, host string, order *acme.Order) error {
 	for _, authzURL := range order.AuthzURLs {
 		authz, err := m.acmeClient.GetAuthorization(ctx, authzURL)
 		if err != nil {
-			return nil, fmt.Errorf("get authorization: %w", err)
+			return fmt.Errorf("get authorization: %w", err)
 		}
 		if authz.Status == acme.StatusValid {
 			continue
 		}
-		var dns01 *acme.Challenge
-		for _, ch := range authz.Challenges {
-			if ch.Type == "dns-01" {
-				dns01 = ch
-				break
-			}
-		}
+		dns01 := findDNS01Challenge(authz.Challenges)
 		if dns01 == nil {
-			return nil, fmt.Errorf("no dns-01 challenge offered for %s", host)
+			return fmt.Errorf("no dns-01 challenge offered for %s", host)
 		}
 		if err := m.satisfyDNS01(ctx, host, dns01); err != nil {
-			return nil, fmt.Errorf("dns-01: %w", err)
+			return fmt.Errorf("dns-01: %w", err)
 		}
 	}
+	return nil
+}
 
+func findDNS01Challenge(challenges []*acme.Challenge) *acme.Challenge {
+	for _, ch := range challenges {
+		if ch.Type == "dns-01" {
+			return ch
+		}
+	}
+	return nil
+}
+
+// finalizeOrder generates a key + CSR, finalizes the ACME order, and
+// best-effort persists the issued certificate.
+func (m *dns01Manager) finalizeOrder(ctx context.Context, host string, order *acme.Order) (*tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("cert key: %w", err)

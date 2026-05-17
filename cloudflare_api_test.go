@@ -41,45 +41,57 @@ func (s *cfStub) handle(w http.ResponseWriter, r *http.Request) {
 		s.write(w, false, nil, &cfError{Code: 9103, Message: "unauthorized"})
 		return
 	}
+	isCreate := r.Method == "POST" &&
+		strings.HasPrefix(r.URL.Path, "/zones/") &&
+		strings.HasSuffix(r.URL.Path, "/dns_records")
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/zones":
-		name := r.URL.Query().Get("name")
-		if id, ok := s.zones[name]; ok {
-			type zone struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			}
-			s.write(w, true, []zone{{ID: id, Name: name}}, nil)
-			return
-		}
-		s.write(w, true, []any{}, nil)
-
-	case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/zones/") && strings.HasSuffix(r.URL.Path, "/dns_records"):
-		zone := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/zones/"), "/dns_records")
-		var body struct {
-			Type, Name, Content string
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if s.records[zone] == nil {
-			s.records[zone] = map[string]string{}
-		}
-		recID := "rec-" + body.Name
-		s.records[zone][recID] = body.Content
-		s.write(w, true, map[string]string{"id": recID}, nil)
-
+		s.handleListZones(w, r)
+	case isCreate:
+		s.handleCreateRecord(w, r)
 	case r.Method == "DELETE":
-		// /zones/{zone}/dns_records/{rec}
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) == 4 && parts[0] == "zones" && parts[2] == "dns_records" {
-			delete(s.records[parts[1]], parts[3])
-			s.write(w, true, map[string]string{"id": parts[3]}, nil)
-			return
-		}
-		http.NotFound(w, r)
-
+		s.handleDeleteRecord(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *cfStub) handleListZones(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if id, ok := s.zones[name]; ok {
+		type zone struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		s.write(w, true, []zone{{ID: id, Name: name}}, nil)
+		return
+	}
+	s.write(w, true, []any{}, nil)
+}
+
+func (s *cfStub) handleCreateRecord(w http.ResponseWriter, r *http.Request) {
+	zone := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/zones/"), "/dns_records")
+	var body struct {
+		Type, Name, Content string
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if s.records[zone] == nil {
+		s.records[zone] = map[string]string{}
+	}
+	recID := "rec-" + body.Name
+	s.records[zone][recID] = body.Content
+	s.write(w, true, map[string]string{"id": recID}, nil)
+}
+
+func (s *cfStub) handleDeleteRecord(w http.ResponseWriter, r *http.Request) {
+	// /zones/{zone}/dns_records/{rec}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 4 && parts[0] == "zones" && parts[2] == "dns_records" {
+		delete(s.records[parts[1]], parts[3])
+		s.write(w, true, map[string]string{"id": parts[3]}, nil)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (s *cfStub) write(w http.ResponseWriter, success bool, result any, e *cfError) {

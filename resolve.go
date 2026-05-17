@@ -26,28 +26,14 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 	}
 	out.Defaults = defaults
 
-	for name, pool := range cfg.Upstreams {
-		rp, err := resolvePool(name, pool)
-		if err != nil {
-			return nil, fmt.Errorf("upstream %q: %w", name, err)
-		}
-		out.Upstreams[name] = rp
+	if err := resolveUpstreams(cfg.Upstreams, out.Upstreams); err != nil {
+		return nil, err
 	}
-
-	for i, l := range cfg.Listeners {
-		rl, err := resolveListener(l)
-		if err != nil {
-			return nil, fmt.Errorf("listener[%d]: %w", i, err)
-		}
-		out.Listeners = append(out.Listeners, rl)
+	if err := resolveListeners(cfg.Listeners, out); err != nil {
+		return nil, err
 	}
-
-	for i, r := range cfg.Routes {
-		rr, err := resolveRoute(r, out.Upstreams)
-		if err != nil {
-			return nil, fmt.Errorf("route[%d] %q: %w", i, r.pattern, err)
-		}
-		out.Routes = append(out.Routes, rr)
+	if err := resolveRoutes(cfg.Routes, out); err != nil {
+		return nil, err
 	}
 
 	obs, err := resolveObservability(cfg.Observability)
@@ -66,6 +52,39 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func resolveUpstreams(in map[string]Pool, out map[string]*resolved.Pool) error {
+	for name, pool := range in {
+		rp, err := resolvePool(name, pool)
+		if err != nil {
+			return fmt.Errorf("upstream %q: %w", name, err)
+		}
+		out[name] = rp
+	}
+	return nil
+}
+
+func resolveListeners(in []*Listener, out *resolved.Config) error {
+	for i, l := range in {
+		rl, err := resolveListener(l)
+		if err != nil {
+			return fmt.Errorf("listener[%d]: %w", i, err)
+		}
+		out.Listeners = append(out.Listeners, rl)
+	}
+	return nil
+}
+
+func resolveRoutes(in []*Route, out *resolved.Config) error {
+	for i, r := range in {
+		rr, err := resolveRoute(r, out.Upstreams)
+		if err != nil {
+			return fmt.Errorf("route[%d] %q: %w", i, r.pattern, err)
+		}
+		out.Routes = append(out.Routes, rr)
+	}
+	return nil
 }
 
 func resolveDefaults(d Defaults) (resolved.Defaults, error) {
@@ -203,10 +222,8 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		HTTP3Addr:        l.http3Addr,
 		BehindCloudflare: l.behindCF,
 	}
-	if l.scheme == schemeHTTPS && l.redirect == "" {
-		if l.autoTLS == nil && l.staticTLS == nil {
-			return nil, errors.New("https listener requires AutoTLS or StaticTLS")
-		}
+	if err := validateListenerTLSPresence(l); err != nil {
+		return nil, err
 	}
 	if l.autoTLS != nil {
 		at, err := resolveAutoTLS(l.autoTLS)
@@ -223,6 +240,15 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		rl.StaticTLS = st
 	}
 	return rl, nil
+}
+
+// validateListenerTLSPresence rejects an HTTPS content listener that carries
+// no TLS material. Redirect-only listeners and plain HTTP need none.
+func validateListenerTLSPresence(l *Listener) error {
+	if l.scheme == schemeHTTPS && l.redirect == "" && l.autoTLS == nil && l.staticTLS == nil {
+		return errors.New("https listener requires AutoTLS or StaticTLS")
+	}
+	return nil
 }
 
 func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
@@ -274,67 +300,90 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 		Host:      r.host,
 		StaticDir: r.staticDir,
 	}
+	if err := resolveRouteTarget(r, pools, rr); err != nil {
+		return nil, err
+	}
+	mws, err := resolveMiddlewares(r.middleware)
+	if err != nil {
+		return nil, err
+	}
+	rr.Middleware = mws
+	return rr, nil
+}
+
+// resolveRouteTarget validates the ProxyTo/Serve choice and, for a proxy
+// route, dereferences the named upstream into rr.Upstream.
+func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.Route) error {
 	switch {
 	case r.upstream != "" && r.staticDir != "":
-		return nil, errors.New("route has both ProxyTo and Serve; pick one")
+		return errors.New("route has both ProxyTo and Serve; pick one")
 	case r.upstream == "" && r.staticDir == "":
-		return nil, errors.New("route has neither ProxyTo nor Serve")
+		return errors.New("route has neither ProxyTo nor Serve")
 	case r.upstream != "":
 		pool, ok := pools[r.upstream]
 		if !ok {
-			return nil, fmt.Errorf("unknown upstream %q", r.upstream)
+			return fmt.Errorf("unknown upstream %q", r.upstream)
 		}
 		rr.Upstream = pool
 	}
-	for i, mw := range r.middleware {
+	return nil
+}
+
+func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
+	if len(mws) == 0 {
+		return nil, nil
+	}
+	out := make([]resolved.Middleware, 0, len(mws))
+	for i, mw := range mws {
 		rmw, err := resolveMiddleware(mw)
 		if err != nil {
 			return nil, fmt.Errorf("middleware[%d]: %w", i, err)
 		}
-		rr.Middleware = append(rr.Middleware, rmw)
+		out = append(out, rmw)
 	}
-	return rr, nil
+	return out, nil
 }
 
-// resolveMiddleware dispatches a surface middleware value to its per-type
-// resolver. Each case stays a single delegation; the validation lives in the
-// resolveXxxMW helpers below.
+// resolvableMiddleware is implemented by every surface middleware type. The
+// per-type resolution lives in each type's resolve method (defined alongside
+// the resolveXxxMW helpers below), so dispatch is a single assertion rather
+// than a large type switch.
+type resolvableMiddleware interface {
+	resolve() (resolved.Middleware, error)
+}
+
 func resolveMiddleware(mw Middleware) (resolved.Middleware, error) {
-	switch m := mw.(type) {
-	case *timeoutMW:
-		return resolveTimeoutMW(m)
-	case *rateLimitMW:
-		return resolveRateLimitMW(m)
-	case *retryMW:
-		return resolveRetryMW(m)
-	case *cacheMW:
-		return resolveCacheMW(m)
-	case *compressMW:
-		return resolveCompressMW(m)
-	case *etagMW:
-		return resolved.Middleware{Type: resolved.MWETag}, nil
-	case *bodyLimitMW:
-		return resolveBodyLimitMW(m)
-	case *requestIDMW:
-		return resolved.Middleware{
-			Type:                resolved.MWRequestID,
-			RequestIDHeader:     m.header,
-			RequestIDFromHeader: m.fromHeader,
-		}, nil
-	case *securityHeadersMW:
-		return resolveSecurityHeadersMW(m)
-	case *allowIPsMW:
-		return resolveAllowIPsMW(m)
-	case *denyIPsMW:
-		return resolveDenyIPsMW(m)
-	case *basicAuthMW:
-		return resolveBasicAuthMW(m)
-	case *corsMW:
-		return resolveCORSMW(m)
-	default:
+	rm, ok := mw.(resolvableMiddleware)
+	if !ok {
 		return resolved.Middleware{}, fmt.Errorf("unknown middleware type %T", mw)
 	}
+	return rm.resolve()
 }
+
+func (m *timeoutMW) resolve() (resolved.Middleware, error)   { return resolveTimeoutMW(m) }
+func (m *rateLimitMW) resolve() (resolved.Middleware, error) { return resolveRateLimitMW(m) }
+func (m *retryMW) resolve() (resolved.Middleware, error)     { return resolveRetryMW(m) }
+func (m *cacheMW) resolve() (resolved.Middleware, error)     { return resolveCacheMW(m) }
+func (m *compressMW) resolve() (resolved.Middleware, error)  { return resolveCompressMW(m), nil }
+func (*etagMW) resolve() (resolved.Middleware, error) {
+	return resolved.Middleware{Type: resolved.MWETag}, nil
+}
+func (m *bodyLimitMW) resolve() (resolved.Middleware, error) { return resolveBodyLimitMW(m) }
+func (m *requestIDMW) resolve() (resolved.Middleware, error) {
+	return resolved.Middleware{
+		Type:                resolved.MWRequestID,
+		RequestIDHeader:     m.header,
+		RequestIDFromHeader: m.fromHeader,
+	}, nil
+}
+
+func (m *securityHeadersMW) resolve() (resolved.Middleware, error) {
+	return resolveSecurityHeadersMW(m)
+}
+func (m *allowIPsMW) resolve() (resolved.Middleware, error)  { return resolveAllowIPsMW(m) }
+func (m *denyIPsMW) resolve() (resolved.Middleware, error)   { return resolveDenyIPsMW(m) }
+func (m *basicAuthMW) resolve() (resolved.Middleware, error) { return resolveBasicAuthMW(m) }
+func (m *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(m) }
 
 func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 	d, err := parseDuration(m.dur)
@@ -375,12 +424,12 @@ func resolveCacheMW(m *cacheMW) (resolved.Middleware, error) {
 	return resolved.Middleware{Type: resolved.MWCache, CacheTTL: d}, nil
 }
 
-func resolveCompressMW(m *compressMW) (resolved.Middleware, error) {
+func resolveCompressMW(m *compressMW) resolved.Middleware {
 	algos := make([]resolved.CompressAlgo, 0, len(m.algos))
 	for _, a := range m.algos {
 		algos = append(algos, resolved.CompressAlgo(a))
 	}
-	return resolved.Middleware{Type: resolved.MWCompress, CompressAlgos: algos}, nil
+	return resolved.Middleware{Type: resolved.MWCompress, CompressAlgos: algos}
 }
 
 func resolveBodyLimitMW(m *bodyLimitMW) (resolved.Middleware, error) {
@@ -636,21 +685,41 @@ func expandNumberAt(s string, i int, b *strings.Builder) (int, error) {
 	if isSign(s[i]) {
 		j++
 	}
-	for j < len(s) && (isDigit(s[j]) || s[j] == '.') {
-		j++
-	}
-	if j == i || (j == i+1 && isSign(s[i])) {
+	j = scanDigits(s, j)
+	if !isNumberToken(s, i, j) {
 		// Not actually a number; copy the single byte.
 		b.WriteByte(s[i])
 		return i + 1, nil
 	}
-	if j < len(s) && (s[j] == 'd' || s[j] == 'w') {
+	if j < len(s) && isDayWeekUnit(s[j]) {
 		return expandDayWeek(s, i, j, b)
 	}
 	// No d/w suffix — copy the captured number verbatim.
 	b.WriteString(s[i:j])
 	return j, nil
 }
+
+// scanDigits returns the index past the run of digits and dots starting at j.
+func scanDigits(s string, j int) int {
+	for j < len(s) && (isDigit(s[j]) || s[j] == '.') {
+		j++
+	}
+	return j
+}
+
+// isNumberToken reports whether s[i:j] is a real number rather than a lone
+// sign that was never followed by digits.
+func isNumberToken(s string, i, j int) bool {
+	if j == i {
+		return false
+	}
+	if j == i+1 && isSign(s[i]) {
+		return false
+	}
+	return true
+}
+
+func isDayWeekUnit(c byte) bool { return c == 'd' || c == 'w' }
 
 // expandDayWeek rewrites the number s[i:j] followed by the unit at s[j]
 // ('d' → 24h, 'w' → 168h) into an "<hours>h" string appended to b. It

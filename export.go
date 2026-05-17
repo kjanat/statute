@@ -40,52 +40,58 @@ func Main(cfg Config) {
 	lint := flag.Bool("lint", false, "audit configuration against the production checklist")
 	flag.Parse()
 
-	// Enforce mutual exclusion.
-	count := 0
-	for _, b := range []*bool{export, validate, graph, lint} {
-		if *b {
-			count++
-		}
-	}
-	if count > 1 {
+	if countTrue(export, validate, graph, lint) > 1 {
 		fmt.Fprintln(os.Stderr, "statute: -export, -validate, -graph, and -lint are mutually exclusive")
 		os.Exit(2)
 	}
 
 	switch {
 	case *export:
-		if err := Export(cfg, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "statute:", err)
-			os.Exit(1)
-		}
+		exitOnErr(Export(cfg, os.Stdout))
 	case *validate:
-		if _, err := Resolve(cfg); err != nil {
-			fmt.Fprintln(os.Stderr, "statute:", err)
-			os.Exit(1)
-		}
+		_, err := Resolve(cfg)
+		exitOnErr(err)
 		fmt.Println("ok")
 	case *graph:
-		if err := GraphDOT(cfg, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "statute:", err)
-			os.Exit(1)
-		}
+		exitOnErr(GraphDOT(cfg, os.Stdout))
 	case *lint:
-		findings, err := Lint(cfg)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "statute:", err)
-			os.Exit(1)
-		}
-		hasError := false
-		for _, f := range findings {
-			fmt.Println(f.String())
-			if f.Severity == SeverityError {
-				hasError = true
-			}
-		}
-		if hasError {
-			os.Exit(1)
-		}
+		runLint(cfg)
 	default:
 		Run(cfg)
+	}
+}
+
+func countTrue(flags ...*bool) int {
+	count := 0
+	for _, b := range flags {
+		if *b {
+			count++
+		}
+	}
+	return count
+}
+
+// exitOnErr prints err to stderr and exits 1 when err is non-nil.
+func exitOnErr(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "statute:", err)
+		os.Exit(1)
+	}
+}
+
+// runLint audits the configuration and exits 1 if any error-severity finding
+// fires. Findings are always printed first so warnings remain visible.
+func runLint(cfg Config) {
+	findings, err := Lint(cfg)
+	exitOnErr(err)
+	hasError := false
+	for _, f := range findings {
+		fmt.Println(f.String())
+		if f.Severity == SeverityError {
+			hasError = true
+		}
+	}
+	if hasError {
+		os.Exit(1)
 	}
 }

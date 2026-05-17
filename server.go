@@ -51,16 +51,8 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	}
 	s.autocertMgr = mgr
 
-	s.dns01Managers = make(map[string]*dns01Manager)
-	for _, l := range cfg.Listeners {
-		if l.AutoTLS == nil || l.AutoTLS.DNS01 == nil {
-			continue
-		}
-		dm, err := newDNS01Manager(l.AutoTLS)
-		if err != nil {
-			return nil, fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
-		}
-		s.dns01Managers[l.Addr] = dm
+	if err := s.initDNS01Managers(cfg.Listeners); err != nil {
+		return nil, err
 	}
 
 	tracingShutdown, err := initTracing(cfg.Observability.Tracing)
@@ -69,30 +61,11 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	}
 	s.tracingShutdown = tracingShutdown
 
-	for name, p := range cfg.Upstreams {
-		ph, err := newPoolHandler(p)
-		if err != nil {
-			return nil, fmt.Errorf("upstream %q: %w", name, err)
-		}
-		s.pools[name] = ph
+	if err := s.initPools(cfg.Upstreams); err != nil {
+		return nil, err
 	}
-
-	mux := s.buildRouter()
-
-	for _, l := range cfg.Listeners {
-		hs, err := s.buildHTTPServer(l, mux)
-		if err != nil {
-			return nil, fmt.Errorf("listener %s: %w", l.Addr, err)
-		}
-		s.listeners = append(s.listeners, hs)
-
-		if l.HTTP3Addr != "" {
-			h3, err := s.buildHTTP3Server(l, mux)
-			if err != nil {
-				return nil, fmt.Errorf("listener %s http3: %w", l.Addr, err)
-			}
-			s.http3Servers = append(s.http3Servers, h3)
-		}
+	if err := s.initListeners(cfg.Listeners, s.buildRouter()); err != nil {
+		return nil, err
 	}
 
 	if cfg.Observability.Metrics.Enabled {
@@ -100,6 +73,52 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	}
 
 	return s, nil
+}
+
+func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
+	s.dns01Managers = make(map[string]*dns01Manager)
+	for _, l := range listeners {
+		if l.AutoTLS == nil || l.AutoTLS.DNS01 == nil {
+			continue
+		}
+		dm, err := newDNS01Manager(l.AutoTLS)
+		if err != nil {
+			return fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
+		}
+		s.dns01Managers[l.Addr] = dm
+	}
+	return nil
+}
+
+func (s *server) initPools(upstreams map[string]*resolved.Pool) error {
+	for name, p := range upstreams {
+		ph, err := newPoolHandler(p)
+		if err != nil {
+			return fmt.Errorf("upstream %q: %w", name, err)
+		}
+		s.pools[name] = ph
+	}
+	return nil
+}
+
+func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler) error {
+	for _, l := range listeners {
+		hs, err := s.buildHTTPServer(l, mux)
+		if err != nil {
+			return fmt.Errorf("listener %s: %w", l.Addr, err)
+		}
+		s.listeners = append(s.listeners, hs)
+
+		if l.HTTP3Addr == "" {
+			continue
+		}
+		h3, err := s.buildHTTP3Server(l, mux)
+		if err != nil {
+			return fmt.Errorf("listener %s http3: %w", l.Addr, err)
+		}
+		s.http3Servers = append(s.http3Servers, h3)
+	}
+	return nil
 }
 
 func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*http.Server, error) {
@@ -257,6 +276,19 @@ func serveListener(hs *http.Server, l *resolved.Listener, ln net.Listener) {
 	}
 }
 
+// goShutdown runs fn(ctx) in a WaitGroup-tracked goroutine, forwarding any
+// error to errs. errs must be buffered enough to hold one error per call so
+// the sends never block before wg.Wait returns.
+func goShutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error, fn func(context.Context) error) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := fn(ctx); err != nil {
+			errs <- err
+		}
+	}()
+}
+
 func (s *server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Shutdown.GracePeriod)
 	defer cancel()
@@ -265,33 +297,13 @@ func (s *server) Shutdown() error {
 	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+1)
 
 	for _, hs := range s.listeners {
-		wg.Add(1)
-		hs := hs
-		go func() {
-			defer wg.Done()
-			if err := hs.Shutdown(ctx); err != nil {
-				errs <- err
-			}
-		}()
+		goShutdown(ctx, &wg, errs, hs.Shutdown)
 	}
 	if s.metricsServer != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := s.metricsServer.Shutdown(ctx); err != nil {
-				errs <- err
-			}
-		}()
+		goShutdown(ctx, &wg, errs, s.metricsServer.Shutdown)
 	}
 	for _, h3 := range s.http3Servers {
-		wg.Add(1)
-		h3 := h3
-		go func() {
-			defer wg.Done()
-			if err := h3.Shutdown(ctx); err != nil {
-				errs <- err
-			}
-		}()
+		goShutdown(ctx, &wg, errs, h3.Shutdown)
 	}
 	wg.Wait()
 
@@ -545,35 +557,41 @@ func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
 	return h
 }
 
+// middlewareBuilders maps each resolved middleware type to the constructor
+// that wraps the next handler. Constructors with a non-uniform signature
+// (timeout, compress, etag) are bridged by small adapters below. An unknown
+// type falls through applyMiddleware to a pass-through.
+var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, http.Handler) http.Handler{
+	resolved.MWTimeout:         buildTimeout,
+	resolved.MWRateLimit:       rateLimitHandler,
+	resolved.MWRetry:           retryHandler,
+	resolved.MWCache:           cacheHandler,
+	resolved.MWCompress:        buildCompress,
+	resolved.MWETag:            buildETag,
+	resolved.MWBodyLimit:       bodyLimitHandler,
+	resolved.MWRequestID:       requestIDHandler,
+	resolved.MWSecurityHeaders: securityHeadersHandler,
+	resolved.MWCORS:            corsHandler,
+	resolved.MWBasicAuth:       basicAuthHandler,
+	resolved.MWAllowIPs:        allowIPsHandler,
+	resolved.MWDenyIPs:         denyIPsHandler,
+}
+
+func buildTimeout(m resolved.Middleware, next http.Handler) http.Handler {
+	return http.TimeoutHandler(next, m.Timeout, "request timed out")
+}
+
+func buildCompress(m resolved.Middleware, next http.Handler) http.Handler {
+	return compressHandler(m.CompressAlgos, next)
+}
+
+func buildETag(_ resolved.Middleware, next http.Handler) http.Handler {
+	return etagHandler(next)
+}
+
 func applyMiddleware(m resolved.Middleware, next http.Handler) http.Handler {
-	switch m.Type {
-	case resolved.MWTimeout:
-		return http.TimeoutHandler(next, m.Timeout, "request timed out")
-	case resolved.MWRateLimit:
-		return rateLimitHandler(m, next)
-	case resolved.MWRetry:
-		return retryHandler(m, next)
-	case resolved.MWCache:
-		return cacheHandler(m, next)
-	case resolved.MWCompress:
-		return compressHandler(m.CompressAlgos, next)
-	case resolved.MWETag:
-		return etagHandler(next)
-	case resolved.MWBodyLimit:
-		return bodyLimitHandler(m, next)
-	case resolved.MWRequestID:
-		return requestIDHandler(m, next)
-	case resolved.MWSecurityHeaders:
-		return securityHeadersHandler(m, next)
-	case resolved.MWCORS:
-		return corsHandler(m, next)
-	case resolved.MWBasicAuth:
-		return basicAuthHandler(m, next)
-	case resolved.MWAllowIPs:
-		return allowIPsHandler(m, next)
-	case resolved.MWDenyIPs:
-		return denyIPsHandler(m, next)
-	default:
-		return next
+	if build, ok := middlewareBuilders[m.Type]; ok {
+		return build(m, next)
 	}
+	return next
 }

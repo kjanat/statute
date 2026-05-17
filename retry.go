@@ -48,22 +48,9 @@ func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			return
 		}
 
-		var bodyBytes []byte
-		if r.Body != nil && r.Body != http.NoBody {
-			limited := io.LimitReader(r.Body, maxRetryBufferBytes+1)
-			b, err := io.ReadAll(limited)
-			_ = r.Body.Close()
-			if err != nil {
-				http.Error(w, "could not buffer request body for retry: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			if len(b) > maxRetryBufferBytes {
-				// Body too large to buffer; do a single-shot pass without retry.
-				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
-				next.ServeHTTP(w, r)
-				return
-			}
-			bodyBytes = b
+		bodyBytes, ok := bufferRetryBody(w, r, next)
+		if !ok {
+			return
 		}
 
 		for attempt := 1; attempt <= max; attempt++ {
@@ -78,6 +65,30 @@ func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			}
 		}
 	})
+}
+
+// bufferRetryBody reads and buffers the request body so it can be replayed
+// across attempts. ok is false when the caller must return without retrying:
+// either buffering failed (a 400 was already written) or the body exceeded
+// maxRetryBufferBytes (a single-shot pass was already served via next).
+func bufferRetryBody(w http.ResponseWriter, r *http.Request, next http.Handler) (body []byte, ok bool) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, true
+	}
+	limited := io.LimitReader(r.Body, maxRetryBufferBytes+1)
+	b, err := io.ReadAll(limited)
+	_ = r.Body.Close()
+	if err != nil {
+		http.Error(w, "could not buffer request body for retry: "+err.Error(), http.StatusBadRequest)
+		return nil, false
+	}
+	if len(b) > maxRetryBufferBytes {
+		// Body too large to buffer; do a single-shot pass without retry.
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
+		next.ServeHTTP(w, r)
+		return nil, false
+	}
+	return b, true
 }
 
 // isRetryable returns true when the request meets the safety preconditions
