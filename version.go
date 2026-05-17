@@ -1,13 +1,19 @@
 package statute
 
 import (
+	"reflect"
 	"runtime/debug"
 	"strings"
 )
 
 // statuteModulePath is statute's module path, used to locate statute's
-// own version inside the build info of whatever binary embeds it.
-const statuteModulePath = "statute.kjanat.dev"
+// own version inside the build info of whatever binary embeds it. It is
+// derived from the import path of a type declared in this package rather
+// than hand-written, so it tracks module renames automatically. This
+// equals the module path only because version.go lives in the module's
+// root package; moving it into a subpackage would require revisiting
+// this (see TestStatuteModulePath).
+var statuteModulePath = reflect.TypeFor[Config]().PkgPath()
 
 // goDevelVersion is the placeholder Go reports for a module built without
 // a version (local builds, `go run`, tests).

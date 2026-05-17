@@ -75,3 +75,12 @@ func TestVersion_NotEmpty(t *testing.T) {
 		t.Fatal("version() returned empty string")
 	}
 }
+
+// TestStatuteModulePath locks the reflect-derived module path. It fails
+// if version.go is moved out of the root package (PkgPath would gain a
+// subpackage suffix) or the module is renamed without updating expectations.
+func TestStatuteModulePath(t *testing.T) {
+	if statuteModulePath != "statute.kjanat.dev" {
+		t.Fatalf("statuteModulePath = %q, want statute.kjanat.dev", statuteModulePath)
+	}
+}
