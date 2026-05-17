@@ -1,3 +1,8 @@
+// Example: a minimal plain-HTTP reverse proxy with no TLS — a single
+// :8080 listener round-robining across two echo backends, with per-route
+// rate limiting and timeouts, JSON access logging, Prometheus metrics, and
+// graceful shutdown. Useful for local development or running behind a TLS
+// terminator that handles certificates upstream.
 package main
 
 import "statute.kjanat.dev"

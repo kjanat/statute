@@ -1,3 +1,12 @@
+// Example: the canonical statute deployment — an HTTP listener that
+// redirects to HTTPS, an HTTPS listener with AutoTLS, HTTP/2 and HTTP/3, a
+// weighted upstream pool with a backup backend and active health checks,
+// host-scoped proxy and static routes with per-route middleware, and the
+// production baseline of timeouts, JSON access logging, Prometheus metrics,
+// and graceful shutdown.
+//
+// It uses statute.Main, so the binary also accepts -validate, -export,
+// -graph, and -lint.
 package main
 
 import "statute.kjanat.dev"

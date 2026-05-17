@@ -15,7 +15,7 @@ version: "2"
 run:
   timeout: 5m
   tests: true
-  modules-download-mode: readonly
+  modules-download-mode: mod
 
 issues:
   max-issues-per-linter: 0
@@ -83,5 +83,5 @@ linters:
       # stub Encode, and http.MethodGet over "GET" in table tests all waste
       # everyone's afternoon. usestdlibvars/noctx still apply to prod code.
       - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, usestdlibvars] }
-      - { path: examples/, linters: [revive, errcheck] }
+      - { path: examples/, linters: [errcheck] }
       - { path: dns01\.go, linters: [bodyclose] }

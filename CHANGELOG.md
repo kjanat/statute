@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Added package doc comments to the `basic` and `http-only` examples;
+  pkg.go.dev rendered "There is no documentation for this package" for
+  them. Enforced going forward by `revive`'s `package-comments` rule.
+
 ## [0.3.0] — 2026-05-17
 
 ### Added
