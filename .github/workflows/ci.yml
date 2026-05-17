@@ -37,6 +37,14 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=cover.out | tail -1
 
+      - name: upload coverage reports to codecov
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: kjanat/statute
+          files: ./cover.out
+          fail_ci_if_error: false
+
       - name: upload coverage
         uses: actions/upload-artifact@v7
         with:
