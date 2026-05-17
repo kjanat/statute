@@ -23,6 +23,8 @@ func TestParseDuration(t *testing.T) {
 		{"1.5d", 36 * time.Hour, false},
 		{"0d", 0, false},
 		{"-1d", 0, true},
+		{"1.2.3d", 0, true}, // bad float before the d/w unit
+		{"+s", 0, true},     // lone sign, not a number token
 		{"-1s", 0, true},
 		{"forever", 0, true},
 		{"", 0, true},
@@ -125,6 +127,7 @@ func TestParseSize(t *testing.T) {
 		{"1QB", 0, true},                          // 1000^10, far too large
 		{"abc", 0, true},
 		{"-1MB", 0, true},
+		{"1.2.3KB", 0, true}, // numeric run present but not a valid float
 		{"1XB", 0, true},
 		{"ib", 0, true},
 		{"", 0, true},
