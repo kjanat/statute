@@ -1,6 +1,7 @@
 name: release
 on: { push: { tags: ["v*"] } }
 permissions: { contents: write }
+env: { CNAME: "${{ vars.CNAME }}", TAG: "${{ github.ref_name }}" }
 jobs:
   release:
     name: release
@@ -16,31 +17,30 @@ jobs:
       - name: extract changelog entry for this tag
         id: notes
         run: |
-          awk -v tag="$GITHUB_REF_NAME" '
+          awk -v tag="${TAG}" '
             $0 ~ "^## \\[?" substr(tag,2) "\\]?" { found=1; next }
             found && /^## \[?/ { exit }
             found { print }
           ' CHANGELOG.md > .release-notes.md
-          if [ ! -s .release-notes.md ]; then
-            echo "no CHANGELOG entry for $GITHUB_REF_NAME; using auto-generated notes"
-            echo "use_generated=true" >> "$GITHUB_OUTPUT"
+          if [[ ! -s .release-notes.md ]]; then
+            echo "no CHANGELOG entry for ${TAG}; using auto-generated notes"
+            echo "use_generated=true" >> "$GITHUB_ENV"
           else
-            echo "use_generated=false" >> "$GITHUB_OUTPUT"
-            echo "--- release notes ---"
-            cat .release-notes.md
+            echo "use_generated=false" >> "$GITHUB_ENV"
+            printf "::group::release notes for ${TAG}\n%s\n::endgroup::" "$(cat .release-notes.md)"
           fi
       - name: create release
-        env: { GH_TOKEN: "${{ github.token }}", USE: "${{ steps.notes.outputs.use_generated }}" }
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          if [[ "${USE}" == "true" ]]; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          if [[ "${use_generated}" == "true" ]]; then
+            gh release create "${TAG}" --verify-tag --generate-notes
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --notes-file .release-notes.md
+            gh release create "${TAG}" --verify-tag --notes-file .release-notes.md
           fi
       - name: warm proxy.golang.org
         run: |
           for _ in 1 2 3 4 5; do
-            if curl --fail --silent --show-error "https://proxy.golang.org/statute.kjanat.dev/@v/${GITHUB_REF_NAME}.info" > /dev/null; then
+            if curl --fail --silent --show-error "https://proxy.golang.org/${CNAME}/@v/${GITHUB_REF_NAME}.info" > /dev/null; then
               echo "proxy indexed $GITHUB_REF_NAME"
               exit 0
             fi
