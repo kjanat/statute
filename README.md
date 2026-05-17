@@ -1,6 +1,6 @@
 # statute
 
-> Config-as-code reverse proxy in Go. The binary *is* the configuration.
+> Config-as-code reverse proxy in Go. The binary _is_ the configuration.
 
 statute is a reverse proxy framework where your routing topology, TLS material, upstream pools, and middleware stack are expressed as Go values — type-checked, IDE-completed, and validated at startup. There is no runtime config file, no hot reload, no module loader. You write a `main.go`, you `go build`, you ship a single binary that boots, validates, and serves.
 
