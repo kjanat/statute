@@ -32,6 +32,7 @@ type Finding struct {
 	Path string
 }
 
+// String renders the finding as a single human-readable line.
 func (f Finding) String() string {
 	return fmt.Sprintf("[%s] %s: %s (at %s)", f.Severity, f.Code, f.Message, f.Path)
 }

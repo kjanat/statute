@@ -21,8 +21,10 @@ func newResponseBuffer() *responseBuffer {
 	return &responseBuffer{header: make(http.Header), status: http.StatusOK}
 }
 
+// Header returns the buffered response header map.
 func (b *responseBuffer) Header() http.Header { return b.header }
 
+// WriteHeader records the status code once; later calls are ignored.
 func (b *responseBuffer) WriteHeader(code int) {
 	if b.wroteHeader {
 		return
@@ -31,6 +33,7 @@ func (b *responseBuffer) WriteHeader(code int) {
 	b.wroteHeader = true
 }
 
+// Write appends to the buffered body, defaulting the status to 200.
 func (b *responseBuffer) Write(p []byte) (int, error) {
 	if !b.wroteHeader {
 		b.wroteHeader = true

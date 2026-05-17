@@ -23,6 +23,7 @@ type stats struct {
 
 func newStats() *stats { return &stats{} }
 
+// Observe records one handled request: its status code and latency.
 func (s *stats) Observe(status int, dur time.Duration) {
 	s.requests.Add(1)
 	v, _ := s.requestsByStatus.LoadOrStore(status, &atomic.Uint64{})
@@ -34,6 +35,8 @@ func (s *stats) Observe(status int, dur time.Duration) {
 	s.durationCount.Add(1)
 }
 
+// WritePrometheus writes the accumulated stats to w in Prometheus text
+// exposition format.
 func (s *stats) WritePrometheus(w io.Writer) {
 	pf := func(format string, args ...any) {
 		_, _ = fmt.Fprintf(w, format, args...)
@@ -75,6 +78,7 @@ type statusRecorder struct {
 	wroteHeader bool
 }
 
+// WriteHeader records the first status code written, then forwards it.
 func (s *statusRecorder) WriteHeader(code int) {
 	if s.wroteHeader {
 		return
@@ -84,6 +88,8 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Write treats an un-preceded body write as an implicit 200, then
+// forwards the bytes.
 func (s *statusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true

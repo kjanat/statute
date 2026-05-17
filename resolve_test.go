@@ -96,3 +96,70 @@ func TestResolveListenerlessFails(t *testing.T) {
 		t.Fatal("want error for missing listener")
 	}
 }
+
+// TestResolveParseErrors exercises every parse.* error-rewrap branch in
+// resolve.go: each case feeds one invalid duration/rate/size string through
+// a Config that is otherwise valid, and asserts Resolve surfaces the
+// context-prefixed wrap (e.g. "cache: invalid duration ...").
+func TestResolveParseErrors(t *testing.T) {
+	const bad = "nope" // invalid as a duration, rate, and size
+
+	base := func() Config {
+		return Config{
+			Listeners: Listeners{HTTP(":8080")},
+			Upstreams: Upstreams{
+				"api": Pool{
+					Backends: []Backend{{Address: "127.0.0.1:9001"}},
+					Strategy: RoundRobin,
+				},
+			},
+			Routes: Routes{Match("/*").ProxyTo("api")},
+		}
+	}
+	withMW := func(mw Middleware) func(*Config) {
+		return func(c *Config) {
+			c.Routes = Routes{Match("/*").ProxyTo("api").With(mw)}
+		}
+	}
+	withPool := func(p Pool) func(*Config) {
+		return func(c *Config) { c.Upstreams = Upstreams{"api": p} }
+	}
+	okBackends := []Backend{{Address: "127.0.0.1:9001"}}
+
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"defaults.read_header_timeout", func(c *Config) { c.Defaults = Defaults{ReadHeaderTimeout: bad} }, "read_header_timeout:"},
+		{"defaults.read_timeout", func(c *Config) { c.Defaults = Defaults{ReadTimeout: bad} }, "read_timeout:"},
+		{"defaults.write_timeout", func(c *Config) { c.Defaults = Defaults{WriteTimeout: bad} }, "write_timeout:"},
+		{"defaults.idle_timeout", func(c *Config) { c.Defaults = Defaults{IdleTimeout: bad} }, "idle_timeout:"},
+		{"healthcheck.interval", withPool(Pool{Backends: okBackends, Strategy: RoundRobin, HealthCheck: HealthCheck{Path: "/h", Interval: bad}}), "interval:"},
+		{"healthcheck.timeout", withPool(Pool{Backends: okBackends, Strategy: RoundRobin, HealthCheck: HealthCheck{Path: "/h", Timeout: bad}}), "timeout:"},
+		{"transport.idle_conn_timeout", withPool(Pool{Backends: okBackends, Strategy: RoundRobin, Transport: Transport{IdleConnTimeout: bad}}), "idle_conn_timeout:"},
+		{"transport.dial_timeout", withPool(Pool{Backends: okBackends, Strategy: RoundRobin, Transport: Transport{DialTimeout: bad}}), "dial_timeout:"},
+		{"transport.tls_handshake_timeout", withPool(Pool{Backends: okBackends, Strategy: RoundRobin, Transport: Transport{TLSHandshakeTimeout: bad}}), "tls_handshake_timeout:"},
+		{"mw.timeout", withMW(Timeout(bad)), "timeout:"},
+		{"mw.rate_limit", withMW(RateLimit(bad)), "rate_limit:"},
+		{"mw.cache", withMW(Cache(bad)), "cache:"},
+		{"mw.body_limit", withMW(BodyLimit(bad)), "body_limit:"},
+		{"mw.security_headers.hsts", withMW(SecurityHeaders().HSTS(bad)), "security_headers.hsts:"},
+		{"mw.cors.max_age", withMW(CORS().Origins("https://example.com").MaxAge(bad)), "cors.max_age:"},
+		{"shutdown.grace_period", func(c *Config) { c.Shutdown = Shutdown{GracePeriod: bad} }, "grace_period:"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base()
+			tc.mutate(&cfg)
+			_, err := Resolve(cfg)
+			if err == nil {
+				t.Fatalf("%s: want error, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("%s: error %q, want substring %q", tc.name, err, tc.want)
+			}
+		})
+	}
+}

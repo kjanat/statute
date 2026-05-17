@@ -239,6 +239,8 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 	}
 }
 
+// Start opens all configured listeners and begins serving. Calling it
+// after the server has already started returns an error.
 func (s *server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,6 +302,8 @@ func goShutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error, fn f
 	})
 }
 
+// Shutdown gracefully drains and stops the server within the configured
+// shutdown grace period.
 func (s *server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Shutdown.GracePeriod)
 	defer cancel()
@@ -529,6 +533,8 @@ func (ph *poolHandler) candidates() []*backendState {
 	return ph.primary
 }
 
+// ServeHTTP proxies the request to a healthy backend in the pool,
+// responding 503 when no backends are available.
 func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	candidates := ph.candidates()
 	if len(candidates) == 0 {

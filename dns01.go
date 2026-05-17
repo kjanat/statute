@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/crypto/acme"
 
+	"statute.kjanat.dev/internal/cloudflare"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -42,7 +43,7 @@ type dns01Manager struct {
 	domains []string
 	email   string
 	storage string
-	cf      *cloudflareAPI
+	cf      *cloudflare.Client
 	zoneID  string
 
 	mu    sync.RWMutex
@@ -67,7 +68,7 @@ func newDNS01Manager(cfg *resolved.AutoTLS) (*dns01Manager, error) {
 		domains: cfg.Domains,
 		email:   cfg.Email,
 		storage: dir,
-		cf:      newCloudflareAPI(cfg.DNS01.APIToken),
+		cf:      cloudflare.New(cfg.DNS01.APIToken),
 		zoneID:  cfg.DNS01.ZoneID,
 		cache:   make(map[string]*tls.Certificate),
 	}, nil
@@ -266,13 +267,13 @@ func (m *dns01Manager) satisfyDNS01(ctx context.Context, host string, ch *acme.C
 	}
 	zoneID := m.zoneID
 	if zoneID == "" {
-		zoneID, err = m.cf.findZoneID(ctx, host)
+		zoneID, err = m.cf.FindZoneID(ctx, host)
 		if err != nil {
 			return err
 		}
 	}
 	recordName := "_acme-challenge." + strings.TrimPrefix(host, "*.")
-	recordID, err := m.cf.addTXTRecord(ctx, zoneID, recordName, value)
+	recordID, err := m.cf.AddTXTRecord(ctx, zoneID, recordName, value)
 	if err != nil {
 		return fmt.Errorf("add TXT record: %w", err)
 	}
@@ -281,7 +282,7 @@ func (m *dns01Manager) satisfyDNS01(ctx context.Context, host string, ch *acme.C
 		// stale record is harmless after a couple of minutes.
 		dctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if derr := m.cf.deleteRecord(dctx, zoneID, recordID); derr != nil {
+		if derr := m.cf.DeleteRecord(dctx, zoneID, recordID); derr != nil {
 			log.Printf("statute: dns01: cleanup TXT %s: %v", recordName, derr)
 		}
 	}()

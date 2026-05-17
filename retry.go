@@ -109,8 +109,10 @@ type multiReadCloser struct {
 	orig io.Closer
 }
 
+// Read reads from the concatenated prefix+body reader.
 func (m *multiReadCloser) Read(p []byte) (int, error) { return m.r.Read(p) }
 
+// Close closes the original underlying body.
 func (m *multiReadCloser) Close() error { return m.orig.Close() }
 
 // isRetryable returns true when the request meets the safety preconditions
