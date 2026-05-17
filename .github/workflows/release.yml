@@ -35,6 +35,12 @@ jobs:
           if [[ "${use_generated}" == "true" ]]; then
             gh release create "${TAG}" --verify-tag --title "${TAG}" --generate-notes
           else
+            # Append GitHub's generated "What's Changed" + "Full Changelog"
+            # below the curated CHANGELOG section.
+            gen=$(gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${TAG}" --jq .body)
+            printf '\n\n%s\n' "${gen}" >> .release-notes.md
             gh release create "${TAG}" --verify-tag --title "${TAG}" --notes-file .release-notes.md
           fi
       - name: warm proxy.golang.org
