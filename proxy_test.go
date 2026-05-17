@@ -99,7 +99,7 @@ func TestStrategyRoundRobin(t *testing.T) {
 	bs := mkStates("a", "b", "c")
 	p := newPicker(resolved.RoundRobin)
 	counts := map[string]int{}
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		s := p.pick(bs, "")
 		counts[s.backend.Address]++
 	}
@@ -127,7 +127,7 @@ func TestIPHashStable(t *testing.T) {
 	bs := mkStates("a", "b", "c")
 	p := &ipHashPicker{}
 	first := p.pick(bs, "203.0.113.5")
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if p.pick(bs, "203.0.113.5") != first {
 			t.Fatal("ip-hash unstable for same key")
 		}

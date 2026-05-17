@@ -2,6 +2,7 @@ package statute
 
 import (
 	"bytes"
+	"maps"
 	"net/http"
 )
 
@@ -43,9 +44,7 @@ func (b *responseBuffer) Flush() {}
 
 // replay copies the buffered response into the real ResponseWriter.
 func (b *responseBuffer) replay(w http.ResponseWriter) {
-	for k, v := range b.header {
-		w.Header()[k] = v
-	}
+	maps.Copy(w.Header(), b.header)
 	w.WriteHeader(b.status)
 	_, _ = w.Write(b.body.Bytes())
 }

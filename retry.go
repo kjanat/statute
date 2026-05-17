@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"statute.kjanat.dev/resolved"
@@ -120,10 +121,5 @@ func isIdempotent(method string) bool {
 }
 
 func statusMatches(status int, codes []int) bool {
-	for _, c := range codes {
-		if c == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(codes, status)
 }

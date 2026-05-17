@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -236,7 +237,6 @@ func (s *server) Start() error {
 		}
 	}
 	for _, hs := range s.listeners {
-		hs := hs
 		ln, err := net.Listen("tcp", hs.Addr)
 		if err != nil {
 			return fmt.Errorf("listen %s: %w", hs.Addr, err)
@@ -245,7 +245,6 @@ func (s *server) Start() error {
 		go serveListener(hs, l, ln)
 	}
 	for _, h3 := range s.http3Servers {
-		h3 := h3
 		go func() { _ = h3.Serve() }()
 	}
 	if s.metricsServer != nil {
@@ -280,13 +279,11 @@ func serveListener(hs *http.Server, l *resolved.Listener, ln net.Listener) {
 // error to errs. errs must be buffered enough to hold one error per call so
 // the sends never block before wg.Wait returns.
 func goShutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error, fn func(context.Context) error) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := fn(ctx); err != nil {
 			errs <- err
 		}
-	}()
+	})
 }
 
 func (s *server) Shutdown() error {
@@ -397,8 +394,8 @@ func stripPort(hostport string) string {
 // matchPattern matches a path against a pattern. A trailing /* matches any
 // suffix; otherwise the match is exact.
 func matchPattern(pattern, path string) bool {
-	if strings.HasSuffix(pattern, "/*") {
-		prefix := strings.TrimSuffix(pattern, "/*")
+	if before, ok := strings.CutSuffix(pattern, "/*"); ok {
+		prefix := before
 		if prefix == "" {
 			return true
 		}
@@ -551,8 +548,8 @@ func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
 		})
 	}
 	h := base
-	for i := len(mws) - 1; i >= 0; i-- {
-		h = applyMiddleware(mws[i], h)
+	for _, mw := range slices.Backward(mws) {
+		h = applyMiddleware(mw, h)
 	}
 	return h
 }
