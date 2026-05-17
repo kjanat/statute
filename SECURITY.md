@@ -8,7 +8,7 @@ Use GitHub's [private vulnerability reporting](https://github.com/kjanat/statute
 
 I'll look at it when I can. No promised response time, no promised turnaround — don't expect a quick fix. If you want credit for the find, say so and I'll add it somewhere.
 
-If your report is low-effort AI slop, it'll get triaged by an equally low-effort AI, and you'll get whatever it spits back. Garbage in, garbage out — calibrate accordingly.
+If your report is low-effort AI slop, it'll get triaged by an equally low-effort AI.
 
 ## Supported versions
 
