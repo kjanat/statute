@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-17
+
 ### Added
 
 - `FuzzParseSize` fuzz target; loosened the `parseDuration` / `parseRate`
@@ -152,6 +154,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kjanat/statute/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kjanat/statute/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kjanat/statute/releases/tag/v0.1.0
