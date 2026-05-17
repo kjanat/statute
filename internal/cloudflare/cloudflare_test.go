@@ -208,7 +208,13 @@ func TestCloudflareAPI_NetworkError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := c.FindZoneID(ctx, "foo.example.com"); err == nil {
+	_, err := c.FindZoneID(ctx, "foo.example.com")
+	if err == nil {
 		t.Fatal("want error when the API is unreachable")
+	}
+	// The underlying transport error must propagate, not be masked as
+	// "no zone found".
+	if strings.Contains(err.Error(), "no zone found") {
+		t.Errorf("transport error masked as not-found: %v", err)
 	}
 }

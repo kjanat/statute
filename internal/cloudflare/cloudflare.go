@@ -60,7 +60,13 @@ func (c *Client) FindZoneID(ctx context.Context, domain string) (string, error) 
 	for i := 0; i < len(labels)-1; i++ {
 		candidate := strings.Join(labels[i:], ".")
 		id, err := c.getZoneByName(ctx, candidate)
-		if err == nil && id != "" {
+		if err != nil {
+			// Auth/network/API failures are token- and endpoint-wide;
+			// retrying shorter candidates can't help, and swallowing this
+			// would misreport it as "no zone found".
+			return "", err
+		}
+		if id != "" {
 			return id, nil
 		}
 	}
