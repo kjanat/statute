@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"math/big"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -138,6 +139,47 @@ func TestDNS01_NewManager_ValidatesConfig(t *testing.T) {
 	_, err = newDNS01Manager(&resolved.AutoTLS{Domains: []string{"x"}, Email: "x@x", Storage: t.TempDir()})
 	if err == nil {
 		t.Fatal("want error for config without DNS01 field")
+	}
+
+	// Storage points at a regular file, so MkdirAll(<file>/dns01) fails.
+	f := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newDNS01Manager(&resolved.AutoTLS{
+		Storage: f,
+		DNS01:   &resolved.CloudflareDNS01{APIToken: "tok"},
+	})
+	if err == nil {
+		t.Fatal("want error when storage dir cannot be created")
+	}
+}
+
+// TestDNS01_NewManager_BuildsManager covers the success path: storage dir
+// creation and the struct build (including the cloudflare client).
+func TestDNS01_NewManager_BuildsManager(t *testing.T) {
+	t.Parallel()
+	cfg := &resolved.AutoTLS{
+		Domains: []string{"example.com"},
+		Email:   "ops@example.com",
+		Storage: t.TempDir(),
+		DNS01:   &resolved.CloudflareDNS01{APIToken: "tok", ZoneID: "zone-1"},
+	}
+	m, err := newDNS01Manager(cfg)
+	if err != nil {
+		t.Fatalf("newDNS01Manager: %v", err)
+	}
+	if m.cf == nil {
+		t.Error("cloudflare client not constructed")
+	}
+	if m.email != "ops@example.com" || m.zoneID != "zone-1" {
+		t.Errorf("fields not wired: email=%q zoneID=%q", m.email, m.zoneID)
+	}
+	if !slices.Equal(m.domains, []string{"example.com"}) {
+		t.Errorf("domains not wired: %v", m.domains)
+	}
+	if m.cache == nil {
+		t.Error("cert cache not initialised")
 	}
 }
 
