@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Vanity host (`statute.kjanat.dev`) now also publishes a `404.html`
+  carrying the same `go-import`/`go-source` meta, so every subpackage
+  resolves directly for `go get` instead of relying on prefix fallback;
+  browsers get a path-aware redirect to the exact pkg.go.dev page.
+
 ### Fixed
 
 - Added package doc comments to the `basic` and `http-only` examples;
