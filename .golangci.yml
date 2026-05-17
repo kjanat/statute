@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://golangci-lint.run/jsonschema/golangci.jsonschema.json
 # golangci-lint configuration for statute.
 #
 # Conventions:
@@ -8,6 +9,7 @@
 #     bar is visible from now on.
 #   - Test files get a slightly relaxed set: error-checking on every Fprintln
 #     and noctx on every httptest call wastes everyone's afternoon.
+---
 version: "2"
 
 run:
@@ -16,7 +18,7 @@ run:
   modules-download-mode: readonly
 
 linters:
-  default: none
+  default: standard
   enable:
     - errcheck
     - govet
@@ -32,6 +34,9 @@ linters:
     - nilerr
     - errorlint
     - unconvert
+    - goconst
+    - nakedret
+    - tagalign
   settings:
     errcheck:
       check-type-assertions: false
@@ -62,6 +67,7 @@ linters:
           - errcheck
           - bodyclose
           - revive
+          - goconst
       - path: examples/
         linters:
           - revive
@@ -77,10 +83,8 @@ issues:
   max-same-issues: 0
 
 formatters:
-  enable:
-    - gofumpt
-    - goimports
+  enable: [gci, gofumpt, gofmt, goimports]
   settings:
-    goimports:
-      local-prefixes:
-        - github.com/kjanat/statute
+    goimports: { local-prefixes: [github.com/kjanat/statute] }
+    gci: { sections: [standard, default, localmodule] }
+    gofumpt: { module-path: github.com/kjanat/statute, extra-rules: true }

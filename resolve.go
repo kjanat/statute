@@ -3,6 +3,7 @@ package statute
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -201,7 +202,7 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		HTTP3Addr:        l.http3Addr,
 		BehindCloudflare: l.behindCF,
 	}
-	if l.scheme == "https" && l.redirect == "" {
+	if l.scheme == schemeHTTPS && l.redirect == "" {
 		if l.autoTLS == nil && l.staticTLS == nil {
 			return nil, errors.New("https listener requires AutoTLS or StaticTLS")
 		}
@@ -324,6 +325,108 @@ func resolveMiddleware(mw Middleware) (resolved.Middleware, error) {
 	case *etagMW:
 		return resolved.Middleware{Type: resolved.MWETag}, nil
 
+	case *bodyLimitMW:
+		n, err := parseSize(m.size)
+		if err != nil {
+			return resolved.Middleware{}, fmt.Errorf("body_limit: %w", err)
+		}
+		if n <= 0 {
+			return resolved.Middleware{}, errors.New("body_limit: size must be positive")
+		}
+		return resolved.Middleware{Type: resolved.MWBodyLimit, BodyLimitBytes: n}, nil
+
+	case *requestIDMW:
+		return resolved.Middleware{
+			Type:                resolved.MWRequestID,
+			RequestIDHeader:     m.header,
+			RequestIDFromHeader: m.fromHeader,
+		}, nil
+
+	case *securityHeadersMW:
+		hstsHeader := ""
+		if m.hsts != "" {
+			d, err := parseDuration(m.hsts)
+			if err != nil {
+				return resolved.Middleware{}, fmt.Errorf("security_headers.hsts: %w", err)
+			}
+			hstsHeader = formatHSTS(d)
+		}
+		return resolved.Middleware{
+			Type:                  resolved.MWSecurityHeaders,
+			SecHSTS:               hstsHeader,
+			SecCSP:                m.csp,
+			SecFrameOptions:       m.frameOptions,
+			SecContentTypeOptions: m.contentTypeOptions,
+			SecReferrerPolicy:     m.referrerPolicy,
+			SecPermissionsPolicy:  m.permissionsPolicy,
+		}, nil
+
+	case *allowIPsMW:
+		canon, err := resolveCIDRs(m.cidrs)
+		if err != nil {
+			return resolved.Middleware{}, fmt.Errorf("allow_ips: %w", err)
+		}
+		return resolved.Middleware{Type: resolved.MWAllowIPs, IPCIDRs: canon}, nil
+
+	case *denyIPsMW:
+		canon, err := resolveCIDRs(m.cidrs)
+		if err != nil {
+			return resolved.Middleware{}, fmt.Errorf("deny_ips: %w", err)
+		}
+		return resolved.Middleware{Type: resolved.MWDenyIPs, IPCIDRs: canon}, nil
+
+	case *basicAuthMW:
+		if len(m.users) == 0 {
+			return resolved.Middleware{}, errors.New("basic_auth: users map is empty")
+		}
+		users := make(map[string]string, len(m.users))
+		for name, hash := range m.users {
+			if !isBCryptHash(hash) {
+				return resolved.Middleware{}, fmt.Errorf("basic_auth: user %q: value is not a bcrypt hash (must be $2a$/$2b$/$2y$ prefixed)", name)
+			}
+			users[name] = hash
+		}
+		return resolved.Middleware{
+			Type:           resolved.MWBasicAuth,
+			BasicAuthRealm: m.realm,
+			BasicAuthUsers: users,
+		}, nil
+
+	case *corsMW:
+		if len(m.origins) == 0 {
+			return resolved.Middleware{}, errors.New("cors: at least one Origin must be configured")
+		}
+		allowAll := false
+		var explicit []string
+		for _, o := range m.origins {
+			if o == "*" {
+				allowAll = true
+				continue
+			}
+			explicit = append(explicit, o)
+		}
+		if allowAll && m.credentials {
+			return resolved.Middleware{}, errors.New("cors: wildcard origin '*' is incompatible with Credentials() per the CORS spec")
+		}
+		maxAge := time.Duration(0)
+		if m.maxAge != "" {
+			d, err := parseDuration(m.maxAge)
+			if err != nil {
+				return resolved.Middleware{}, fmt.Errorf("cors.max_age: %w", err)
+			}
+			maxAge = d
+		}
+		return resolved.Middleware{
+			Type:               resolved.MWCORS,
+			CORSAllowAllOrigin: allowAll,
+			CORSOrigins:        explicit,
+			CORSMethods:        append([]string(nil), m.methods...),
+			CORSHeaders:        append([]string(nil), m.headers...),
+			CORSExposeHeaders:  append([]string(nil), m.exposeHeaders...),
+			CORSCredentials:    m.credentials,
+			CORSMaxAge:         maxAge,
+		}, nil
+
 	default:
 		return resolved.Middleware{}, fmt.Errorf("unknown middleware type %T", mw)
 	}
@@ -336,7 +439,7 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 		case *jsonLog:
 			out.AccessLog = resolved.AccessLog{
 				Enabled:    true,
-				Format:     "json",
+				Format:     accessLogFormatJSON,
 				Writer:     al.dest.Writer(),
 				Name:       al.dest.Name(),
 				SampleRate: al.sampleRate,
@@ -424,8 +527,16 @@ func parseDurationOr(s string, fallback time.Duration) (time.Duration, error) {
 	return parseDuration(s)
 }
 
+// parseDuration accepts every unit Go's time.ParseDuration accepts (ns, us,
+// ms, s, m, h) plus "d" for days (24h) and "w" for weeks (7d). Days and
+// weeks are de-sugared by string-rewriting before falling through to the
+// stdlib parser, so they compose with the other units ("1w2d" works).
 func parseDuration(s string) (time.Duration, error) {
-	d, err := time.ParseDuration(s)
+	normalized, err := expandDayWeekUnits(s)
+	if err != nil {
+		return 0, err
+	}
+	d, err := time.ParseDuration(normalized)
 	if err != nil {
 		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
 	}
@@ -433,6 +544,59 @@ func parseDuration(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("duration %q is negative", s)
 	}
 	return d, nil
+}
+
+// expandDayWeekUnits rewrites Nd → N*24h and Nw → N*168h. The rewrite is
+// purely textual — it requires the number to immediately precede the unit
+// suffix and falls through to a plain ParseDuration error otherwise.
+func expandDayWeekUnits(s string) (string, error) {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		// Capture a number prefix (with optional sign + fractional part).
+		if c == '-' || c == '+' || (c >= '0' && c <= '9') {
+			j := i
+			if c == '-' || c == '+' {
+				j++
+			}
+			for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == '.') {
+				j++
+			}
+			if j == i || (j == i+1 && (s[i] == '-' || s[i] == '+')) {
+				// Not actually a number; fall through to default copy.
+				b.WriteByte(c)
+				i++
+				continue
+			}
+			// Check the unit suffix.
+			if j < len(s) && (s[j] == 'd' || s[j] == 'w') {
+				num := s[i:j]
+				hours := 24
+				if s[j] == 'w' {
+					hours = 24 * 7
+				}
+				n, err := strconv.ParseFloat(num, 64)
+				if err != nil {
+					return "", fmt.Errorf("duration %q: invalid number %q: %w", s, num, err)
+				}
+				h := n * float64(hours)
+				// Emit as "<h>h" so time.ParseDuration handles it.
+				b.WriteString(strconv.FormatFloat(h, 'f', -1, 64))
+				b.WriteByte('h')
+				i = j + 1
+				continue
+			}
+			// No d/w suffix — copy the captured number verbatim.
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String(), nil
 }
 
 // parseRate parses a rate of the form "N/unit" into requests per second.
@@ -459,4 +623,76 @@ func parseRate(s string) (float64, error) {
 	default:
 		return 0, fmt.Errorf("rate %q: unknown unit %q", s, parts[1])
 	}
+}
+
+// resolveCIDRs validates and canonicalises a list of CIDR strings. Every
+// entry must be parseable as a netip.Prefix; the resolved list is the
+// canonical Masked form so that an entry like "10.0.0.1/24" is stored as
+// "10.0.0.0/24".
+func resolveCIDRs(cidrs []string) ([]string, error) {
+	if len(cidrs) == 0 {
+		return nil, errors.New("at least one CIDR required")
+	}
+	out := make([]string, 0, len(cidrs))
+	for _, c := range cidrs {
+		p, err := netip.ParsePrefix(c)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", c, err)
+		}
+		out = append(out, p.Masked().String())
+	}
+	return out, nil
+}
+
+// parseSize parses a byte size like "1MB", "512KiB", or "256" into a count
+// of bytes. Suffixes are case-insensitive. Decimal (KB/MB/GB) and binary
+// (KiB/MiB/GiB) units are both accepted. Decimal units use powers of 1000;
+// binary units use powers of 1024.
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("size: empty")
+	}
+	// Walk to the boundary between digits/dot and unit.
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+' {
+			i++
+			continue
+		}
+		break
+	}
+	numStr := strings.TrimSpace(s[:i])
+	unit := strings.ToLower(strings.TrimSpace(s[i:]))
+	if numStr == "" {
+		return 0, fmt.Errorf("size %q: missing number", s)
+	}
+	n, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("size %q: invalid number: %w", s, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("size %q: negative", s)
+	}
+	var mult float64
+	switch unit {
+	case "", "b":
+		mult = 1
+	case "k", "kb":
+		mult = 1000
+	case "m", "mb":
+		mult = 1000 * 1000
+	case "g", "gb":
+		mult = 1000 * 1000 * 1000
+	case "kib":
+		mult = 1024
+	case "mib":
+		mult = 1024 * 1024
+	case "gib":
+		mult = 1024 * 1024 * 1024
+	default:
+		return 0, fmt.Errorf("size %q: unknown unit %q", s, unit)
+	}
+	return int64(n * mult), nil
 }

@@ -365,9 +365,9 @@ func dns01TLSConfig(m *dns01Manager, http2 bool) *tls.Config {
 		MinVersion:     tls.VersionTLS12,
 	}
 	if http2 {
-		cfg.NextProtos = []string{"h2", "http/1.1"}
+		cfg.NextProtos = []string{alpnHTTP2, alpnHTTP1}
 	} else {
-		cfg.NextProtos = []string{"http/1.1"}
+		cfg.NextProtos = []string{alpnHTTP1}
 	}
 	return cfg
 }

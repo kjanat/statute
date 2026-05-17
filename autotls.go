@@ -67,12 +67,12 @@ func buildAutocertManager(listeners []*resolved.Listener) (*autocert.Manager, er
 // terminates TLS and will not forward the custom ALPN protocol.
 func autocertTLSConfig(m *autocert.Manager, http2, behindCF bool) *tls.Config {
 	cfg := m.TLSConfig()
-	protos := []string{"http/1.1"}
+	protos := []string{alpnHTTP1}
 	if http2 {
-		protos = append([]string{"h2"}, protos...)
+		protos = append([]string{alpnHTTP2}, protos...)
 	}
 	if !behindCF {
-		protos = append(protos, "acme-tls/1")
+		protos = append(protos, alpnACMETLS)
 	}
 	cfg.NextProtos = protos
 	return cfg

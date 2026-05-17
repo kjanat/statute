@@ -24,7 +24,7 @@ func (k RateLimitKey) String() string {
 	case HostHeader:
 		return "host"
 	default:
-		return "unknown"
+		return enumUnknown
 	}
 }
 
@@ -109,7 +109,7 @@ func (a CompressAlgo) String() string {
 	case Brotli:
 		return "br"
 	default:
-		return "unknown"
+		return enumUnknown
 	}
 }
 

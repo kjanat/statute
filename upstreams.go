@@ -49,7 +49,7 @@ func (s Strategy) String() string {
 	case Weighted:
 		return "weighted"
 	default:
-		return "unknown"
+		return enumUnknown
 	}
 }
 

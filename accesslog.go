@@ -47,6 +47,9 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 			"proto":         r.Proto,
 			"forwarded_for": r.Header.Get("X-Forwarded-For"),
 		}
+		if id := requestIDFromContext(r.Context()); id != "" {
+			entry["request_id"] = id
+		}
 		enc.Encode(entry)
 	})
 }

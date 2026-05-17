@@ -103,7 +103,7 @@ func (c *cloudflareAPI) deleteRecord(ctx context.Context, zoneID, recordID strin
 	return c.do(ctx, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+recordID, nil, nil)
 }
 
-func (c *cloudflareAPI) do(ctx context.Context, method, path string, body any, out any) error {
+func (c *cloudflareAPI) do(ctx context.Context, method, path string, body, out any) error {
 	var bodyR io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)

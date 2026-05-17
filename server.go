@@ -113,14 +113,14 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 	// When AutoTLS is configured anywhere, the plain-HTTP listener must serve
 	// /.well-known/acme-challenge/* so HTTP-01 can complete. autocert.HTTPHandler
 	// transparently passes other paths through to the wrapped handler.
-	if l.Scheme == "http" && s.autocertMgr != nil {
+	if l.Scheme == schemeHTTP && s.autocertMgr != nil {
 		handler = s.autocertMgr.HTTPHandler(handler)
 	}
 
 	// When HTTP/3 is enabled on a sibling listener, advertise it via Alt-Svc
 	// so compatible clients upgrade. Browsers need this header on the HTTPS
 	// response that introduces the origin.
-	if l.Scheme == "https" && l.HTTP3Addr != "" {
+	if l.Scheme == schemeHTTPS && l.HTTP3Addr != "" {
 		handler = altSvcHandler(l.HTTP3Addr, handler)
 	}
 
@@ -153,7 +153,7 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 		MaxHeaderBytes:    s.cfg.Defaults.MaxHeaderBytes,
 	}
 
-	if l.Scheme == "https" && l.Redirect == "" {
+	if l.Scheme == schemeHTTPS && l.Redirect == "" {
 		switch {
 		case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
 			dm := s.dns01Managers[l.Addr]
@@ -209,9 +209,9 @@ func (s *server) Start() error {
 		l, _ := findListener(s.cfg.Listeners, hs.Addr)
 		go func() {
 			switch {
-			case l != nil && l.Scheme == "https" && l.Redirect == "" && l.StaticTLS != nil:
+			case l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" && l.StaticTLS != nil:
 				_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
-			case l != nil && l.Scheme == "https" && l.Redirect == "" && l.AutoTLS != nil:
+			case l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" && l.AutoTLS != nil:
 				// TLSConfig (set on the http.Server) carries the cert source
 				// — autocert.Manager.GetCertificate or our dns01Manager
 				// equivalent. ServeTLS with empty paths uses it.
@@ -539,6 +539,20 @@ func applyMiddleware(m resolved.Middleware, next http.Handler) http.Handler {
 		return compressHandler(m.CompressAlgos, next)
 	case resolved.MWETag:
 		return etagHandler(next)
+	case resolved.MWBodyLimit:
+		return bodyLimitHandler(m, next)
+	case resolved.MWRequestID:
+		return requestIDHandler(m, next)
+	case resolved.MWSecurityHeaders:
+		return securityHeadersHandler(m, next)
+	case resolved.MWCORS:
+		return corsHandler(m, next)
+	case resolved.MWBasicAuth:
+		return basicAuthHandler(m, next)
+	case resolved.MWAllowIPs:
+		return allowIPsHandler(m, next)
+	case resolved.MWDenyIPs:
+		return denyIPsHandler(m, next)
 	default:
 		return next
 	}

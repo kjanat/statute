@@ -1,0 +1,5 @@
+name: pages
+on: {push: {branches: [master]}}
+permissions: {id: write, contents: read, pages: write}
+jobs
+  pages:

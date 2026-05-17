@@ -139,6 +139,37 @@ type Middleware struct {
 
 	// Compress
 	CompressAlgos []CompressAlgo
+
+	// BodyLimit
+	BodyLimitBytes int64
+
+	// RequestID
+	RequestIDHeader     string
+	RequestIDFromHeader string
+
+	// SecurityHeaders — each empty string means "do not emit this header".
+	SecHSTS               string
+	SecCSP                string
+	SecFrameOptions       string
+	SecContentTypeOptions bool
+	SecReferrerPolicy     string
+	SecPermissionsPolicy  string
+
+	// CORS
+	CORSOrigins        []string
+	CORSAllowAllOrigin bool // explicit "*" in Origins
+	CORSMethods        []string
+	CORSHeaders        []string
+	CORSExposeHeaders  []string
+	CORSCredentials    bool
+	CORSMaxAge         time.Duration
+
+	// BasicAuth — users is a username -> bcrypt hash map.
+	BasicAuthRealm string
+	BasicAuthUsers map[string]string
+
+	// IP allow/deny — only one direction is populated per middleware.
+	IPCIDRs []string // canonical "1.2.3.0/24"
 }
 
 // MiddlewareType discriminates resolved middleware values.
@@ -154,6 +185,13 @@ const (
 	MWCache
 	MWCompress
 	MWETag
+	MWBodyLimit
+	MWRequestID
+	MWSecurityHeaders
+	MWCORS
+	MWBasicAuth
+	MWAllowIPs
+	MWDenyIPs
 )
 
 // RateLimitKey mirrors the surface key.

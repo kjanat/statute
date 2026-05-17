@@ -15,13 +15,13 @@ type Listener struct {
 
 // HTTP starts an HTTP/1.1 listener declaration on the given address.
 func HTTP(addr string) *Listener {
-	return &Listener{addr: addr, scheme: "http"}
+	return &Listener{addr: addr, scheme: schemeHTTP}
 }
 
 // HTTPS starts an HTTPS listener declaration on the given address. Options
 // configure TLS material, HTTP/2, and HTTP/3.
 func HTTPS(addr string, opts ...ListenerOption) *Listener {
-	l := &Listener{addr: addr, scheme: "https"}
+	l := &Listener{addr: addr, scheme: schemeHTTPS}
 	for _, o := range opts {
 		o.applyListener(l)
 	}
