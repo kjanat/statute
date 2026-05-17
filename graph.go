@@ -38,30 +38,40 @@ func GraphDOT(cfg Config, w io.Writer) error {
 	return graphResolved(r, w)
 }
 
-func graphResolved(r *resolved.Config, w io.Writer) error {
-	pf := func(format string, args ...any) error {
-		_, err := fmt.Fprintf(w, format, args...)
-		return err
-	}
-	if err := pf("digraph statute {\n"); err != nil {
-		return err
-	}
-	if err := pf("  rankdir=LR;\n  node [fontname=\"Helvetica\"];\n  edge [fontname=\"Helvetica\"];\n\n"); err != nil {
-		return err
-	}
+// dotWriter accumulates the first write error so the graph emitters can be
+// written as straight-line code instead of an if-err ladder after every
+// Fprintf. Once err is set, subsequent printf calls are no-ops.
+type dotWriter struct {
+	w   io.Writer
+	err error
+}
 
-	// Listeners
-	if err := pf("  // listeners\n"); err != nil {
-		return err
+func (d *dotWriter) printf(format string, args ...any) {
+	if d.err != nil {
+		return
 	}
+	_, d.err = fmt.Fprintf(d.w, format, args...)
+}
+
+func graphResolved(r *resolved.Config, w io.Writer) error {
+	d := &dotWriter{w: w}
+	d.printf("digraph statute {\n")
+	d.printf("  rankdir=LR;\n  node [fontname=\"Helvetica\"];\n  edge [fontname=\"Helvetica\"];\n\n")
+	graphListeners(d, r)
+	graphRoutes(d, r)
+	graphUpstreams(d, r)
+	d.printf("}\n")
+	return d.err
+}
+
+func graphListeners(d *dotWriter, r *resolved.Config) {
+	d.printf("  // listeners\n")
 	for i, l := range r.Listeners {
 		label := fmt.Sprintf("%s %s", strings.ToUpper(l.Scheme), l.Addr)
 		if l.Redirect != "" {
 			label = fmt.Sprintf("%s -> %s (redirect)", strings.ToUpper(l.Scheme), l.Redirect)
 		}
-		if err := pf("  L%d [shape=Mrecord, style=filled, fillcolor=\"#cfe2ff\", label=%q];\n", i, label); err != nil {
-			return err
-		}
+		d.printf("  L%d [shape=Mrecord, style=filled, fillcolor=\"#cfe2ff\", label=%q];\n", i, label)
 	}
 
 	// Redirect listener -> content listener edge: find the matching scheme.
@@ -71,26 +81,21 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 		}
 		for j, target := range r.Listeners {
 			if target.Scheme == l.Redirect {
-				if err := pf("  L%d -> L%d [label=\"redirect 301\", style=dashed];\n", i, j); err != nil {
-					return err
-				}
+				d.printf("  L%d -> L%d [label=\"redirect 301\", style=dashed];\n", i, j)
 			}
 		}
 	}
+}
 
-	// Routes
-	if err := pf("\n  // routes\n"); err != nil {
-		return err
-	}
+func graphRoutes(d *dotWriter, r *resolved.Config) {
+	d.printf("\n  // routes\n")
 	for i, route := range r.Routes {
 		host := route.Host
 		if host == "" {
 			host = "*"
 		}
 		label := fmt.Sprintf("%s %s", host, route.Pattern)
-		if err := pf("  R%d [shape=box, style=\"filled,rounded\", fillcolor=\"#fff3cd\", label=%q];\n", i, label); err != nil {
-			return err
-		}
+		d.printf("  R%d [shape=box, style=\"filled,rounded\", fillcolor=\"#fff3cd\", label=%q];\n", i, label)
 	}
 
 	// Listener->route edges: only from content listeners.
@@ -99,12 +104,12 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 			continue
 		}
 		for j := range r.Routes {
-			if err := pf("  L%d -> R%d [color=\"#888\"];\n", i, j); err != nil {
-				return err
-			}
+			d.printf("  L%d -> R%d [color=\"#888\"];\n", i, j)
 		}
 	}
+}
 
+func graphUpstreams(d *dotWriter, r *resolved.Config) {
 	// Pools (sorted for stable output) and backends.
 	poolNames := make([]string, 0, len(r.Upstreams))
 	for name := range r.Upstreams {
@@ -112,35 +117,12 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 	}
 	sort.Strings(poolNames)
 
-	if err := pf("\n  // upstreams\n"); err != nil {
-		return err
-	}
+	d.printf("\n  // upstreams\n")
 	for _, name := range poolNames {
 		pool := r.Upstreams[name]
-		strategyName := strategyString(pool.Strategy)
-		label := fmt.Sprintf("%s\\n(%s)", name, strategyName)
-		if err := pf("  P_%s [shape=ellipse, style=filled, fillcolor=\"#d1e7dd\", label=%q];\n", sanitize(name), label); err != nil {
-			return err
-		}
-		for k, b := range pool.Backends {
-			style := "solid"
-			color := "#dee2e6"
-			if b.Backup {
-				style = "dashed"
-				color = "#e2e3e5"
-			}
-			if err := pf("  B_%s_%d [shape=circle, style=\"filled,%s\", fillcolor=%q, label=%q];\n",
-				sanitize(name), k, style, color, b.Address); err != nil {
-				return err
-			}
-			edgeLabel := ""
-			if b.Weight != 1 {
-				edgeLabel = fmt.Sprintf("w=%d", b.Weight)
-			}
-			if err := pf("  P_%s -> B_%s_%d [label=%q];\n", sanitize(name), sanitize(name), k, edgeLabel); err != nil {
-				return err
-			}
-		}
+		label := fmt.Sprintf("%s\\n(%s)", name, strategyString(pool.Strategy))
+		d.printf("  P_%s [shape=ellipse, style=filled, fillcolor=\"#d1e7dd\", label=%q];\n", sanitize(name), label)
+		graphBackends(d, name, pool)
 	}
 
 	// Route -> pool edges
@@ -148,12 +130,26 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 		if route.Upstream == nil {
 			continue
 		}
-		if err := pf("  R%d -> P_%s;\n", i, sanitize(route.Upstream.Name)); err != nil {
-			return err
-		}
+		d.printf("  R%d -> P_%s;\n", i, sanitize(route.Upstream.Name))
 	}
+}
 
-	return pf("}\n")
+func graphBackends(d *dotWriter, name string, pool *resolved.Pool) {
+	for k, b := range pool.Backends {
+		style := "solid"
+		color := "#dee2e6"
+		if b.Backup {
+			style = "dashed"
+			color = "#e2e3e5"
+		}
+		d.printf("  B_%s_%d [shape=circle, style=\"filled,%s\", fillcolor=%q, label=%q];\n",
+			sanitize(name), k, style, color, b.Address)
+		edgeLabel := ""
+		if b.Weight != 1 {
+			edgeLabel = fmt.Sprintf("w=%d", b.Weight)
+		}
+		d.printf("  P_%s -> B_%s_%d [label=%q];\n", sanitize(name), sanitize(name), k, edgeLabel)
+	}
 }
 
 // sanitize turns an arbitrary string into a valid DOT identifier suffix by

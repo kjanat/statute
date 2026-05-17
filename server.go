@@ -103,6 +103,28 @@ func newServer(cfg *resolved.Config) (*server, error) {
 }
 
 func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*http.Server, error) {
+	hs := &http.Server{
+		Addr:              l.Addr,
+		Handler:           s.buildListenerHandler(l, content),
+		ReadHeaderTimeout: s.cfg.Defaults.ReadHeaderTimeout,
+		ReadTimeout:       s.cfg.Defaults.ReadTimeout,
+		WriteTimeout:      s.cfg.Defaults.WriteTimeout,
+		IdleTimeout:       s.cfg.Defaults.IdleTimeout,
+		MaxHeaderBytes:    s.cfg.Defaults.MaxHeaderBytes,
+	}
+
+	if l.Scheme == schemeHTTPS && l.Redirect == "" {
+		if err := s.applyListenerTLS(hs, l); err != nil {
+			return nil, err
+		}
+	}
+	return hs, nil
+}
+
+// buildListenerHandler assembles the middleware chain for a listener. The
+// wrapping order is deliberate: each block comments why it must sit where it
+// does relative to the others.
+func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler) http.Handler {
 	var handler http.Handler
 	if l.Redirect != "" {
 		handler = redirectHandler(l.Redirect)
@@ -142,37 +164,31 @@ func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*h
 	if l.BehindCloudflare {
 		handler = behindCloudflareMiddleware(handler)
 	}
+	return handler
+}
 
-	hs := &http.Server{
-		Addr:              l.Addr,
-		Handler:           handler,
-		ReadHeaderTimeout: s.cfg.Defaults.ReadHeaderTimeout,
-		ReadTimeout:       s.cfg.Defaults.ReadTimeout,
-		WriteTimeout:      s.cfg.Defaults.WriteTimeout,
-		IdleTimeout:       s.cfg.Defaults.IdleTimeout,
-		MaxHeaderBytes:    s.cfg.Defaults.MaxHeaderBytes,
-	}
-
-	if l.Scheme == schemeHTTPS && l.Redirect == "" {
-		switch {
-		case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
-			dm := s.dns01Managers[l.Addr]
-			if dm == nil {
-				return nil, errors.New("auto_tls: dns01 manager not initialised")
-			}
-			hs.TLSConfig = dns01TLSConfig(dm, l.EnableHTTP2)
-		case l.AutoTLS != nil:
-			if s.autocertMgr == nil {
-				return nil, errors.New("auto_tls: manager not initialised")
-			}
-			hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2, l.BehindCloudflare)
-		case l.StaticTLS != nil:
-			// TLS config left to ServeTLS; cert/key paths are passed at start.
-		default:
-			return nil, errors.New("https listener has no TLS material")
+// applyListenerTLS selects the TLS source for an HTTPS content listener and
+// installs it on hs. StaticTLS is intentionally a no-op here: its cert/key
+// paths are passed to ServeTLS at start time instead.
+func (s *server) applyListenerTLS(hs *http.Server, l *resolved.Listener) error {
+	switch {
+	case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
+		dm := s.dns01Managers[l.Addr]
+		if dm == nil {
+			return errors.New("auto_tls: dns01 manager not initialised")
 		}
+		hs.TLSConfig = dns01TLSConfig(dm, l.EnableHTTP2)
+	case l.AutoTLS != nil:
+		if s.autocertMgr == nil {
+			return errors.New("auto_tls: manager not initialised")
+		}
+		hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2, l.BehindCloudflare)
+	case l.StaticTLS != nil:
+		// TLS config left to ServeTLS; cert/key paths are passed at start.
+	default:
+		return errors.New("https listener has no TLS material")
 	}
-	return hs, nil
+	return nil
 }
 
 func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
@@ -207,19 +223,7 @@ func (s *server) Start() error {
 			return fmt.Errorf("listen %s: %w", hs.Addr, err)
 		}
 		l, _ := findListener(s.cfg.Listeners, hs.Addr)
-		go func() {
-			switch {
-			case l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" && l.StaticTLS != nil:
-				_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
-			case l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" && l.AutoTLS != nil:
-				// TLSConfig (set on the http.Server) carries the cert source
-				// — autocert.Manager.GetCertificate or our dns01Manager
-				// equivalent. ServeTLS with empty paths uses it.
-				_ = hs.ServeTLS(ln, "", "")
-			default:
-				_ = hs.Serve(ln)
-			}
-		}()
+		go serveListener(hs, l, ln)
 	}
 	for _, h3 := range s.http3Servers {
 		h3 := h3
@@ -235,6 +239,22 @@ func (s *server) Start() error {
 	}
 	s.started = true
 	return nil
+}
+
+// serveListener runs hs on ln, picking ServeTLS vs Serve based on the
+// resolved listener's TLS material. For AutoTLS the cert source lives on
+// hs.TLSConfig (autocert.Manager.GetCertificate or the dns01Manager
+// equivalent), so ServeTLS is called with empty paths.
+func serveListener(hs *http.Server, l *resolved.Listener, ln net.Listener) {
+	isContentHTTPS := l != nil && l.Scheme == schemeHTTPS && l.Redirect == ""
+	switch {
+	case isContentHTTPS && l.StaticTLS != nil:
+		_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
+	case isContentHTTPS && l.AutoTLS != nil:
+		_ = hs.ServeTLS(ln, "", "")
+	default:
+		_ = hs.Serve(ln)
+	}
 }
 
 func (s *server) Shutdown() error {

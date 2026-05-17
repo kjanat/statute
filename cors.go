@@ -108,36 +108,14 @@ func corsHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		}
 
 		if matched {
-			if allowAll {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
-			} else {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-			}
-			if credentials {
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-			}
-			if exposeHeader != "" {
-				w.Header().Set("Access-Control-Expose-Headers", exposeHeader)
-			}
+			setCORSResponseHeaders(w, origin, allowAll, credentials, exposeHeader)
 		}
 
 		// Preflight: OPTIONS with Access-Control-Request-Method short-circuits
 		// after emitting the policy headers.
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if matched {
-				if methodsHeader != "" {
-					w.Header().Set("Access-Control-Allow-Methods", methodsHeader)
-				}
-				reqHeaders := r.Header.Get("Access-Control-Request-Headers")
-				if headersHeader != "" {
-					w.Header().Set("Access-Control-Allow-Headers", headersHeader)
-				} else if reqHeaders != "" {
-					// Echo back what the client asked for.
-					w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
-				}
-				if maxAge != "" {
-					w.Header().Set("Access-Control-Max-Age", maxAge)
-				}
+				setCORSPreflightHeaders(w, r, methodsHeader, headersHeader, maxAge)
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -145,6 +123,40 @@ func corsHandler(m resolved.Middleware, next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// setCORSResponseHeaders writes the Access-Control-Allow-Origin and related
+// headers that apply to every matched request (preflight or not).
+func setCORSResponseHeaders(w http.ResponseWriter, origin string, allowAll, credentials bool, exposeHeader string) {
+	if allowAll {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	} else {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
+	if credentials {
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+	if exposeHeader != "" {
+		w.Header().Set("Access-Control-Expose-Headers", exposeHeader)
+	}
+}
+
+// setCORSPreflightHeaders writes the preflight-only policy headers
+// (allowed methods, allowed headers, max-age) for a matched OPTIONS request.
+func setCORSPreflightHeaders(w http.ResponseWriter, r *http.Request, methodsHeader, headersHeader, maxAge string) {
+	if methodsHeader != "" {
+		w.Header().Set("Access-Control-Allow-Methods", methodsHeader)
+	}
+	reqHeaders := r.Header.Get("Access-Control-Request-Headers")
+	if headersHeader != "" {
+		w.Header().Set("Access-Control-Allow-Headers", headersHeader)
+	} else if reqHeaders != "" {
+		// Echo back what the client asked for.
+		w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+	}
+	if maxAge != "" {
+		w.Header().Set("Access-Control-Max-Age", maxAge)
+	}
 }
 
 // appendVary appends a value to an existing Vary header, deduplicating.
