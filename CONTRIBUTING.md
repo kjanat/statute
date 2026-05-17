@@ -9,8 +9,7 @@ statute is small and opinionated. Before opening a PR for a new feature, please 
 - Dynamic configuration reload, runtime config files, plugin loading.
 - Web admin UIs.
 - Scripting languages (Lua, Starlark, etc.).
-- L4 (TCP/UDP) proxying — statute is L7-only.
-- Clustering or distributed coordination across statute instances.
+- Generic L4 (TCP/UDP) load balancing — statute is L7-first. SNI-based TLS passthrough and PROXY-protocol ingress may be considered, since they compose with the existing listener/TLS path; open an issue first.
 
 If your idea is in one of these categories, [Caddy](https://caddyserver.com/) or [Traefik](https://traefik.io/) is a better home for it.
 
