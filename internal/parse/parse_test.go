@@ -105,9 +105,16 @@ func TestParseSize(t *testing.T) {
 		{"1.5GB", 1_500_000_000, false},
 		{"512B", 512, false},
 		{"  10kb  ", 10_000, false},
+		{"1TB", 1_000_000_000_000, false},
+		{"1TiB", 1024 * 1024 * 1024 * 1024, false},
+		{"1PB", 1_000_000_000_000_000, false},
+		{"9EB", 9_000_000_000_000_000_000, false}, // < MaxInt64
+		{"10EB", 0, true},                         // 1e19 >= MaxInt64
+		{"1QB", 0, true},                          // 1000^10, far too large
 		{"abc", 0, true},
 		{"-1MB", 0, true},
 		{"1XB", 0, true},
+		{"ib", 0, true},
 		{"", 0, true},
 	}
 	for _, c := range cases {

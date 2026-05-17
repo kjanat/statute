@@ -210,26 +210,41 @@ func splitSizeUnit(s string) (numStr, unit string) {
 	return strings.TrimSpace(s[:i]), strings.ToLower(strings.TrimSpace(s[i:]))
 }
 
+// bytePrefixes is the ordered list of byte-size prefixes; a prefix's index
+// is its exponent minus one. Decimal units raise 1000 to that exponent,
+// binary units (…ib) raise 1024. Extending the range (terabytes,
+// petabytes, …) is just a longer string — no new mapping.
+const bytePrefixes = "kmgtpezyrq"
+
 // sizeMultiplier maps a lower-cased byte-size unit to its multiplier.
-// Decimal units (kb/mb/gb) use powers of 1000; binary units (kib/mib/gib)
-// use powers of 1024.
+// Decimal units (kb, mb, gb, tb, …) use powers of 1000; binary units
+// (kib, mib, gib, …) use powers of 1024. The bare unit "b" (or "") is 1.
+// Case is irrelevant here because callers lower-case the unit before this
+// sees it; this is byte-size parsing, not general SI (where m=milli≠M=mega).
 func sizeMultiplier(unit string) (float64, error) {
-	switch unit {
-	case "", "b":
+	original := unit
+	unit = strings.ToLower(strings.TrimSpace(unit))
+
+	if unit == "" || unit == "b" {
 		return 1, nil
-	case "k", "kb":
-		return 1000, nil
-	case "m", "mb":
-		return 1000 * 1000, nil
-	case "g", "gb":
-		return 1000 * 1000 * 1000, nil
-	case "kib":
-		return 1024, nil
-	case "mib":
-		return 1024 * 1024, nil
-	case "gib":
-		return 1024 * 1024 * 1024, nil
-	default:
-		return 0, fmt.Errorf("unknown unit %q", unit)
 	}
+
+	base := 1000.0
+	prefix := unit
+	switch {
+	case strings.HasSuffix(unit, "ib"):
+		base = 1024
+		prefix = strings.TrimSuffix(unit, "ib")
+	case strings.HasSuffix(unit, "b"):
+		prefix = strings.TrimSuffix(unit, "b")
+	}
+
+	if len(prefix) != 1 {
+		return 0, fmt.Errorf("unknown unit %q", original)
+	}
+	idx := strings.IndexByte(bytePrefixes, prefix[0])
+	if idx == -1 {
+		return 0, fmt.Errorf("unknown unit %q", original)
+	}
+	return math.Pow(base, float64(idx+1)), nil
 }
