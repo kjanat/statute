@@ -6,7 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `FuzzParseSize` fuzz target; loosened the `parseDuration` / `parseRate`
+  / `parseSize` fuzz invariants to cut false failures.
+
 ### Changed
+
+#### Breaking
+
+- Module path renamed to `statute.kjanat.dev`. Importers must update
+  their import paths. `.editorconfig` removed.
+
+#### Repository & CI
+
+- Moved `CODEOWNERS`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, and
+  `SECURITY.md` under `.github/`; `SECURITY.md` rewritten and
+  `CODE_OF_CONDUCT.md` condensed; `CONTRIBUTING.md` reframed (dropped the
+  clustering non-goal, allow L4 SNI / PROXY-protocol passthrough).
+- Pages workflow heredoc fix; CI fuzz step fixed (`-fuzz` cannot target
+  multiple packages in one invocation); formatter/linter config tidied.
 
 #### Complexity refactor (no behaviour change)
 
@@ -50,6 +69,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `parseSize` no longer overflows `int64` on very large inputs.
 - Retry middleware: the large-body single-shot pass-through built its
   fallback `io.MultiReader` from `r.Body` _after_ closing it, so reads
   past the buffered prefix failed with `ErrBodyReadAfterClose`. The body
