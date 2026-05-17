@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in statute doesn't behave as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please include enough information that we can reproduce the issue without going back and forth.
+
+  - type: input
+    id: version
+    attributes:
+      label: statute version
+      description: Output of `go list -m github.com/kjanat/statute` or the tagged release.
+      placeholder: v0.2.0
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Output of `go version`.
+      placeholder: go1.25.1 linux/amd64
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Minimal configuration that reproduces the issue
+      description: The smallest `statute.Config` value that exhibits the bug. Please redact secrets (Cloudflare tokens, ACME emails) before pasting.
+      render: go
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you run, what request did you send, what did you observe?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the relevant lines of the access log / stderr / metrics.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Network topology (behind Cloudflare?), TLS mode, anything else that might be relevant.

@@ -82,6 +82,8 @@ type Backend struct {
 // Strategy mirrors the surface Strategy enum.
 type Strategy int
 
+// Load-balancing strategies. Values match the surface API constants in the
+// statute package one-for-one; see statute.Strategy for documentation.
 const (
 	RoundRobin Strategy = iota
 	LeastConnections
@@ -142,6 +144,9 @@ type Middleware struct {
 // MiddlewareType discriminates resolved middleware values.
 type MiddlewareType int
 
+// Middleware-type discriminators. Append new entries to this list; never
+// insert in the middle — the integer values are part of the JSON resolved
+// export contract that downstream tooling depends on.
 const (
 	MWTimeout MiddlewareType = iota
 	MWRateLimit
@@ -154,6 +159,7 @@ const (
 // RateLimitKey mirrors the surface key.
 type RateLimitKey int
 
+// Rate-limit bucket keys. Mirror statute.RateLimitKey.
 const (
 	KeyClientIP RateLimitKey = iota
 	KeyHostHeader
@@ -162,6 +168,7 @@ const (
 // CompressAlgo mirrors the surface algorithm enum.
 type CompressAlgo int
 
+// Compression algorithms. Mirror statute.CompressAlgo.
 const (
 	Gzip CompressAlgo = iota
 	Brotli

@@ -1,0 +1,86 @@
+# golangci-lint configuration for statute.
+#
+# Conventions:
+#   - Enabled lint set is explicit; the default set drifts across releases
+#     and tests of "fresh checkout passes lint" become noisy over time.
+#   - All linters are errors. We brought the new config in as warnings, fixed
+#     the violations in one focused commit, then promoted to errors so the
+#     bar is visible from now on.
+#   - Test files get a slightly relaxed set: error-checking on every Fprintln
+#     and noctx on every httptest call wastes everyone's afternoon.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - revive
+    - misspell
+    - unparam
+    - prealloc
+    - bodyclose
+    - nilerr
+    - errorlint
+    - unconvert
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: exported
+          severity: warning
+      # unexported-return is disabled. Many builder constructors (RateLimit,
+      # Retry, Timeout, JSONLog, OTLP, ...) intentionally return unexported
+      # pointer types: the user only chains methods on the result and never
+      # names the type. Suppressing the warning is consistent with the
+      # config-as-code style the framework targets.
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+          - revive
+      - path: examples/
+        linters:
+          - revive
+          - errcheck
+      - path: dns01\.go
+        linters:
+          - bodyclose
+        # quic-go and acme close response bodies via internal helpers that
+        # the linter can't see through.
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/kjanat/statute

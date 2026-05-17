@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test
+        run: go test -race -coverprofile=cover.out -covermode=atomic ./...
+
+      - name: coverage summary
+        run: go tool cover -func=cover.out | tail -1
+
+      - name: upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: cover.out
+          path: cover.out
+          if-no-files-found: error
+          retention-days: 14
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          args: --timeout=5m
+
+  fuzz:
+    name: fuzz (30s/target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: list fuzz targets
+        id: targets
+        run: |
+          mapfile -t targets < <(grep -rhoE '^func (Fuzz[A-Za-z0-9_]+)' --include='*_test.go' . | awk '{print $2}' | sort -u)
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "no fuzz targets found"
+            exit 0
+          fi
+          printf '%s\n' "${targets[@]}" > .fuzz-targets
+          cat .fuzz-targets
+      - name: run fuzz targets
+        run: |
+          [ -f .fuzz-targets ] || exit 0
+          while read -r target; do
+            echo "::group::$target"
+            go test -run=^$ -fuzz="^${target}$" -fuzztime=30s ./...
+            echo "::endgroup::"
+          done < .fuzz-targets
+
+  examples:
+    name: build examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./examples/...

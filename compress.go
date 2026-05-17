@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/andybalholm/brotli"
+
 	"github.com/kjanat/statute/resolved"
 )
 

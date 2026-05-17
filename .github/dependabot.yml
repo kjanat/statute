@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Europe/Amsterdam"
+    open-pull-requests-limit: 5
+    groups:
+      otel:
+        patterns:
+          - "go.opentelemetry.io/*"
+      x-crypto:
+        patterns:
+          - "golang.org/x/crypto"
+          - "golang.org/x/crypto/*"
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Europe/Amsterdam"
+    labels:
+      - dependencies
+      - github-actions

@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new feature or surface-API addition.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        statute aims to stay focused. Before filing, please check whether the feature is on the explicit non-goals list in the README (dynamic reload, plugin loading, admin UI, scripting).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the real-world scenario; what does the absence of this feature force you to do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed surface API
+      description: If you have an idea of what the API should look like, sketch it as a Go snippet.
+      render: go
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else have you tried, or what would you do without this feature?
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and breaking changes
+      description: Would this be additive (new constructor) or does it require changing existing API?

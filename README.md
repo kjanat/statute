@@ -2,6 +2,12 @@
 
 > Config-as-code reverse proxy in Go. The binary _is_ the configuration.
 
+[![ci](https://github.com/kjanat/statute/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kjanat/statute/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/kjanat/statute.svg)](https://pkg.go.dev/github.com/kjanat/statute)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kjanat/statute)](https://goreportcard.com/report/github.com/kjanat/statute)
+[![Release](https://img.shields.io/github/v/release/kjanat/statute?sort=semver)](https://github.com/kjanat/statute/releases)
+[![License](https://img.shields.io/github/license/kjanat/statute)](LICENSE)
+
 statute is a reverse proxy framework where your routing topology, TLS material, upstream pools, and middleware stack are expressed as Go values — type-checked, IDE-completed, and validated at startup. There is no runtime config file, no hot reload, no module loader. You write a `main.go`, you `go build`, you ship a single binary that boots, validates, and serves.
 
 ```go

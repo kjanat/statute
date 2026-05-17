@@ -339,7 +339,10 @@ func (m *dns01Manager) loadCert(host string) *tls.Certificate {
 }
 
 func (m *dns01Manager) persistCert(host string, chain [][]byte, key *ecdsa.PrivateKey) error {
-	var certPEM []byte
+	// Pre-allocate to roughly the encoded size: PEM adds ~1/3 overhead on
+	// base64 plus header/footer bytes. The exact size is unimportant; we just
+	// want to avoid the growth-and-copy cycle for typical 3-cert chains.
+	certPEM := make([]byte, 0, 4096)
 	for _, der := range chain {
 		certPEM = append(certPEM, pem.EncodeToMemory(&pem.Block{
 			Type:  "CERTIFICATE",
