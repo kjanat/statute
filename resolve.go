@@ -3,6 +3,7 @@ package statute
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -694,5 +695,9 @@ func parseSize(s string) (int64, error) {
 	default:
 		return 0, fmt.Errorf("size %q: unknown unit %q", s, unit)
 	}
-	return int64(n * mult), nil
+	bytes := n * mult
+	if math.IsInf(bytes, 0) || math.IsNaN(bytes) || bytes >= math.MaxInt64 {
+		return 0, fmt.Errorf("size %q: too large", s)
+	}
+	return int64(bytes), nil
 }

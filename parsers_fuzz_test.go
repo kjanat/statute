@@ -47,7 +47,7 @@ func FuzzParseRate(f *testing.F) {
 
 // FuzzParseSize invariant: never panic; on err==nil the result is non-negative.
 func FuzzParseSize(f *testing.F) {
-	for _, seed := range []string{"100", "1KB", "1MB", "1GB", "1KiB", "1MiB", "1GiB", "1.5GB", "0", "", "abc", "1XB", "-5MB"} {
+	for _, seed := range []string{"100", "1KB", "1MB", "1GB", "1KiB", "1MiB", "1GiB", "1.5GB", "0", "", "abc", "1XB", "-5MB", "10000000000000000000", "1e308GB", "9223372036854775807"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
