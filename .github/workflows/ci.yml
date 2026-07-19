@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - run: go vet ./...
       - run: go build ./...
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@v9
         with: { version: latest, args: --timeout=5m }
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - name: list fuzz targets
         id: targets
@@ -71,6 +71,6 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - run: go build ./examples/...
