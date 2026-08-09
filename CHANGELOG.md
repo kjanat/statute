@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Docker label discovery provider (`statute.Docker()`, new `Config.Docker`
+  field): containers register routes and upstream pools via `statute.*`
+  labels, discovered over the Docker Engine API (unix socket or TCP) with
+  event-driven reconciliation, debounced bursts, atomic route-table
+  generations, and pool-handler reuse that preserves health-check state
+  across reconciles. Label-derived routes are matched only after all
+  static routes. Includes a `TraefikLabels()` compat mode honoring the
+  common subset of Traefik's docker labels — router rules with
+  `Host`/`Path`/`PathPrefix` (`&&`, `||`, parentheses),
+  `loadbalancer.server.port`/`.scheme`, loadbalancer health checks,
+  `traefik.enable`, and `traefik.docker.network` — so fleets already
+  labeled for Traefik migrate without editing compose files. Implemented
+  in-tree with a minimal Docker API client (`internal/docker`); no new
+  module dependencies. See `docs/docker.md` and `examples/docker`.
+
 ## [0.4.0] — 2026-05-17
 
 ### Changed

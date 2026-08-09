@@ -21,6 +21,7 @@ type Config struct {
 	Listeners     Listeners
 	Upstreams     Upstreams
 	Routes        Routes
+	Docker        *DockerConfig
 	Defaults      Defaults
 	Observability Observability
 	Shutdown      Shutdown

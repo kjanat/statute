@@ -46,6 +46,8 @@ Choose statute when you want your reverse proxy configuration to be Go code that
 
 You give up: hot reload, runtime configuration changes, plugin loading, web admin UIs, and a community ecosystem of off-the-shelf middleware. If those are deal-breakers, run Caddy or Traefik instead — they're better at being them.
 
+One deliberate exception: the opt-in [Docker label discovery provider](docs/docker.md) routes containers by their labels, Traefik-style — including a compat mode for existing `traefik.*` labels. The topology (listeners, TLS, static routes, that discovery happens at all) stays compiled; only the label-derived routes follow containers as they come and go.
+
 statute is designed for teams that already build and ship Go binaries, where adding "edit the config file" as an extra deployment path costs more than recompiling and re-rolling.
 
 ## Status
@@ -69,6 +71,7 @@ What's implemented:
 - pprof endpoints on the metrics server
 - Graceful shutdown with listener draining
 - Cloudflare-aware mode: `BehindCloudflare()` flips ALPN to suppress TLS-ALPN-01 and trusts `CF-Connecting-IP`
+- Docker label discovery: containers register routes and pools via `statute.*` labels, with a `traefik.*` label compat mode for drop-in migration
 - `statute.Main` CLI wrapper with `-validate` and `-export` flags
 
 ## Install
@@ -203,6 +206,30 @@ Middleware:
 - **`Compress(Gzip, Brotli)`** — negotiates content encoding via `Accept-Encoding`. Brotli preferred when the client advertises both.
 - **`ETag()`** — adds an SHA-256-based ETag to 200 responses; answers 304 on `If-None-Match` match.
 
+### Docker discovery
+
+```go
+Docker: statute.Docker().
+    Network("proxy").    // docker network to take container IPs from
+    TraefikLabels().     // also honor existing traefik.* labels
+    Refresh("30s"),      // optional periodic resync on top of the event stream
+```
+
+Containers opt in with labels and are routed as they start and stop:
+
+```yaml
+services:
+  api:
+    image: example/api
+    labels:
+      statute.enable: "true"
+      statute.host: api.example.com
+      statute.port: "8080"
+      statute.healthcheck.path: /healthz
+```
+
+Replicas sharing a `statute.service` name pool together. With `TraefikLabels()`, containers already labeled for Traefik (`traefik.http.routers.<r>.rule` with `Host`/`Path`/`PathPrefix`, `loadbalancer.server.port`, …) work unmodified — the intended migration path for fleets moving off Traefik. Label-derived routes are matched only after every static route, and the discovery settings themselves are validated at startup like all other config. Full label reference and semantics in [docs/docker.md](docs/docker.md).
+
 ### Observability
 
 ```go
@@ -287,6 +314,7 @@ Examples are runnable Go programs in `examples/`:
 - `examples/basic` — canonical AutoTLS + HTTP/2 + HTTP/3 setup.
 - `examples/cloudflare` — fronted by Cloudflare with HTTP-01 (no API key).
 - `examples/cloudflare-wildcard` — wildcard cert via Cloudflare DNS-01 + OTLP tracing.
+- `examples/docker` — Docker label discovery with Traefik label compatibility.
 
 Run any of them:
 
@@ -300,6 +328,7 @@ go run ./examples/cloudflare-wildcard       # needs CLOUDFLARE_API_TOKEN
 - [docs/cloudflare.md](docs/cloudflare.md) — running behind Cloudflare, HTTP-01 vs DNS-01, settings to enable on the Cloudflare side, failure modes.
 - [docs/observability.md](docs/observability.md) — access log fields, metric names, span structure, sampling guidance.
 - [docs/production.md](docs/production.md) — deployment patterns, ports, capabilities, the `setcap` trick for binding low ports as a non-root user.
+- [docs/docker.md](docs/docker.md) — Docker label discovery: the `statute.*` label schema, the supported `traefik.*` compat subset, and the migration path from Traefik.
 
 ## Testing
 

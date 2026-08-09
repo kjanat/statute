@@ -1,0 +1,234 @@
+// Package docker is a minimal Docker Engine API client plus the label
+// extraction logic that turns container labels into statute service
+// registrations. It speaks only the two endpoints the docker provider
+// needs — container listing and the event stream — over a unix socket or
+// TCP, with no dependency on the Docker SDK.
+package docker
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+)
+
+// Client talks to the Docker Engine API.
+type Client struct {
+	// baseURL is the http(s) URL requests are issued against. For unix
+	// sockets this is a placeholder host; the transport dials the socket.
+	baseURL string
+	http    *http.Client
+}
+
+// NewClient builds a client for the given endpoint. Supported forms:
+//
+//	unix:///var/run/docker.sock
+//	tcp://127.0.0.1:2375
+//	http://127.0.0.1:2375
+func NewClient(endpoint string) (*Client, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("docker endpoint %q: %w", endpoint, err)
+	}
+	switch u.Scheme {
+	case "unix":
+		socketPath := u.Path
+		if u.Host != "" {
+			// unix://var/run/... parses the first segment as host.
+			socketPath = "/" + u.Host + u.Path
+		}
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
+			},
+		}
+		return &Client{
+			baseURL: "http://docker",
+			http:    &http.Client{Transport: transport},
+		}, nil
+	case "tcp", "http":
+		return &Client{
+			baseURL: "http://" + u.Host,
+			http:    &http.Client{},
+		}, nil
+	default:
+		return nil, fmt.Errorf("docker endpoint %q: unsupported scheme %q (use unix:// or tcp://)", endpoint, u.Scheme)
+	}
+}
+
+// Container is the subset of the Docker container listing statute needs.
+type Container struct {
+	ID     string
+	Name   string
+	Labels map[string]string
+	// Networks maps docker network name to the container's IP on it.
+	Networks map[string]string
+	// Ports is the deduplicated, sorted list of private (container-side)
+	// TCP ports the container exposes.
+	Ports []int
+}
+
+// containerJSON mirrors the wire format of GET /containers/json.
+type containerJSON struct {
+	ID     string   `json:"Id"`
+	Names  []string `json:"Names"`
+	Labels map[string]string
+	Ports  []struct {
+		PrivatePort int    `json:"PrivatePort"`
+		Type        string `json:"Type"`
+	}
+	NetworkSettings struct {
+		Networks map[string]struct {
+			IPAddress string `json:"IPAddress"`
+		}
+	}
+}
+
+// ListContainers returns the running containers.
+func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
+	q := url.Values{}
+	q.Set("filters", `{"status":["running"]}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/containers/json?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("docker: list containers: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("docker: list containers: unexpected status %s", resp.Status)
+	}
+	var raw []containerJSON
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("docker: list containers: decode: %w", err)
+	}
+	out := make([]Container, 0, len(raw))
+	for _, cj := range raw {
+		out = append(out, normalizeContainer(cj))
+	}
+	return out, nil
+}
+
+// normalizeContainer converts the wire form to the internal Container.
+func normalizeContainer(cj containerJSON) Container {
+	name := cj.ID
+	if len(cj.Names) > 0 {
+		name = strings.TrimPrefix(cj.Names[0], "/")
+	}
+	networks := make(map[string]string, len(cj.NetworkSettings.Networks))
+	for netName, n := range cj.NetworkSettings.Networks {
+		if n.IPAddress != "" {
+			networks[netName] = n.IPAddress
+		}
+	}
+	seen := map[int]bool{}
+	var ports []int
+	for _, p := range cj.Ports {
+		if p.Type != "" && p.Type != "tcp" {
+			continue
+		}
+		if p.PrivatePort > 0 && !seen[p.PrivatePort] {
+			seen[p.PrivatePort] = true
+			ports = append(ports, p.PrivatePort)
+		}
+	}
+	sort.Ints(ports)
+	return Container{
+		ID:       cj.ID,
+		Name:     name,
+		Labels:   cj.Labels,
+		Networks: networks,
+		Ports:    ports,
+	}
+}
+
+// Event is a Docker Engine event. Only the discriminating fields are kept.
+type Event struct {
+	Type   string `json:"Type"`
+	Action string `json:"Action"`
+}
+
+// typeContainer is the Event.Type value for container lifecycle events.
+const typeContainer = "container"
+
+// topologyActions are the container lifecycle actions that can change the
+// set of routable backends.
+var topologyActions = map[string]bool{
+	"start":   true,
+	"die":     true,
+	"stop":    true,
+	"kill":    true,
+	"pause":   true,
+	"unpause": true,
+	"restart": true,
+	"update":  true,
+	"rename":  true,
+}
+
+// ChangesTopology reports whether the event can alter routing state.
+func (e Event) ChangesTopology() bool {
+	if e.Type != typeContainer {
+		return false
+	}
+	// Health transitions arrive as "health_status: healthy".
+	return topologyActions[e.Action] || strings.HasPrefix(e.Action, "health_status")
+}
+
+// StreamEvents opens the event stream and invokes handle for every event
+// until the stream ends or ctx is cancelled. It returns the stream error;
+// the caller owns reconnect policy.
+func (c *Client) StreamEvents(ctx context.Context, handle func(Event)) error {
+	q := url.Values{}
+	q.Set("filters", `{"type":["container"]}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/events?"+q.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker: event stream: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("docker: event stream: unexpected status %s", resp.Status)
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var ev Event
+		if err := dec.Decode(&ev); err != nil {
+			// Context cancellation surfaces as a read error on the body.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("docker: event stream: decode: %w", err)
+		}
+		handle(ev)
+	}
+}
+
+// Ping checks that the daemon is reachable.
+func (c *Client) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/_ping", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker: ping: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("docker: ping: unexpected status %s", resp.Status)
+	}
+	return nil
+}

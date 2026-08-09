@@ -35,6 +35,12 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 		return nil, err
 	}
 
+	docker, err := resolveDocker(cfg.Docker)
+	if err != nil {
+		return nil, fmt.Errorf("docker: %w", err)
+	}
+	out.Docker = docker
+
 	obs, err := resolveObservability(cfg.Observability)
 	if err != nil {
 		return nil, fmt.Errorf("observability: %w", err)
@@ -211,6 +217,33 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 	}, nil
 }
 
+// resolveDocker fills provider defaults and parses the refresh interval.
+// The endpoint's scheme is validated here so a typo fails at Resolve time,
+// not when the runtime first dials the daemon.
+func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
+	if d == nil {
+		return nil, nil
+	}
+	endpoint := d.endpoint
+	if endpoint == "" {
+		endpoint = "unix:///var/run/docker.sock"
+	}
+	if !strings.HasPrefix(endpoint, "unix://") && !strings.HasPrefix(endpoint, "tcp://") && !strings.HasPrefix(endpoint, "http://") {
+		return nil, fmt.Errorf("endpoint %q: must be unix:// or tcp://", endpoint)
+	}
+	refresh, err := parse.DurationOr(d.refresh, 0)
+	if err != nil {
+		return nil, fmt.Errorf("refresh: %w", err)
+	}
+	return &resolved.Docker{
+		Endpoint:         endpoint,
+		Network:          d.network,
+		ExposedByDefault: d.exposedByDefault,
+		TraefikLabels:    d.traefikLabels,
+		Refresh:          refresh,
+	}, nil
+}
+
 func resolveListener(l *Listener) (*resolved.Listener, error) {
 	if l == nil {
 		return nil, errors.New("nil listener")
@@ -374,7 +407,10 @@ func (m *timeoutMW) resolve() (resolved.Middleware, error)   { return resolveTim
 func (m *rateLimitMW) resolve() (resolved.Middleware, error) { return resolveRateLimitMW(m) }
 func (m *retryMW) resolve() (resolved.Middleware, error)     { return resolveRetryMW(m) }
 func (m *cacheMW) resolve() (resolved.Middleware, error)     { return resolveCacheMW(m) }
-func (m *compressMW) resolve() (resolved.Middleware, error)  { return resolveCompressMW(m), nil }
+
+//nolint:unparam // the error result is fixed by the resolvableMiddleware interface
+func (m *compressMW) resolve() (resolved.Middleware, error) { return resolveCompressMW(m), nil }
+
 func (*etagMW) resolve() (resolved.Middleware, error) {
 	return resolved.Middleware{Type: resolved.MWETag}, nil
 }

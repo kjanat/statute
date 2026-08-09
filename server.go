@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -28,6 +29,12 @@ type server struct {
 	http3Servers  []*http3Listener
 
 	pools map[string]*poolHandler
+
+	// docker is the label-discovery provider; nil unless configured.
+	// dynamic is the current generation of label-derived routes, consulted
+	// after static routes so labels can never shadow compiled config.
+	docker  *dockerProvider
+	dynamic atomic.Pointer[dynamicTable]
 
 	stats *stats
 
@@ -73,6 +80,9 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	if err := s.initPools(cfg.Upstreams); err != nil {
 		return nil, err
 	}
+	if err := s.initDocker(cfg.Docker); err != nil {
+		return nil, err
+	}
 	if err := s.initListeners(cfg.Listeners, s.buildRouter()); err != nil {
 		return nil, err
 	}
@@ -100,6 +110,45 @@ func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
 		s.dns01Managers[l.Addr] = dm
 	}
 	return nil
+}
+
+// initDocker constructs the label-discovery provider when configured.
+func (s *server) initDocker(cfg *resolved.Docker) error {
+	if cfg == nil {
+		return nil
+	}
+	dp, err := newDockerProvider(cfg, s)
+	if err != nil {
+		return fmt.Errorf("docker: %w", err)
+	}
+	s.docker = dp
+	return nil
+}
+
+// startDocker runs the provider's initial sync before listeners open so
+// the first request already sees label-derived routes.
+func (s *server) startDocker() error {
+	if s.docker == nil {
+		return nil
+	}
+	if err := s.docker.start(); err != nil {
+		return fmt.Errorf("docker: %w", err)
+	}
+	return nil
+}
+
+// shutdownDocker stops the provider before its pools so no reconcile swaps
+// in a fresh generation mid-teardown, then retires the current generation.
+func (s *server) shutdownDocker() {
+	if s.docker == nil {
+		return
+	}
+	s.docker.stop()
+	if t := s.dynamic.Load(); t != nil {
+		for _, ph := range t.pools {
+			ph.shutdown()
+		}
+	}
 }
 
 // initPools builds a poolHandler for every resolved upstream.
@@ -252,6 +301,9 @@ func (s *server) Start() error {
 			return fmt.Errorf("dns01 manager %s: %w", addr, err)
 		}
 	}
+	if err := s.startDocker(); err != nil {
+		return err
+	}
 	for _, hs := range s.listeners {
 		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
 		if err != nil {
@@ -322,6 +374,8 @@ func (s *server) Shutdown() error {
 	}
 	wg.Wait()
 
+	s.shutdownDocker()
+
 	// Stop health checkers after listeners drain so probes do not race
 	// shutdown of the metrics server.
 	for _, ph := range s.pools {
@@ -362,14 +416,33 @@ func joinErrors(ch <-chan error) error {
 	return errors.Join(collected...)
 }
 
-// buildRouter returns an http.Handler that dispatches to the matching route
-// in declaration order.
-func (s *server) buildRouter() http.Handler {
-	type compiled struct {
-		route   *resolved.Route
-		handler http.Handler
+// compiledRoute pairs a resolved route with its ready-to-serve handler
+// chain. Both static routes and docker label-derived routes compile to it.
+type compiledRoute struct {
+	route   *resolved.Route
+	handler http.Handler
+}
+
+// findHandler returns the first route matching host and path, in slice
+// order, or nil.
+func findHandler(routes []compiledRoute, host, path string) http.Handler {
+	for _, c := range routes {
+		if c.route.Host != "" && c.route.Host != host {
+			continue
+		}
+		if !matchPattern(c.route.Pattern, path) {
+			continue
+		}
+		return c.handler
 	}
-	routes := make([]compiled, 0, len(s.cfg.Routes))
+	return nil
+}
+
+// buildRouter returns an http.Handler that dispatches to the matching
+// static route in declaration order, then to the docker provider's dynamic
+// routes when one is configured.
+func (s *server) buildRouter() http.Handler {
+	static := make([]compiledRoute, 0, len(s.cfg.Routes))
 	for _, r := range s.cfg.Routes {
 		var base http.Handler
 		switch {
@@ -380,20 +453,20 @@ func (s *server) buildRouter() http.Handler {
 			base = stripPrefix(r.Pattern, base)
 		}
 		h := wrapMiddleware(r.Middleware, base)
-		routes = append(routes, compiled{route: r, handler: h})
+		static = append(static, compiledRoute{route: r, handler: h})
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host := stripPort(req.Host)
-		for _, c := range routes {
-			if c.route.Host != "" && c.route.Host != host {
-				continue
-			}
-			if !matchPattern(c.route.Pattern, req.URL.Path) {
-				continue
-			}
-			c.handler.ServeHTTP(w, req)
+		if h := findHandler(static, host, req.URL.Path); h != nil {
+			h.ServeHTTP(w, req)
 			return
+		}
+		if t := s.dynamic.Load(); t != nil {
+			if h := findHandler(t.routes, host, req.URL.Path); h != nil {
+				h.ServeHTTP(w, req)
+				return
+			}
 		}
 		http.NotFound(w, req)
 	})
