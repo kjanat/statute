@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/andybalholm/brotli v1.2.2
-	github.com/quic-go/quic-go v0.60.0
+	github.com/quic-go/quic-go v0.61.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0
