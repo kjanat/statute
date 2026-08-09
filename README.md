@@ -4,7 +4,6 @@
 
 [![ci](https://github.com/kjanat/statute/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kjanat/statute/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/statute.kjanat.dev.svg)](https://pkg.go.dev/statute.kjanat.dev)
-[![Go Report Card](https://goreportcard.com/badge/statute.kjanat.dev)](https://goreportcard.com/report/statute.kjanat.dev)
 [![Release](https://img.shields.io/github/v/release/kjanat/statute?sort=semver)](https://github.com/kjanat/statute/releases)
 [![License](https://img.shields.io/github/license/kjanat/statute)](LICENSE)
 
