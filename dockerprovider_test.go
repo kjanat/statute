@@ -130,6 +130,10 @@ func TestDockerSyncBuildsRoutes(t *testing.T) {
 	if got := rec.Header().Get("X-Seen-Host"); got != "app.example.com" {
 		t.Fatalf("host header not preserved: %q", got)
 	}
+	// Host matching is case-insensitive per RFC 9110.
+	if h := findHandler(tab.routes, "APP.Example.COM", "/x"); h == nil {
+		t.Fatal("host match is case-sensitive")
+	}
 }
 
 func TestDockerSyncTraefikLabels(t *testing.T) {

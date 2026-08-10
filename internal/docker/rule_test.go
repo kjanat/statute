@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -71,6 +72,24 @@ func TestParseRule(t *testing.T) {
 			rule: "Host(`a.example.com`) && Host(`a.example.com`)",
 			want: []Matcher{{Host: "a.example.com", Path: "/*"}},
 		},
+		{
+			name: "single quotes",
+			rule: "Host('a.example.com')",
+			want: []Matcher{{Host: "a.example.com", Path: "/*"}},
+		},
+		{
+			name: "and binds tighter than or",
+			rule: "Host(`a.example.com`) && PathPrefix(`/x`) || Host(`b.example.com`)",
+			want: []Matcher{
+				{Host: "a.example.com", Path: "/x/*"},
+				{Host: "b.example.com", Path: "/*"},
+			},
+		},
+		{
+			name: "hosts are lowercased",
+			rule: "Host(`APP.Example.COM`)",
+			want: []Matcher{{Host: "app.example.com", Path: "/*"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -101,6 +120,7 @@ func TestParseRuleErrors(t *testing.T) {
 		{"empty args", "Host()", "at least one argument"},
 		{"header matcher", "Header(`X-Foo`, `bar`)", "not supported"},
 		{"trailing garbage", "Host(`a`) Host(`b`)", "unexpected"},
+		{"empty rule", "", "end of rule"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,5 +132,32 @@ func TestParseRuleErrors(t *testing.T) {
 				t.Fatalf("ParseRule(%q) error = %q, want substring %q", tt.rule, err, tt.want)
 			}
 		})
+	}
+}
+
+// TestParseRuleExpansionCap covers the maxRuleMatchers guard against
+// pathological labels inflating the route table.
+func TestParseRuleExpansionCap(t *testing.T) {
+	hosts := make([]string, maxRuleMatchers+1)
+	for i := range hosts {
+		hosts[i] = fmt.Sprintf("`h%d.example.com`", i)
+	}
+	rule := "Host(" + strings.Join(hosts, ",") + ")"
+	if _, err := ParseRule(rule); err == nil || !strings.Contains(err.Error(), "matchers") {
+		t.Fatalf("oversized host list not capped: %v", err)
+	}
+
+	// The cap also applies mid-expansion when a conjunction distributes
+	// over a large disjunction.
+	rule = "Host(" + strings.Join(hosts, ",") + ") && PathPrefix(`/x`)"
+	if _, err := ParseRule(rule); err == nil || !strings.Contains(err.Error(), "matchers") {
+		t.Fatalf("oversized conjunction not capped: %v", err)
+	}
+
+	// A rule at the cap still parses.
+	rule = "Host(" + strings.Join(hosts[:maxRuleMatchers], ",") + ")"
+	got, err := ParseRule(rule)
+	if err != nil || len(got) != maxRuleMatchers {
+		t.Fatalf("rule at cap failed: %d matchers, err %v", len(got), err)
 	}
 }

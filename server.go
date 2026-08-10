@@ -137,6 +137,14 @@ func (s *server) startDocker() error {
 	return nil
 }
 
+// rollbackDockerUnlessStarted undoes startDocker when a later startup step
+// failed. Deferred from Start; a completed Start sets started first.
+func (s *server) rollbackDockerUnlessStarted() {
+	if !s.started {
+		s.shutdownDocker()
+	}
+}
+
 // shutdownDocker stops the provider before its pools so no reconcile swaps
 // in a fresh generation mid-teardown, then retires the current generation.
 func (s *server) shutdownDocker() {
@@ -304,6 +312,9 @@ func (s *server) Start() error {
 	if err := s.startDocker(); err != nil {
 		return err
 	}
+	// If a later startup step fails, stop the provider again so a
+	// failed Start does not leak its reconcile loop and pools.
+	defer s.rollbackDockerUnlessStarted()
 	for _, hs := range s.listeners {
 		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
 		if err != nil {
@@ -424,10 +435,10 @@ type compiledRoute struct {
 }
 
 // findHandler returns the first route matching host and path, in slice
-// order, or nil.
+// order, or nil. Host comparison is case-insensitive per RFC 9110.
 func findHandler(routes []compiledRoute, host, path string) http.Handler {
 	for _, c := range routes {
-		if c.route.Host != "" && c.route.Host != host {
+		if c.route.Host != "" && !strings.EqualFold(c.route.Host, host) {
 			continue
 		}
 		if !matchPattern(c.route.Pattern, path) {

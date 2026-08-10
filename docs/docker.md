@@ -29,11 +29,20 @@ statute.Main(statute.Config{
 
 | Option | Meaning |
 | --- | --- |
-| `Endpoint(string)` | Docker Engine API endpoint. Default `unix:///var/run/docker.sock`; `tcp://host:port` also works. |
+| `Endpoint(string)` | Docker Engine API endpoint. Default `unix:///var/run/docker.sock`; `tcp://host:port` also works — but see the warning below. |
 | `Network(string)` | Docker network whose IP is used to reach containers. Overridable per container with `statute.network` / `traefik.docker.network`. |
 | `ExposedByDefault()` | Register every running container without requiring an enable label (Traefik's `exposedByDefault=true`). statute's default is opt-in. |
 | `TraefikLabels()` | Additionally honor `traefik.*` labels (see below). |
 | `Refresh(string)` | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
+
+> **Warning — TCP endpoints are unauthenticated.** The client speaks plain
+> HTTP with no TLS or client certificates, and whoever can answer on that
+> socket controls your routing. Use `tcp://` only for loopback addresses or
+> endpoints reached through an authenticated tunnel (SSH forward, TLS
+> sidecar such as `docker-socket-proxy` on a private network). Never expose
+> a raw Docker TCP socket to a network you don't fully trust — that is
+> remote root on the host, as the Docker docs themselves warn. The unix
+> socket default is the safe choice.
 
 ## How discovery behaves
 
@@ -82,13 +91,13 @@ a pool named after the compose service. The full schema:
 
 | Label | Meaning |
 | --- | --- |
-| `statute.enable` | `"true"` / `"false"`. Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. `"false"` always wins. |
+| `statute.enable` | Boolean (parsed like Traefik: `1`/`t`/`true`/`True`, …). Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. An explicit false always wins; an unparseable value counts as false with a warning. |
 | `statute.service` | Pool name. Containers sharing it pool together (replicas). Default: compose service name, else container name. |
-| `statute.host` | Comma-separated hosts; each becomes a route. Empty: any host. |
+| `statute.host` | Comma-separated hosts; each becomes a route (matched case-insensitively). Empty fragments are skipped. Empty or unset: any host. |
 | `statute.path` | statute pattern: `/exact` or `/prefix/*`. Default `/*`. |
 | `statute.routes.<name>.host` / `.path` | Additional named routes for the same service. |
-| `statute.port` | Container-side port. Default: the single exposed TCP port; ambiguous or missing ports skip the container with a warning. |
-| `statute.scheme` | `http` (default) or `https` for the backend connection. |
+| `statute.port` | Container-side port. Default: the lowest exposed TCP port (Traefik's rule), with a warning when several were exposed; a container exposing no port is skipped with a warning. |
+| `statute.scheme` | `http` (default) or `https` for the backend connection (case-insensitive; unknown values warn and fall back to http). |
 | `statute.network` | Docker network to take the IP from, overriding `Network()`. |
 | `statute.weight` | Backend weight for the `weighted` strategy. Default 1. |
 | `statute.backup` | `"true"` marks a failover-only backend. |
@@ -105,10 +114,10 @@ without editing compose files. Supported:
 
 | Label | Notes |
 | --- | --- |
-| `traefik.enable` | Same opt-in semantics as `statute.enable`. |
+| `traefik.enable` | Exactly Traefik's semantics: without `ExposedByDefault()`, a container is exposed only with an explicit `traefik.enable=true` — router labels alone do not expose it. |
 | `traefik.http.routers.<r>.rule` | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`. |
-| `traefik.http.routers.<r>.service` | Router→service binding, with Traefik's defaulting (sole defined service, else implicit service per router). |
-| `traefik.http.services.<s>.loadbalancer.server.port` | Container-side port. |
+| `traefik.http.routers.<r>.service` | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container — so several label-less routers share one backend pool. |
+| `traefik.http.services.<s>.loadbalancer.server.port` | Container-side port. Default: the lowest exposed port, as in Traefik. |
 | `traefik.http.services.<s>.loadbalancer.server.scheme` | `https` for TLS backends. |
 | `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks. |
 | `traefik.docker.network` | Same as `statute.network`. |

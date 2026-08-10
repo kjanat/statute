@@ -3,8 +3,10 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -154,5 +156,78 @@ func TestNormalizeContainerNoName(t *testing.T) {
 	c := normalizeContainer(cj)
 	if c.Name != "deadbeef" {
 		t.Errorf("Name = %q", c.Name)
+	}
+}
+
+// brokenDaemon serves the given status and body on every endpoint.
+func brokenDaemon(t *testing.T, status int, body string) *Client {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(ts.Close)
+	client, err := NewClient("tcp://" + strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return client
+}
+
+func TestClientStatusErrors(t *testing.T) {
+	// Non-200 responses surface as "unexpected status".
+	client := brokenDaemon(t, http.StatusInternalServerError, "boom")
+	if _, err := client.ListContainers(context.Background()); err == nil || !strings.Contains(err.Error(), "unexpected status") {
+		t.Errorf("ListContainers 500: %v", err)
+	}
+	if err := client.Ping(context.Background()); err == nil || !strings.Contains(err.Error(), "unexpected status") {
+		t.Errorf("Ping 500: %v", err)
+	}
+	if err := client.StreamEvents(context.Background(), func(Event) {}); err == nil || !strings.Contains(err.Error(), "unexpected status") {
+		t.Errorf("StreamEvents 500: %v", err)
+	}
+}
+
+func TestClientDecodeErrors(t *testing.T) {
+	// Malformed JSON surfaces as a decode error.
+	client := brokenDaemon(t, http.StatusOK, "{not json")
+	if _, err := client.ListContainers(context.Background()); err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Errorf("ListContainers malformed body: %v", err)
+	}
+	if err := client.StreamEvents(context.Background(), func(Event) {}); err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Errorf("StreamEvents malformed body: %v", err)
+	}
+}
+
+// TestUnixSocketEndToEnd exercises NewClient's unix:// branch against a
+// real unix-socket listener.
+func TestUnixSocketEndToEnd(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("unix listen: %v", err)
+	}
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_ping" {
+			_, _ = w.Write([]byte("OK"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	ts.Listener = ln
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	client, err := NewClient("unix://" + sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping over unix socket: %v", err)
+	}
+	got, err := client.ListContainers(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("ListContainers over unix socket: %v %v", got, err)
 	}
 }

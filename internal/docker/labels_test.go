@@ -130,12 +130,13 @@ func TestExtractComposeServiceName(t *testing.T) {
 }
 
 func TestExtractPortSelection(t *testing.T) {
-	// Multiple exposed ports without a label: warn and skip.
+	// Multiple exposed ports without a label: pick the lowest (Traefik's
+	// rule) and warn about the ambiguity.
 	c := webContainer(map[string]string{"statute.enable": "true"})
 	c.Ports = []int{8080, 9090}
 	svcs, warns := Extract(c, ExtractOptions{})
-	if len(svcs) != 0 {
-		t.Errorf("ambiguous ports still registered: %+v", svcs)
+	if len(svcs) != 1 || svcs[0].Backend.Address != "172.17.0.2:8080" {
+		t.Errorf("lowest port not picked: %+v", svcs)
 	}
 	if len(warns) == 0 || !strings.Contains(warns[0], "multiple exposed ports") {
 		t.Errorf("warns = %v", warns)
@@ -145,6 +146,120 @@ func TestExtractPortSelection(t *testing.T) {
 	svcs, warns = Extract(c, ExtractOptions{})
 	if len(svcs) != 0 || len(warns) == 0 {
 		t.Errorf("portless container: svcs=%v warns=%v", svcs, warns)
+	}
+}
+
+func TestExtractHostFragments(t *testing.T) {
+	// A trailing comma must not create a catch-all route.
+	c := webContainer(map[string]string{
+		"statute.enable": "true",
+		"statute.host":   "API.example.com,",
+	})
+	svcs, _ := Extract(c, ExtractOptions{})
+	want := []Matcher{{Host: "api.example.com", Path: "/*"}}
+	if len(svcs) != 1 || !reflect.DeepEqual(svcs[0].Routes, want) {
+		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
+	}
+
+	// A whitespace-only host list falls back to the host-less default.
+	c.Labels["statute.host"] = " , "
+	svcs, _ = Extract(c, ExtractOptions{})
+	want = []Matcher{{Path: "/*"}}
+	if len(svcs) != 1 || !reflect.DeepEqual(svcs[0].Routes, want) {
+		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
+	}
+}
+
+func TestExtractBackupAndWeight(t *testing.T) {
+	c := webContainer(map[string]string{
+		"statute.enable": "true",
+		"statute.backup": "true",
+		"statute.weight": "banana",
+	})
+	svcs, warns := Extract(c, ExtractOptions{})
+	if len(svcs) != 1 || !svcs[0].Backend.Backup {
+		t.Errorf("backup not set: %+v", svcs)
+	}
+	if svcs[0].Backend.Weight != 1 {
+		t.Errorf("invalid weight fallback = %d", svcs[0].Backend.Weight)
+	}
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "invalid statute.weight") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no weight warning: %v", warns)
+	}
+}
+
+func TestExtractInvalidBackup(t *testing.T) {
+	// Invalid backup value: warn and treat as false.
+	c := webContainer(map[string]string{"statute.enable": "true", "statute.backup": "yep"})
+	svcs, warns := Extract(c, ExtractOptions{})
+	if len(svcs) != 1 || svcs[0].Backend.Backup {
+		t.Errorf("invalid backup not false: %+v", svcs)
+	}
+	if len(warns) == 0 || !strings.Contains(warns[0], "invalid boolean") {
+		t.Errorf("warns = %v", warns)
+	}
+}
+
+func TestExtractEnableParsing(t *testing.T) {
+	// ParseBool variants register, as in Traefik.
+	for _, v := range []string{"True", "1", "t"} {
+		c := webContainer(map[string]string{"statute.enable": v})
+		if svcs, _ := Extract(c, ExtractOptions{}); len(svcs) != 1 {
+			t.Errorf("statute.enable=%q did not register", v)
+		}
+	}
+	// Unparseable enable: false, with a warning.
+	c := webContainer(map[string]string{"statute.enable": "banana"})
+	svcs, warns := Extract(c, ExtractOptions{})
+	if len(svcs) != 0 {
+		t.Errorf("invalid enable registered: %+v", svcs)
+	}
+	if len(warns) == 0 || !strings.Contains(warns[0], "invalid boolean") {
+		t.Errorf("warns = %v", warns)
+	}
+}
+
+func TestExtractSchemeCaseFold(t *testing.T) {
+	c := webContainer(map[string]string{"statute.enable": "true", "statute.scheme": "HTTPS"})
+	svcs, warns := Extract(c, ExtractOptions{})
+	if len(warns) != 0 || len(svcs) != 1 || svcs[0].Backend.Address != "https://172.17.0.2:8080" {
+		t.Errorf("HTTPS scheme not folded: %+v warns=%v", svcs, warns)
+	}
+
+	c.Labels["statute.scheme"] = "ftp"
+	svcs, warns = Extract(c, ExtractOptions{})
+	if len(svcs) != 1 || svcs[0].Backend.Address != "172.17.0.2:8080" {
+		t.Errorf("unknown scheme not http fallback: %+v", svcs)
+	}
+	if len(warns) == 0 || !strings.Contains(warns[0], "unsupported scheme") {
+		t.Errorf("warns = %v", warns)
+	}
+}
+
+func TestExtractNamedRouteMalformed(t *testing.T) {
+	c := webContainer(map[string]string{
+		"statute.enable":             "true",
+		"statute.routes.admin":       "oops",
+		"statute.routes.extra.bogus": "x",
+	})
+	_, warns := Extract(c, ExtractOptions{})
+	var malformed, unknown bool
+	for _, w := range warns {
+		if strings.Contains(w, "malformed label") {
+			malformed = true
+		}
+		if strings.Contains(w, "unknown route field") {
+			unknown = true
+		}
+	}
+	if !malformed || !unknown {
+		t.Errorf("expected malformed + unknown-field warnings, got %v", warns)
 	}
 }
 
@@ -213,10 +328,11 @@ func TestExtractTraefikDisabledWithoutOption(t *testing.T) {
 }
 
 func TestExtractTraefikDefaults(t *testing.T) {
-	// No service labels at all: implicit service named after the router,
-	// port from the single exposed port, healthcheck carried.
+	// No server.port label: port from the single exposed port, router
+	// bound to the sole defined service, healthcheck carried.
 	c := webContainer(map[string]string{
-		"traefik.http.routers.app.rule":                               "Host(`app.example.com`)",
+		"traefik.enable":                "true",
+		"traefik.http.routers.app.rule": "Host(`app.example.com`)",
 		"traefik.http.services.app.loadbalancer.healthcheck.path":     "/ping",
 		"traefik.http.services.app.loadbalancer.healthcheck.interval": "10s",
 	})
@@ -323,7 +439,42 @@ func TestExtractTraefikOnlyContainerSkipsNative(t *testing.T) {
 	if len(svcs) != 1 {
 		t.Fatalf("got %d services, want 1: %+v", len(svcs), svcs)
 	}
-	if svcs[0].Name != "web@traefik" {
+	// With no service labels the implicit service is named after the
+	// container, as in Traefik.
+	if svcs[0].Name != "web-1@traefik" {
 		t.Errorf("Name = %q", svcs[0].Name)
+	}
+}
+
+func TestExtractTraefikRequiresExplicitEnable(t *testing.T) {
+	// Traefik semantics: router labels alone do not expose a container
+	// when ExposedByDefault is off.
+	c := webContainer(map[string]string{
+		"traefik.http.routers.web.rule": "Host(`a.example.com`)",
+	})
+	if svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true}); len(svcs) != 0 {
+		t.Errorf("router labels without traefik.enable registered: %+v", svcs)
+	}
+	// ParseBool variants work.
+	c.Labels["traefik.enable"] = "1"
+	if svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true}); len(svcs) != 1 {
+		t.Errorf("traefik.enable=1 did not register")
+	}
+}
+
+func TestExtractTraefikImplicitServiceShared(t *testing.T) {
+	// Two routers with no service labels share the container-named
+	// implicit service instead of creating one backend pool per router.
+	c := webContainer(map[string]string{
+		"traefik.enable":              "true",
+		"traefik.http.routers.a.rule": "Host(`a.example.com`)",
+		"traefik.http.routers.b.rule": "Host(`b.example.com`)",
+	})
+	svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(svcs) != 1 {
+		t.Fatalf("got %d services, want 1: %+v", len(svcs), svcs)
+	}
+	if svcs[0].Name != "web-1@traefik" || len(svcs[0].Routes) != 2 {
+		t.Errorf("service = %+v", svcs[0])
 	}
 }

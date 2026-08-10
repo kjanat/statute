@@ -25,6 +25,16 @@ type Client struct {
 	http    *http.Client
 }
 
+// Transport-level deadlines. http.Client.Timeout is deliberately unset —
+// /events is a long-lived stream — so the guards live on the transport:
+// the daemon sends response headers immediately, making a header timeout
+// safe even for the event stream, while a silent daemon can no longer
+// hang a reconcile forever.
+const (
+	dialTimeout           = 5 * time.Second
+	responseHeaderTimeout = 30 * time.Second
+)
+
 // NewClient builds a client for the given endpoint. Supported forms:
 //
 //	unix:///var/run/docker.sock
@@ -44,9 +54,10 @@ func NewClient(endpoint string) (*Client, error) {
 		}
 		transport := &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
+				d := net.Dialer{Timeout: dialTimeout}
 				return d.DialContext(ctx, "unix", socketPath)
 			},
+			ResponseHeaderTimeout: responseHeaderTimeout,
 		}
 		return &Client{
 			baseURL: "http://docker",
@@ -55,10 +66,13 @@ func NewClient(endpoint string) (*Client, error) {
 	case "tcp", "http":
 		return &Client{
 			baseURL: "http://" + u.Host,
-			http:    &http.Client{},
+			http: &http.Client{Transport: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: dialTimeout}).DialContext,
+				ResponseHeaderTimeout: responseHeaderTimeout,
+			}},
 		}, nil
 	default:
-		return nil, fmt.Errorf("docker endpoint %q: unsupported scheme %q (use unix:// or tcp://)", endpoint, u.Scheme)
+		return nil, fmt.Errorf("docker endpoint %q: unsupported scheme %q (use unix://, tcp://, or http://)", endpoint, u.Scheme)
 	}
 }
 

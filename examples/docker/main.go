@@ -26,9 +26,19 @@
 //	      statute.healthcheck.path: /healthz
 package main
 
-import "statute.kjanat.dev"
+import (
+	"log"
+	"os"
+
+	"statute.kjanat.dev"
+)
 
 func main() {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	if token == "" {
+		log.Fatal("CLOUDFLARE_API_TOKEN env var is required")
+	}
+
 	statute.Main(statute.Config{
 		Listeners: statute.Listeners{
 			statute.HTTP(":80").RedirectTo("https"),
@@ -36,7 +46,7 @@ func main() {
 				statute.AutoTLS("example.com", "*.example.com").
 					Email("ops@example.com").
 					Storage("/var/lib/statute/certs").
-					CloudflareDNS01("cf-api-token"),
+					CloudflareDNS01(token),
 				statute.HTTP2(),
 			),
 		},

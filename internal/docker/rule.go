@@ -64,7 +64,9 @@ func conjsToMatchers(conjs []conj) ([]Matcher, error) {
 			hosts = []string{""}
 		}
 		for _, h := range hosts {
-			out = append(out, Matcher{Host: h, Path: path})
+			// HTTP hosts are case-insensitive; store the canonical
+			// lowercase form so matching and dedupe are consistent.
+			out = append(out, Matcher{Host: strings.ToLower(h), Path: path})
 			if len(out) > maxRuleMatchers {
 				return nil, fmt.Errorf("rule expands to more than %d matchers", maxRuleMatchers)
 			}
@@ -72,6 +74,10 @@ func conjsToMatchers(conjs []conj) ([]Matcher, error) {
 	}
 	return out, nil
 }
+
+// endOfRule describes a token stream that ended before the grammar was
+// satisfied, in parser error messages.
+const endOfRule = "end of rule"
 
 // token kinds for the rule lexer.
 const (
@@ -360,7 +366,7 @@ func (p *ruleParser) parseAnd() (ruleExpr, error) {
 func (p *ruleParser) parseTerm() (ruleExpr, error) {
 	t, ok := p.peek()
 	if !ok {
-		return nil, fmt.Errorf("rule: unexpected end of rule")
+		return nil, fmt.Errorf("rule: unexpected %s", endOfRule)
 	}
 	if t.kind == tokLParen {
 		p.pos++
@@ -415,7 +421,7 @@ func (p *ruleParser) parseArgs(fn string) ([]string, error) {
 func (p *ruleParser) expect(kind int, what string) error {
 	t, ok := p.peek()
 	if !ok || t.kind != kind {
-		got := "end of rule"
+		got := endOfRule
 		if ok {
 			got = fmt.Sprintf("%q", t.val)
 		}

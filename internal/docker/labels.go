@@ -16,10 +16,6 @@ const (
 	// composeServiceLabel is set by docker compose and is the natural
 	// default service name for a container.
 	composeServiceLabel = "com.docker.compose.service"
-
-	// labelTrue is the canonical truthy label value; docker labels are
-	// strings, so booleans arrive spelled out.
-	labelTrue = "true"
 )
 
 // Service is one upstream service contributed by a container: the routes
@@ -97,13 +93,41 @@ func hasPrefixedLabels(labels map[string]string, prefix string) bool {
 	return false
 }
 
-// enabled decides whether a container participates, honoring an explicit
-// enable label and falling back to ExposedByDefault.
-func enabled(labels map[string]string, enableKey string, opts ExtractOptions, prefix string) bool {
-	if v, ok := labels[enableKey]; ok {
-		return v == labelTrue
+// boolLabel parses a boolean label the way Traefik does (strconv.ParseBool:
+// 1/t/true/True/TRUE and friends). present is false when the label is
+// absent; an unparseable value counts as present-and-false with a warning.
+func boolLabel(c Container, labels map[string]string, key string) (value, present bool, warn string) {
+	v, ok := labels[key]
+	if !ok {
+		return false, false, ""
 	}
-	return opts.ExposedByDefault || hasPrefixedLabels(labels, prefix)
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return false, true, fmt.Sprintf("container %s: invalid boolean %q for label %s, treating as false", c.Name, v, key)
+	}
+	return b, true, ""
+}
+
+// nativeEnabled decides whether the statute.* schema applies: an explicit
+// statute.enable wins; otherwise ExposedByDefault or the presence of any
+// statute.* label opts the container in.
+func nativeEnabled(c Container, opts ExtractOptions) (bool, string) {
+	b, present, warn := boolLabel(c, c.Labels, "statute.enable")
+	if present {
+		return b, warn
+	}
+	return opts.ExposedByDefault || hasPrefixedLabels(c.Labels, statutePrefix), ""
+}
+
+// traefikEnabled mirrors Traefik's own semantics: with exposedByDefault
+// off, only an explicit traefik.enable=true exposes the container — router
+// labels alone do not.
+func traefikEnabled(c Container, opts ExtractOptions) (bool, string) {
+	b, present, warn := boolLabel(c, c.Labels, "traefik.enable")
+	if present {
+		return b, warn
+	}
+	return opts.ExposedByDefault, ""
 }
 
 // defaultServiceName is the compose service name when present, else the
@@ -148,7 +172,8 @@ func containerIP(c Container, labelNetwork string, opts ExtractOptions) (string,
 }
 
 // containerPort resolves the container-side port: explicit label value,
-// else the single exposed TCP port.
+// else the lowest-numbered exposed TCP port (Traefik's rule), warning when
+// that pick was ambiguous.
 func containerPort(c Container, labelPort string) (int, string) {
 	if labelPort != "" {
 		p, err := strconv.Atoi(labelPort)
@@ -163,17 +188,24 @@ func containerPort(c Container, labelPort string) (int, string) {
 	case 0:
 		return 0, fmt.Sprintf("container %s: no exposed port and no port label", c.Name)
 	default:
-		return 0, fmt.Sprintf("container %s: multiple exposed ports %v, set a port label to pick one", c.Name, c.Ports)
+		// Ports is sorted ascending, so [0] is the lowest.
+		return c.Ports[0], fmt.Sprintf("container %s: multiple exposed ports %v, using %d (set a port label to pick another)", c.Name, c.Ports, c.Ports[0])
 	}
 }
 
-// backendAddress joins scheme, ip, and port into a resolvable address.
-func backendAddress(scheme, ip string, port int) string {
+// backendAddress joins scheme, ip, and port into a resolvable address. The
+// scheme is case-folded; an unrecognised value warns and falls back to
+// http so the typo is visible instead of silently downgrading.
+func backendAddress(c Container, scheme, ip string, port int) (string, string) {
 	addr := net.JoinHostPort(ip, strconv.Itoa(port))
-	if scheme == "https" {
-		return "https://" + addr
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "https":
+		return "https://" + addr, ""
+	case "", "http":
+		return addr, ""
+	default:
+		return addr, fmt.Sprintf("container %s: unsupported scheme %q, using http", c.Name, scheme)
 	}
-	return addr
 }
 
 // --- native statute.* labels ---
@@ -194,7 +226,11 @@ func backendAddress(scheme, ip string, port int) string {
 //	statute.timeout=30s  statute.ratelimit=100/min  statute.compress=gzip,br
 func extractNative(c Container, opts ExtractOptions) ([]Service, []string) {
 	labels := c.Labels
-	if !enabled(labels, "statute.enable", opts, statutePrefix) {
+	on, enableWarn := nativeEnabled(c, opts)
+	if !on {
+		if enableWarn != "" {
+			return nil, []string{enableWarn}
+		}
 		return nil, nil
 	}
 	if !hasPrefixedLabels(labels, statutePrefix) && !opts.ExposedByDefault {
@@ -261,10 +297,18 @@ func nativeBackend(c Container, labels map[string]string, opts ExtractOptions) (
 			weight = n
 		}
 	}
+	backup, _, backupWarn := boolLabel(c, labels, "statute.backup")
+	if backupWarn != "" {
+		warns = append(warns, backupWarn)
+	}
+	addr, schemeWarn := backendAddress(c, labels["statute.scheme"], ip, port)
+	if schemeWarn != "" {
+		warns = append(warns, schemeWarn)
+	}
 	return &Backend{
-		Address: backendAddress(labels["statute.scheme"], ip, port),
+		Address: addr,
 		Weight:  weight,
-		Backup:  labels["statute.backup"] == labelTrue,
+		Backup:  backup,
 	}, warns
 }
 
@@ -275,12 +319,16 @@ func nativeRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 	if path == "" {
 		path = "/*"
 	}
+	// Empty fragments (a trailing comma, a lone space) are skipped: an
+	// empty Host means "any host", so keeping one would silently turn a
+	// host-scoped registration into a catch-all.
 	var routes []Matcher
-	if hosts := labels["statute.host"]; hosts != "" {
-		for h := range strings.SplitSeq(hosts, ",") {
-			routes = append(routes, Matcher{Host: strings.TrimSpace(h), Path: path})
+	for h := range strings.SplitSeq(labels["statute.host"], ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			routes = append(routes, Matcher{Host: strings.ToLower(h), Path: path})
 		}
-	} else {
+	}
+	if len(routes) == 0 {
 		routes = append(routes, Matcher{Path: path})
 	}
 
@@ -310,7 +358,7 @@ func namedRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 		}
 		switch field {
 		case "host":
-			m.Host = v
+			m.Host = strings.ToLower(strings.TrimSpace(v))
 		case "path":
 			m.Path = v
 		default:
@@ -351,7 +399,11 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []string) {
 	if !hasPrefixedLabels(labels, traefikPrefix) {
 		return nil, nil
 	}
-	if !enabled(labels, "traefik.enable", opts, traefikPrefix) {
+	on, enableWarn := traefikEnabled(c, opts)
+	if !on {
+		if enableWarn != "" {
+			return nil, []string{enableWarn}
+		}
 		return nil, nil
 	}
 
@@ -483,7 +535,8 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 
 	// Router→service binding, mirroring Traefik's defaulting: explicit
 	// label, else the sole service defined on the container, else an
-	// implicit service named after the router.
+	// implicit service named after the container — so several label-less
+	// routers on one container share a single backend pool, as in Traefik.
 	svcName := r.service
 	if svcName == "" {
 		if len(serviceNames) == 1 {
@@ -492,7 +545,7 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 			warns = append(warns, fmt.Sprintf("container %s: router %q names no service but container defines %d, skipping", c.Name, r.name, len(serviceNames)))
 			return nil, warns
 		} else {
-			svcName = r.name
+			svcName = defaultServiceName(c)
 		}
 	}
 	ts := services[svcName]
@@ -507,13 +560,17 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 	if port == 0 {
 		return nil, warns
 	}
+	addr, schemeWarn := backendAddress(c, ts.scheme, ip, port)
+	if schemeWarn != "" {
+		warns = append(warns, schemeWarn)
+	}
 
 	// Namespace traefik-defined pools so they cannot collide with pools
 	// from native statute labels on sibling containers.
 	svc := &Service{
 		Name:    svcName + "@traefik",
 		Routes:  matchers,
-		Backend: Backend{Address: backendAddress(ts.scheme, ip, port), Weight: 1},
+		Backend: Backend{Address: addr, Weight: 1},
 
 		HealthCheckPath:     ts.hcPath,
 		HealthCheckInterval: ts.hcInterval,
