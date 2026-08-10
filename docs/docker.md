@@ -15,7 +15,7 @@ statute.Main(statute.Config{
             statute.AutoTLS("example.com", "*.example.com").
                 Email("ops@example.com").
                 Storage("/var/lib/statute/certs").
-                CloudflareDNS01(os.Getenv("CF_API_TOKEN")),
+                CloudflareDNS01(os.Getenv("CLOUDFLARE_API_TOKEN")),
             statute.HTTP2(),
         ),
     },
