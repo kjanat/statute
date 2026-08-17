@@ -97,7 +97,7 @@ a pool named after the compose service. The full schema:
 | `statute.path` | statute pattern: `/exact` or `/prefix/*`. Default `/*`. |
 | `statute.routes.<name>.host` / `.path` | Additional named routes for the same service. |
 | `statute.port` | Container-side port. Default: the lowest exposed TCP port (Traefik's rule), with a warning when several were exposed; a container exposing no port is skipped with a warning. |
-| `statute.scheme` | `http` (default) or `https` for the backend connection (case-insensitive; unknown values warn and fall back to http). |
+| `statute.scheme` | `http` (default) or `https` for the backend connection (case-insensitive). Anything else — including `h2c`, which statute's proxy does not speak — skips the service with a warning rather than registering it with the wrong protocol. |
 | `statute.network` | Docker network to take the IP from, overriding `Network()`. |
 | `statute.weight` | Backend weight for the `weighted` strategy. Default 1. |
 | `statute.backup` | `"true"` marks a failover-only backend. |
@@ -118,7 +118,7 @@ without editing compose files. Supported:
 | `traefik.http.routers.<r>.rule` | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`. |
 | `traefik.http.routers.<r>.service` | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container — so several label-less routers share one backend pool. |
 | `traefik.http.services.<s>.loadbalancer.server.port` | Container-side port. Default: the lowest exposed port, as in Traefik. |
-| `traefik.http.services.<s>.loadbalancer.server.scheme` | `https` for TLS backends. |
+| `traefik.http.services.<s>.loadbalancer.server.scheme` | `https` for TLS backends. `h2c` is not supported — such services are skipped with a warning instead of being proxied over the wrong protocol. |
 | `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks. |
 | `traefik.docker.network` | Same as `statute.network`. |
 

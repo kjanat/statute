@@ -147,9 +147,18 @@ func TestParseRuleExpansionCap(t *testing.T) {
 		t.Fatalf("oversized host list not capped: %v", err)
 	}
 
-	// The cap also applies mid-expansion when a conjunction distributes
-	// over a large disjunction.
-	rule = "Host(" + strings.Join(hosts, ",") + ") && PathPrefix(`/x`)"
+	// The cap also applies mid-expansion in andExpr, when a conjunction
+	// distributes over disjunctions whose product exceeds it: 9 Host()
+	// alternatives × 8 PathPrefix arguments = 72 conjunctions.
+	hostAlts := make([]string, 0, 9)
+	for i := range 9 {
+		hostAlts = append(hostAlts, fmt.Sprintf("Host(`h%d.example.com`)", i))
+	}
+	prefixes := make([]string, 8)
+	for i := range prefixes {
+		prefixes[i] = fmt.Sprintf("`/p%d`", i)
+	}
+	rule = "(" + strings.Join(hostAlts, " || ") + ") && PathPrefix(" + strings.Join(prefixes, ",") + ")"
 	if _, err := ParseRule(rule); err == nil || !strings.Contains(err.Error(), "matchers") {
 		t.Fatalf("oversized conjunction not capped: %v", err)
 	}

@@ -232,13 +232,39 @@ func TestExtractSchemeCaseFold(t *testing.T) {
 		t.Errorf("HTTPS scheme not folded: %+v warns=%v", svcs, warns)
 	}
 
-	c.Labels["statute.scheme"] = "ftp"
-	svcs, warns = Extract(c, ExtractOptions{})
-	if len(svcs) != 1 || svcs[0].Backend.Address != "172.17.0.2:8080" {
-		t.Errorf("unknown scheme not http fallback: %+v", svcs)
+	// Unknown schemes (h2c included) skip the service instead of
+	// silently registering it with the wrong protocol.
+	for _, scheme := range []string{"h2c", "ftp"} {
+		c.Labels["statute.scheme"] = scheme
+		svcs, warns = Extract(c, ExtractOptions{})
+		if len(svcs) != 0 {
+			t.Errorf("scheme %q still registered: %+v", scheme, svcs)
+		}
+		if len(warns) == 0 || !strings.Contains(warns[0], "unsupported backend scheme") {
+			t.Errorf("scheme %q warns = %v", scheme, warns)
+		}
 	}
-	if len(warns) == 0 || !strings.Contains(warns[0], "unsupported scheme") {
-		t.Errorf("warns = %v", warns)
+}
+
+func TestExtractTraefikH2CSkipped(t *testing.T) {
+	c := webContainer(map[string]string{
+		"traefik.enable":                                       "true",
+		"traefik.http.routers.web.rule":                        "Host(`a.example.com`)",
+		"traefik.http.services.web.loadbalancer.server.scheme": "h2c",
+		"traefik.http.services.web.loadbalancer.server.port":   "8080",
+	})
+	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(svcs) != 0 {
+		t.Errorf("h2c service registered: %+v", svcs)
+	}
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "unsupported backend scheme") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no h2c warning: %v", warns)
 	}
 }
 

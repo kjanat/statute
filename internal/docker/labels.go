@@ -194,8 +194,10 @@ func containerPort(c Container, labelPort string) (int, string) {
 }
 
 // backendAddress joins scheme, ip, and port into a resolvable address. The
-// scheme is case-folded; an unrecognised value warns and falls back to
-// http so the typo is visible instead of silently downgrading.
+// scheme is case-folded; an unrecognised value (including h2c, which
+// statute's proxy does not speak) returns an empty address and a warning
+// so the service is skipped rather than registered with the wrong
+// protocol.
 func backendAddress(c Container, scheme, ip string, port int) (string, string) {
 	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 	switch strings.ToLower(strings.TrimSpace(scheme)) {
@@ -204,7 +206,7 @@ func backendAddress(c Container, scheme, ip string, port int) (string, string) {
 	case "", "http":
 		return addr, ""
 	default:
-		return addr, fmt.Sprintf("container %s: unsupported scheme %q, using http", c.Name, scheme)
+		return "", fmt.Sprintf("container %s: unsupported backend scheme %q (statute proxies http and https only), skipping", c.Name, scheme)
 	}
 }
 
@@ -288,14 +290,9 @@ func nativeBackend(c Container, labels map[string]string, opts ExtractOptions) (
 		return nil, warns
 	}
 
-	weight := 1
-	if w := labels["statute.weight"]; w != "" {
-		n, err := strconv.Atoi(w)
-		if err != nil || n < 1 {
-			warns = append(warns, fmt.Sprintf("container %s: invalid statute.weight %q, using 1", c.Name, w))
-		} else {
-			weight = n
-		}
+	weight, weightWarn := nativeWeight(c, labels)
+	if weightWarn != "" {
+		warns = append(warns, weightWarn)
 	}
 	backup, _, backupWarn := boolLabel(c, labels, "statute.backup")
 	if backupWarn != "" {
@@ -305,11 +302,28 @@ func nativeBackend(c Container, labels map[string]string, opts ExtractOptions) (
 	if schemeWarn != "" {
 		warns = append(warns, schemeWarn)
 	}
+	if addr == "" {
+		return nil, warns
+	}
 	return &Backend{
 		Address: addr,
 		Weight:  weight,
 		Backup:  backup,
 	}, warns
+}
+
+// nativeWeight parses the statute.weight label, warning and defaulting to
+// 1 on invalid values.
+func nativeWeight(c Container, labels map[string]string) (int, string) {
+	w := labels["statute.weight"]
+	if w == "" {
+		return 1, ""
+	}
+	n, err := strconv.Atoi(w)
+	if err != nil || n < 1 {
+		return 1, fmt.Sprintf("container %s: invalid statute.weight %q, using 1", c.Name, w)
+	}
+	return n, ""
 }
 
 // nativeRoutes builds the route matchers from statute.host / statute.path
@@ -519,6 +533,25 @@ func traefikServiceLabel(c Container, services map[string]*traefikService, k, v 
 	return nil
 }
 
+// traefikServiceName resolves the router→service binding, mirroring
+// Traefik's defaulting: explicit label, else the sole service defined on
+// the container, else an implicit service named after the container — so
+// several label-less routers on one container share a single backend
+// pool. An empty name (with warning) means the router cannot be bound.
+func traefikServiceName(c Container, r *traefikRouter, serviceNames []string) (string, string) {
+	if r.service != "" {
+		return r.service, ""
+	}
+	switch len(serviceNames) {
+	case 0:
+		return defaultServiceName(c), ""
+	case 1:
+		return serviceNames[0], ""
+	default:
+		return "", fmt.Sprintf("container %s: router %q names no service but container defines %d, skipping", c.Name, r.name, len(serviceNames))
+	}
+}
+
 // bindTraefikRouter resolves one router into a Service carrying its
 // matchers and this container's backend.
 func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string, _ ExtractOptions) (*Service, []string) {
@@ -533,20 +566,12 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		return nil, warns
 	}
 
-	// Router→service binding, mirroring Traefik's defaulting: explicit
-	// label, else the sole service defined on the container, else an
-	// implicit service named after the container — so several label-less
-	// routers on one container share a single backend pool, as in Traefik.
-	svcName := r.service
+	svcName, warn := traefikServiceName(c, r, serviceNames)
+	if warn != "" {
+		warns = append(warns, warn)
+	}
 	if svcName == "" {
-		if len(serviceNames) == 1 {
-			svcName = serviceNames[0]
-		} else if len(serviceNames) > 1 {
-			warns = append(warns, fmt.Sprintf("container %s: router %q names no service but container defines %d, skipping", c.Name, r.name, len(serviceNames)))
-			return nil, warns
-		} else {
-			svcName = defaultServiceName(c)
-		}
+		return nil, warns
 	}
 	ts := services[svcName]
 	if ts == nil {
@@ -563,6 +588,9 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 	addr, schemeWarn := backendAddress(c, ts.scheme, ip, port)
 	if schemeWarn != "" {
 		warns = append(warns, schemeWarn)
+	}
+	if addr == "" {
+		return nil, warns
 	}
 
 	// Namespace traefik-defined pools so they cannot collide with pools
