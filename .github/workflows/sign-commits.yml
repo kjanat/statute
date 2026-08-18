@@ -1,29 +1,59 @@
-name: Sign commits
+name: sign-commits
 on:
-  workflow_dispatch: null
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Sign every commit after this ref (exclusive). Blank uses the merge base with master, or the last verified commit when run on master.
+        type: string
+        required: false
+      allow_resign:
+        description: Permit rewriting commits that already carry a signature
+        type: boolean
+        required: false
+        default: false
+      sign_others:
+        description: Attach the signing key to commits committed by other identities
+        type: boolean
+        required: false
+        default: false
+      scan_limit:
+        description: Stop looking for the last signed commit after this many commits. Blank searches the whole history.
+        type: number
+        required: false
 permissions:
-  contents: read
-  id-token: write
-
+  contents: write # rewritten commits are force-pushed back to the branch
+  id-token: write # mint the OIDC token the signing service authenticates
+concurrency: { group: "sign-commits-${{ github.ref }}", cancel-in-progress: false }
 jobs:
-  steps:
-    - uses: actions/checkout@v7
-      with: { fetch-depth: 0 }
+  sign:
+    name: sign
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
 
-    - uses: kjanat/gpg-signing-service@cbcb8600547bd6799cdca0b339e8dad044481435
-      with: { version: v1.1.2 }
+      - uses: kjanat/gpg-signing-service@cbcb8600547bd6799cdca0b339e8dad044481435
+        with: { version: v1.1.2 }
 
-    - id: oidc
-      uses: actions/github-script@v9
-      with:
-        script: |
-          const token = await core.getIDToken("gpg-signing-service");
-          core.setSecret(token);
-          core.setOutput("token", token);
+      - id: oidc
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const token = await core.getIDToken("gpg-signing-service");
+            core.setSecret(token);
+            core.setOutput("token", token);
 
-    - name: Request signature
-      env:
-        GPG_SIGN_TOKEN: ${{ steps.oidc.outputs.token }}
-        GPG_SIGN_URL: ${{ vars.SIGNING_SERVICE_URL }}
-      run: |
-        git cat-file commit HEAD | gpg-sign sign --key-id 62E75E54497815DD > commit.sig
+      - name: sign commits
+        env:
+          GPG_SIGN_TOKEN: ${{ steps.oidc.outputs.token }}
+          GPG_SIGN_URL: ${{ vars.SIGNING_SERVICE_URL }}
+          GPG_SIGN_KEY_ID: 62E75E54497815DD
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_REF: ${{ inputs.base }}
+          ALLOW_RESIGN: ${{ inputs.allow_resign }}
+          SIGN_OTHERS: ${{ inputs.sign_others }}
+          SCAN_LIMIT: ${{ inputs.scan_limit }}
+        run: python3 .github/scripts/sign-commits.py
+
+      - name: push signed commits
+        run: git push origin HEAD:${{ github.ref_name }} --force-with-lease
