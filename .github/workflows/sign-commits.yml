@@ -44,6 +44,7 @@ jobs:
             core.setOutput("token", token);
 
       - name: sign commits
+        id: sign
         env:
           GPG_SIGN_TOKEN: ${{ steps.oidc.outputs.token }}
           GPG_SIGN_URL: ${{ vars.SIGNING_SERVICE_URL }}
@@ -54,6 +55,31 @@ jobs:
           SIGN_OTHERS: ${{ inputs.sign_others }}
           SCAN_LIMIT: ${{ inputs.scan_limit }}
         run: python3 .github/scripts/sign-commits.py
+
+      # gpg-sign surfaces only the HTTP status; the service sends a JSON body
+      # naming the cause (untrusted subject, disallowed issuer, wrong key).
+      # A GitHub OIDC token exists only inside a run, so this is the only place
+      # that distinction can be read. Replays one request to print it.
+      - name: explain signing failure
+        if: failure() && steps.sign.outcome == 'failure'
+        env:
+          GPG_SIGN_TOKEN: ${{ steps.oidc.outputs.token }}
+          GPG_SIGN_URL: ${{ vars.SIGNING_SERVICE_URL }}
+          GPG_SIGN_KEY_ID: 62E75E54497815DD
+        run: |
+          url="${GPG_SIGN_URL:-https://gpg.kajkowalski.nl}"
+          code=$(curl -sS -m 20 -o body.txt -w '%{http_code}' \
+            -X POST "$url/sign?keyId=$GPG_SIGN_KEY_ID" \
+            -H "Authorization: Bearer $GPG_SIGN_TOKEN" \
+            -H 'Content-Type: text/plain' \
+            --data-binary 'diagnostic') || true
+          # A 200 returns a signature over the probe text, which is not a
+          # diagnosis and does not belong in the log.
+          if [ "$code" = 200 ]; then
+            echo "::notice::/sign answered 200 on replay; the original failure was not authorization"
+          else
+            echo "::error::/sign returned $code: $(head -c 500 body.txt)"
+          fi
 
       - name: push signed commits
         run: git push origin HEAD:${{ github.ref_name }} --force-with-lease
