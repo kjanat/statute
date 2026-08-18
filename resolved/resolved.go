@@ -20,9 +20,22 @@ type Config struct {
 	Listeners     []*Listener
 	Upstreams     map[string]*Pool
 	Routes        []*Route
+	Docker        *Docker // nil unless Docker label discovery is enabled
 	Defaults      Defaults
 	Observability Observability
 	Shutdown      Shutdown
+}
+
+// Docker is the resolved Docker label-discovery provider configuration.
+// The provider's output (label-derived routes and pools) is runtime state,
+// not part of the resolved schema; only the discovery settings are.
+type Docker struct {
+	Endpoint         string
+	Network          string
+	ExposedByDefault bool
+	TraefikLabels    bool
+	// Refresh is the periodic full-resync interval; zero means events only.
+	Refresh time.Duration
 }
 
 // Listener is a resolved listener.

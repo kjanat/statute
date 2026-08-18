@@ -18,4 +18,8 @@ const (
 
 	// accessLogFormatJSON is the only access-log format currently supported.
 	accessLogFormatJSON = "json"
+
+	// labelValueTrue is the canonical truthy docker label value; labels
+	// are strings, so booleans arrive spelled out.
+	labelValueTrue = "true"
 )
