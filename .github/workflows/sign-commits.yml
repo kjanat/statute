@@ -1,0 +1,29 @@
+name: Sign commits
+on:
+  workflow_dispatch: null
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  steps:
+    - uses: actions/checkout@v7
+      with: { fetch-depth: 0 }
+
+    - uses: kjanat/gpg-signing-service@cbcb8600547bd6799cdca0b339e8dad044481435
+      with: { version: v1.1.2 }
+
+    - id: oidc
+      uses: actions/github-script@v9
+      with:
+        script: |
+          const token = await core.getIDToken("gpg-signing-service");
+          core.setSecret(token);
+          core.setOutput("token", token);
+
+    - name: Request signature
+      env:
+        GPG_SIGN_TOKEN: ${{ steps.oidc.outputs.token }}
+        GPG_SIGN_URL: ${{ vars.SIGNING_SERVICE_URL }}
+      run: |
+        git cat-file commit HEAD | gpg-sign sign --key-id 62E75E54497815DD > commit.sig
