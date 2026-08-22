@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-22
+
+### Changed
+
+- Go 1.27 or newer is now required.
+- CI now takes its Go version from `go.mod`, analyzes both Go and GitHub
+  Actions with CodeQL, validates workflows with Actionlint, and discovers
+  and runs every fuzz target independently.
+- Commit signing is provided by a reusable local action and rejects a
+  missing default branch instead of silently assuming `master`.
+
+### Fixed
+
+- Middleware resolution now distinguishes fallible and infallible
+  middleware instead of manufacturing unused `nil` errors. This has no
+  public API or behavior change.
+- Formatting checks use the mutually compatible `gci`, `gofmt`, and
+  `goimports` set under Go 1.27, without the deprecated `gofumpt`
+  configuration.
+
 ## [0.5.0] — 2026-08-18
 
 ### Added
@@ -221,7 +241,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/kjanat/statute/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/kjanat/statute/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kjanat/statute/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kjanat/statute/compare/v0.2.0...v0.3.0

@@ -67,7 +67,7 @@ If the middleware changes the access-log shape, the change must be **additive** 
 
 ## Style
 
-- `gofumpt` formatted (the linter enforces this). Run `gofumpt -w .` if your editor doesn't.
+- `gofmt` formatted (the linter enforces this). Run `gofmt -w .` if your editor doesn't.
 - Imports grouped: stdlib, then external deps with a blank line, then `statute.kjanat.dev` last. The linter's `goimports` config enforces the `statute.kjanat.dev` local-prefix.
 - No comments stating _what_ code does — names should be self-explanatory. Comments should answer _why_: non-obvious constraints, hidden invariants, historical context.
 - No `// TODO` or `// FIXME` comments in committed code. If something is genuinely deferred, open an issue and reference it from a code comment.
