@@ -65,6 +65,50 @@ func TestDNS01_GetCertificate_ReusesWildcard(t *testing.T) {
 	}
 }
 
+// TestDNS01_GetCertificate_PrefersExactOverWildcard pins the precedence rule
+// in matchDomain: when both an exact host and a covering wildcard are
+// configured, the exact certificate wins — regardless of which is listed
+// first.
+func TestDNS01_GetCertificate_PrefersExactOverWildcard(t *testing.T) {
+	t.Parallel()
+	exact := testCertificate(t, time.Now().Add(90*24*time.Hour))
+	wildcard := testCertificate(t, time.Now().Add(90*24*time.Hour))
+
+	// The wildcard is listed first on purpose: precedence must come from the
+	// match rule, not from configuration order.
+	m := &dns01Manager{
+		domains: []string{"*.example.com", "foo.example.com"},
+		cache: map[string]*tls.Certificate{
+			"*.example.com":   wildcard,
+			"foo.example.com": exact,
+		},
+	}
+
+	got, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "Foo.Example.Com."})
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	switch got {
+	case exact: // want
+	case wildcard:
+		t.Fatal("GetCertificate returned the wildcard certificate; the exact host must win")
+	default:
+		t.Fatal("GetCertificate returned an unexpected certificate")
+	}
+
+	// A sibling host with no exact entry still falls back to the wildcard.
+	got, err = m.GetCertificate(&tls.ClientHelloInfo{ServerName: "bar.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate(bar): %v", err)
+	}
+	if got != wildcard {
+		t.Fatal("sibling host did not fall back to the wildcard certificate")
+	}
+	if _, ok := m.cache["bar.example.com"]; ok {
+		t.Fatal("GetCertificate created a concrete-host cache entry for the wildcard fallback")
+	}
+}
+
 // TestDNS01_CertValid covers the freshness logic. A leaf that expires within
 // 30 days is treated as needing renewal.
 func TestDNS01_CertValid(t *testing.T) {
