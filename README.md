@@ -80,7 +80,7 @@ What's implemented:
 go get statute.kjanat.dev
 ```
 
-Requires Go 1.26 or newer.
+Requires Go 1.27 or newer.
 
 ## Concepts
 

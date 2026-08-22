@@ -22,11 +22,10 @@ issues:
   max-same-issues: 0
 
 formatters:
-  enable: [gci, gofumpt, gofmt, goimports]
+  enable: [gci, gofmt, goimports]
   settings:
     gci: { sections: [standard, default, localmodule] }
     goimports: { local-prefixes: [statute.kjanat.dev] }
-    gofumpt: { module-path: statute.kjanat.dev, extra-rules: true }
 
 linters:
   default: standard
