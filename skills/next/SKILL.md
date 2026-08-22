@@ -25,9 +25,10 @@ ambiguous text.
 An invocation authorizes carrying one selected issue through implementation in
 an issue branch and isolated worktree, validation, one or more focused signed
 commits, one branch push, and creation of one linked pull request carrying the
-labels and milestone derived below. It does not authorize merging,
-auto-merging, manually closing issues, changing repository settings, editing
-unrelated issue content, or rewriting another contributor's branch.
+labels and milestone derived below. It also authorizes retiring the worktrees
+and branches of pull requests GitHub reports as merged. It does not authorize
+merging, auto-merging, manually closing issues, changing repository settings,
+editing unrelated issue content, or rewriting another contributor's branch.
 
 Use only the `gh` CLI for GitHub reads and mutations.
 
@@ -106,11 +107,34 @@ checkout. Preserve all staged and unstaged state there.
    match this issue. Otherwise create a new, explicitly named issue branch and
    sibling worktree from `origin/<default-branch>`.
 4. Assert the worktree path, branch, issue number, and base SHA before editing.
-5. Perform every issue-related mutation from that worktree. Never delete or
-   repurpose an existing worktree, and do not remove the new worktree at handoff.
+5. Perform every issue-related mutation from that worktree. Never repurpose an
+   existing worktree, do not remove the new worktree at handoff, and remove an
+   older one only under the merged-worktree cleanup below.
 
 Use an issue-specific branch name derived from the issue number and title. Avoid
 renaming an existing matching branch.
+
+### Clean up merged worktrees
+
+A run cannot retire its own worktree — its pull request is still open when the
+run ends — so each run clears out what earlier runs left behind. Do this once,
+before creating this run's worktree.
+
+For every issue worktree and issue branch other than the one this run is about,
+ask GitHub whether its pull request merged (`gh pr list --state all --json
+number,state,headRefName,mergedAt`). Retire only those whose PR is `MERGED`:
+
+```sh
+git worktree remove <path>          # --force only for an empty, unmodified tree
+git branch -D <branch>              # -d refuses after a squash merge
+git worktree prune                  # clears metadata for a directory already gone
+```
+
+Leave everything else alone. A branch whose PR is open, closed unmerged, or
+absent may hold unpushed work, and a worktree with uncommitted changes is
+someone's work in progress: report those and move on rather than deleting them.
+Never touch the primary checkout or a worktree this run did not create unless
+GitHub says its pull request merged.
 
 ## Implement the issue
 
@@ -199,7 +223,7 @@ After creation, re-query GitHub and verify all of the following:
 - The pull request carries the derived labels and the selected issue's
   milestone, and no repository label or milestone was created or edited.
 
-Report the selected issue, selection rationale, blockers checked, worktree and
-branch, implementation, validations, commit and signature status, push, applied
-labels and milestone, and PR URL separately. Leave the worktree available for
-follow-up.
+Report the selected issue, selection rationale, blockers checked, worktrees
+retired, worktree and branch, implementation, validations, commit and signature
+status, push, applied labels and milestone, and PR URL separately. Leave this
+run's worktree available for follow-up.
