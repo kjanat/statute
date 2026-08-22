@@ -47,7 +47,9 @@ def fail(message: str) -> NoReturn:
 
 
 def git(*args: str, stdin: bytes | None = None) -> bytes:
-    result = subprocess.run(["git", *args], input=stdin, capture_output=True)
+    result = subprocess.run(
+        ["git", *args], input=stdin, capture_output=True, check=False
+    )
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip()
         fail(f"git {' '.join(args)} failed: {detail}")
@@ -55,7 +57,9 @@ def git(*args: str, stdin: bytes | None = None) -> bytes:
 
 
 def gpg_sign(*args: str, stdin: bytes | None = None) -> bytes:
-    result = subprocess.run(["gpg-sign", *args], input=stdin, capture_output=True)
+    result = subprocess.run(
+        ["gpg-sign", *args], input=stdin, capture_output=True, check=False
+    )
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip()
         fail(f"gpg-sign {' '.join(args)} failed: {detail}")
@@ -63,7 +67,9 @@ def gpg_sign(*args: str, stdin: bytes | None = None) -> bytes:
 
 
 def gpg(*args: str, stdin: bytes | None = None) -> bytes:
-    result = subprocess.run(["gpg", *args], input=stdin, capture_output=True)
+    result = subprocess.run(
+        ["gpg", *args], input=stdin, capture_output=True, check=False
+    )
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip()
         fail(f"gpg {' '.join(args)} failed: {detail}")
@@ -92,10 +98,12 @@ def keyring(armored: bytes) -> str:
         ["gpg", "--homedir", home, "--batch", "--quiet", "--import"],
         input=armored,
         capture_output=True,
+        check=False,
     )
     listing = subprocess.run(
         ["gpg", "--homedir", home, "--batch", "--list-keys", "--with-colons"],
         capture_output=True,
+        check=False,
     )
     if not listing.stdout.startswith(b"pub:") and b"\npub:" not in listing.stdout:
         detail = imported.stderr.decode(errors="replace").strip()
@@ -143,6 +151,7 @@ def verify_status(commit: bytes, home: str) -> tuple[bool, str]:
             commit.decode(),
         ],
         capture_output=True,
+        check=False,
         env={**os.environ, "GNUPGHOME": home},
     )
     detail = result.stderr.decode(errors="replace").strip()
@@ -237,6 +246,7 @@ def last_signed(home: str) -> str:
         ["git", "cat-file", "--batch"],
         input=git("rev-list", *scan_bound(), "HEAD"),
         capture_output=True,
+        check=False,
     )
     if objects.returncode != 0:
         detail = objects.stderr.decode(errors="replace").strip()
@@ -265,8 +275,12 @@ def resolve_base(branch: str, home: str) -> str:
         pinned = (
             f"base={BASE_REF} pins the range"
             if BASE_REF
-            else f"{branch} is not {DEFAULT_BRANCH}, so the range starts at the "
-            "merge base"
+            else " ".join(
+                (
+                    f"{branch} is not {DEFAULT_BRANCH}, so the range starts at the",
+                    "merge base",
+                )
+            )
         )
         reason = "the scan for the last signed commit only runs when base is blank"
         warn(f"scan_limit={SCAN_LIMIT} was discarded because {pinned}; {reason}")
@@ -276,42 +290,49 @@ def resolve_base(branch: str, home: str) -> str:
     return git("merge-base", "HEAD", f"origin/{DEFAULT_BRANCH}").strip().decode()
 
 
-def main() -> None:
-    if not DEFAULT_BRANCH:
-        fail("default_branch must not be empty")
-
-    branch = git("rev-parse", "--abbrev-ref", "HEAD").strip().decode()
-    if branch == "HEAD":
-        fail("HEAD is detached; check out the branch you want signed")
-
-    armored = gpg_sign("public-key", *key_args())
-    identities = key_identities(armored)
-    home = keyring(armored)
-
-    head = git("rev-parse", "HEAD").strip()
-    base = resolve_base(branch, home)
-    commits = git("rev-list", "--reverse", "--topo-order", f"{base}..HEAD").split()
-    if not commits:
-        if base != head.decode():
-            warn(
-                f"No commits in {base}..HEAD; nothing was signed. Check that base "
-                "is an ancestor of HEAD on the branch you dispatched."
+def report_empty_range(branch: str, head: bytes, base: str) -> None:
+    if base != head.decode():
+        warn(
+            " ".join(
+                (
+                    f"No commits in {base}..HEAD; nothing was signed. Check that base",
+                    "is an ancestor of HEAD on the branch you dispatched.",
+                )
             )
-        elif BASE_REF:
-            remedy = "pass the commit before the first one you want signed"
-            warn(
-                f"base={BASE_REF} resolved to {base}, which is HEAD itself; base is "
-                f"an exclusive lower bound, so the range is empty — {remedy}."
+        )
+    elif BASE_REF:
+        remedy = "pass the commit before the first one you want signed"
+        warn(
+            " ".join(
+                (
+                    f"base={BASE_REF} resolved to {base}, which is HEAD itself; base is",
+                    f"an exclusive lower bound, so the range is empty — {remedy}.",
+                )
             )
-        elif branch == DEFAULT_BRANCH:
-            print(f"Nothing to sign; HEAD ({base}) is already signed and verified.")
-        else:
-            print(
-                f"Nothing to sign; {branch} adds no commits on top of "
-                f"origin/{DEFAULT_BRANCH} ({base})."
+        )
+    elif branch == DEFAULT_BRANCH:
+        print(f"Nothing to sign; HEAD ({base}) is already signed and verified.")
+    else:
+        print(
+            " ".join(
+                (
+                    f"Nothing to sign; {branch} adds no commits on top of",
+                    f"origin/{DEFAULT_BRANCH} ({base}).",
+                )
             )
-        return
+        )
 
+
+def analyze_commits(
+    commits: list[bytes], identities: set[str], home: str
+) -> tuple[
+    dict[bytes, bytes],
+    dict[bytes, bool],
+    dict[bytes, bool],
+    dict[bytes, bool],
+    dict[bytes, str],
+    set[bytes],
+]:
     raw = {commit: git("cat-file", "commit", commit.decode()) for commit in commits}
     mine = {commit: committer_email(raw[commit]) in identities for commit in commits}
     ours = {commit: SIGN_OTHERS or mine[commit] for commit in commits}
@@ -329,39 +350,75 @@ def main() -> None:
         if moved or (ours[commit] and not verified_by_key[commit]):
             stale.add(commit)
 
-    if not stale:
-        others = sum(1 for commit in commits if not mine[commit])
-        if others == len(commits) and not SIGN_OTHERS:
-            warn(
-                f"Nothing was signed: all {others} commit(s) in {base}..HEAD were "
-                "committed by identities the key does not carry — dispatch with "
-                "sign_others to include them."
+    return raw, mine, ours, verified_by_key, verify_detail, stale
+
+
+def report_if_nothing_to_rewrite(
+    commits: list[bytes],
+    mine: dict[bytes, bool],
+    stale: set[bytes],
+    base: str,
+) -> bool:
+    if stale:
+        return False
+
+    others = sum(1 for commit in commits if not mine[commit])
+    if others == len(commits) and not SIGN_OTHERS:
+        warn(
+            " ".join(
+                (
+                    f"Nothing was signed: all {others} commit(s) in {base}..HEAD were",
+                    "committed by identities the key does not carry — dispatch with",
+                    "sign_others to include them.",
+                )
             )
-        else:
-            print(f"Nothing to sign in {base}..HEAD ({others} commit(s) by others).")
+        )
+    else:
+        print(f"Nothing to sign in {base}..HEAD ({others} commit(s) by others).")
+    return True
+
+
+def ensure_resign_allowed(
+    commits: list[bytes],
+    raw: dict[bytes, bytes],
+    ours: dict[bytes, bool],
+    stale: set[bytes],
+    verified_by_key: dict[bytes, bool],
+    verify_detail: dict[bytes, str],
+) -> None:
+    resign = [commit for commit in stale if is_signed(raw[commit])]
+    if not resign or ALLOW_RESIGN:
         return
 
-    resign = [commit for commit in stale if is_signed(raw[commit])]
-    if resign and not ALLOW_RESIGN:
-        for commit in commits:
-            if commit in resign:
-                if commit in verify_detail and not verified_by_key[commit]:
-                    # No PGP status at all (an SSH signature, say) still means
-                    # the signature we can check did not check out.
-                    reason = (
-                        verify_reason(verify_detail[commit])
-                        or "its signature did not verify"
-                    )
-                else:
-                    reason = "a rewritten parent invalidates its signature"
-                # A commit the key does not cover is reparented, not re-signed:
-                # the rewrite strips its signature and nothing replaces it.
-                action = "re-sign" if ours[commit] else "drop the signature on"
-                print(f"  would {action} {commit.decode()[:8]} ({reason})")
-        blocked = f"would rewrite {len(resign)} already-signed commit(s) below the tip"
-        remedy = "move the base forward or dispatch with allow_resign"
-        fail(f"signing {len(stale)} commit(s) {blocked}; {remedy}")
+    for commit in commits:
+        if commit not in resign:
+            continue
+        if commit in verify_detail and not verified_by_key[commit]:
+            # No PGP status at all (an SSH signature, say) still means
+            # the signature we can check did not check out.
+            reason = (
+                verify_reason(verify_detail[commit]) or "its signature did not verify"
+            )
+        else:
+            reason = "a rewritten parent invalidates its signature"
+        # A commit the key does not cover is reparented, not re-signed:
+        # the rewrite strips its signature and nothing replaces it.
+        action = "re-sign" if ours[commit] else "drop the signature on"
+        print(f"  would {action} {commit.decode()[:8]} ({reason})")
 
+    blocked = f"would rewrite {len(resign)} already-signed commit(s) below the tip"
+    remedy = "move the base forward or dispatch with allow_resign"
+    fail(f"signing {len(stale)} commit(s) {blocked}; {remedy}")
+
+
+def rewrite_commits(
+    commits: list[bytes],
+    raw: dict[bytes, bytes],
+    ours: dict[bytes, bool],
+    stale: set[bytes],
+    home: str,
+    base: str,
+) -> tuple[dict[bytes, bytes], int]:
     rewritten: dict[bytes, bytes] = {}
     for commit in commits:
         if commit not in stale:
@@ -393,26 +450,75 @@ def main() -> None:
 
     signed = sum(1 for commit in rewritten if ours[commit])
     print(f"Signed {signed} of {len(commits)} commit(s) in {base}..HEAD")
+    return rewritten, signed
 
+
+def report_rewrite_results(
+    rewritten: dict[bytes, bytes],
+    raw: dict[bytes, bytes],
+    ours: dict[bytes, bool],
+    head: bytes,
+    home: str,
+    signed: int,
+) -> bytes:
     dropped = [c for c in rewritten if not ours[c] and is_signed(raw[c])]
     if dropped:
         # An annotation, not just a log line: this is the run destroying
         # signatures it cannot replace, and the log scrolls past.
         shas = ", ".join(commit.decode()[:8] for commit in dropped)
         warn(
-            f"Dropped the signature on {len(dropped)} commit(s) ({shas}); they were "
-            "committed by identities the key does not carry, so the rewrite stripped "
-            "each signature and nothing replaced it — dispatch with sign_others to "
-            "sign them instead."
+            " ".join(
+                (
+                    f"Dropped the signature on {len(dropped)} commit(s) ({shas}); they were",
+                    "committed by identities the key does not carry, so the rewrite stripped",
+                    "each signature and nothing replaced it — dispatch with sign_others to",
+                    "sign them instead.",
+                )
+            )
         )
 
     tip = rewritten.get(head, head)
     if not verify_status(tip, home)[0]:
         warn(
-            f"Signed {signed} commit(s), but the tip {tip.decode()[:8]} still carries "
-            "no signature this key can verify; it was committed by an identity the "
-            "key does not carry — dispatch with sign_others to include it."
+            " ".join(
+                (
+                    f"Signed {signed} commit(s), but the tip {tip.decode()[:8]} still carries",
+                    "no signature this key can verify; it was committed by an identity the",
+                    "key does not carry — dispatch with sign_others to include it.",
+                )
+            )
         )
+    return tip
+
+
+def main() -> None:
+    if not DEFAULT_BRANCH:
+        fail("default_branch must not be empty")
+
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").strip().decode()
+    if branch == "HEAD":
+        fail("HEAD is detached; check out the branch you want signed")
+
+    armored = gpg_sign("public-key", *key_args())
+    identities = key_identities(armored)
+    home = keyring(armored)
+
+    head = git("rev-parse", "HEAD").strip()
+    base = resolve_base(branch, home)
+    commits = git("rev-list", "--reverse", "--topo-order", f"{base}..HEAD").split()
+    if not commits:
+        report_empty_range(branch, head, base)
+        return
+
+    raw, mine, ours, verified_by_key, verify_detail, stale = analyze_commits(
+        commits, identities, home
+    )
+    if report_if_nothing_to_rewrite(commits, mine, stale, base):
+        return
+
+    ensure_resign_allowed(commits, raw, ours, stale, verified_by_key, verify_detail)
+    rewritten, signed = rewrite_commits(commits, raw, ours, stale, home, base)
+    tip = report_rewrite_results(rewritten, raw, ours, head, home, signed)
 
     _ = git("update-ref", "HEAD", tip.decode())
 
