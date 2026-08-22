@@ -6,13 +6,19 @@
     "cwd": "${configDir}",
     "commands": [{ "command": "golangci-lint fmt --stdin", "exts": ["go"], "cacheKeyFiles": [".golangci.yml"] }],
   },
+  "gofumpt": {
+    "langVersion": "go1.27",
+    "modulePath": "statute.kjanat.dev",
+    "extra": { "groupParams": true }
+  },
   "plugins": [
-    "https://plugins.dprint.dev/dockerfile-0.6.0.wasm",
-    "https://plugins.dprint.dev/exec-0.7.3.json@a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa",
-    "https://plugins.dprint.dev/g-plane/markup_fmt-v0.27.3.wasm",
-    "https://plugins.dprint.dev/g-plane/pretty_yaml-v0.6.0.wasm",
-    "https://plugins.dprint.dev/json-0.23.0.wasm",
+    "npm:@dprint/dockerfile@0.6.0",
+    "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
+    "npm:dprint-plugin-markup@0.27.3",
+    "npm:dprint-plugin-yaml@0.6.0",
+    "npm:@dprint/json@0.23.0",
     "https://plugins.dprint.dev/kjanat/svg-v0.4.1.wasm",
-    "https://plugins.dprint.dev/markdown-0.22.1.wasm",
+    "npm:@dprint/markdown@0.22.1",
+    "npm:@jakebailey/dprint-plugin-gofumpt@0.0.15",
   ],
 }
