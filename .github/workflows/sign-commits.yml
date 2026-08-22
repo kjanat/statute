@@ -69,16 +69,17 @@ jobs:
         run: |
           url="${GPG_SIGN_URL:-https://gpg.kajkowalski.nl}"
           code=$(curl -sS -m 20 -o body.txt -w '%{http_code}' \
-            -X POST "$url/sign?keyId=$GPG_SIGN_KEY_ID" \
-            -H "Authorization: Bearer $GPG_SIGN_TOKEN" \
+            -X POST "${url}/sign?keyId=${GPG_SIGN_KEY_ID}" \
+            -H "Authorization: Bearer ${GPG_SIGN_TOKEN}" \
             -H 'Content-Type: text/plain' \
             --data-binary 'diagnostic') || true
           # A 200 returns a signature over the probe text, which is not a
           # diagnosis and does not belong in the log.
-          if [ "$code" = 200 ]; then
+          if [[ "${code}" == 200 ]]; then
             echo "::notice::/sign answered 200 on replay; the original failure was not authorization"
           else
-            echo "::error::/sign returned $code: $(head -c 500 body.txt)"
+            body="$(head -c 500 body.txt)"
+            echo "::error::/sign returned ${code}: ${body}"
           fi
 
       - name: push signed commits

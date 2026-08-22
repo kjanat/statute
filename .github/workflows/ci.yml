@@ -1,7 +1,5 @@
 name: ci
-on:
-  push: { branches: [master] }
-  pull_request:
+on: { push: { branches: [master] }, pull_request: null }
 permissions: { contents: read }
 concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
 jobs:
@@ -17,18 +15,10 @@ jobs:
       - run: go test -race -coverprofile=cover.out -covermode=atomic ./...
       - run: go tool cover -func=cover.out | tail -1
       - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          slug: kjanat/statute
-          files: ./cover.out
-          fail_ci_if_error: false
+        with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
       - name: upload coverage artifact
         uses: actions/upload-artifact@v7
-        with:
-          name: cover.out
-          path: cover.out
-          if-no-files-found: error
-          retention-days: 14
+        with: { name: cover.out, path: cover.out, if-no-files-found: error, retention-days: 14 }
   lint:
     name: lint
     runs-on: ubuntu-slim
@@ -38,39 +28,52 @@ jobs:
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@v9
         with: { version: latest, args: --timeout=5m }
-  fuzz:
-    name: fuzz (30s/target)
-    runs-on: ubuntu-slim
+  discover_fuzz:
+    name: discover fuzz targets
+    runs-on: ubuntu-latest
+    outputs: { matrix: "${{ steps.targets.outputs.matrix }}" }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
-      - name: list fuzz targets
+      - name: discover fuzz targets
         id: targets
         run: |
-          mapfile -t targets < <(grep -rhoE '^func (Fuzz[A-Za-z0-9_]+)' --include='*_test.go' . | awk '{print $2}' | sort -u)
-          if [ "${#targets[@]}" -eq 0 ]; then
-            echo "no fuzz targets found"
-            exit 0
-          fi
-          printf '%s\n' "${targets[@]}" > .fuzz-targets
-          cat .fuzz-targets
-      - name: run fuzz targets
+          set -o pipefail
+          go test -json -run='^$' -list='^Fuzz' ./... |
+            jq -sc '
+              [.[] | select(.Action == "output" and (.Output | test("^Fuzz[A-Za-z0-9_]+\\n$"))) | { package: .Package, target: (.Output | rtrimstr("\n")) }]
+              | unique_by(.package, .target) | if length == 0 then error("no fuzz targets found") else {include: .} end
+            ' > fuzz-matrix.json
+          matrix="$(<fuzz-matrix.json)"
+          jq . fuzz-matrix.json
+          printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
+  fuzz:
+    name: fuzz (${{ matrix.target }}, 30s)
+    needs: discover_fuzz
+    runs-on: ubuntu-latest
+    strategy: { fail-fast: false, matrix: "${{ fromJSON(needs.discover_fuzz.outputs.matrix) }}" }
+    env: { FUZZ_PACKAGE: "${{ matrix.package }}", FUZZ_TARGET: "${{ matrix.target }}" }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      - name: run fuzz target
         run: |
-          [[ -f .fuzz-targets ]] || exit 0
-          # -fuzz cannot target multiple packages in one invocation; we run
-          # against the root package where every Fuzz* lives. If the framework
-          # grows fuzz targets in other packages, this loop must be expanded.
-          while read -r target; do
-            echo "::group::$target"
-            go test -run=^$ -fuzz="^${target}$" -fuzztime=30s .
-            echo "::endgroup::"
-          done < .fuzz-targets
+          printf '::group::%s\n' "${FUZZ_TARGET}"
+          go test -run='^$' -fuzz="^${FUZZ_TARGET}$" -fuzztime=30s "${FUZZ_PACKAGE}"
+          echo '::endgroup::'
   examples:
     name: build examples
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - run: go build ./examples/...
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: kjanat/actionlint@v1

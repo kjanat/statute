@@ -24,10 +24,11 @@ jobs:
           ' CHANGELOG.md > .release-notes.md
           if [[ ! -s .release-notes.md ]]; then
             echo "no CHANGELOG entry for ${TAG}; using auto-generated notes"
-            echo "use_generated=true" >> "$GITHUB_ENV"
+            echo "use_generated=true" >> "${GITHUB_ENV}"
           else
-            echo "use_generated=false" >> "$GITHUB_ENV"
-            printf "::group::release notes for ${TAG}\n%s\n::endgroup::" "$(cat .release-notes.md)"
+            echo "use_generated=false" >> "${GITHUB_ENV}"
+            release_notes="$(<.release-notes.md)"
+            printf "::group::release notes for ${TAG}\n%s\n::endgroup::" "${release_notes}"
           fi
       - name: create release
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -47,7 +48,7 @@ jobs:
         run: |
           for _ in 1 2 3 4 5; do
             if curl --fail --silent --show-error "https://proxy.golang.org/${CNAME}/@v/${GITHUB_REF_NAME}.info" > /dev/null; then
-              echo "proxy indexed $GITHUB_REF_NAME"
+              echo "proxy indexed ${GITHUB_REF_NAME}"
               exit 0
             fi
             echo "proxy not ready, retrying in 10s"
