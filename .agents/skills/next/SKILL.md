@@ -42,16 +42,25 @@ number, title, body, state, labels, milestone, parent, sub-issues, `blockedBy`,
 
 For `/next` without an argument, or `/next 37`:
 
-1. Query #37 and all open repository issues.
-2. Verify every open implementation issue is a child of #37. If an open issue
+1. Read [GitHub milestone commands](references/milestone-commands.md), then query
+   GitHub for the current open milestones and their issues. The aliases are
+   optional views; do not install or overwrite aliases unless the user asks.
+2. Query #37 and all open repository issues.
+3. Verify every open implementation issue is a child of #37. If an open issue
    has no parent, attach it with `gh issue edit ISSUE --parent 37` and verify the
    result. If it already has a different parent, stop and ask before reparenting.
-3. Consider only open children of #37 with no open `blockedBy` issues and no
+4. Consider only open children of #37 with no open `blockedBy` issues and no
    open linked pull request.
-4. Choose the lowest numbered milestone first, then the lowest issue number.
-   Put issues without a milestone after numbered milestones. Milestone order is
-   prioritization, not a blocking relationship.
-5. If no child is actionable, report whether the remaining children are
+5. Walk GitHub's open milestones in ascending milestone `.number`. Within each
+   milestone, sort its children by issue number and select the first actionable
+   issue. Advance to the next milestone only when the lower-numbered milestone
+   has no actionable child because its open children are blocked or already
+   linked to open pull requests. Consider children without a milestone only
+   after all numbered open milestones. Do not use due-date order, title order,
+   the tracking-body list, or `gh mb` display order for selection.
+6. Milestone order is prioritization, not a blocking relationship. Do not add
+   `blockedBy` metadata merely to encode milestone sequence.
+7. If no child is actionable, report whether the remaining children are
    blocked or already have pull requests and stop.
 
 For an explicitly selected issue:
