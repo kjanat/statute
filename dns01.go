@@ -107,27 +107,37 @@ func (m *dns01Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 	if host == "" {
 		return nil, errors.New("dns01: SNI hostname empty")
 	}
-	if !m.coversHost(host) {
+	domain, ok := m.matchDomain(host)
+	if !ok {
 		return nil, fmt.Errorf("dns01: host %q not configured", host)
 	}
-	return m.getOrIssue(hello.Context(), host)
+	return m.getOrIssue(hello.Context(), domain)
 }
 
 func (m *dns01Manager) coversHost(host string) bool {
+	_, ok := m.matchDomain(host)
+	return ok
+}
+
+func (m *dns01Manager) matchDomain(host string) (string, bool) {
+	// Prefer an exact certificate when both an exact name and a wildcard
+	// cover the SNI host, regardless of their configuration order.
 	for _, d := range m.domains {
 		if strings.EqualFold(d, host) {
-			return true
+			return d, true
 		}
+	}
+	for _, d := range m.domains {
 		// wildcard match: *.example.com matches foo.example.com but not bar.foo.example.com
 		if strings.HasPrefix(d, "*.") {
 			suffix := d[1:]
 			if strings.HasSuffix(strings.ToLower(host), strings.ToLower(suffix)) &&
 				strings.Count(host, ".") == strings.Count(d, ".") {
-				return true
+				return d, true
 			}
 		}
 	}
-	return false
+	return "", false
 }
 
 func (m *dns01Manager) getOrIssue(ctx context.Context, host string) (*tls.Certificate, error) {

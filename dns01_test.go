@@ -45,6 +45,26 @@ func TestDNS01_CoversHost(t *testing.T) {
 	}
 }
 
+func TestDNS01_GetCertificate_ReusesWildcard(t *testing.T) {
+	t.Parallel()
+	cert := testCertificate(t, time.Now().Add(90*24*time.Hour))
+	m := &dns01Manager{
+		domains: []string{"*.example.com"},
+		cache:   map[string]*tls.Certificate{"*.example.com": cert},
+	}
+
+	got, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "Foo.Example.Com."})
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if got != cert {
+		t.Fatal("GetCertificate did not return the cached wildcard certificate")
+	}
+	if _, ok := m.cache["foo.example.com"]; ok {
+		t.Fatal("GetCertificate created a concrete-host cache entry")
+	}
+}
+
 // TestDNS01_CertValid covers the freshness logic. A leaf that expires within
 // 30 days is treated as needing renewal.
 func TestDNS01_CertValid(t *testing.T) {
@@ -54,34 +74,33 @@ func TestDNS01_CertValid(t *testing.T) {
 		t.Fatal("nil/empty cert must be invalid")
 	}
 
-	// Build a fake self-signed cert with controllable NotAfter.
-	mk := func(notAfter time.Time) *tls.Certificate {
-		t.Helper()
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		template := &x509.Certificate{
-			SerialNumber: big.NewInt(1),
-			NotBefore:    notAfter.Add(-24 * time.Hour),
-			NotAfter:     notAfter,
-		}
-		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
-	}
-
-	if !certValid(mk(time.Now().Add(90 * 24 * time.Hour))) {
+	if !certValid(testCertificate(t, time.Now().Add(90*24*time.Hour))) {
 		t.Errorf("90d-out cert must be valid")
 	}
-	if certValid(mk(time.Now().Add(7 * 24 * time.Hour))) {
+	if certValid(testCertificate(t, time.Now().Add(7*24*time.Hour))) {
 		t.Errorf("7d-out cert must be invalid (within 30d window)")
 	}
-	if certValid(mk(time.Now().Add(-1 * time.Hour))) {
+	if certValid(testCertificate(t, time.Now().Add(-1*time.Hour))) {
 		t.Errorf("expired cert must be invalid")
 	}
+}
+
+func testCertificate(t *testing.T, notAfter time.Time) *tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    notAfter.Add(-24 * time.Hour),
+		NotAfter:     notAfter,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
 // TestDNS01_ECPrivateKeyRoundTrip ensures the on-disk PEM serialisation
