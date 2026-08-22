@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kjanat/github-labelmanager/master/.github/labels.schema.json
+---
+labels:
+  - name: bug
+    description: Something isn't working
+    color: D73A4A
+  - name: documentation
+    description: Improvements or additions to documentation
+    color: 0075CA
+  - name: duplicate
+    description: This issue or pull request already exists
+    color: CFD3D7
+  - name: enhancement
+    description: New feature or request
+    color: A2EEEF
+  - name: good first issue
+    description: Good for newcomers
+    color: 7057FF
+  - name: help wanted
+    description: Extra attention is needed
+    color: "008672"
+  - name: invalid
+    description: This doesn't seem right
+    color: E4E669
+  - name: question
+    description: Further information is requested
+    color: D876E3
+  - name: wontfix
+    description: This will not be worked on
+    color: FFFFFF
+  - name: cr:skip
+    description: Skip CodeRabbit review
+    color: FF570A
+  - name: cr:review
+    description: Allow CodeRabbit review
+    color: FF570A
+  - name: dependencies
+    description: Dependency updates
+    color: 0366D6
+  - name: go
+    description: Go module updates
+    color: 00ADD8
+  - name: github-actions
+    description: GitHub Actions workflow updates
+    color: 2088FF
+  - name: "area: middleware"
+    description: Request and response middleware
+    color: "5319E7"
+  - name: "area: docker"
+    description: Docker discovery and label compatibility
+    color: 2496ED
+  - name: "area: lifecycle"
+    description: Startup, readiness, shutdown, and process operation
+    color: C5DEF5
+  - name: "area: observability"
+    description: Logs, metrics, tracing, profiling, and diagnostics
+    color: FBCA04
+  - name: "area: routing"
+    description: Request matching, route actions, and dispatch
+    color: 1D76DB
+  - name: "area: tls"
+    description: TLS, certificates, SNI, and ACME
+    color: D93F0B
+  - name: "area: upstream"
+    description: Backend pools, proxy transport, and health checks
+    color: 0E8A16
+  - name: migration
+    description: Needed for feature-complete migration from another proxy
+    color: 6F42C1
+  - name: security
+    description: Security-sensitive behavior and hardening
+    color: B60205

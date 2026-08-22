@@ -1,0 +1,4 @@
+name: Sync Labels
+on: { push: { branches: [master], paths: [".github/**/labels.yml"] }, workflow_dispatch: null }
+permissions: { contents: read, issues: write }
+jobs: { sync: { runs-on: ubuntu-slim, steps: [{ uses: actions/checkout@v7, with: { sparse-checkout: .github } }, uses: kjanat/github-labelmanager@v1] } }
