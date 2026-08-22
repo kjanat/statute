@@ -24,10 +24,10 @@ ambiguous text.
 
 An invocation authorizes carrying one selected issue through implementation in
 an issue branch and isolated worktree, validation, one or more focused signed
-commits, one branch push, and creation of one linked pull request. It does not
-authorize merging, auto-merging, manually closing issues, changing repository
-settings, editing unrelated issue content, or rewriting another contributor's
-branch.
+commits, one branch push, and creation of one linked pull request carrying the
+labels and milestone derived below. It does not authorize merging,
+auto-merging, manually closing issues, changing repository settings, editing
+unrelated issue content, or rewriting another contributor's branch.
 
 Use only the `gh` CLI for GitHub reads and mutations.
 
@@ -145,6 +145,49 @@ create the pull request with `gh pr create`:
   metadata.
 - Never merge, auto-merge, enqueue, or manually close the issue.
 
+### Labels and milestone
+
+Label every pull request you create. The canonical label set is
+[`.github/labels.yml`](../../.github/labels.yml), and `gh label list` is the
+live state. Read both, and apply only names that already exist live. Never
+invent a label, and never run `gh label create` or `gh label edit`; the
+label-sync workflow owns the label set. If a label you need is defined in
+`.github/labels.yml` but is missing from the repository, apply the labels that
+do exist and report the gap.
+
+Derive the set from the selected issue and the change actually made:
+
+- Carry over every `area: *` label the issue carries, plus `migration` and
+  `security` when it carries them. Add an `area: *` label the issue lacks only
+  when the change demonstrably touches that area.
+- Apply exactly one kind label for the change: `bug` for a defect fix,
+  `enhancement` for new or extended behavior, `documentation` for a
+  documentation-only change.
+- Do not copy triage labels onto a pull request. `good first issue`,
+  `help wanted`, `question`, `duplicate`, `invalid`, and `wontfix` are issue
+  triage; `dependencies`, `go`, and `github-actions` belong to the dependency
+  bots.
+- Apply `cr:skip` or `cr:review` only when the user explicitly asks for it.
+
+Set the pull request's milestone to the selected issue's milestone, so the
+milestone view shows the work in flight alongside its issue. An issue with no
+milestone gives the pull request none; never create a milestone, and never move
+the issue's own milestone.
+
+Pass both to `gh pr create --label ... --milestone ...` so the pull request is
+labeled and milestoned at creation. If creation rejects either, create the pull
+request without it and attach the rest with `gh pr edit <number> --add-label`
+and `gh pr edit <number> --milestone`. When `gh pr edit` fails on the
+projects-classic deprecation error, fall back to the REST endpoints, which add
+labels without replacing ones automation has already applied:
+
+```sh
+gh api -X POST "repos/{owner}/{repo}/issues/<number>/labels" -f 'labels[]=bug'
+gh api -X PATCH "repos/{owner}/{repo}/issues/<number>" -F milestone=<milestone-number>
+```
+
+Do not relabel or remilestone the selected issue.
+
 After creation, re-query GitHub and verify all of the following:
 
 - The remote PR head SHA matches the pushed local head.
@@ -153,7 +196,10 @@ After creation, re-query GitHub and verify all of the following:
 - The selected issue remains a child of #37.
 - Its blocking relationships are unchanged unless the user separately requested
   a graph mutation.
+- The pull request carries the derived labels and the selected issue's
+  milestone, and no repository label or milestone was created or edited.
 
 Report the selected issue, selection rationale, blockers checked, worktree and
-branch, implementation, validations, commit and signature status, push, and PR
-URL separately. Leave the worktree available for follow-up.
+branch, implementation, validations, commit and signature status, push, applied
+labels and milestone, and PR URL separately. Leave the worktree available for
+follow-up.
