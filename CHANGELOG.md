@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-18
+
 ### Added
 
 - Docker label discovery provider (`statute.Docker()`, new `Config.Docker`
@@ -22,6 +24,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   labeled for Traefik migrate without editing compose files. Implemented
   in-tree with a minimal Docker API client (`internal/docker`); no new
   module dependencies. See `docs/docker.md` and `examples/docker`.
+
+### Fixed
+
+- Docker-discovered services with unsupported backend schemes — including
+  `h2c`, which statute does not proxy — are now skipped with a warning
+  instead of being silently registered as plain HTTP. This applies to both
+  `statute.scheme` and Traefik's `loadbalancer.server.scheme` label.
 
 ## [0.4.0] — 2026-05-17
 
@@ -212,7 +221,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kjanat/statute/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/kjanat/statute/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kjanat/statute/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kjanat/statute/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kjanat/statute/releases/tag/v0.1.0
