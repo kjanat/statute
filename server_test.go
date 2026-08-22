@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +258,10 @@ func TestStripPrefix(t *testing.T) {
 		{"/static/*", "/static/", "/"},
 		{"/api/*", "/api/v1/x", "/v1/x"},
 		{"/*", "/anything", "/anything"},
+		// Exact patterns name a file, not a directory prefix: the path
+		// reaches the FileServer whole so it can find the file.
+		{"/robots.txt", "/robots.txt", "/robots.txt"},
+		{"/well-known/security.txt", "/well-known/security.txt", "/well-known/security.txt"},
 	}
 	for _, c := range cases {
 		inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -266,6 +272,59 @@ func TestStripPrefix(t *testing.T) {
 		h := stripPrefix(c.pattern, inner)
 		req := httptest.NewRequest("GET", "http://x"+c.path, nil)
 		runRequest(t, h, req)
+	}
+}
+
+// TestStaticRouteServesFiles — an exact static route serves the file that
+// its pattern names, while a trailing-wildcard route keeps serving the
+// directory with its prefix stripped.
+func TestStaticRouteServesFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeFile(t, dir, "robots.txt", "User-agent: *\nDisallow:\n")
+	writeFile(t, dir, "index.html", "<h1>root</h1>")
+	if err := os.Mkdir(filepath.Join(dir, "css"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, dir, filepath.Join("css", "app.css"), "body{}")
+
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP(":0")},
+		Routes: Routes{
+			Match("/robots.txt").Host("foo.example.com").Serve(dir),
+			Match("/static/*").Serve(dir),
+		},
+	})
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	h := srv.buildRouter()
+
+	cases := []struct {
+		name, host, path string
+		wantStatus       int
+		wantBody         string
+	}{
+		{"exact route serves its file", "foo.example.com", "/robots.txt", http.StatusOK, "User-agent: *\nDisallow:\n"},
+		{"exact route is host scoped", "bar.example.com", "/robots.txt", http.StatusNotFound, ""},
+		{"wildcard route strips its prefix", "foo.example.com", "/static/css/app.css", http.StatusOK, "body{}"},
+		{"wildcard route serves the directory index", "foo.example.com", "/static/", http.StatusOK, "<h1>root</h1>"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://"+c.host+c.path, nil)
+			rec := runRequest(t, h, req)
+			if rec.Code != c.wantStatus {
+				t.Fatalf("status: got %d, want %d", rec.Code, c.wantStatus)
+			}
+			if c.wantBody == "" {
+				return
+			}
+			if got := rec.Body.String(); got != c.wantBody {
+				t.Errorf("body: got %q, want %q", got, c.wantBody)
+			}
+		})
 	}
 }
 

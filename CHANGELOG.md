@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Exact-path static routes serve the file their pattern names instead of the
+  served directory's root. `Match("/robots.txt").Serve("./public")` now serves
+  `./public/robots.txt`; prefix stripping is applied only to trailing-wildcard
+  directory routes, whose behavior is unchanged.
 - DNS-01 wildcard certificates are reused for matching SNI hosts instead of
   issuing and caching a separate certificate for each concrete hostname.
 
