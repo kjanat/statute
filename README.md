@@ -197,6 +197,8 @@ Routes are matched in declaration order; the first match wins. Patterns support 
 
 Each route is either a proxy (`ProxyTo("pool")`) or a static-file serve (`Serve("./dir")`), not both.
 
+A wildcard static route strips its own prefix before looking in the directory, so `Match("/static/*").Serve("./public")` maps `/static/css/app.css` to `./public/css/app.css`. An exact static route keeps the whole path, so `Match("/robots.txt").Serve("./public")` serves `./public/robots.txt` — a single declared file rather than the directory root.
+
 Middleware:
 
 - **`Timeout(dur)`** — wraps the handler in `http.TimeoutHandler`. Returns 503 when exceeded.

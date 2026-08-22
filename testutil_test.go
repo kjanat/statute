@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,4 +99,12 @@ func decodeEcho(t *testing.T, body io.Reader) echoRequest {
 		t.Fatalf("decode echo: %v", err)
 	}
 	return e
+}
+
+// writeFile writes name (relative to dir) with the given contents.
+func writeFile(t *testing.T, dir, name, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
 }

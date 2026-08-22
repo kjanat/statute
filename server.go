@@ -506,9 +506,17 @@ func matchPattern(pattern, path string) bool {
 	return pattern == path
 }
 
-// stripPrefix strips the static-route prefix so the FileServer sees a clean path.
+// stripPrefix strips the static-route prefix so the FileServer sees a clean
+// path. Only a trailing-wildcard pattern names a directory prefix: /static/*
+// serving ./public maps /static/css/app.css to ./public/css/app.css. An exact
+// pattern names one file below the served directory, so its path is passed
+// through untouched and Match("/robots.txt").Serve("./public") serves
+// ./public/robots.txt rather than the directory root.
 func stripPrefix(pattern string, h http.Handler) http.Handler {
-	prefix := strings.TrimSuffix(pattern, "/*")
+	prefix, wildcard := strings.CutSuffix(pattern, "/*")
+	if !wildcard {
+		return h
+	}
 	prefix = strings.TrimSuffix(prefix, "/")
 	if prefix == "" {
 		return h
