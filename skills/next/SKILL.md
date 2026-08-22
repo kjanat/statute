@@ -2,6 +2,8 @@
 name: next
 description: Pick up the next actionable Statute tracking issue, or a specified issue, in an isolated Git worktree and carry it through a linked pull request.
 disable-model-invocation: true
+metadata:
+  internal: true
 ---
 
 # Pick up the next issue
