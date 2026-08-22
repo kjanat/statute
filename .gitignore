@@ -2,3 +2,4 @@
 /dist
 /fuzz-matrix.json
 /node_modules
+/cover.out
