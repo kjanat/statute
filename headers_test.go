@@ -104,6 +104,27 @@ func TestResponseHeaderHostAllowed(t *testing.T) {
 	}
 }
 
+// TestHeaderOpUnknownType — a discriminator that is not a header operation is
+// inert: applyHeaderOp leaves the map alone rather than guessing, and the
+// label falls back to the enum convention. Both branches are unreachable from
+// the surface API, and stay that way only if they behave.
+func TestHeaderOpUnknownType(t *testing.T) {
+	t.Parallel()
+	notAHeaderOp := resolved.MWCompress
+
+	h := http.Header{"X-Existing": []string{"kept"}}
+	applyHeaderOp(h, notAHeaderOp, "X-Existing", "clobbered")
+	if got := h.Get("X-Existing"); got != "kept" {
+		t.Errorf("X-Existing: got %q, want it untouched", got)
+	}
+	if len(h) != 1 {
+		t.Errorf("header map grew: %v", h)
+	}
+	if got := headerMWLabel(notAHeaderOp); got != enumUnknown {
+		t.Errorf("headerMWLabel: got %q, want %q", got, enumUnknown)
+	}
+}
+
 // TestRequestHeaderMiddleware — request mutations reach the inner handler and
 // apply in declaration order.
 func TestRequestHeaderMiddleware(t *testing.T) {
