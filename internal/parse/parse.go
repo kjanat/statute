@@ -8,6 +8,7 @@ package parse
 import (
 	"fmt"
 	"math"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -252,4 +253,46 @@ func sizeMultiplier(unit string) (float64, error) {
 		return 0, fmt.Errorf("unknown unit %q", unit)
 	}
 	return math.Pow(base, float64(idx+1)), nil
+}
+
+// HeaderName validates an HTTP field name and returns it in canonical form,
+// so "x-robots-tag" and "X-Robots-Tag" name the same header no matter how a
+// configuration spells it. Field names are tokens (RFC 9110 §5.1); an empty
+// string, a space, a colon, or a non-ASCII byte is rejected rather than
+// silently producing a message no client can parse.
+func HeaderName(s string) (string, error) {
+	if s == "" {
+		return "", fmt.Errorf("header name: empty")
+	}
+	for i := range len(s) {
+		if !isTchar(s[i]) {
+			return "", fmt.Errorf("header name %q: invalid character %q", s, s[i])
+		}
+	}
+	return textproto.CanonicalMIMEHeaderKey(s), nil
+}
+
+// HeaderValue validates an HTTP field value and returns it unchanged. A CR,
+// LF, or NUL in a configured value is header injection; the other C0
+// controls and DEL are not valid field content (RFC 9110 §5.5). Horizontal
+// tab and the high bytes of obs-text are allowed.
+func HeaderValue(s string) (string, error) {
+	for i := range len(s) {
+		if c := s[i]; (c < 0x20 && c != '\t') || c == 0x7f {
+			return "", fmt.Errorf("header value %q: invalid character %q", s, s[i])
+		}
+	}
+	return s, nil
+}
+
+// tcharSymbols is the non-alphanumeric half of RFC 9110's tchar set.
+const tcharSymbols = "!#$%&'*+-.^_`|~"
+
+// isTchar reports whether c is an RFC 9110 tchar, the byte class HTTP field
+// names are drawn from.
+func isTchar(c byte) bool {
+	if isDigit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+		return true
+	}
+	return strings.IndexByte(tcharSymbols, c) >= 0
 }

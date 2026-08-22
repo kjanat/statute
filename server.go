@@ -684,6 +684,13 @@ var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, h
 	resolved.MWBasicAuth:       basicAuthHandler,
 	resolved.MWAllowIPs:        allowIPsHandler,
 	resolved.MWDenyIPs:         denyIPsHandler,
+
+	resolved.MWSetRequestHeader:     requestHeaderHandler,
+	resolved.MWAddRequestHeader:     requestHeaderHandler,
+	resolved.MWRemoveRequestHeader:  requestHeaderHandler,
+	resolved.MWSetResponseHeader:    responseHeaderHandler,
+	resolved.MWAddResponseHeader:    responseHeaderHandler,
+	resolved.MWRemoveResponseHeader: responseHeaderHandler,
 }
 
 // buildTimeout adapts http.TimeoutHandler to the middlewareBuilders signature.

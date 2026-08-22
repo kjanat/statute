@@ -207,6 +207,10 @@ Middleware:
 - **`Cache(ttl)`** — in-process cache for 2xx GET/HEAD responses. Replace with a real LRU for high-cardinality deployments.
 - **`Compress(Gzip, Brotli)`** — negotiates content encoding via `Accept-Encoding`. Brotli preferred when the client advertises both.
 - **`ETag()`** — adds an SHA-256-based ETag to 200 responses; answers 304 on `If-None-Match` match.
+- **`SetRequestHeader(name, value)`, `AddRequestHeader(name, value)`, `RemoveRequestHeader(name)`** — rewrite the request before it reaches the proxy or file handler. Names are canonicalised and values validated when the config resolves, so a bad header is a startup error rather than a malformed request.
+- **`SetResponseHeader(name, value)`, `AddResponseHeader(name, value)`, `RemoveResponseHeader(name)`** — rewrite the response on the way out, overriding whatever the upstream sent. Applied when the response header is committed, so streaming and protocol upgrades are unaffected.
+
+Header operations run in declaration order, request and response alike: the last `Set` of a name wins, and a `Remove` after a `Set` clears it. Three groups are not yours to set on a proxy route, because the proxy owns them: the request `Host` (rejected at resolve time — see `ProxyTo` for upstream host handling), the `X-Forwarded-*` set (rewritten from the real connection so a client cannot spoof them), and hop-by-hop headers (stripped).
 
 ### Docker discovery
 

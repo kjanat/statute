@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Request and response header middleware: `SetRequestHeader`,
+  `AddRequestHeader`, `RemoveRequestHeader`, `SetResponseHeader`,
+  `AddResponseHeader`, and `RemoveResponseHeader`. Operations run in
+  declaration order, header names are canonicalised and values validated at
+  resolve time (rejecting header injection and the unsettable request `Host`),
+  and both appear in the resolved and exported schema as `HeaderName` /
+  `HeaderValue`. Response mutations are applied when the response header is
+  committed, through a wrapper that preserves flushing and connection
+  hijacking.
+
 ### Fixed
 
 - Exact-path static routes serve the file their pattern names instead of the

@@ -158,3 +158,71 @@ func TestParseSize(t *testing.T) {
 		}
 	}
 }
+
+func TestHeaderName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		err  bool
+	}{
+		{"x-robots-tag", "X-Robots-Tag", false},
+		{"X-Robots-Tag", "X-Robots-Tag", false},
+		{"CONTENT-TYPE", "Content-Type", false},
+		{"x_custom", "X_custom", false}, // underscore is a token char, so no dash-casing
+		{"a", "A", false},
+		{"!#$%&'*+-.^_`|~", "!#$%&'*+-.^_`|~", false}, // every tchar symbol
+		{"", "", true},
+		{"X Robots", "", true},
+		{"X-Robots:", "", true},
+		{"X-Robots\n", "", true},
+		{"héader", "", true},
+	}
+	for _, c := range cases {
+		got, err := HeaderName(c.in)
+		if c.err {
+			if err == nil {
+				t.Errorf("HeaderName(%q) = %q, want error", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("HeaderName(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("HeaderName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestHeaderValue(t *testing.T) {
+	cases := []struct {
+		in  string
+		err bool
+	}{
+		{"noindex, nofollow", false},
+		{"", false},
+		{"tab\there", false},
+		{"ünicode obs-text", false},
+		{"noindex\r\nX-Injected: yes", true},
+		{"trailing\n", true},
+		{"nul\x00byte", true},
+		{"del\x7f", true},
+	}
+	for _, c := range cases {
+		got, err := HeaderValue(c.in)
+		if c.err {
+			if err == nil {
+				t.Errorf("HeaderValue(%q) = %q, want error", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("HeaderValue(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.in {
+			t.Errorf("HeaderValue(%q) = %q, want it unchanged", c.in, got)
+		}
+	}
+}

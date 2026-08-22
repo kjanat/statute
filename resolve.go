@@ -435,6 +435,7 @@ func (m *allowIPsMW) resolve() (resolved.Middleware, error)  { return resolveAll
 func (m *denyIPsMW) resolve() (resolved.Middleware, error)   { return resolveDenyIPsMW(m) }
 func (m *basicAuthMW) resolve() (resolved.Middleware, error) { return resolveBasicAuthMW(m) }
 func (m *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(m) }
+func (m *headerMW) resolve() (resolved.Middleware, error)    { return resolveHeaderMW(m) }
 
 // resolveTimeoutMW parses the timeout duration string.
 func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
@@ -523,6 +524,23 @@ func resolveSecurityHeadersMW(m *securityHeadersMW) (resolved.Middleware, error)
 		SecReferrerPolicy:     m.referrerPolicy,
 		SecPermissionsPolicy:  m.permissionsPolicy,
 	}, nil
+}
+
+// resolveHeaderMW validates one header mutation and canonicalises its name.
+func resolveHeaderMW(m *headerMW) (resolved.Middleware, error) {
+	label := headerMWLabel(m.op)
+	name, err := parse.HeaderName(m.name)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("%s: %w", label, err)
+	}
+	value, err := parse.HeaderValue(m.value)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("%s: %w", label, err)
+	}
+	if name == "Host" && isRequestHeaderOp(m.op) {
+		return resolved.Middleware{}, fmt.Errorf("%s: the request Host header cannot be rewritten here; Go keeps the authority outside the header map", label)
+	}
+	return resolved.Middleware{Type: m.op, HeaderName: name, HeaderValue: value}, nil
 }
 
 // resolveAllowIPsMW canonicalises the allow-list CIDRs.
