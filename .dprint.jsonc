@@ -11,6 +11,7 @@
     "modulePath": "statute.kjanat.dev",
     "extra": { "groupParams": true }
   },
+  "typescript": { "useTabs": true, "quoteStyle": "preferSingle" },
   "plugins": [
     "npm:@dprint/dockerfile@0.6.0",
     "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
@@ -20,5 +21,6 @@
     "https://plugins.dprint.dev/kjanat/svg-v0.4.1.wasm",
     "npm:@dprint/markdown@0.22.1",
     "npm:@jakebailey/dprint-plugin-gofumpt@0.0.15",
+    "npm:@dprint/typescript@0.96.1",
   ],
 }

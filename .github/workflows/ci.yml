@@ -71,6 +71,17 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - run: go build ./examples/...
+  apidiff:
+    name: api surface diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      # Diffs the exported surface against the latest release on pkg.go.dev.
+      # A deliberate break passes once this step carries
+      # env: { APIDIFF_ALLOW_BREAKING: "1" }.
+      - run: go run ./scripts/apidiff
   actionlint:
     runs-on: ubuntu-latest
     steps:

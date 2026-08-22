@@ -9,7 +9,7 @@ GOLANGCI_LINT   ?= golangci-lint
 COVER_PROFILE   ?= cover.out
 FUZZ_TIME       ?= 30s
 
-.PHONY: all help test test-race lint cover bench fuzz build-examples tidy clean
+.PHONY: all help test test-race lint cover bench fuzz build-examples apidiff typecheck tidy clean
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z_-]+:.*?## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -49,6 +49,16 @@ build-examples: ## Compile every example
 		echo "build examples/$$ex"; \
 		$(GO) build -o /dev/null ./examples/$$ex; \
 	done
+
+# Deliberately not part of `all`: it reaches out to pkg.go.dev, and `all`
+# has to keep working on a train. Pass -baseline to diff a saved surface
+# offline; APIDIFF_ALLOW_BREAKING=1 downgrades a deliberate break to a warning.
+apidiff: ## Diff the exported API against the surface published on pkg.go.dev
+	$(GO) run ./scripts/apidiff
+
+typecheck: ## Strict-typecheck scripts/api-page.mjs (installs dev deps on first run)
+	@test -d node_modules || npm ci --no-audit --no-fund
+	npm run typecheck
 
 tidy: ## Run go mod tidy
 	$(GO) mod tidy

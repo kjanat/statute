@@ -47,11 +47,124 @@ jobs:
       - name: warm proxy.golang.org
         run: |
           for _ in 1 2 3 4 5; do
-            if curl --fail --silent --show-error "https://proxy.golang.org/${CNAME}/@v/${GITHUB_REF_NAME}.info" > /dev/null; then
-              echo "proxy indexed ${GITHUB_REF_NAME}"
+            if curl --fail --silent --show-error --location --max-time 30 --retry 2 --retry-delay 3 --retry-connrefused "https://proxy.golang.org/${CNAME}/@v/${TAG}.info" > /dev/null; then
+              echo "proxy indexed ${TAG}"
               exit 0
             fi
             echo "proxy not ready, retrying in 10s"
             sleep 10
           done
-          echo "proxy did not pick up the tag within 50s; pkg.go.dev may take a few hours"
+          echo "proxy did not pick up the tag within 50s; the verify job keeps polling"
+  verify:
+    name: verify pkg.go.dev
+    needs: release
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 30
+    env: { POLL_INTERVAL: "30", POLL_TIMEOUT: "1200" }
+    steps:
+      - name: nudge proxy.golang.org
+        run: |
+          if curl --fail --silent --show-error --location --max-time 30 --retry 2 --retry-delay 3 --retry-connrefused "https://proxy.golang.org/${CNAME}/@v/${TAG}.info" > /dev/null; then
+            echo "proxy serves ${TAG}"
+          else
+            echo "proxy does not serve ${TAG} yet; polling pkg.go.dev anyway"
+          fi
+      - name: wait for pkg.go.dev to index the tag
+        run: |
+          set -euo pipefail
+          api="https://pkg.go.dev/v1/versions/${CNAME}"
+          versions="${RUNNER_TEMP}/pkgsite-versions.json"
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            if curl --fail --silent --show-error --location --max-time 30 \
+              --retry 3 --retry-delay 5 --retry-connrefused "${api}" -o "${versions}"; then
+              if jq -e --arg tag "${TAG}" 'any(.items[]?; .version == $tag)' "${versions}" > /dev/null; then
+                echo "pkg.go.dev indexed ${TAG} after ${SECONDS}s in ${attempt} attempt(s)"
+                printf 'INDEX_WAIT=found after %ss in %s attempts\n' "${SECONDS}" "${attempt}" >> "${GITHUB_ENV}"
+                exit 0
+              fi
+              newest="$(jq -r '.items[0].version // "unknown"' "${versions}")"
+              echo "attempt ${attempt} (${SECONDS}s): ${TAG} not indexed yet, newest known is ${newest}"
+            else
+              echo "attempt ${attempt} (${SECONDS}s): could not read ${api}"
+            fi
+            if ((SECONDS + POLL_INTERVAL >= POLL_TIMEOUT)); then
+              break
+            fi
+            sleep "${POLL_INTERVAL}"
+          done
+          {
+            printf '## pkg.go.dev verification\n\n'
+            printf 'Timed out after %ss waiting for %s@%s to appear on pkg.go.dev.\n\n' "${SECONDS}" "${CNAME}" "${TAG}"
+            printf 'pkg.go.dev ingests new versions from proxy.golang.org every few minutes, but it can\n'
+            printf 'lag considerably longer. The release itself is unaffected. Re-run only this job once\n'
+            printf 'the version shows up (run page -> "Re-run failed jobs"), or check manually:\n\n'
+            printf '%s\n' "* https://pkg.go.dev/${CNAME}@${TAG}"
+            printf '%s\n' "* https://proxy.golang.org/${CNAME}/@v/${TAG}.info"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "::error::${CNAME}@${TAG} did not appear on pkg.go.dev within ${POLL_TIMEOUT}s"
+          exit 1
+      - name: assert published metadata
+        run: |
+          set -euo pipefail
+          versions="${RUNNER_TEMP}/pkgsite-versions.json"
+          item="${RUNNER_TEMP}/pkgsite-item.json"
+          module="${RUNNER_TEMP}/pkgsite-module.json"
+          vulns="${RUNNER_TEMP}/pkgsite-vulns.json"
+          rows="${RUNNER_TEMP}/pkgsite-rows.md"
+          : > "${rows}"
+          failed=0
+          fetch() {
+            curl --fail --silent --show-error --location --max-time 30 \
+              --retry 3 --retry-delay 5 --retry-connrefused "$1" -o "$2"
+          }
+          record() { # name result detail
+            if [[ "$2" == "fail" ]]; then
+              failed=1
+              echo "::error::$1: $3"
+            else
+              echo "$1: $2 ($3)"
+            fi
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${rows}"
+          }
+          assert_eq() { # name want got
+            if [[ "$2" == "$3" ]]; then
+              record "$1" pass "$3"
+            else
+              record "$1" fail "expected $2, got $3"
+            fi
+          }
+          jq --arg tag "${TAG}" 'first(.items[] | select(.version == $tag))' "${versions}" > "${item}"
+          record "listed on pkg.go.dev" pass "${INDEX_WAIT:-indexed}"
+          assert_eq "hasGoMod" true "$(jq -r '.hasGoMod // false' "${item}")"
+          assert_eq "isRedistributable" true "$(jq -r '.isRedistributable // false' "${item}")"
+          assert_eq "retracted" false "$(jq -r '.retracted // false' "${item}")"
+          assert_eq "deprecated" false "$(jq -r '.deprecated // false' "${item}")"
+          if fetch "https://pkg.go.dev/v1/module/${CNAME}" "${module}"; then
+            module_version="$(jq -r '.version // ""' "${module}")"
+            if [[ "${module_version}" == "${TAG}" ]]; then
+              assert_eq "latest version is ${TAG}" true "$(jq -r '.isLatest // false' "${module}")"
+            else
+              record "latest version is ${TAG}" skip "pkg.go.dev reports ${module_version} as latest; a newer tag was likely published while polling"
+            fi
+          else
+            record "latest version is ${TAG}" fail "could not read /v1/module/${CNAME}"
+          fi
+          if fetch "https://pkg.go.dev/v1/vulns/${CNAME}" "${vulns}"; then
+            assert_eq "known vulnerabilities" 0 "$(jq -r '.total // 0' "${vulns}")"
+          else
+            record "known vulnerabilities" fail "could not read /v1/vulns/${CNAME}"
+          fi
+          {
+            printf '## pkg.go.dev verification\n\n'
+            printf '[%s@%s](https://pkg.go.dev/%s@%s)\n\n' "${CNAME}" "${TAG}" "${CNAME}" "${TAG}"
+            printf '| check | result | detail |\n| --- | --- | --- |\n'
+            cat "${rows}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if ((failed)); then
+            echo "::error::pkg.go.dev verification failed for ${CNAME}@${TAG}"
+            exit 1
+          fi
+          echo "pkg.go.dev verification passed for ${CNAME}@${TAG}"
