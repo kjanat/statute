@@ -27,13 +27,13 @@ statute.Main(statute.Config{
 
 ## Provider options
 
-| Option | Meaning |
-| --- | --- |
-| `Endpoint(string)` | Docker Engine API endpoint. Default `unix:///var/run/docker.sock`; `tcp://host:port` also works — but see the warning below. |
-| `Network(string)` | Docker network whose IP is used to reach containers. Overridable per container with `statute.network` / `traefik.docker.network`. |
-| `ExposedByDefault()` | Register every running container without requiring an enable label (Traefik's `exposedByDefault=true`). statute's default is opt-in. |
-| `TraefikLabels()` | Additionally honor `traefik.*` labels (see below). |
-| `Refresh(string)` | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
+| Option               | Meaning                                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `Endpoint(string)`   | Docker Engine API endpoint. Default `unix:///var/run/docker.sock`; `tcp://host:port` also works — but see the warning below.          |
+| `Network(string)`    | Docker network whose IP is used to reach containers. Overridable per container with `statute.network` / `traefik.docker.network`.     |
+| `ExposedByDefault()` | Register every running container without requiring an enable label (Traefik's `exposedByDefault=true`). statute's default is opt-in.  |
+| `TraefikLabels()`    | Additionally honor `traefik.*` labels (see below).                                                                                    |
+| `Refresh(string)`    | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
 
 > **Warning — TCP endpoints are unauthenticated.** The client speaks plain
 > HTTP with no TLS or client certificates, and whoever can answer on that
@@ -89,38 +89,38 @@ services:
 With one exposed port, the container is routed on every host at `/*` under
 a pool named after the compose service. The full schema:
 
-| Label | Meaning |
-| --- | --- |
-| `statute.enable` | Boolean (parsed like Traefik: `1`/`t`/`true`/`True`, …). Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. An explicit false always wins; an unparseable value counts as false with a warning. |
-| `statute.service` | Pool name. Containers sharing it pool together (replicas). Default: compose service name, else container name. |
-| `statute.host` | Comma-separated hosts; each becomes a route (matched case-insensitively). Empty fragments are skipped. Empty or unset: any host. |
-| `statute.path` | statute pattern: `/exact` or `/prefix/*`. Default `/*`. |
-| `statute.routes.<name>.host` / `.path` | Additional named routes for the same service. |
-| `statute.port` | Container-side port. Default: the lowest exposed TCP port (Traefik's rule), with a warning when several were exposed; a container exposing no port is skipped with a warning. |
-| `statute.scheme` | `http` (default) or `https` for the backend connection (case-insensitive). Anything else — including `h2c`, which statute's proxy does not speak — skips the service with a warning rather than registering it with the wrong protocol. |
-| `statute.network` | Docker network to take the IP from, overriding `Network()`. |
-| `statute.weight` | Backend weight for the `weighted` strategy. Default 1. |
-| `statute.backup` | `"true"` marks a failover-only backend. |
-| `statute.strategy` | `round_robin`, `least_connections`, `ip_hash`, `weighted`. First container in the pool (by name) wins. |
-| `statute.healthcheck.path` / `.interval` / `.timeout` | Active health checks, same semantics as `statute.HealthCheck`. |
-| `statute.timeout` | Per-route timeout middleware, e.g. `30s`. |
-| `statute.ratelimit` | Per-route rate limit, e.g. `100/min`. |
-| `statute.compress` | `gzip`, `br`, a comma list, or `true` for both. |
+| Label                                                 | Meaning                                                                                                                                                                                                                                     |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `statute.enable`                                      | Boolean (parsed like Traefik: `1`/`t`/`true`/`True`, …). Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. An explicit false always wins; an unparseable value counts as false with a warning. |
+| `statute.service`                                     | Pool name. Containers sharing it pool together (replicas). Default: compose service name, else container name.                                                                                                                              |
+| `statute.host`                                        | Comma-separated hosts; each becomes a route (matched case-insensitively). Empty fragments are skipped. Empty or unset: any host.                                                                                                            |
+| `statute.path`                                        | statute pattern: `/exact` or `/prefix/*`. Default `/*`.                                                                                                                                                                                     |
+| `statute.routes.<name>.host` / `.path`                | Additional named routes for the same service.                                                                                                                                                                                               |
+| `statute.port`                                        | Container-side port. Default: the lowest exposed TCP port (Traefik's rule), with a warning when several were exposed; a container exposing no port is skipped with a warning.                                                               |
+| `statute.scheme`                                      | `http` (default) or `https` for the backend connection (case-insensitive). Anything else — including `h2c`, which statute's proxy does not speak — skips the service with a warning rather than registering it with the wrong protocol.     |
+| `statute.network`                                     | Docker network to take the IP from, overriding `Network()`.                                                                                                                                                                                 |
+| `statute.weight`                                      | Backend weight for the `weighted` strategy. Default 1.                                                                                                                                                                                      |
+| `statute.backup`                                      | `"true"` marks a failover-only backend.                                                                                                                                                                                                     |
+| `statute.strategy`                                    | `round_robin`, `least_connections`, `ip_hash`, `weighted`. First container in the pool (by name) wins.                                                                                                                                      |
+| `statute.healthcheck.path` / `.interval` / `.timeout` | Active health checks, same semantics as `statute.HealthCheck`.                                                                                                                                                                              |
+| `statute.timeout`                                     | Per-route timeout middleware, e.g. `30s`.                                                                                                                                                                                                   |
+| `statute.ratelimit`                                   | Per-route rate limit, e.g. `100/min`.                                                                                                                                                                                                       |
+| `statute.compress`                                    | `gzip`, `br`, a comma list, or `true` for both.                                                                                                                                                                                             |
 
 ## Traefik compatibility (`TraefikLabels()`)
 
 The goal is that a fleet labeled for Traefik's docker provider migrates
 without editing compose files. Supported:
 
-| Label | Notes |
-| --- | --- |
-| `traefik.enable` | Exactly Traefik's semantics: without `ExposedByDefault()`, a container is exposed only with an explicit `traefik.enable=true` — router labels alone do not expose it. |
-| `traefik.http.routers.<r>.rule` | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`. |
-| `traefik.http.routers.<r>.service` | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container — so several label-less routers share one backend pool. |
-| `traefik.http.services.<s>.loadbalancer.server.port` | Container-side port. Default: the lowest exposed port, as in Traefik. |
-| `traefik.http.services.<s>.loadbalancer.server.scheme` | `https` for TLS backends. `h2c` is not supported — such services are skipped with a warning instead of being proxied over the wrong protocol. |
-| `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks. |
-| `traefik.docker.network` | Same as `statute.network`. |
+| Label                                                                                | Notes                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `traefik.enable`                                                                     | Exactly Traefik's semantics: without `ExposedByDefault()`, a container is exposed only with an explicit `traefik.enable=true` — router labels alone do not expose it.                                    |
+| `traefik.http.routers.<r>.rule`                                                      | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`.                                                                                                 |
+| `traefik.http.routers.<r>.service`                                                   | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container — so several label-less routers share one backend pool. |
+| `traefik.http.services.<s>.loadbalancer.server.port`                                 | Container-side port. Default: the lowest exposed port, as in Traefik.                                                                                                                                    |
+| `traefik.http.services.<s>.loadbalancer.server.scheme`                               | `https` for TLS backends. `h2c` is not supported — such services are skipped with a warning instead of being proxied over the wrong protocol.                                                            |
+| `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks.                                                                                                                                                                  |
+| `traefik.docker.network`                                                             | Same as `statute.network`.                                                                                                                                                                               |
 
 Deliberately ignored (harmless, handled at the listener level in statute):
 `entrypoints`, `tls`, `tls.certresolver`, `priority`.

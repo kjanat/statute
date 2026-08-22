@@ -387,20 +387,25 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 	return out, nil
 }
 
-// resolvableMiddleware is implemented by every surface middleware type. The
-// per-type resolution lives in each type's resolve method (defined alongside
-// the resolveXxxMW helpers below), so dispatch is a single assertion rather
-// than a large type switch.
-type resolvableMiddleware interface {
+// Every surface middleware implements one of these resolver interfaces. Types
+// that cannot fail avoid manufacturing an error result solely for dispatch.
+type fallibleMiddleware interface {
 	resolve() (resolved.Middleware, error)
 }
 
+type infallibleMiddleware interface {
+	resolve() resolved.Middleware
+}
+
 func resolveMiddleware(mw Middleware) (resolved.Middleware, error) {
-	rm, ok := mw.(resolvableMiddleware)
-	if !ok {
+	switch rm := mw.(type) {
+	case fallibleMiddleware:
+		return rm.resolve()
+	case infallibleMiddleware:
+		return rm.resolve(), nil
+	default:
 		return resolved.Middleware{}, fmt.Errorf("unknown middleware type %T", mw)
 	}
-	return rm.resolve()
 }
 
 func (m *timeoutMW) resolve() (resolved.Middleware, error)   { return resolveTimeoutMW(m) }
@@ -408,19 +413,19 @@ func (m *rateLimitMW) resolve() (resolved.Middleware, error) { return resolveRat
 func (m *retryMW) resolve() (resolved.Middleware, error)     { return resolveRetryMW(m) }
 func (m *cacheMW) resolve() (resolved.Middleware, error)     { return resolveCacheMW(m) }
 
-//nolint:unparam // the error result is fixed by the resolvableMiddleware interface
-func (m *compressMW) resolve() (resolved.Middleware, error) { return resolveCompressMW(m), nil }
+func (m *compressMW) resolve() resolved.Middleware { return resolveCompressMW(m) }
 
-func (*etagMW) resolve() (resolved.Middleware, error) {
-	return resolved.Middleware{Type: resolved.MWETag}, nil
+func (*etagMW) resolve() resolved.Middleware {
+	return resolved.Middleware{Type: resolved.MWETag}
 }
 func (m *bodyLimitMW) resolve() (resolved.Middleware, error) { return resolveBodyLimitMW(m) }
-func (m *requestIDMW) resolve() (resolved.Middleware, error) {
+
+func (m *requestIDMW) resolve() resolved.Middleware {
 	return resolved.Middleware{
 		Type:                resolved.MWRequestID,
 		RequestIDHeader:     m.header,
 		RequestIDFromHeader: m.fromHeader,
-	}, nil
+	}
 }
 
 func (m *securityHeadersMW) resolve() (resolved.Middleware, error) {
