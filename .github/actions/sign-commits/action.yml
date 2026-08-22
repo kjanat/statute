@@ -1,0 +1,87 @@
+name: Sign commits
+description: Rewrite commits with signatures from the GPG signing service
+inputs:
+  signing-service-version:
+    description: Version of the gpg-sign client to install
+    required: true
+  signing-service-url:
+    description: URL of the GPG signing service
+    required: true
+  oidc-audience:
+    description: Audience for the GitHub OIDC token
+    required: true
+  key-id:
+    description: ID of the signing key
+    required: true
+  default-branch:
+    description: Name of the repository's default branch
+    required: true
+  base:
+    description: Sign every commit after this ref (exclusive)
+    required: false
+  allow-resign:
+    description: Permit rewriting commits that already carry a signature
+    required: false
+    default: "false"
+  sign-others:
+    description: Attach the signing key to commits committed by other identities
+    required: false
+    default: "false"
+  scan-limit:
+    description: Stop looking for the last signed commit after this many commits
+    required: false
+runs:
+  using: composite
+  steps:
+    - uses: kjanat/gpg-signing-service@cbcb8600547bd6799cdca0b339e8dad044481435
+      with: { version: "${{ inputs.signing-service-version }}" }
+
+    - id: oidc
+      uses: actions/github-script@v9
+      env: { OIDC_AUDIENCE: "${{ inputs.oidc-audience }}" }
+      with:
+        script: |
+          const token = await core.getIDToken(process.env['OIDC_AUDIENCE']);
+          core.setSecret(token);
+          core.setOutput("token", token);
+
+    - name: sign commits
+      id: sign
+      shell: bash
+      env:
+        ALLOW_RESIGN: ${{ inputs.allow-resign }}
+        BASE_REF: ${{ inputs.base }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        GPG_SIGN_KEY_ID: ${{ inputs.key-id }}
+        GPG_SIGN_TOKEN: ${{ steps.oidc.outputs.token }}
+        GPG_SIGN_URL: ${{ inputs.signing-service-url }}
+        SCAN_LIMIT: ${{ inputs.scan-limit }}
+        SIGN_OTHERS: ${{ inputs.sign-others }}
+      run: python3 "${{ github.action_path }}/sign-commits.py"
+
+    # gpg-sign surfaces only the HTTP status; the service sends a JSON body
+    # naming the cause (untrusted subject, disallowed issuer, wrong key).
+    # A GitHub OIDC token exists only inside a run, so this is the only place
+    # that distinction can be read. Replays one request to print it.
+    - name: explain signing failure
+      if: failure() && steps.sign.outcome == 'failure'
+      shell: bash
+      env:
+        GPG_SIGN_KEY_ID: ${{ inputs.key-id }}
+        GPG_SIGN_TOKEN: ${{ steps.oidc.outputs.token }}
+        GPG_SIGN_URL: ${{ inputs.signing-service-url }}
+      run: |
+        url="${GPG_SIGN_URL}"
+        code=$(curl -sS -m 20 -o body.txt -w '%{http_code}' \
+          -X POST "${url}/sign?keyId=${GPG_SIGN_KEY_ID}" \
+          -H "Authorization: Bearer ${GPG_SIGN_TOKEN}" \
+          -H 'Content-Type: text/plain' \
+          --data-binary 'diagnostic') || true
+        # A 200 returns a signature over the probe text, which is not a
+        # diagnosis and does not belong in the log.
+        if [[ "${code}" == 200 ]]; then
+          echo "::notice::/sign answered 200 on replay; the original failure was not authorization"
+        else
+          body="$(head -c 500 body.txt)"
+          echo "::error::/sign returned ${code}: ${body}"
+        fi

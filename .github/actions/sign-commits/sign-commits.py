@@ -13,7 +13,7 @@ import sys
 import tempfile
 from typing import NoReturn
 
-DEFAULT_BRANCH = os.environ.get("DEFAULT_BRANCH") or "master"
+DEFAULT_BRANCH = os.environ.get("DEFAULT_BRANCH", "").strip()
 ALLOW_RESIGN = os.environ.get("ALLOW_RESIGN") == "true"
 SIGN_OTHERS = os.environ.get("SIGN_OTHERS") == "true"
 SCAN_LIMIT = os.environ.get("SCAN_LIMIT", "").strip()
@@ -277,6 +277,9 @@ def resolve_base(branch: str, home: str) -> str:
 
 
 def main() -> None:
+    if not DEFAULT_BRANCH:
+        fail("default_branch must not be empty")
+
     branch = git("rev-parse", "--abbrev-ref", "HEAD").strip().decode()
     if branch == "HEAD":
         fail("HEAD is detached; check out the branch you want signed")
