@@ -50,8 +50,8 @@ linters:
     - nakedret
     - nilerr
     - noctx
-    - predeclared
     - prealloc
+    - predeclared
     - reassign
     - revive
     - staticcheck

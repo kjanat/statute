@@ -11,12 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Request and response header middleware: `SetRequestHeader`,
   `AddRequestHeader`, `RemoveRequestHeader`, `SetResponseHeader`,
   `AddResponseHeader`, and `RemoveResponseHeader`. Operations run in
-  declaration order, header names are canonicalised and values validated at
-  resolve time (rejecting header injection and the unsettable request `Host`),
-  and both appear in the resolved and exported schema as `HeaderName` /
-  `HeaderValue`. Response mutations are applied when the response header is
-  committed, through a wrapper that preserves flushing and connection
-  hijacking.
+  declaration order and appear in the resolved and exported schema as
+  `HeaderName` / `HeaderValue`. Names are canonicalised and values validated
+  at resolve time, rejecting header injection and the request names Go carries
+  outside the header map (`Host`, `Content-Length`, `Transfer-Encoding`).
+  Operations apply once per request at the route's edges, so a `Retry` cannot
+  repeat them per attempt; response mutations are applied when the final
+  response header is committed — not on a 1xx preview — through a wrapper that
+  preserves flushing and connection hijacking. On a proxy route, an explicit
+  `X-Forwarded-For`, `-Host`, or `-Proto` declaration is reapplied after the
+  proxy derives its own, so the route's value wins without making the fields
+  it leaves alone spoofable.
 
 ### Fixed
 

@@ -526,6 +526,17 @@ func resolveSecurityHeadersMW(m *securityHeadersMW) (resolved.Middleware, error)
 	}, nil
 }
 
+// unsettableRequestHeaders are the request fields Go carries outside the
+// header map, where a mutation would be a silent no-op: net/http writes them
+// from Request.Host, Request.ContentLength, and Request.TransferEncoding and
+// excludes the header-map entries when it writes the request. Rejecting them
+// at resolve time turns a configuration that cannot work into a startup error.
+var unsettableRequestHeaders = map[string]string{
+	"Host":              "Go keeps the request authority in Request.Host",
+	"Content-Length":    "Go frames the body from Request.ContentLength",
+	"Transfer-Encoding": "Go frames the body from Request.TransferEncoding",
+}
+
 // resolveHeaderMW validates one header mutation and canonicalises its name.
 func resolveHeaderMW(m *headerMW) (resolved.Middleware, error) {
 	label := headerMWLabel(m.op)
@@ -537,8 +548,8 @@ func resolveHeaderMW(m *headerMW) (resolved.Middleware, error) {
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("%s: %w", label, err)
 	}
-	if name == "Host" && isRequestHeaderOp(m.op) {
-		return resolved.Middleware{}, fmt.Errorf("%s: the request Host header cannot be rewritten here; Go keeps the authority outside the header map", label)
+	if reason, ok := unsettableRequestHeaders[name]; ok && isRequestHeaderOp(m.op) {
+		return resolved.Middleware{}, fmt.Errorf("%s: %q cannot be rewritten on a request; %s", label, name, reason)
 	}
 	return resolved.Middleware{Type: m.op, HeaderName: name, HeaderValue: value}, nil
 }

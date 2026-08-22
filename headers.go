@@ -18,20 +18,17 @@ type headerMW struct {
 
 func (*headerMW) statuteMiddleware() {}
 
-// SetRequestHeader replaces the named header on the request before it reaches
-// the route's proxy or file handler, dropping whatever the client sent. Names
-// are canonicalised when the configuration resolves, so "x-real-ip" and
-// "X-Real-IP" name the same header.
+// SetRequestHeader replaces the named header on the request before the rest of
+// the route runs, dropping whatever the client sent. Names are canonicalised
+// when the configuration resolves, so "x-real-ip" and "X-Real-IP" name the
+// same header.
 //
-// Host is rejected: Go carries the request authority in a dedicated field
-// that the transport writes from, so mutating the header map would be
-// silently ignored.
-//
-// Two other groups are not yours to set on a proxy route, because the reverse
-// proxy rewrites them after route middleware has run: the X-Forwarded-For,
-// X-Forwarded-Host, and X-Forwarded-Proto set, which the proxy derives from
-// the real connection so a client cannot spoof them, and the hop-by-hop
-// headers (Connection, Upgrade, …), which it strips.
+// Two names are rejected at resolve time because Go carries them outside the
+// header map, where a mutation here would be a silent no-op: Host (the request
+// authority) and Content-Length (the body framing, along with
+// Transfer-Encoding). Hop-by-hop headers — Connection, Upgrade, TE, and the
+// rest — can be set, but the reverse proxy strips them from the outbound
+// request, as RFC 9110 requires.
 func SetRequestHeader(name, value string) *headerMW {
 	return &headerMW{op: resolved.MWSetRequestHeader, name: name, value: value}
 }
@@ -42,15 +39,14 @@ func AddRequestHeader(name, value string) *headerMW {
 	return &headerMW{op: resolved.MWAddRequestHeader, name: name, value: value}
 }
 
-// RemoveRequestHeader drops every value of the named request header before
-// the request is forwarded.
+// RemoveRequestHeader drops every value of the named request header before the
+// rest of the route runs.
 func RemoveRequestHeader(name string) *headerMW {
 	return &headerMW{op: resolved.MWRemoveRequestHeader, name: name}
 }
 
 // SetResponseHeader replaces the named header on the way out, overriding
-// whatever the upstream or file handler produced. Response mutations apply
-// when the response header is committed, so they win over the origin.
+// whatever the upstream or file handler produced.
 func SetResponseHeader(name, value string) *headerMW {
 	return &headerMW{op: resolved.MWSetResponseHeader, name: name, value: value}
 }
@@ -88,8 +84,7 @@ func headerMWLabel(op resolved.MiddlewareType) string {
 	}
 }
 
-// isRequestHeaderOp reports whether op mutates the request rather than the
-// response.
+// isRequestHeaderOp reports whether op mutates the request.
 func isRequestHeaderOp(op resolved.MiddlewareType) bool {
 	switch op {
 	case resolved.MWSetRequestHeader, resolved.MWAddRequestHeader, resolved.MWRemoveRequestHeader:
@@ -99,8 +94,18 @@ func isRequestHeaderOp(op resolved.MiddlewareType) bool {
 	}
 }
 
-// applyHeaderOp performs one mutation on a header map. Names arrive
-// canonical from resolve; Set, Add, and Del canonicalise again anyway.
+// isResponseHeaderOp reports whether op mutates the response.
+func isResponseHeaderOp(op resolved.MiddlewareType) bool {
+	switch op {
+	case resolved.MWSetResponseHeader, resolved.MWAddResponseHeader, resolved.MWRemoveResponseHeader:
+		return true
+	default:
+		return false
+	}
+}
+
+// applyHeaderOp performs one mutation on a header map. Names arrive canonical
+// from resolve; Set, Add, and Del canonicalise again anyway.
 func applyHeaderOp(h http.Header, op resolved.MiddlewareType, name, value string) {
 	switch op {
 	case resolved.MWSetRequestHeader, resolved.MWSetResponseHeader:
@@ -113,76 +118,114 @@ func applyHeaderOp(h http.Header, op resolved.MiddlewareType, name, value string
 	}
 }
 
-// requestHeaderHandler mutates the inbound request header before passing the
-// request on. Middleware runs outermost-first, so a route's request
-// mutations apply in declaration order.
-func requestHeaderHandler(m resolved.Middleware, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		applyHeaderOp(r.Header, m.Type, m.HeaderName, m.HeaderValue)
-		next.ServeHTTP(w, r)
-	})
-}
-
-// headerOp is one response-header mutation awaiting the response.
+// headerOp is one resolved mutation, compiled out of the middleware list when
+// the route is built.
 type headerOp struct {
 	op    resolved.MiddlewareType
 	name  string
 	value string
 }
 
-// pendingHeaderOps collects a route's response-header mutations, in
-// declaration order, for the single ResponseWriter wrapper that applies them.
+// proxyForwardedHeaders are the fields httputil.ProxyRequest.SetXForwarded
+// rewrites from the real connection. A route that declares its own value for
+// one of them has to be reapplied afterwards, or the proxy's default silently
+// wins — see forwardedOpsFromContext.
+var proxyForwardedHeaders = map[string]bool{
+	"X-Forwarded-For":   true,
+	"X-Forwarded-Host":  true,
+	"X-Forwarded-Proto": true,
+}
+
+// withHeaderMiddleware hoists a route's header operations out of the
+// middleware chain and applies them at the route's edges: request mutations
+// before anything else runs, response mutations when the header commits.
 //
-// Response mutations cannot run on the way in — the upstream response has
-// not been produced yet, and a proxy overwrites the header map wholesale
-// when it arrives. Wrapping the writer once per middleware would instead
-// apply them innermost-first, reversing the declared order, so the first
-// response-header middleware on the route installs the wrapper and shares
-// this list through the request context; the rest append to it.
-type pendingHeaderOps struct{ ops []headerOp }
-
-type pendingHeaderOpsKey struct{}
-
-// responseHeaderHandler registers one response-header mutation for the
-// request, installing the writer wrapper if it is the first on the route.
-func responseHeaderHandler(m resolved.Middleware, next http.Handler) http.Handler {
-	op := headerOp{op: m.Type, name: m.HeaderName, value: m.HeaderValue}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if pending, ok := r.Context().Value(pendingHeaderOpsKey{}).(*pendingHeaderOps); ok {
-			pending.ops = append(pending.ops, op)
-			next.ServeHTTP(w, r)
-			return
+// Hoisting is what makes them exactly-once. Left in the chain, a Retry sitting
+// outside them would re-enter the same handlers once per attempt, and an Add
+// would stack a value per attempt. This handler runs once per request no
+// matter how many attempts happen underneath it. It also gives the response
+// wrapper a position outside any response buffering (retry, cache, ETag), so
+// the mutations land on the response that is actually committed.
+//
+// Ordering among the operations themselves is the declared one; they do not
+// interleave with the other middleware on the route.
+func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Handler {
+	var requestOps, responseOps, forwardedOps []headerOp
+	for _, m := range mws {
+		op := headerOp{op: m.Type, name: m.HeaderName, value: m.HeaderValue}
+		switch {
+		case isRequestHeaderOp(m.Type):
+			requestOps = append(requestOps, op)
+			if proxyForwardedHeaders[op.name] {
+				forwardedOps = append(forwardedOps, op)
+			}
+		case isResponseHeaderOp(m.Type):
+			responseOps = append(responseOps, op)
 		}
-		pending := &pendingHeaderOps{ops: []headerOp{op}}
-		ctx := context.WithValue(r.Context(), pendingHeaderOpsKey{}, pending)
-		next.ServeHTTP(&headerResponseWriter{ResponseWriter: w, pending: pending}, r.WithContext(ctx))
+	}
+	if len(requestOps) == 0 && len(responseOps) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, op := range requestOps {
+			applyHeaderOp(r.Header, op.op, op.name, op.value)
+		}
+		if len(forwardedOps) > 0 {
+			r = r.WithContext(context.WithValue(r.Context(), forwardedOpsKey{}, forwardedOps))
+		}
+		if len(responseOps) > 0 {
+			w = &headerResponseWriter{ResponseWriter: w, ops: responseOps}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
-// headerResponseWriter applies the route's response-header mutations when the
-// response header is committed — by an explicit WriteHeader, an implicit one
-// from the first Write, or a Flush on a streaming response.
+type forwardedOpsKey struct{}
+
+// forwardedOpsFromContext returns the route's X-Forwarded-* operations, or nil
+// when it declared none. The reverse proxy calls this after SetXForwarded to
+// reapply what the route asked for: SetXForwarded derives those three fields
+// from the real connection — which is what keeps a client from spoofing them —
+// and in doing so overwrites the values a route configured on purpose.
+func forwardedOpsFromContext(ctx context.Context) []headerOp {
+	ops, _ := ctx.Value(forwardedOpsKey{}).([]headerOp)
+	return ops
+}
+
+// headerResponseWriter applies a route's response-header operations when the
+// response header is committed — by an explicit WriteHeader, the implicit one
+// from a first Write, or a Flush on a streaming response.
+//
+// A protocol upgrade is the one response it does not touch: the reverse proxy
+// hijacks the connection and writes the 101 handshake to it directly, from the
+// upstream's response rather than through this writer. Hijacking still works
+// (see Unwrap); the handshake simply is not a response this can rewrite.
 type headerResponseWriter struct {
 	http.ResponseWriter
-	pending *pendingHeaderOps
+	ops     []headerOp
 	applied bool
 }
 
-// WriteHeader applies the pending mutations, then writes the status.
+// WriteHeader applies the operations, then writes the status. A 1xx is
+// informational: net/http keeps the response open and the reverse proxy clears
+// the header map right after, so those pass through untouched and the
+// operations wait for the final status.
 func (w *headerResponseWriter) WriteHeader(code int) {
-	w.applyOps()
+	if code >= 200 {
+		w.applyOps()
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// Write applies the pending mutations before the implicit 200 that an
-// un-preceded body write commits.
+// Write applies the operations before the implicit 200 that an un-preceded
+// body write commits.
 func (w *headerResponseWriter) Write(b []byte) (int, error) {
 	w.applyOps()
 	return w.ResponseWriter.Write(b)
 }
 
-// Flush applies the pending mutations — a flush commits the header — and
-// propagates the flush when the underlying writer supports it.
+// Flush applies the operations — a flush commits the header — and propagates
+// the flush when the underlying writer supports it.
 func (w *headerResponseWriter) Flush() {
 	w.applyOps()
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
@@ -190,19 +233,19 @@ func (w *headerResponseWriter) Flush() {
 	}
 }
 
-// Unwrap exposes the underlying writer to http.ResponseController, so
-// flushing and connection hijacking (WebSocket and other protocol upgrades)
-// keep working through this wrapper.
+// Unwrap exposes the underlying writer to http.ResponseController, so flushing
+// and connection hijacking (WebSocket and other protocol upgrades) keep
+// working through this wrapper.
 func (w *headerResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// applyOps runs the collected mutations once, in declaration order.
+// applyOps runs the operations once, in declaration order.
 func (w *headerResponseWriter) applyOps() {
 	if w.applied {
 		return
 	}
 	w.applied = true
 	h := w.Header()
-	for _, op := range w.pending.ops {
+	for _, op := range w.ops {
 		applyHeaderOp(h, op.op, op.name, op.value)
 	}
 }

@@ -210,7 +210,9 @@ Middleware:
 - **`SetRequestHeader(name, value)`, `AddRequestHeader(name, value)`, `RemoveRequestHeader(name)`** — rewrite the request before it reaches the proxy or file handler. Names are canonicalised and values validated when the config resolves, so a bad header is a startup error rather than a malformed request.
 - **`SetResponseHeader(name, value)`, `AddResponseHeader(name, value)`, `RemoveResponseHeader(name)`** — rewrite the response on the way out, overriding whatever the upstream sent. Applied when the response header is committed, so streaming and protocol upgrades are unaffected.
 
-Header operations run in declaration order, request and response alike: the last `Set` of a name wins, and a `Remove` after a `Set` clears it. Three groups are not yours to set on a proxy route, because the proxy owns them: the request `Host` (rejected at resolve time — see `ProxyTo` for upstream host handling), the `X-Forwarded-*` set (rewritten from the real connection so a client cannot spoof them), and hop-by-hop headers (stripped).
+Header operations run in declaration order, request and response alike: the last `Set` of a name wins, and a `Remove` after a `Set` clears it. They apply at the route's edges rather than interleaved with the other middleware — request mutations before the chain runs, response mutations when the header commits — so a `Retry` underneath cannot apply them a second time per attempt.
+
+On a proxy route, an explicit `X-Forwarded-For`, `-Host`, or `-Proto` declaration is reapplied after the proxy derives its own, so your value wins while the fields you leave alone keep the derived, unspoofable ones. Three names are rejected on requests because Go carries them outside the header map, where the mutation would do nothing: `Host`, `Content-Length`, and `Transfer-Encoding`. Hop-by-hop headers can be set but the proxy strips them, as RFC 9110 requires, and a protocol-upgrade handshake is written straight to the hijacked connection, so response operations do not reach it.
 
 ### Docker discovery
 

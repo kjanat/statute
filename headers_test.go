@@ -1,6 +1,8 @@
 package statute
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,9 +78,11 @@ func TestResolveHeaderMWErrors(t *testing.T) {
 		{"space in name", SetResponseHeader("X Robots", "v"), "invalid character"},
 		{"colon in name", AddResponseHeader("X-Robots:", "v"), "invalid character"},
 		{"newline in value", SetResponseHeader("X-Robots-Tag", "noindex\r\nX-Injected: yes"), "invalid character"},
-		{"set request host", SetRequestHeader("Host", "internal.example.com"), "Host header cannot be rewritten"},
-		{"add request host", AddRequestHeader("host", "internal.example.com"), "Host header cannot be rewritten"},
-		{"remove request host", RemoveRequestHeader("HOST"), "Host header cannot be rewritten"},
+		{"set request host", SetRequestHeader("Host", "internal.example.com"), `"Host" cannot be rewritten on a request`},
+		{"add request host", AddRequestHeader("host", "internal.example.com"), `"Host" cannot be rewritten on a request`},
+		{"remove request host", RemoveRequestHeader("HOST"), `"Host" cannot be rewritten on a request`},
+		{"set request content-length", SetRequestHeader("content-length", "0"), `"Content-Length" cannot be rewritten on a request`},
+		{"remove request transfer-encoding", RemoveRequestHeader("Transfer-Encoding"), `"Transfer-Encoding" cannot be rewritten on a request`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -94,13 +98,16 @@ func TestResolveHeaderMWErrors(t *testing.T) {
 	}
 }
 
-// TestResponseHeaderHostAllowed — Host is only special on the request; a
-// response may carry it like any other header.
-func TestResponseHeaderHostAllowed(t *testing.T) {
+// TestResponseHeaderUnsettableNamesAllowed — the rejected names are rejected
+// because of how Go writes a *request*; on a response they are ordinary
+// headers and stay allowed.
+func TestResponseHeaderUnsettableNamesAllowed(t *testing.T) {
 	t.Parallel()
-	got := mustResolveMW(t, SetResponseHeader("Host", "edge.example.com"))
-	if got.HeaderName != "Host" || got.HeaderValue != "edge.example.com" {
-		t.Errorf("got %q: %q", got.HeaderName, got.HeaderValue)
+	for _, name := range []string{"Host", "Content-Length", "Transfer-Encoding"} {
+		got := mustResolveMW(t, SetResponseHeader(name, "x"))
+		if got.HeaderName != name || got.HeaderValue != "x" {
+			t.Errorf("%s: got %q: %q", name, got.HeaderName, got.HeaderValue)
+		}
 	}
 }
 
@@ -225,6 +232,96 @@ func TestResponseHeaderMiddlewareStreaming(t *testing.T) {
 	}
 }
 
+// TestHeaderMiddlewareAcrossRetries — a retried request re-enters the route's
+// middleware once per attempt. Header operations must not stack up with it:
+// the upstream sees one added request value, and the client one added
+// response value, however many attempts it took.
+func TestHeaderMiddlewareAcrossRetries(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	var lastRequestTags []string
+	base := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		lastRequestTags = r.Header.Values("X-Tag")
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	h := chain(t, base,
+		AddRequestHeader("X-Tag", "route"),
+		AddResponseHeader("Vary", "Origin"),
+		Retry(3, OnStatus(http.StatusBadGateway)),
+		// A second response operation inside the retry: the op list must not
+		// grow an entry per attempt either.
+		AddResponseHeader("Vary", "Accept-Encoding"),
+	)
+	rec := runRequest(t, h, httptest.NewRequest("GET", "http://x/", nil))
+
+	if attempts != 3 {
+		t.Fatalf("attempts: got %d, want 3 — the retry did not re-enter the chain", attempts)
+	}
+	if len(lastRequestTags) != 1 || lastRequestTags[0] != "route" {
+		t.Errorf("upstream X-Tag: got %v, want one [route]", lastRequestTags)
+	}
+	if got := rec.Header().Values("Vary"); len(got) != 2 {
+		t.Errorf("Vary: got %v, want exactly two values", got)
+	}
+}
+
+// TestResponseHeaderMiddlewareInformationalStatus — a 1xx is a preview, not
+// the response. net/http keeps the exchange open and the reverse proxy clears
+// the header map right after writing one, so the operations have to wait for
+// the final status instead of being spent on the hint.
+func TestResponseHeaderMiddlewareInformationalStatus(t *testing.T) {
+	t.Parallel()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Link", "</style.css>; rel=preload")
+		w.WriteHeader(http.StatusEarlyHints)
+		// What the proxy does after forwarding a 1xx.
+		clear(w.Header())
+		w.WriteHeader(http.StatusOK)
+	})
+	h := chain(t, inner, SetResponseHeader("X-Robots-Tag", "noindex"))
+	rec := runRequest(t, h, httptest.NewRequest("GET", "http://x/", nil))
+
+	assertHeader(t, rec.Header(), "X-Robots-Tag", "noindex")
+}
+
+// hijackableRecorder is an httptest.ResponseRecorder that can also be
+// hijacked, so the wrapper's Unwrap can be exercised the way a protocol
+// upgrade exercises it.
+type hijackableRecorder struct {
+	*httptest.ResponseRecorder
+	hijacked bool
+}
+
+// Hijack records the attempt and hands back nothing usable; the test only
+// cares that the call reaches this writer through the wrapper.
+func (h *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	return nil, nil, nil
+}
+
+// TestResponseHeaderMiddlewareHijack — an upgrade must still be able to take
+// the connection. The proxy reaches for it through http.ResponseController,
+// which follows Unwrap, so the wrapper cannot be what blocks a WebSocket.
+func TestResponseHeaderMiddlewareHijack(t *testing.T) {
+	t.Parallel()
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := http.NewResponseController(w).Hijack(); err != nil {
+			t.Errorf("hijack through the wrapper: %v", err)
+		}
+	})
+	h := chain(t, inner, SetResponseHeader("X-Robots-Tag", "noindex"))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://x/", nil))
+
+	if !rec.hijacked {
+		t.Error("hijack did not reach the underlying ResponseWriter")
+	}
+	// The handshake is written to the hijacked connection, not through this
+	// writer, so nothing was rewritten — and nothing panicked either.
+	assertNoHeader(t, rec.Header(), "X-Robots-Tag")
+}
+
 // TestHeaderMiddlewareThroughProxy — the mutations survive a real proxy hop:
 // request headers reach the backend, and a response mutation beats the
 // header the backend set.
@@ -237,9 +334,11 @@ func TestHeaderMiddlewareThroughProxy(t *testing.T) {
 			"api": Pool{Backends: []Backend{{Address: strings.TrimPrefix(backend.URL, "http://")}}},
 		},
 		Routes: Routes{
+			// The example from issue #21, plus a header the proxy does not own.
 			Match("/*").ProxyTo("api").With(
 				SetRequestHeader("X-Api-Version", "2"),
 				SetRequestHeader("X-Forwarded-Proto", "https"),
+				RemoveRequestHeader("X-Forwarded-For"),
 				RemoveRequestHeader("X-Secret"),
 				SetResponseHeader("X-Robots-Tag", "noindex, nofollow"),
 			),
@@ -272,12 +371,20 @@ func TestHeaderMiddlewareThroughProxy(t *testing.T) {
 	if got, ok := echo.Headers["X-Secret"]; ok {
 		t.Errorf("upstream still saw X-Secret: %v", got)
 	}
-	// The proxy owns the X-Forwarded-* set: ProxyRequest.SetXForwarded runs
-	// after route middleware and rewrites them from the real connection, so a
-	// client (or a route) cannot spoof them. Pinned so the interaction is a
-	// decision rather than a surprise.
-	if got := echo.Headers["X-Forwarded-Proto"]; len(got) != 1 || got[0] != "http" {
-		t.Errorf("upstream X-Forwarded-Proto: got %v, want [http] from the proxy", got)
+	// SetXForwarded derives the X-Forwarded-* fields from the real connection
+	// and overwrites whatever was in the header map — including a value the
+	// route configured. An explicit route declaration has to survive that, or
+	// the example in the issue would be a silent no-op.
+	if got := echo.Headers["X-Forwarded-Proto"]; len(got) != 1 || got[0] != "https" {
+		t.Errorf("upstream X-Forwarded-Proto: got %v, want [https] from the route", got)
+	}
+	if got, ok := echo.Headers["X-Forwarded-For"]; ok {
+		t.Errorf("upstream still saw X-Forwarded-For: %v", got)
+	}
+	// A field the route said nothing about keeps the proxy's derived value,
+	// so a client still cannot spoof it.
+	if got := echo.Headers["X-Forwarded-Host"]; len(got) != 1 || got[0] != "x" {
+		t.Errorf("upstream X-Forwarded-Host: got %v, want [x] from the proxy", got)
 	}
 	assertHeader(t, rec.Header(), "X-Robots-Tag", "noindex, nofollow")
 }
