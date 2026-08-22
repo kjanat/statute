@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- DNS-01 wildcard certificates are reused for matching SNI hosts instead of
+  issuing and caching a separate certificate for each concrete hostname.
+
 ## [0.5.1] — 2026-08-22
 
 ### Changed
