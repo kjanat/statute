@@ -209,11 +209,19 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 	if err != nil {
 		return resolved.Transport{}, fmt.Errorf("tls_handshake_timeout: %w", err)
 	}
+	for i, f := range t.RootCAFiles {
+		if strings.TrimSpace(f) == "" {
+			return resolved.Transport{}, fmt.Errorf("root_ca_files[%d]: path is empty", i)
+		}
+	}
 	return resolved.Transport{
 		MaxIdleConnsPerHost: maxIdle,
 		IdleConnTimeout:     idle,
 		DialTimeout:         dial,
 		TLSHandshakeTimeout: tlsHs,
+		ServerName:          t.ServerName,
+		RootCAFiles:         append([]string(nil), t.RootCAFiles...),
+		InsecureSkipVerify:  t.InsecureSkipVerify,
 	}, nil
 }
 

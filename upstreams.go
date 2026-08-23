@@ -62,10 +62,24 @@ type HealthCheck struct {
 	Unhealthy int    // consecutive failures to mark unhealthy; defaults to 3
 }
 
-// Transport tunes the HTTP transport used to reach backends.
+// Transport tunes the HTTP transport used to reach backends. The TLS fields
+// apply to backends dialed over https and set one verification policy for the
+// pool: reverse-proxy requests and active health-check probes share it.
 type Transport struct {
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     string // e.g. "90s"
 	DialTimeout         string // e.g. "5s"
 	TLSHandshakeTimeout string // e.g. "5s"
+
+	// ServerName overrides the hostname verified against the backend's
+	// certificate (and sent as SNI). Set it when backends are dialed by IP
+	// but present a certificate for a DNS name.
+	ServerName string
+	// RootCAFiles are PEM files whose certificates replace the system roots
+	// when verifying backend certificates. Useful for internal CAs.
+	RootCAFiles []string
+	// InsecureSkipVerify disables backend certificate verification
+	// entirely. The lint rule TLS002 warns when it is set; prefer
+	// RootCAFiles and ServerName.
+	InsecureSkipVerify bool
 }
