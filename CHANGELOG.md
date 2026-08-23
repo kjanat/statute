@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A per-pool upstream `Host` header policy: `UpstreamHost` on `Pool`
+  chooses between forwarding the client's `Host` (the default, today's
+  behavior), sending each backend its own host (`TargetHost`), or sending
+  a fixed name (`HostValue("...")`). The policy appears in the resolved
+  schema as `UpstreamHost`/`HostValue`, an explicit value is validated at
+  resolve time, and health-check probes carry an explicit value too, so
+  hostname-sensitive backends see consistent traffic.
 - Per-upstream TLS verification settings on `Transport`: `ServerName`
   overrides the hostname verified (and sent as SNI) against the backend
   certificate, `RootCAFiles` replaces the system roots with internal-CA PEM

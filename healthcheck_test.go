@@ -21,7 +21,7 @@ func TestHealthCheck_RecordTransitions(t *testing.T) {
 	}
 	b := &backendState{backend: &resolved.Backend{Address: "x:1"}}
 	b.markHealthy(true)
-	hc := newHealthChecker(cfg, []*backendState{b}, nil)
+	hc := newHealthChecker(cfg, []*backendState{b}, nil, "")
 
 	// Two failures: still healthy (under threshold).
 	hc.recordFailure(b)
@@ -51,7 +51,7 @@ func TestHealthCheck_RecordTransitions(t *testing.T) {
 func TestHealthCheck_DisabledIsInert(t *testing.T) {
 	t.Parallel()
 	cfg := resolved.HealthCheck{Enabled: false}
-	hc := newHealthChecker(cfg, nil, nil)
+	hc := newHealthChecker(cfg, nil, nil, "")
 	hc.start() // must not panic
 	hc.stop()  // must not block; cancel is nil
 }
