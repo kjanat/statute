@@ -3,8 +3,11 @@ package statute
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -550,18 +553,216 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	}
 	switch {
 	case a.dns01 != nil:
-		if a.dns01.apiToken == "" {
-			return nil, errors.New("auto_tls.cloudflare_dns01: api token is required")
+		dns01, derr := resolveCloudflareDNS01(a)
+		if derr != nil {
+			return nil, derr
 		}
-		at.DNS01 = &resolved.CloudflareDNS01{
-			APIToken: a.dns01.apiToken,
-			ZoneID:   a.dns01.zoneID,
-		}
+		at.DNS01 = dns01
 		at.Challenge = resolved.ChallengeDNS01
 	case a.explicitHTTP01:
 		at.Challenge = resolved.ChallengeHTTP01
 	}
 	return at, nil
+}
+
+// DNS-01 propagation bounds. The maxima are absurdity guards, not tuning
+// knobs: a policy that waits longer than ten minutes for one record has a
+// broken zone, not a slow one, and every minute of it is spent inside the
+// order the CA is holding open.
+const (
+	dnsPropagationMaxWait         = 10 * time.Minute
+	dnsPropagationDefaultTimeout  = 2 * time.Minute
+	dnsPropagationDefaultInterval = 5 * time.Second
+	dnsPropagationMinInterval     = 100 * time.Millisecond
+)
+
+// resolveCloudflareDNS01 validates the Cloudflare DNS-01 settings of one
+// AutoTLS source and produces their resolved form, propagation policy
+// included.
+func resolveCloudflareDNS01(a *AutoTLSConfig) (*resolved.CloudflareDNS01, error) {
+	if a.dns01.apiToken == "" {
+		return nil, errors.New("auto_tls.cloudflare_dns01: api token is required")
+	}
+	prop, err := resolveDNSPropagation(a.propagation)
+	if err != nil {
+		return nil, err
+	}
+	return &resolved.CloudflareDNS01{
+		APIToken:    a.dns01.apiToken,
+		ZoneID:      a.dns01.zoneID,
+		Propagation: prop,
+	}, nil
+}
+
+// resolveDNSPropagation normalises a declared propagation policy: it
+// parses the duration strings, fills the polling defaults, and validates
+// the resolver list. A nil policy resolves to nil — the runtime's fixed
+// default wait.
+func resolveDNSPropagation(p *DNSPropagation) (*resolved.DNSPropagation, error) {
+	if p == nil {
+		return nil, nil
+	}
+	delay, err := resolveDNSPropagationDelay(p.Delay)
+	if err != nil {
+		return nil, err
+	}
+	resolvers, err := resolveDNSPropagationResolvers(p.Resolvers)
+	if err != nil {
+		return nil, err
+	}
+	timeout, interval, err := resolveDNSPropagationPolling(p, len(resolvers) > 0)
+	if err != nil {
+		return nil, err
+	}
+	// Judged on the parsed value, not the spelling: Delay "0s" is as
+	// empty as "". A policy that waits for nothing would silently drop
+	// the built-in default wait — which is what leaving the option off
+	// already expresses. Checked after the polling validation so a
+	// timeout or interval without resolvers gets its own message, not a
+	// claim that the policy is empty.
+	if delay == 0 && len(resolvers) == 0 {
+		return nil, errors.New("dns_propagation: the policy waits for nothing; set a positive delay, resolvers, or drop the option")
+	}
+	return &resolved.DNSPropagation{
+		Delay:     delay,
+		Timeout:   timeout,
+		Interval:  interval,
+		Resolvers: resolvers,
+	}, nil
+}
+
+// resolveDNSPropagationDelay parses the fixed pre-validation wait. An
+// empty delay is none at all; parse.Duration already rejects a negative
+// one.
+func resolveDNSPropagationDelay(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	d, err := parse.Duration(s)
+	if err != nil {
+		return 0, fmt.Errorf("dns_propagation: delay: %w", err)
+	}
+	if d > dnsPropagationMaxWait {
+		return 0, fmt.Errorf("dns_propagation: delay %s is above the %s maximum; a record that slow is a broken zone, not a propagating one", d, dnsPropagationMaxWait)
+	}
+	return d, nil
+}
+
+// resolveDNSPropagationPolling fills the polling window. Timeout and
+// Interval govern resolver verification alone, so declaring either without
+// resolvers is an error rather than a setting nothing ever reads.
+func resolveDNSPropagationPolling(p *DNSPropagation, hasResolvers bool) (time.Duration, time.Duration, error) {
+	if !hasResolvers {
+		if p.Timeout != "" || p.Interval != "" {
+			return 0, 0, errors.New("dns_propagation: timeout and interval govern resolver polling, and no resolvers are set; add resolvers or drop them")
+		}
+		return 0, 0, nil
+	}
+	timeout, err := parse.DurationOr(p.Timeout, dnsPropagationDefaultTimeout)
+	if err != nil {
+		return 0, 0, fmt.Errorf("dns_propagation: timeout: %w", err)
+	}
+	if timeout == 0 {
+		return 0, 0, errors.New("dns_propagation: timeout must be greater than zero; polling needs a deadline to fail at")
+	}
+	if timeout > dnsPropagationMaxWait {
+		return 0, 0, fmt.Errorf("dns_propagation: timeout %s is above the %s maximum; a record that slow is a broken zone, not a propagating one", timeout, dnsPropagationMaxWait)
+	}
+	interval, err := resolveDNSPropagationInterval(p.Interval, timeout)
+	if err != nil {
+		return 0, 0, err
+	}
+	return timeout, interval, nil
+}
+
+// resolveDNSPropagationInterval parses the polling cadence against the
+// window it has to fit in. The floor keeps a misconfigured policy from
+// hammering the resolvers; the ceiling keeps a cadence that could never
+// fire twice from masquerading as polling.
+func resolveDNSPropagationInterval(s string, timeout time.Duration) (time.Duration, error) {
+	if s == "" {
+		// The default cadence, clamped into the window: a user who set
+		// only a short timeout asked for fail-fast polling, not an error
+		// about a field they never wrote.
+		return min(dnsPropagationDefaultInterval, timeout), nil
+	}
+	interval, err := parse.Duration(s)
+	if err != nil {
+		return 0, fmt.Errorf("dns_propagation: interval: %w", err)
+	}
+	if interval < dnsPropagationMinInterval {
+		return 0, fmt.Errorf("dns_propagation: interval %s is below the %s minimum; a tighter loop only floods the resolvers", interval, dnsPropagationMinInterval)
+	}
+	if interval > timeout {
+		return 0, fmt.Errorf("dns_propagation: interval %s is above timeout %s; the loop would never poll twice", interval, timeout)
+	}
+	return interval, nil
+}
+
+// resolveDNSPropagationResolvers validates each "host:port" resolver and
+// returns the list in declaration order, each in its canonical spelling.
+// Duplicate detection runs on the canonical form, so one server listed
+// twice under different spellings is caught too.
+func resolveDNSPropagationResolvers(list []string) ([]string, error) {
+	if len(list) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(list))
+	for _, r := range list {
+		canon, err := canonicalDNSResolverAddr(r)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(out, canon) {
+			return nil, fmt.Errorf("dns_propagation: resolver %q is listed twice (canonical form %s)", r, canon)
+		}
+		out = append(out, canon)
+	}
+	return out, nil
+}
+
+// canonicalDNSResolverAddr validates one resolver address and returns its
+// canonical "host:port" spelling: an IP literal in its canonical text
+// form (so "[2001:0db8::0:1]:53" and "[2001:db8::1]:53" are one
+// resolver), a hostname lowercased (DNS names are case-insensitive), the
+// port in plain decimal, an IPv6 host bracketed. The canonical form is
+// what the resolved schema stores and what the runtime dials. The port is
+// mandatory: net.Dial has no default for DNS, so a bare address would
+// fail at issuance time instead of here.
+func canonicalDNSResolverAddr(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("dns_propagation: resolver %q must be host:port, as in \"192.0.2.53:53\" or \"[2001:db8::1]:53\": %w", addr, err)
+	}
+	if host == "" || host != strings.TrimSpace(host) || strings.ContainsAny(host, " \t") {
+		return "", fmt.Errorf("dns_propagation: resolver %q has no usable host", addr)
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.String()
+	} else {
+		host = strings.ToLower(host)
+	}
+	n, ok := dnsResolverPort(port)
+	if !ok {
+		return "", fmt.Errorf("dns_propagation: resolver %q has port %q; want a number from 1 to 65535", addr, port)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(n)), nil
+}
+
+// dnsResolverPort parses a decimal port. Digits only: strconv.Atoi would
+// also take "+53", which passes resolve but fails net.Dial's own port
+// parser at issuance time.
+func dnsResolverPort(port string) (int, bool) {
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return 0, false
+	}
+	return n, true
 }
 
 // canonicalAutoTLSDomains lowers every configured ACME domain to its
@@ -610,10 +811,14 @@ func validateTLSWildcard(canonical string) error {
 
 // validateAutoTLSChallenge rejects contradictory or unsatisfiable challenge
 // policy on one ACME source: HTTP01 and CloudflareDNS01 cannot both be
-// declared, and a wildcard domain can only be issued over DNS-01.
+// declared, a propagation policy needs a DNS-01 source to govern, and a
+// wildcard domain can only be issued over DNS-01.
 func validateAutoTLSChallenge(a *AutoTLSConfig) error {
 	if a.explicitHTTP01 && a.dns01 != nil {
 		return errors.New("auto_tls: HTTP01 and CloudflareDNS01 are mutually exclusive on one source")
+	}
+	if a.propagation != nil && a.dns01 == nil {
+		return errors.New("dns_propagation: only a CloudflareDNS01 source publishes a DNS record to wait for; add CloudflareDNS01 or drop Propagation")
 	}
 	if a.dns01 == nil {
 		for _, d := range a.Domains {

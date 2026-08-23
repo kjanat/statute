@@ -325,12 +325,18 @@ statute.AutoTLS("example.com", "api.example.com").
 statute.AutoTLS("*.example.com", "example.com").
     Email("ops@example.com").
     Storage("/var/lib/statute/certs").
-    CloudflareDNS01(token).Zone(zoneID)
+    CloudflareDNS01(token).Zone(zoneID).
+    Propagation(statute.DNSPropagation{
+        Delay:     "30s",
+        Resolvers: []string{"192.0.2.53:53", "198.51.100.53:53"},
+    })
 ```
 
 AutoTLS persistence is **mandatory**. The `Storage` directory holds the ACME account key, issued certs, and renewal state; without it, every restart re-registers and re-issues, blowing through Let's Encrypt rate limits in days.
 
 The DNS-01 path is implemented in-tree using `golang.org/x/crypto/acme` directly + a tiny Cloudflare DNS API client. It does not pull in lego or certmagic. It supports wildcards and works without a publicly-reachable port 80. See [docs/cloudflare.md](docs/cloudflare.md) for setup details.
+
+**Propagation control.** After publishing the challenge TXT record, a DNS-01 source waits a fixed 15 seconds before asking the CA to validate. `Propagation` replaces that with a policy of your own, in either or both of two modes: a `Delay` you choose (up to 10 minutes), and a list of `Resolvers` — `host:port` DNS servers that must **all** return the expected TXT value before validation is requested. Polling runs from the end of the delay on a `Timeout` (default `"2m"`, max 10 minutes) and `Interval` (default `"5s"`, min 100ms), with the first round immediate and a resolver dropped from the set once it has answered correctly. Lookup errors are not failures — an unpropagated record is indistinguishable from `NXDOMAIN` — but the deadline is: it fails issuance with an error naming the record and the resolvers still short, without asking the CA to validate, so a slow zone costs a retry instead of one of the five validation failures Let's Encrypt allows per hostname per hour. The propagation budget is added to the per-order timeout so a long policy is not cancelled mid-wait. Resolve rejects the dead and contradictory shapes: `Timeout` or `Interval` without `Resolvers`, a policy that waits for nothing (`Delay: "0s"` alone counts), a delay or timeout over 10 minutes, an explicit interval below 100ms or above the timeout, a resolver without a valid `host:port`, a duplicate resolver in any spelling, and `Propagation` on a source with no `CloudflareDNS01`. The normalised policy is part of the resolved schema and the `-export` output.
 
 **SNI-scoped sources.** One listener takes any number of TLS sources, mixed freely, and picks one per handshake by SNI hostname — an exact name wins over a wildcard pattern (which covers exactly one extra label), and a hostless `StaticTLS` is the fallback for unmatched names and clients that send no SNI. Mixed public/direct names, DNS-01 wildcards, and externally provisioned certificates can therefore share port 443:
 

@@ -62,6 +62,7 @@ type AutoTLSConfig struct {
 	email          string
 	storage        string
 	dns01          *cloudflareDNS01Config
+	propagation    *DNSPropagation
 	explicitHTTP01 bool
 }
 
@@ -142,6 +143,84 @@ func (a *AutoTLSConfig) applyListener(l *Listener) { l.autoTLS = append(l.autoTL
 type cloudflareDNS01Config struct {
 	apiToken string
 	zoneID   string
+}
+
+// DNSPropagation configures how a DNS-01 source waits for its challenge
+// TXT record to become visible before it asks the CA to validate. It is
+// passed to AutoTLSConfig.Propagation and applies to that source only.
+//
+// Delay, Timeout, and Interval are duration strings ("30s", "2m",
+// "500ms"; "d" and "w" are also understood). The policy has two halves,
+// and a policy must use at least one of them:
+//
+//   - Delay is a fixed wait that always elapses first. On its own it is
+//     the classic "sleep and hope" — the same shape as the built-in
+//     default, with a duration you choose.
+//   - Resolvers turns on verification: after Delay, the runtime queries
+//     each listed DNS server for the challenge record and does not ask the
+//     CA to validate until every one of them serves the expected value.
+//     Timeout and Interval govern that loop and are meaningful only here —
+//     setting either without Resolvers is a resolve error rather than a
+//     setting that quietly does nothing.
+//
+// Verification fails closed: if the deadline passes with any resolver
+// still not serving the value, issuance fails with an error naming the
+// record and the laggards, and the CA is never asked to validate. That is
+// deliberate — a failed statute-side check costs nothing, while a failed
+// CA validation spends one of the five validation failures Let's Encrypt
+// allows per hostname per hour.
+//
+//	statute.AutoTLS("*.foo.example.test").
+//	    Email("ops@example.test").
+//	    Storage("/var/lib/statute/acme").
+//	    CloudflareDNS01(token).
+//	    Propagation(statute.DNSPropagation{
+//	        Delay:     "30s",
+//	        Resolvers: []string{"192.0.2.53:53", "198.51.100.53:53"},
+//	    })
+type DNSPropagation struct {
+	// Delay is the fixed wait between publishing the TXT record and doing
+	// anything else. Empty or zero means none when Resolvers is set
+	// (polling replaces the sleep); with no Resolvers either, the policy
+	// waits for nothing and is rejected. Must not exceed 10m.
+	Delay string
+	// Timeout is the deadline for the polling loop, measured from the end
+	// of Delay. Empty defaults to "2m". Must be positive and at most 10m.
+	// Only meaningful with Resolvers.
+	Timeout string
+	// Interval is the cadence between polling rounds, and the budget each
+	// resolver's probe gets within a round. A round probes every
+	// still-pending resolver concurrently, so one unreachable resolver
+	// spends its own probe budget, never another's. Empty defaults to
+	// "5s", clamped down to Timeout when Timeout is shorter. An explicit
+	// value must be at least 100ms and at most Timeout. The first round
+	// runs immediately after Delay, not one interval later. Only
+	// meaningful with Resolvers.
+	Interval string
+	// Resolvers are the DNS servers to verify against, each as "host:port"
+	// (the port is explicit: "192.0.2.53:53", not "192.0.2.53"; an IPv6
+	// host is bracketed: "[2001:db8::1]:53"). A host may be an IP or a
+	// name. Every listed resolver must serve the expected TXT value before
+	// validation is requested. The resolved schema keeps declaration order
+	// but stores each address canonically — IP literals in canonical text
+	// form, hostnames lowercased, ports in plain decimal — and one server
+	// listed twice in any spelling is a resolve error. Empty means no
+	// verification: only Delay applies.
+	Resolvers []string
+}
+
+// Propagation sets the DNS-01 propagation policy for this source. It is
+// only valid on a source that also declares CloudflareDNS01 — no other
+// challenge publishes a DNS record to wait for — and, like Email and
+// Storage, a second call replaces the first rather than merging.
+//
+// Without it a DNS-01 source waits a fixed 15 seconds after publishing the
+// record and then asks the CA to validate, which is what deployments with
+// fast authoritative DNS want and what slower ones cannot express. See
+// DNSPropagation for the two modes and their defaults.
+func (a *AutoTLSConfig) Propagation(p DNSPropagation) *AutoTLSConfig {
+	a.propagation = &p
+	return a
 }
 
 // StaticTLSConfig declares pre-provisioned TLS material. A listener may
