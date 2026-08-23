@@ -174,6 +174,8 @@ Strategies:
 - `IPHash` — consistent per-client routing for session affinity.
 - `Weighted` — smooth weighted round-robin (Nginx-style).
 
+`UpstreamHost` selects the `Host` header backends receive. The default forwards the client's own `Host` unchanged; `statute.TargetHost` sends each backend its own host (what a plain client dialing it directly would send — hostname-sensitive upstreams that reject the client's `Host` usually want this); `statute.HostValue("api.internal.example")` sends a fixed name. The policy also covers active health-check probes: an explicit value is carried on every probe, and the other policies leave probes on each backend's own host, since a probe has no client `Host` to preserve.
+
 The picker filters to healthy primary backends; when no primary is healthy, it falls through to the backup tier; when none of those are healthy either, it goes degraded and tries primaries anyway. Active health checks demote and promote backends in the background based on consecutive success/failure thresholds.
 
 `Transport` tunes the HTTP transport reused across all backends in the pool. The default `MaxIdleConnsPerHost` (32) is a much better default for a proxy than Go's stdlib value (2); leave it alone unless you know why you're changing it.

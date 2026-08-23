@@ -10,6 +10,9 @@ type Pool struct {
 	Strategy    Strategy
 	HealthCheck HealthCheck
 	Transport   Transport
+	// UpstreamHost selects the Host header backends receive. The zero value
+	// is ClientHost, today's behavior: the client's own Host is forwarded.
+	UpstreamHost UpstreamHost
 }
 
 // Backend is a single upstream target.
@@ -21,6 +24,54 @@ type Backend struct {
 	// Backup is true for failover-only backends; they receive traffic only
 	// when all primary backends are unhealthy.
 	Backup bool
+}
+
+// UpstreamHost is a pool's outgoing Host header policy. The zero value
+// forwards the client's Host unchanged; construct the other policies from
+// TargetHost or HostValue. Hostname-sensitive backends that reject the
+// client's Host usually want TargetHost.
+//
+// The policy applies to proxied requests and to active health-check probes
+// alike, so a backend that routes on Host sees consistent traffic. A probe
+// has no client, so under ClientHost it carries the backend's own host.
+type UpstreamHost struct {
+	mode  hostMode
+	value string
+}
+
+type hostMode int
+
+const (
+	hostModeClient hostMode = iota
+	hostModeTarget
+	hostModeExplicit
+)
+
+// ClientHost forwards the client's original Host header to the backend.
+// This is the default.
+var ClientHost = UpstreamHost{mode: hostModeClient}
+
+// TargetHost sends each backend its own host, taken from its address —
+// what a plain http.Client dialing the backend directly would send.
+var TargetHost = UpstreamHost{mode: hostModeTarget}
+
+// HostValue sends the given fixed Host header to every backend in the pool.
+func HostValue(host string) UpstreamHost {
+	return UpstreamHost{mode: hostModeExplicit, value: host}
+}
+
+// String returns the canonical name of the policy.
+func (u UpstreamHost) String() string {
+	switch u.mode {
+	case hostModeClient:
+		return "client_host"
+	case hostModeTarget:
+		return "target_host"
+	case hostModeExplicit:
+		return "host:" + u.value
+	default:
+		return enumUnknown
+	}
 }
 
 // Strategy selects how a request is routed across the backends in a pool.

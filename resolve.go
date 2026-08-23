@@ -159,7 +159,33 @@ func resolvePool(name string, p Pool) (*resolved.Pool, error) {
 		return nil, fmt.Errorf("transport: %w", err)
 	}
 	rp.Transport = tr
+	if err := resolveUpstreamHost(p.UpstreamHost, rp); err != nil {
+		return nil, fmt.Errorf("upstream_host: %w", err)
+	}
 	return rp, nil
+}
+
+// resolveUpstreamHost maps the surface Host policy onto the resolved pool.
+// An explicit value is a header value bound for the wire, so it gets the
+// header-injection validation configured headers get, plus a token check
+// light enough to admit any real host:port.
+func resolveUpstreamHost(u UpstreamHost, rp *resolved.Pool) error {
+	switch u.mode {
+	case hostModeClient:
+		rp.UpstreamHost = resolved.HostClient
+	case hostModeTarget:
+		rp.UpstreamHost = resolved.HostTarget
+	case hostModeExplicit:
+		if strings.TrimSpace(u.value) == "" {
+			return errors.New("HostValue is empty")
+		}
+		if _, err := parse.HeaderValue(u.value); err != nil {
+			return err
+		}
+		rp.UpstreamHost = resolved.HostExplicit
+		rp.HostValue = u.value
+	}
+	return nil
 }
 
 func resolveHealthCheck(h HealthCheck) (resolved.HealthCheck, error) {

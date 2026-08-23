@@ -83,7 +83,23 @@ type Pool struct {
 	Strategy    Strategy
 	HealthCheck HealthCheck
 	Transport   Transport
+	// UpstreamHost is the pool's outgoing Host header policy; HostValue
+	// carries the fixed name when the policy is HostExplicit.
+	UpstreamHost HostPolicy
+	HostValue    string
 }
+
+// HostPolicy selects the Host header backends receive.
+type HostPolicy int
+
+const (
+	// HostClient forwards the client's original Host header (default).
+	HostClient HostPolicy = iota
+	// HostTarget sends each backend its own host, from its address.
+	HostTarget
+	// HostExplicit sends the fixed name in Pool.HostValue.
+	HostExplicit
+)
 
 // Backend is a resolved backend target.
 type Backend struct {

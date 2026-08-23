@@ -581,7 +581,7 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 		bs := &backendState{backend: b}
 		// Backends start healthy; the prober demotes them as it observes failures.
 		bs.markHealthy(true)
-		bs.rp = newBackendProxy(target, transport)
+		bs.rp = newBackendProxy(target, transport, p)
 		if b.Backup {
 			ph.backup = append(ph.backup, bs)
 		} else {
@@ -591,8 +591,14 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 
 	all := append(append([]*backendState{}, ph.primary...), ph.backup...)
 	// The prober rides the same transport as proxy traffic, so both sides
-	// see one TLS verification policy that cannot drift apart.
-	ph.hc = newHealthChecker(p.HealthCheck, all, transport)
+	// see one TLS verification policy that cannot drift apart. An explicit
+	// Host policy carries over too; the other policies leave probes on each
+	// backend's own host — a probe has no client Host to preserve.
+	probeHost := ""
+	if p.UpstreamHost == resolved.HostExplicit {
+		probeHost = p.HostValue
+	}
+	ph.hc = newHealthChecker(p.HealthCheck, all, transport, probeHost)
 	ph.hc.start()
 	return ph, nil
 }
@@ -627,11 +633,20 @@ func backendTLSConfig(t resolved.Transport) (*tls.Config, error) {
 	return cfg, nil
 }
 
-func newBackendProxy(target *url.URL, transport *http.Transport) *httputil.ReverseProxy {
+func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Pool) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			pr.Out.Host = pr.In.Host
+			// SetURL blanked Out.Host, which makes the transport derive the
+			// Host header from the target URL — exactly the HostTarget
+			// policy. The other policies override it.
+			switch p.UpstreamHost {
+			case resolved.HostTarget:
+			case resolved.HostExplicit:
+				pr.Out.Host = p.HostValue
+			default:
+				pr.Out.Host = pr.In.Host
+			}
 			pr.SetXForwarded()
 			// SetXForwarded has just overwritten the X-Forwarded-* fields
 			// from the real connection, including any a route configured on

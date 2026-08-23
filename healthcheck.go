@@ -13,6 +13,7 @@ import (
 // flag according to consecutive success/failure thresholds.
 type healthChecker struct {
 	cfg      resolved.HealthCheck
+	host     string
 	backends []*backendState
 	client   *http.Client
 
@@ -26,10 +27,13 @@ type healthChecker struct {
 
 // newHealthChecker builds a prober whose client rides the given transport —
 // the pool hands over its proxy transport, so probes verify backend TLS under
-// exactly the policy proxied requests use. A nil transport means Go's default.
-func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper) *healthChecker {
+// exactly the policy proxied requests use. A nil transport means Go's
+// default. A non-empty host is the pool's explicit Host policy, carried on
+// every probe; empty leaves probes on each backend's own host.
+func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper, host string) *healthChecker {
 	return &healthChecker{
 		cfg:      cfg,
+		host:     host,
 		backends: backends,
 		client: &http.Client{
 			Timeout:   cfg.Timeout,
@@ -100,6 +104,9 @@ func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 	if err != nil {
 		h.recordFailure(b)
 		return
+	}
+	if h.host != "" {
+		req.Host = h.host
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
