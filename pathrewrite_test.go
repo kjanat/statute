@@ -241,23 +241,40 @@ func TestPathRewriteHandler(t *testing.T) {
 			want:   observedURL{path: "/users/a/b", rawPath: "/users/a%2Fb", requestURI: "/users/a%2Fb"},
 		},
 		{
-			// The prefix boundary is an escaped slash, so "/api%2Fusers" is a
-			// single segment "api/users", not "/api" + "/users". The strip
-			// does not fire, and a later "%2F" keeps its escaping instead of
-			// being decoded by a dropped RawPath.
-			name:   "strip does not fire on an escaped boundary",
+			// The boundary slash is escaped, but the router matched "/api/*"
+			// on the decoded path, so the strip fires too: the boundary "%2F"
+			// becomes the new root "/", and the later "%2F" stays escaped —
+			// never decoded into a second segment.
+			name:   "strip normalises an escaped boundary and keeps the remainder",
 			mws:    []resolved.Middleware{strip},
-			target: "/api%2Fusers/a%2Fb",
-			want:   observedURL{path: "/api/users/a/b", rawPath: "/api%2Fusers/a%2Fb", requestURI: "/api%2Fusers/a%2Fb"},
+			target: "/api%2Ffoo%2Fbar",
+			want:   observedURL{path: "/foo/bar", rawPath: "/foo%2Fbar", requestURI: "/foo%2Fbar"},
 		},
 		{
-			// The open-redirect vector: an escaped boundary slash no longer
-			// strips, so the path stays rooted ("/api%2F@evil.com/x") and a
+			// Both a "%2F" boundary and a later "%2F": the boundary is rooted
+			// and every later escaped slash survives.
+			name:   "strip normalises the boundary with a later escaped slash",
+			mws:    []resolved.Middleware{strip},
+			target: "/api%2Fusers/a%2Fb",
+			want:   observedURL{path: "/users/a/b", rawPath: "/users/a%2Fb", requestURI: "/users/a%2Fb"},
+		},
+		{
+			// The prefix itself arrives percent-encoded ("/a%70i" == "/api").
+			// The walk decodes it, so the strip still fires and the remainder
+			// escaping is preserved.
+			name:   "strip matches a percent-encoded prefix",
+			mws:    []resolved.Middleware{strip},
+			target: "/a%70i/foo%2Fbar",
+			want:   observedURL{path: "/foo/bar", rawPath: "/foo%2Fbar", requestURI: "/foo%2Fbar"},
+		},
+		{
+			// The open-redirect vector: normalising the escaped boundary "%2F"
+			// to "/" leaves the remainder rooted ("/@evil.com/x"), so a
 			// redirect route's {path} cannot be steered off-site through it.
-			name:   "strip leaves an escaped-boundary at-sign path rooted",
+			name:   "strip roots an escaped-boundary at-sign path",
 			mws:    []resolved.Middleware{strip},
 			target: "/api%2F@evil.com/x",
-			want:   observedURL{path: "/api/@evil.com/x", rawPath: "/api%2F@evil.com/x", requestURI: "/api%2F@evil.com/x"},
+			want:   observedURL{path: "/@evil.com/x", requestURI: "/@evil.com/x"},
 		},
 		{
 			name:   "add prepends the prefix",
@@ -385,6 +402,34 @@ func TestPathRewriteHandler(t *testing.T) {
 			got := runPathRewrite(t, c.mws, c.target)
 			if got != c.want {
 				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestStripPathPrefixInconsistentRawPath — a RawPath that real HTTP parsing
+// cannot produce (out of step with Path) makes the raw walk fail; the strip
+// still updates Path and drops RawPath so EscapedPath re-derives it from the
+// decoded path rather than emitting something malformed.
+func TestStripPathPrefixInconsistentRawPath(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		path    string
+		rawPath string
+		want    string // EscapedPath after stripping "/api"
+	}{
+		{"raw shorter than the prefix", "/api/x", "/ap", "/x"},
+		{"raw diverges at the boundary", "/api/x", "/apiXy", "/x"},
+		{"invalid escape inside the prefix span", "/api/x", "/a%zzi/x", "/x"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			u := &url.URL{Path: c.path, RawPath: c.rawPath}
+			stripPathPrefix(u, "/api")
+			if got := u.EscapedPath(); got != c.want {
+				t.Errorf("EscapedPath: got %q, want %q (path %q, rawPath %q)", got, c.want, u.Path, u.RawPath)
 			}
 		})
 	}
@@ -543,17 +588,17 @@ func TestEndToEndStripPrefixRedirectStaysRooted(t *testing.T) {
 		t.Fatalf("newServer: %v", err)
 	}
 
-	// The escaped boundary slash means StripPrefix does not fire, so the
-	// path reaches {path} intact and rooted; the "%2F" keeps the authority
-	// glued to new.example.com instead of introducing evil.com.
+	// StripPrefix normalises the escaped boundary "%2F" to "/", so {path}
+	// resolves to a rooted "/@evil.com/x" and the authority stays glued to
+	// new.example.com instead of introducing evil.com.
 	req := httptest.NewRequest("GET", "/api%2F@evil.com/x", nil)
 	rec := runRequest(t, srv.buildRouter(), req)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 	loc := rec.Header().Get("Location")
-	if loc != "https://new.example.com/api%2F@evil.com/x" {
-		t.Fatalf("Location: got %q, want %q", loc, "https://new.example.com/api%2F@evil.com/x")
+	if loc != "https://new.example.com/@evil.com/x" {
+		t.Fatalf("Location: got %q, want %q", loc, "https://new.example.com/@evil.com/x")
 	}
 	u, err := url.Parse(loc)
 	if err != nil {

@@ -46,11 +46,14 @@ func (*stripPrefixMW) statuteMiddleware() {}
 // guarantees the prefix, and a route that admits other paths should see them
 // unchanged rather than mangled.
 //
-// The prefix must be a whole path segment: it matches only on a real slash
-// boundary, so "/api%2Fusers" — a single segment "api/users", with an escaped
-// slash — is not "/api" and passes through. A "%2F" anywhere past the boundary
-// is likewise carried through to the upstream unchanged, so stripping "/api"
-// from "/api/x%2Fy" yields "/x%2Fy", not "/x/y".
+// The prefix is matched on the decoded path — the same form the route pattern
+// matched — so a request routed under the prefix always has it stripped, even
+// when the boundary slash arrived escaped ("/api%2Fusers") or the prefix
+// itself did ("/a%70i"). What follows the prefix is preserved exactly, escaping
+// and all: the boundary slash becomes the new root "/", and every later "%2F"
+// stays escaped, so stripping "/api" from "/api/x%2Fy" or "/api%2Fx%2Fy" both
+// yield "/x%2Fy", never the decoded "/x/y" — a distinction upstream routing and
+// access control can turn on.
 //
 // This is a transform for proxy routes. A static route already strips its own
 // wildcard prefix before serving (Match("/assets/*").Serve(dir) looks up
@@ -242,40 +245,91 @@ func compilePathOp(m resolved.Middleware) (pathOp, bool) {
 }
 
 // stripPathPrefix removes prefix from u's path, leaving "/" when the prefix
-// was the whole path and leaving the URL completely untouched when the path
-// does not carry the prefix — the route pattern normally guarantees it, and a
-// path that arrives without it passes through rather than 404s.
+// was the whole path and leaving the URL untouched when the path does not
+// carry the prefix — the route pattern normally guarantees it, and a path
+// that arrives without it passes through rather than 404s.
 //
-// The match is made on the escaped path, so the prefix must be a real,
-// slash-bounded path-segment prefix. "/api%2Fusers" is a single segment
-// "api/users", not "/api" + "/users", so it does not match — stripping it
-// would both mis-segment the request and, because the escaped boundary
-// slash would leave the remainder unrooted, hand a redirect route a Location
-// whose authority the client controls. Matching on the escaped form also
-// keeps a "%2F" anywhere past the boundary intact: what remains is carried
-// through verbatim rather than re-derived from the decoded path, so an
-// escaped slash deep in a later segment stays escaped to the upstream.
-//
-// Because normalizePathPrefix rejects a "%" in the prefix, the prefix is its
-// own escaped form, so comparing it against EscapedPath() is exact.
+// The prefix is matched on the decoded path, the same form the router matched,
+// so a request routed under "/api" always has "/api" stripped — including when
+// the client spelled the prefix with percent-escapes ("/a%70i"). RawPath is
+// then rebuilt from the raw bytes that follow the prefix, with the boundary
+// slash normalised to "/": whether that slash arrived as "/" or as an encoded
+// "%2F" (as in "/api%2Ffoo"), the remainder starts rooted, so a redirect route
+// can never be handed an authority the client controls. Every other escaped
+// separator past the boundary is carried through verbatim, so a "%2F" the
+// client meant inside a segment reaches the upstream still escaped:
+// "/api/foo%2Fbar" and "/api%2Ffoo%2Fbar" both strip to "/foo%2Fbar", never
+// the decoded "/foo/bar" — a distinction upstream routing and ACLs can depend
+// on.
 func stripPathPrefix(u *url.URL, prefix string) {
-	escaped := u.EscapedPath()
 	switch {
-	case escaped == prefix:
+	case u.Path == prefix:
 		u.Path = "/"
 		u.RawPath = ""
 		return
-	case strings.HasPrefix(escaped, prefix+"/"):
-		// The boundary slash is real, so the decoded path carries the same
-		// boundary and the escaped remainder is rooted by construction.
+	case strings.HasPrefix(u.Path, prefix+"/"):
 		u.Path = u.Path[len(prefix):]
-		if rest := escaped[len(prefix):]; rest != u.Path {
-			u.RawPath = rest
-		} else {
-			u.RawPath = ""
-		}
 	default:
+		return
 	}
+	if u.RawPath != "" {
+		rest := strippedRawRemainder(u.RawPath, len(prefix))
+		if rest == u.Path {
+			rest = "" // canonical: let EscapedPath re-derive it from Path
+		}
+		u.RawPath = rest
+	}
+}
+
+// strippedRawRemainder returns the escaped path remaining after a prefix of n
+// decoded bytes, with the boundary slash normalised to a literal "/". It
+// returns "" — falling the caller back to the canonical escaping of the
+// decoded path — when raw cannot be walked or the boundary is not a slash,
+// which only a hand-built configuration with an inconsistent RawPath produces.
+func strippedRawRemainder(raw string, n int) string {
+	tail, ok := rawTailFromDecodedOffset(raw, n)
+	switch {
+	case !ok:
+		return ""
+	case strings.HasPrefix(tail, "/"):
+		return tail
+	case isEncodedSlash(tail):
+		return "/" + tail[3:]
+	default:
+		return ""
+	}
+}
+
+// rawTailFromDecodedOffset returns the suffix of raw that begins where the
+// decoded path has consumed n bytes, decoding percent-escapes as it walks so a
+// percent-encoded prefix ("/a%70i") aligns correctly. ok is false when raw
+// holds an invalid escape or n lands inside one.
+func rawTailFromDecodedOffset(raw string, n int) (string, bool) {
+	i := 0
+	for range n {
+		switch {
+		case i >= len(raw):
+			return "", false
+		case raw[i] == '%':
+			if i+2 >= len(raw) || !isHexDigit(raw[i+1]) || !isHexDigit(raw[i+2]) {
+				return "", false
+			}
+			i += 3
+		default:
+			i++
+		}
+	}
+	return raw[i:], true
+}
+
+// isEncodedSlash reports whether s begins with a percent-encoded "/".
+func isEncodedSlash(s string) bool {
+	return len(s) >= 3 && s[0] == '%' && s[1] == '2' && (s[2] == 'F' || s[2] == 'f')
+}
+
+// isHexDigit reports whether b is an ASCII hexadecimal digit.
+func isHexDigit(b byte) bool {
+	return ('0' <= b && b <= '9') || ('a' <= b && b <= 'f') || ('A' <= b && b <= 'F')
 }
 
 // addPathPrefix prepends prefix to u's path, escaping it into RawPath as well
