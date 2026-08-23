@@ -31,7 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   prefix is a decoded literal, while `ReplacePath` takes an escaped target,
   so it is the primitive for a path that must carry an escaped `%2F`;
   `RewritePath` matches the decoded path, so a client's escaped `%2F`
-  becomes a real separator to the pattern. Prefixes are normalised at
+  becomes a real separator to the pattern. `StripPrefix` matches the prefix
+  as a whole path segment on a real slash boundary, so an escaped boundary
+  slash (`/api%2Fusers`, one segment) does not match, and a `%2F` past the
+  boundary reaches the upstream unchanged. Prefixes are normalised at
   resolve time — every trailing slash trimmed, so `StripPrefix("/api/")`
   and `StripPrefix("/api")` are one declaration and the resolved export
   publishes `/api` — and resolve rejects what could not work: an empty,

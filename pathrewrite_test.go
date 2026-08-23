@@ -233,24 +233,31 @@ func TestPathRewriteHandler(t *testing.T) {
 			want:   observedURL{path: "/a/b", rawPath: "/a%2Fb", requestURI: "/a%2Fb"},
 		},
 		{
-			// An escaped slash sitting on the prefix boundary must not
-			// survive as RawPath: keeping "%2Fusers" would make RequestURI
-			// a relative reference, a wrong upstream target. RawPath is
-			// dropped so canonical escaping of "/users" takes over.
-			name:   "strip drops a boundary escaped slash to stay rooted",
+			// An escaped slash further along, past a real boundary, is
+			// carried through verbatim — it has nothing to do with the strip.
+			name:   "strip preserves a later escaped separator",
 			mws:    []resolved.Middleware{strip},
-			target: "/api%2Fusers",
-			want:   observedURL{path: "/users", requestURI: "/users"},
+			target: "/api/users/a%2Fb",
+			want:   observedURL{path: "/users/a/b", rawPath: "/users/a%2Fb", requestURI: "/users/a%2Fb"},
 		},
 		{
-			// The open-redirect vector: without rooting, RawPath would be
-			// "%2F@evil.com/x" and a redirect route's {path} would build
-			// "https://host%2F@evil.com/x", whose authority parses as
-			// evil.com. Rooting keeps the leading "/".
-			name:   "strip keeps an at-sign path rooted",
+			// The prefix boundary is an escaped slash, so "/api%2Fusers" is a
+			// single segment "api/users", not "/api" + "/users". The strip
+			// does not fire, and a later "%2F" keeps its escaping instead of
+			// being decoded by a dropped RawPath.
+			name:   "strip does not fire on an escaped boundary",
+			mws:    []resolved.Middleware{strip},
+			target: "/api%2Fusers/a%2Fb",
+			want:   observedURL{path: "/api/users/a/b", rawPath: "/api%2Fusers/a%2Fb", requestURI: "/api%2Fusers/a%2Fb"},
+		},
+		{
+			// The open-redirect vector: an escaped boundary slash no longer
+			// strips, so the path stays rooted ("/api%2F@evil.com/x") and a
+			// redirect route's {path} cannot be steered off-site through it.
+			name:   "strip leaves an escaped-boundary at-sign path rooted",
 			mws:    []resolved.Middleware{strip},
 			target: "/api%2F@evil.com/x",
-			want:   observedURL{path: "/@evil.com/x", requestURI: "/@evil.com/x"},
+			want:   observedURL{path: "/api/@evil.com/x", rawPath: "/api%2F@evil.com/x", requestURI: "/api%2F@evil.com/x"},
 		},
 		{
 			name:   "add prepends the prefix",
@@ -536,14 +543,17 @@ func TestEndToEndStripPrefixRedirectStaysRooted(t *testing.T) {
 		t.Fatalf("newServer: %v", err)
 	}
 
+	// The escaped boundary slash means StripPrefix does not fire, so the
+	// path reaches {path} intact and rooted; the "%2F" keeps the authority
+	// glued to new.example.com instead of introducing evil.com.
 	req := httptest.NewRequest("GET", "/api%2F@evil.com/x", nil)
 	rec := runRequest(t, srv.buildRouter(), req)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 	loc := rec.Header().Get("Location")
-	if loc != "https://new.example.com/@evil.com/x" {
-		t.Fatalf("Location: got %q, want %q", loc, "https://new.example.com/@evil.com/x")
+	if loc != "https://new.example.com/api%2F@evil.com/x" {
+		t.Fatalf("Location: got %q, want %q", loc, "https://new.example.com/api%2F@evil.com/x")
 	}
 	u, err := url.Parse(loc)
 	if err != nil {

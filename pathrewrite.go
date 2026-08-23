@@ -46,6 +46,12 @@ func (*stripPrefixMW) statuteMiddleware() {}
 // guarantees the prefix, and a route that admits other paths should see them
 // unchanged rather than mangled.
 //
+// The prefix must be a whole path segment: it matches only on a real slash
+// boundary, so "/api%2Fusers" — a single segment "api/users", with an escaped
+// slash — is not "/api" and passes through. A "%2F" anywhere past the boundary
+// is likewise carried through to the upstream unchanged, so stripping "/api"
+// from "/api/x%2Fy" yields "/x%2Fy", not "/x/y".
+//
 // This is a transform for proxy routes. A static route already strips its own
 // wildcard prefix before serving (Match("/assets/*").Serve(dir) looks up
 // "/assets/x" as "x"), so adding StripPrefix("/assets") on top strips twice
@@ -240,31 +246,36 @@ func compilePathOp(m resolved.Middleware) (pathOp, bool) {
 // does not carry the prefix — the route pattern normally guarantees it, and a
 // path that arrives without it passes through rather than 404s.
 //
-// RawPath is cut literally, the way http.StripPrefix does it, so a "%2F"
-// after the prefix boundary survives the strip. The cut is kept only when
-// what remains is still a rooted path: an escaped slash sitting on the prefix
-// boundary ("/api%2Fusers") would otherwise leave RawPath without a leading
-// "/", so EscapedPath() would emit a relative reference — a wrong upstream
-// target, and on a redirect route a Location whose authority the client
-// controls. When the remainder is not rooted, RawPath is dropped so the
-// canonical escaping of the new Path takes over.
+// The match is made on the escaped path, so the prefix must be a real,
+// slash-bounded path-segment prefix. "/api%2Fusers" is a single segment
+// "api/users", not "/api" + "/users", so it does not match — stripping it
+// would both mis-segment the request and, because the escaped boundary
+// slash would leave the remainder unrooted, hand a redirect route a Location
+// whose authority the client controls. Matching on the escaped form also
+// keeps a "%2F" anywhere past the boundary intact: what remains is carried
+// through verbatim rather than re-derived from the decoded path, so an
+// escaped slash deep in a later segment stays escaped to the upstream.
+//
+// Because normalizePathPrefix rejects a "%" in the prefix, the prefix is its
+// own escaped form, so comparing it against EscapedPath() is exact.
 func stripPathPrefix(u *url.URL, prefix string) {
+	escaped := u.EscapedPath()
 	switch {
-	case u.Path == prefix:
+	case escaped == prefix:
 		u.Path = "/"
-	case strings.HasPrefix(u.Path, prefix+"/"):
+		u.RawPath = ""
+		return
+	case strings.HasPrefix(escaped, prefix+"/"):
+		// The boundary slash is real, so the decoded path carries the same
+		// boundary and the escaped remainder is rooted by construction.
 		u.Path = u.Path[len(prefix):]
+		if rest := escaped[len(prefix):]; rest != u.Path {
+			u.RawPath = rest
+		} else {
+			u.RawPath = ""
+		}
 	default:
-		return
 	}
-	if u.RawPath == "" {
-		return
-	}
-	if rest, ok := strings.CutPrefix(u.RawPath, prefix); ok && strings.HasPrefix(rest, "/") {
-		u.RawPath = rest
-		return
-	}
-	u.RawPath = ""
 }
 
 // addPathPrefix prepends prefix to u's path, escaping it into RawPath as well
