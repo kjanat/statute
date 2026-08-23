@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Configurable downstream TLS protocol policy: `statute.TLSPolicy` is a
+  listener option carrying `MinVersion`, `MaxVersion` (`statute.TLS12` or
+  `statute.TLS13`; there are deliberately no TLS 1.0/1.1 constants and
+  resolve rejects any other value, so the floor cannot be lowered) and
+  `CipherSuites`, a list of ten ECDHE `statute.TLSECDHE*` constants.
+  Suites govern TLS 1.2 handshakes only — crypto/tls accepts no TLS 1.3
+  suite override — so pinning them under `MinVersion: TLS13` is a resolve
+  error rather than a dead setting. So are an unsupported version, an
+  inverted version window, an unknown or repeated suite, a second policy
+  on one listener, a policy on a redirect-only listener, `HTTP3()` under a
+  1.2 cap (QUIC is defined over TLS 1.3), a suite list omitting both
+  AES-128-GCM suites (net/http refuses to serve TLS with such an override
+  whether or not HTTP/2 is enabled, so the listener would bind and never
+  answer a handshake), and an RSA-only suite list under a 1.2 cap on a
+  listener with a pinned HTTP-01/DNS-01 source — the in-tree manager's
+  keys are always ECDSA P-256 and the SNI router never falls back past a
+  matching source, so no static fallback rescues those domains. The same
+  policy over automatic sources is lint rule `TLS004`, a warning rather
+  than an error: autocert picks each leaf's key type from the ClientHello,
+  so only clients without ECDSA support get servable RSA certificates, and
+  an advertised TLS-ALPN-01 challenge certificate (ECDSA P-256) fails
+  validation. The policy is applied where every listener's `tls.Config` is
+  built, so the TCP and QUIC listeners share it, and the resolved schema
+  gains `Listener.TLSPolicy` carrying the normalised form (`"1.2"`/`"1.3"`
+  and IANA suite names in declaration order) for the JSON export.
+- Lint rule `TLS003` (warning): a domain issued by more than one ACME
+  certificate manager — two pinned sources with distinct storage roots or
+  challenge kinds, or a pinned source and an automatic one — orders and
+  renews that domain once per manager, spending Let's Encrypt's
+  duplicate-certificate limit (5 per week) several times over. Two
+  automatic sources are not reported: they feed the one shared autocert
+  manager, whose domain set is the union.
 - SNI-scoped TLS and ACME policies on one listener: `HTTPS(":443", ...)`
   accepts any number of TLS sources — `AutoTLS` (HTTP-01 or DNS-01),
   `StaticTLSFor(host, cert, key)` scoped to one SNI name or wildcard

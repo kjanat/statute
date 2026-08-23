@@ -183,6 +183,7 @@ Before considering a deployment "production":
 - [ ] AutoTLS storage mode `0700`, owned by the statute user. The account key in there can issue arbitrary certs.
 - [ ] Cloudflare API token (DNS-01 mode) in an env var or secrets manager, never in the binary or config.
 - [ ] No secrets in the source. The Go config-as-code model makes this tempting; resist. Use env vars (`os.Getenv`) for tokens and credentials.
+- [ ] Downstream TLS policy reviewed. The floor is TLS 1.2 and nothing lowers it, but `statute.TLSPolicy{MinVersion: statute.TLS13}` raises it where every client is modern; pin `CipherSuites` only when a compliance regime names them, since the list applies to TLS 1.2 alone.
 - [ ] CSP / HSTS / X-Frame-Options on responses where appropriate. statute doesn't set these by default; add a small middleware if your backends don't.
 - [ ] Rate limiting on every public route. The token bucket is per-key; pick `ClientIP` (or `HostHeader` for tenant-isolation patterns) deliberately.
 

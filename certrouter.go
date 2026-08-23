@@ -205,6 +205,7 @@ func certRouterTLSConfig(cr *certRouter, l *resolved.Listener) *tls.Config {
 		GetCertificate: cr.GetCertificate,
 		MinVersion:     tls.VersionTLS12,
 	}
+	applyTLSPolicy(cfg, l.TLSPolicy)
 	protos := []string{alpnHTTP1}
 	if l.EnableHTTP2 {
 		protos = append([]string{alpnHTTP2}, protos...)
@@ -214,4 +215,38 @@ func certRouterTLSConfig(cr *certRouter, l *resolved.Listener) *tls.Config {
 	}
 	cfg.NextProtos = protos
 	return cfg
+}
+
+// applyTLSPolicy overlays the listener's resolved downstream TLS policy on
+// the config built above. Every listener's *tls.Config comes from
+// certRouterTLSConfig — the TCP server and the QUIC server both — so one
+// application here covers both transports. A nil policy leaves the
+// defaults; an unset bound leaves that field alone rather than zeroing it,
+// so an empty MinVersion keeps the TLS 1.2 floor set above.
+func applyTLSPolicy(cfg *tls.Config, p *resolved.TLSPolicy) {
+	if p == nil {
+		return
+	}
+	if v, ok := tlsVersionID(p.MinVersion); ok {
+		cfg.MinVersion = v
+	}
+	if v, ok := tlsVersionID(p.MaxVersion); ok {
+		cfg.MaxVersion = v
+	}
+	if len(p.CipherSuites) == 0 {
+		return
+	}
+	suites := make([]uint16, 0, len(p.CipherSuites))
+	for _, name := range p.CipherSuites {
+		// Resolve only ever writes names from cipherSuiteIDByName's own
+		// table, so an unknown one can only come from a hand-built schema.
+		// It is dropped rather than guessed at; if nothing maps, the empty
+		// non-nil slice reaches crypto/tls, which intersects its supported
+		// set with the list and ends up with no TLS 1.2 suites at all —
+		// failing closed instead of widening back to the full default set.
+		if id, ok := cipherSuiteIDByName[name]; ok {
+			suites = append(suites, id)
+		}
+	}
+	cfg.CipherSuites = suites
 }

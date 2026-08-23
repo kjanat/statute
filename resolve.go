@@ -407,6 +407,9 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 	if err := resolveListenerTLS(l, rl); err != nil {
 		return nil, err
 	}
+	if err := resolveTLSPolicy(l, rl); err != nil {
+		return nil, err
+	}
 	if err := resolveTrustedProxy(l.trustedProxy, rl); err != nil {
 		return nil, err
 	}

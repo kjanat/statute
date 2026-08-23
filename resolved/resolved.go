@@ -59,6 +59,12 @@ type Listener struct {
 	AutoTLSSources   []*AutoTLS
 	StaticTLSSources []*StaticTLS
 
+	// TLSPolicy is the listener's downstream TLS protocol policy, shared by
+	// its TCP and QUIC listeners. Nil means none was declared and the
+	// runtime's defaults apply: minimum TLS 1.2, no upper bound, and Go's
+	// own TLS 1.2 cipher-suite selection.
+	TLSPolicy *TLSPolicy
+
 	// BehindCloudflare indicates the listener is fronted by Cloudflare. The
 	// runtime suppresses TLS-ALPN-01 challenges (HTTP-01 only) and trusts
 	// CF-Connecting-IP / True-Client-IP for client IP attribution.
@@ -70,6 +76,22 @@ type Listener struct {
 	// configured on this listener.
 	TrustedProxies []string
 	ClientIPHeader string
+}
+
+// TLSPolicy is a resolved downstream TLS protocol policy: the version
+// window a listener negotiates and the TLS 1.2 cipher suites it permits.
+type TLSPolicy struct {
+	// MinVersion is the lowest protocol version the listener negotiates,
+	// as "1.2" or "1.3". Empty means unset: the runtime's floor applies.
+	MinVersion string
+	// MaxVersion is the highest protocol version the listener negotiates,
+	// as "1.2" or "1.3". Empty means unset: no upper bound is imposed.
+	MaxVersion string
+	// CipherSuites are the permitted TLS 1.2 cipher suites, by IANA name
+	// (e.g. "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"), in the order they
+	// were declared. Empty means unset: the TLS stack's own selection
+	// applies. TLS 1.3 suites are fixed by the protocol and never listed.
+	CipherSuites []string
 }
 
 // AutoTLS is the resolved ACME configuration.

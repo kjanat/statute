@@ -148,3 +148,212 @@ func TestFinding_StringFormat(t *testing.T) {
 		}
 	}
 }
+
+// acmeLintConfig wraps the given listeners with the pool, route, and
+// defaults a clean Lint run needs, so a TLS003 case only differs in its
+// ACME sources.
+func acmeLintConfig(ls ...*Listener) Config {
+	return Config{
+		Listeners: ls,
+		Upstreams: Upstreams{"a": Pool{Backends: []Backend{{Address: "127.0.0.1:1"}, {Address: "127.0.0.1:2"}}}},
+		Routes:    Routes{Match("/*").ProxyTo("a")},
+		Defaults:  Defaults{ReadHeaderTimeout: "5s"},
+		Shutdown:  Shutdown{GracePeriod: "30s"},
+	}
+}
+
+// TestLint_TLS003DuplicateACMEOrders — a domain issued by two certificate
+// managers is reported once, at the source that introduced the second
+// manager. Two automatic sources share the one autocert manager, so that
+// shape stays silent.
+func TestLint_TLS003DuplicateACMEOrders(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		cfg      Config
+		wantPath string // empty means the rule must not fire
+	}{
+		{
+			// One storage root on both: automatic sources must agree on it
+			// (buildAutocertManager rejects a mismatch at server start), so
+			// this is the shape that actually runs — and it is legal.
+			"two automatic sources share the autocert manager",
+			acmeLintConfig(
+				HTTPS(":443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/a")),
+				HTTPS(":8443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/a")),
+			),
+			"",
+		},
+		{
+			"pinned twice with distinct storage roots",
+			acmeLintConfig(
+				HTTPS(":443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/a").CloudflareDNS01("tok")),
+				HTTPS(":8443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/b").CloudflareDNS01("tok")),
+			),
+			"listeners[1].auto_tls[0]",
+		},
+		{
+			"pinned twice with different challenge kinds under one root",
+			acmeLintConfig(
+				HTTPS(":443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/a").HTTP01()),
+				HTTPS(":8443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/a").CloudflareDNS01("tok")),
+				HTTP(":80"),
+			),
+			"listeners[1].auto_tls[0]",
+		},
+		{
+			"pinned on one source and automatic on another",
+			acmeLintConfig(
+				HTTPS(":443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/a")),
+				HTTPS(":8443", AutoTLS("dup.example").Email("ops@example.com").Storage("/var/lib/b").HTTP01()),
+				HTTP(":80"),
+			),
+			"listeners[1].auto_tls[0]",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := Lint(c.cfg)
+			if err != nil {
+				t.Fatalf("Lint: %v", err)
+			}
+			assertTLS003(t, findings, c.wantPath)
+		})
+	}
+}
+
+// assertTLS003 checks the TLS003 findings in the result: exactly one at
+// wantPath, or none at all when wantPath is empty.
+func assertTLS003(t *testing.T, findings []Finding, wantPath string) {
+	t.Helper()
+	var hits []Finding
+	for _, f := range findings {
+		if f.Code == "TLS003" {
+			hits = append(hits, f)
+		}
+	}
+	if wantPath == "" {
+		if len(hits) != 0 {
+			t.Fatalf("TLS003 must not fire here; got %v", hits)
+		}
+		return
+	}
+	if len(hits) != 1 {
+		t.Fatalf("TLS003: got %d findings, want 1: %v", len(hits), hits)
+	}
+	f := hits[0]
+	if f.Severity != SeverityWarning {
+		t.Errorf("severity: got %q, want %q", f.Severity, SeverityWarning)
+	}
+	if f.Path != wantPath {
+		t.Errorf("path: got %q, want %q", f.Path, wantPath)
+	}
+	if !strings.Contains(f.Message, "dup.example") {
+		t.Errorf("message does not name the domain: %s", f.Message)
+	}
+}
+
+// TestLint_TLS004RSAOnlyAutocert — a TLS 1.2-capped, RSA-only suite policy
+// on a listener with automatic ACME sources is a warning, not a resolve
+// error: autocert issues RSA leaves to clients without ECDSA support, so
+// the listener works for exactly that population. The finding mentions
+// the TLS-ALPN-01 hazard only where the listener advertises acme-tls/1.
+func TestLint_TLS004RSAOnlyAutocert(t *testing.T) {
+	t.Parallel()
+	rsaOnly := TLSPolicy{
+		MaxVersion:   TLS12,
+		CipherSuites: []CipherSuite{TLSECDHERSAWithAES128GCM},
+	}
+	auto := func() *AutoTLSConfig {
+		return AutoTLS("legacy.example").Email("ops@example.com").Storage("/var/lib/a")
+	}
+	cases := []struct {
+		name     string
+		cfg      Config
+		wantPath string // empty means the rule must not fire
+		wantALPN bool   // finding mentions the TLS-ALPN-01 challenge cert
+	}{
+		{
+			"RSA-only cap on an automatic source",
+			acmeLintConfig(HTTPS(":443", auto(), rsaOnly)),
+			"listeners[0].tls_policy",
+			true,
+		},
+		{
+			// Cloudflare's edge terminates acme-tls/1, so the challenge
+			// hazard disappears — the per-client leaf hazard stays.
+			"behind Cloudflare the ALPN clause drops",
+			acmeLintConfig(HTTPS(":443", auto(), rsaOnly, BehindCloudflare())),
+			"listeners[0].tls_policy",
+			false,
+		},
+		{
+			"an ECDSA suite silences the rule",
+			acmeLintConfig(HTTPS(":443", auto(), TLSPolicy{
+				MaxVersion: TLS12,
+				CipherSuites: []CipherSuite{
+					TLSECDHERSAWithAES128GCM,
+					TLSECDHEECDSAWithAES128GCM,
+				},
+			})),
+			"",
+			false,
+		},
+		{
+			"an uncapped policy silences the rule",
+			acmeLintConfig(HTTPS(":443", auto(), TLSPolicy{
+				CipherSuites: []CipherSuite{TLSECDHERSAWithAES128GCM},
+			})),
+			"",
+			false,
+		},
+		{
+			"static sources are not judged",
+			acmeLintConfig(HTTPS(":443", StaticTLS("cert.pem", "key.pem"), rsaOnly)),
+			"",
+			false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := Lint(c.cfg)
+			if err != nil {
+				t.Fatalf("Lint: %v", err)
+			}
+			assertTLS004(t, findings, c.wantPath, c.wantALPN)
+		})
+	}
+}
+
+// assertTLS004 checks the TLS004 findings: exactly one at wantPath whose
+// ALPN mention matches wantALPN, or none at all when wantPath is empty.
+func assertTLS004(t *testing.T, findings []Finding, wantPath string, wantALPN bool) {
+	t.Helper()
+	var hits []Finding
+	for _, f := range findings {
+		if f.Code == "TLS004" {
+			hits = append(hits, f)
+		}
+	}
+	if wantPath == "" {
+		if len(hits) != 0 {
+			t.Fatalf("TLS004 must not fire here; got %v", hits)
+		}
+		return
+	}
+	if len(hits) != 1 {
+		t.Fatalf("TLS004: got %d findings, want 1: %v", len(hits), hits)
+	}
+	f := hits[0]
+	if f.Severity != SeverityWarning {
+		t.Errorf("severity: got %q, want %q", f.Severity, SeverityWarning)
+	}
+	if f.Path != wantPath {
+		t.Errorf("path: got %q, want %q", f.Path, wantPath)
+	}
+	if got := strings.Contains(f.Message, "TLS-ALPN-01"); got != wantALPN {
+		t.Errorf("ALPN mention: got %v, want %v: %s", got, wantALPN, f.Message)
+	}
+}

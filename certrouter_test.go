@@ -345,7 +345,10 @@ func handshake(t *testing.T, serverCfg *tls.Config, sni string) tls.ConnectionSt
 		t.Fatalf("server handshake (SNI %q): %v", sni, err)
 	}
 	state := client.ConnectionState()
-	_ = client.Close()
+	// Close the raw pipe, not the TLS conn: client.Close would write a
+	// close_notify no one reads, and net.Pipe blocks that write until
+	// crypto/tls gives up on its 5-second deadline.
+	_ = cp.Close()
 	return state
 }
 
