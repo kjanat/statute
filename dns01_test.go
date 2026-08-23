@@ -111,27 +111,81 @@ func TestDNS01_GetCertificate_PrefersExactOverWildcard(t *testing.T) {
 	}
 }
 
-// TestDNS01_CertValid covers the freshness logic. A leaf that expires within
-// 30 days is treated as needing renewal.
-func TestDNS01_CertValid(t *testing.T) {
+// TestACMEManager_GetCertificate_IDNAEquivalence pins the canonicalTLSName
+// call inside acmeManager.GetCertificate. Resolve stores every AutoTLS
+// domain in its IDNA A-label form, but a client may send the U-label in
+// the ClientHello, in any case and with a trailing root dot. All three
+// spellings name the same host and must serve the same certificate;
+// ad-hoc lowercasing (what GetCertificate did before) leaves the U-label
+// with nothing to match and fails the handshake with "host not
+// configured".
+func TestACMEManager_GetCertificate_IDNAEquivalence(t *testing.T) {
 	t.Parallel()
-	// nil / empty cert is invalid
-	if certValid(nil) || certValid(&tls.Certificate{}) {
-		t.Fatal("nil/empty cert must be invalid")
+	const aLabel = "xn--mnchen-3ya.example" // münchen.example
+	cert := testCertificate(t, time.Now().Add(90*24*time.Hour))
+	m := &acmeManager{
+		name:    "http01",
+		domains: []string{aLabel},
+		cache:   map[string]*tls.Certificate{aLabel: cert},
 	}
 
-	if !certValid(testCertificate(t, time.Now().Add(90*24*time.Hour))) {
-		t.Errorf("90d-out cert must be valid")
+	for _, sni := range []string{"MÜNCHEN.example.", "münchen.example", aLabel} {
+		got, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: sni})
+		if err != nil {
+			t.Fatalf("GetCertificate(%q): %v", sni, err)
+		}
+		if got != cert {
+			t.Errorf("GetCertificate(%q) did not return the cached certificate", sni)
+		}
 	}
-	if certValid(testCertificate(t, time.Now().Add(7*24*time.Hour))) {
-		t.Errorf("7d-out cert must be invalid (within 30d window)")
-	}
-	if certValid(testCertificate(t, time.Now().Add(-1*time.Hour))) {
-		t.Errorf("expired cert must be invalid")
+	if len(m.cache) != 1 {
+		t.Errorf("cache grew beyond the A-label entry: %v", m.cache)
 	}
 }
 
+// TestDNS01_CertPredicates pins the split between the two questions the
+// manager asks about a certificate. usableCert decides whether it can
+// terminate a handshake — only the leaf's own validity window matters —
+// while needsRenewal decides whether to order a replacement, 30 days
+// early. A cert in that overlap is both usable and due for renewal;
+// collapsing the two would make every handshake in the last 30 days order
+// a duplicate certificate.
+func TestDNS01_CertPredicates(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	cases := []struct {
+		name       string
+		cert       *tls.Certificate
+		usable     bool
+		needsRenew bool
+	}{
+		{"nil", nil, false, true},
+		{"no chain", &tls.Certificate{}, false, true},
+		{"90 days left", testCertificate(t, now.Add(90*24*time.Hour)), true, false},
+		{"7 days left", testCertificate(t, now.Add(7*24*time.Hour)), true, true},
+		{"expired", testCertificate(t, now.Add(-time.Hour)), false, true},
+		{"not yet valid", testCertificateFrom(t, now.Add(24*time.Hour), now.Add(90*24*time.Hour)), false, false},
+	}
+	for _, c := range cases {
+		if got := usableCert(c.cert); got != c.usable {
+			t.Errorf("%s: usableCert = %v, want %v", c.name, got, c.usable)
+		}
+		if got := needsRenewal(c.cert); got != c.needsRenew {
+			t.Errorf("%s: needsRenewal = %v, want %v", c.name, got, c.needsRenew)
+		}
+	}
+}
+
+// testCertificate builds a self-signed leaf already in force, expiring at
+// notAfter. Backdating NotBefore relative to notAfter instead would make
+// every long-lived fixture start in the future, which is not a state a
+// served certificate is ever in.
 func testCertificate(t *testing.T, notAfter time.Time) *tls.Certificate {
+	t.Helper()
+	return testCertificateFrom(t, time.Now().Add(-time.Hour), notAfter)
+}
+
+func testCertificateFrom(t *testing.T, notBefore, notAfter time.Time) *tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -139,7 +193,7 @@ func testCertificate(t *testing.T, notAfter time.Time) *tls.Certificate {
 	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		NotBefore:    notAfter.Add(-24 * time.Hour),
+		NotBefore:    notBefore,
 		NotAfter:     notAfter,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)

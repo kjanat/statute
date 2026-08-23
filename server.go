@@ -289,6 +289,26 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	return handler
 }
 
+// warmACMEManagers eagerly issues missing certificates for one warm-up
+// phase. afterListeners false selects the managers whose CA validation
+// needs no local listener (DNS-01) — they warm synchronously before the
+// listeners open, keeping the first handshake fast. afterListeners true
+// selects the HTTP-01 managers, warmed through warmAsync once the plain
+// HTTP listeners are serving and can answer the CA's token fetch; the
+// manager tracks that goroutine so Shutdown waits for it.
+func (s *server) warmACMEManagers(afterListeners bool) {
+	for _, m := range s.acmeManagers {
+		if m.warmsAfterListeners() != afterListeners {
+			continue
+		}
+		if afterListeners {
+			m.warmAsync()
+		} else {
+			m.warm()
+		}
+	}
+}
+
 // wrapACMEChallenges layers every HTTP-01 challenge responder over next on
 // a plain HTTP listener: the shared autocert manager's handler covers
 // automatic sources, and each pinned HTTP-01 manager serves its own token
@@ -347,6 +367,7 @@ func (s *server) Start() error {
 			return fmt.Errorf("%s manager (%s): %w", m.name, strings.Join(src.Domains, ", "), err)
 		}
 	}
+	s.warmACMEManagers(false)
 	if err := s.startDocker(); err != nil {
 		return err
 	}
@@ -364,6 +385,7 @@ func (s *server) Start() error {
 	for _, h3 := range s.http3Servers {
 		go func() { _ = h3.Serve() }()
 	}
+	s.warmACMEManagers(true)
 	if s.metricsServer != nil {
 		ms := s.metricsServer
 		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", ms.Addr)
@@ -404,6 +426,15 @@ func (s *server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Shutdown.GracePeriod)
 	defer cancel()
 
+	// Stop the ACME managers before the listeners: a warm-up still in
+	// flight must be cancelled while the plain HTTP listener that serves
+	// its HTTP-01 tokens is still accepting, or the CA's token fetch hits a
+	// closed port and the account pays for a failed validation on the way
+	// out. stop also waits for that goroutine, so nothing outlives Shutdown.
+	for _, m := range s.acmeManagers {
+		m.stop()
+	}
+
 	var wg sync.WaitGroup
 	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+1)
 
@@ -424,9 +455,6 @@ func (s *server) Shutdown() error {
 	// shutdown of the metrics server.
 	for _, ph := range s.pools {
 		ph.shutdown()
-	}
-	for _, m := range s.acmeManagers {
-		m.stop()
 	}
 
 	// Flush pending spans last so traces produced during shutdown still ship.

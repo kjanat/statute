@@ -35,7 +35,7 @@ type dns01Solver struct {
 
 func (*dns01Solver) challengeType() string { return "dns-01" }
 
-func (s *dns01Solver) satisfy(ctx context.Context, client *acme.Client, host string, ch *acme.Challenge) error {
+func (s *dns01Solver) satisfy(ctx context.Context, client *acme.Client, host, authzURL string, ch *acme.Challenge) error {
 	value, err := client.DNS01ChallengeRecord(ch.Token)
 	if err != nil {
 		return err
@@ -74,7 +74,10 @@ func (s *dns01Solver) satisfy(ctx context.Context, client *acme.Client, host str
 	if _, err := client.Accept(ctx, ch); err != nil {
 		return fmt.Errorf("accept challenge: %w", err)
 	}
-	if _, err := client.WaitAuthorization(ctx, ch.URI); err != nil {
+	// Poll the authorization, not the challenge: only the authorization
+	// reports its own terminal states (RFC 8555 §7.1.6), and an
+	// acme.AuthorizationError built from it names the identifier.
+	if _, err := client.WaitAuthorization(ctx, authzURL); err != nil {
 		return fmt.Errorf("wait authorization: %w", err)
 	}
 	return nil

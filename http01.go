@@ -37,7 +37,7 @@ func newHTTP01Solver() *http01Solver {
 
 func (*http01Solver) challengeType() string { return "http-01" }
 
-func (s *http01Solver) satisfy(ctx context.Context, client *acme.Client, _ string, ch *acme.Challenge) error {
+func (s *http01Solver) satisfy(ctx context.Context, client *acme.Client, _, authzURL string, ch *acme.Challenge) error {
 	body, err := client.HTTP01ChallengeResponse(ch.Token)
 	if err != nil {
 		return err
@@ -55,7 +55,10 @@ func (s *http01Solver) satisfy(ctx context.Context, client *acme.Client, _ strin
 	if _, err := client.Accept(ctx, ch); err != nil {
 		return fmt.Errorf("accept challenge: %w", err)
 	}
-	if _, err := client.WaitAuthorization(ctx, ch.URI); err != nil {
+	// Poll the authorization, not the challenge: only the authorization
+	// reports its own terminal states (RFC 8555 §7.1.6), and an
+	// acme.AuthorizationError built from it names the identifier.
+	if _, err := client.WaitAuthorization(ctx, authzURL); err != nil {
 		return fmt.Errorf("wait authorization: %w", err)
 	}
 	return nil
