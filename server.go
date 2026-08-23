@@ -462,6 +462,8 @@ func (s *server) buildRouter() http.Handler {
 		case r.StaticDir != "":
 			base = http.FileServer(http.Dir(r.StaticDir))
 			base = stripPrefix(r.Pattern, base)
+		case r.Redirect != nil:
+			base = redirectRouteHandler(r.Redirect)
 		}
 		h := wrapMiddleware(r.Middleware, base)
 		static = append(static, compiledRoute{route: r, handler: h})

@@ -195,9 +195,20 @@ Routes: statute.Routes{
 
 Routes are matched in declaration order; the first match wins. Patterns support exact match (`/api`) and a trailing wildcard (`/api/*`). `Host` scopes a route to a specific Host header value. Catch-all `/*` should be last.
 
-Each route is either a proxy (`ProxyTo("pool")`) or a static-file serve (`Serve("./dir")`), not both.
+Each route declares exactly one action: a proxy (`ProxyTo("pool")`), a static-file serve (`Serve("./dir")`), or a redirect (`RedirectTo(target, status)`).
 
 A wildcard static route strips its own prefix before looking in the directory, so `Match("/static/*").Serve("./public")` maps `/static/css/app.css` to `./public/css/app.css`. An exact static route keeps the whole path, so `Match("/robots.txt").Serve("./public")` serves `./public/robots.txt` — a single declared file rather than the directory root.
+
+A redirect route answers without an upstream:
+
+```go
+statute.Match("/*").Host("old.example.com").RedirectTo(
+    "https://new.example.com{request_uri}",
+    http.StatusPermanentRedirect,
+)
+```
+
+The status must be 301, 302, 303, 307, or 308. The target may be fixed, or preserve parts of the request through placeholders substituted at request time: `{request_uri}` (path and query as sent), `{path}`, `{query}` (raw, without the `?`), and `{host}` (port stripped). The target is validated when the config resolves — unknown placeholders, non-redirect statuses, and header-breaking bytes are startup errors — and substituted values come straight from net/http's request parsing, so placeholder-shaped text arriving in a request stays literal in the `Location` header. This is the route-level counterpart of the listener-level `RedirectTo("https")`, which redirects a whole listener to another scheme.
 
 Middleware:
 

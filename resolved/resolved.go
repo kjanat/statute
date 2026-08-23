@@ -126,9 +126,18 @@ type Transport struct {
 type Route struct {
 	Pattern    string
 	Host       string
-	Upstream   *Pool  // nil for static-file routes
-	StaticDir  string // empty for proxy routes
+	Upstream   *Pool  // nil unless this route proxies
+	StaticDir  string // empty unless this route serves static files
 	Middleware []Middleware
+	Redirect   *Redirect // nil unless this route redirects
+}
+
+// Redirect is a resolved route redirect action: the route answers with
+// Status and a Location built from Target, whose placeholders are
+// substituted from the live request.
+type Redirect struct {
+	Target string
+	Status int
 }
 
 // Middleware identifies a single resolved middleware. The Type discriminator
