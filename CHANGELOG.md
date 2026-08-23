@@ -29,9 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   10 minutes, a non-positive timeout, an explicit interval below 100ms or
   above the timeout (the 5s default clamps down to a shorter timeout), a
   resolver that is not `host:port` with a port in 1–65535, and a resolver
-  repeated in any spelling — addresses are canonicalised (hostname
-  lowercased, decimal port) into the resolved schema — plus `Propagation`
-  on a source without `CloudflareDNS01`. The resolved schema gains
+  repeated in any spelling — addresses are canonicalised (IP literals in
+  canonical text form, hostnames lowercased, decimal ports) into the
+  resolved schema — plus `Propagation` on a source without
+  `CloudflareDNS01`. Rounds probe all pending resolvers concurrently,
+  each probe bounded by one interval, so an unreachable resolver spends
+  its own budget, not everyone's. The resolved schema gains
   `CloudflareDNS01.Propagation` carrying the normalised policy for the
   JSON export.
 - Configurable downstream TLS protocol policy: `statute.TLSPolicy` is a

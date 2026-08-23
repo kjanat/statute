@@ -722,11 +722,13 @@ func resolveDNSPropagationResolvers(list []string) ([]string, error) {
 }
 
 // canonicalDNSResolverAddr validates one resolver address and returns its
-// canonical "host:port" spelling: the hostname lowercased (DNS names are
-// case-insensitive), the port in plain decimal, an IPv6 host bracketed.
-// The canonical form is what the resolved schema stores and what the
-// runtime dials. The port is mandatory: net.Dial has no default for DNS,
-// so a bare address would fail at issuance time instead of here.
+// canonical "host:port" spelling: an IP literal in its canonical text
+// form (so "[2001:0db8::0:1]:53" and "[2001:db8::1]:53" are one
+// resolver), a hostname lowercased (DNS names are case-insensitive), the
+// port in plain decimal, an IPv6 host bracketed. The canonical form is
+// what the resolved schema stores and what the runtime dials. The port is
+// mandatory: net.Dial has no default for DNS, so a bare address would
+// fail at issuance time instead of here.
 func canonicalDNSResolverAddr(addr string) (string, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -735,11 +737,16 @@ func canonicalDNSResolverAddr(addr string) (string, error) {
 	if host == "" || host != strings.TrimSpace(host) || strings.ContainsAny(host, " \t") {
 		return "", fmt.Errorf("dns_propagation: resolver %q has no usable host", addr)
 	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.String()
+	} else {
+		host = strings.ToLower(host)
+	}
 	n, ok := dnsResolverPort(port)
 	if !ok {
 		return "", fmt.Errorf("dns_propagation: resolver %q has port %q; want a number from 1 to 65535", addr, port)
 	}
-	return net.JoinHostPort(strings.ToLower(host), strconv.Itoa(n)), nil
+	return net.JoinHostPort(host, strconv.Itoa(n)), nil
 }
 
 // dnsResolverPort parses a decimal port. Digits only: strconv.Atoi would

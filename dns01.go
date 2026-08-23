@@ -8,6 +8,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/acme"
@@ -177,21 +178,30 @@ func (s *dns01Solver) pollResolvers(ctx context.Context, recordName, value strin
 	}
 }
 
-// stillPending queries each resolver that has not yet served value once,
-// and returns those that still have not.
+// stillPending probes every resolver that has not yet served value and
+// returns those that still have not, in their original order. The probes
+// run concurrently, each on its own Interval-bounded context. Concurrency
+// is the invariant here, not an optimisation: probed one after another
+// out of the round's shared budget, a black-holed resolver would spend
+// everyone's window and the resolvers listed after it would only ever be
+// handed an expired context — which resolver answers would depend on
+// declaration order.
 func (s *dns01Solver) stillPending(ctx context.Context, pending []string, recordName, value string) []string {
+	served := make([]bool, len(pending))
+	var wg sync.WaitGroup
+	for i, r := range pending {
+		wg.Go(func() {
+			lctx, cancel := context.WithTimeout(ctx, s.prop.Interval)
+			defer cancel()
+			served[i] = s.resolverServes(lctx, r, recordName, value)
+		})
+	}
+	wg.Wait()
 	remaining := make([]string, 0, len(pending))
-	for _, r := range pending {
-		// One probe gets one interval: a black-holed resolver otherwise
-		// spends the whole polling window on Go-resolver retries and
-		// starves the others of rounds.
-		lctx, cancel := context.WithTimeout(ctx, s.prop.Interval)
-		ok := s.resolverServes(lctx, r, recordName, value)
-		cancel()
-		if ok {
-			continue
+	for i, r := range pending {
+		if !served[i] {
+			remaining = append(remaining, r)
 		}
-		remaining = append(remaining, r)
 	}
 	return remaining
 }

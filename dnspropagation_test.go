@@ -206,6 +206,13 @@ func TestResolveDNSPropagation_Errors(t *testing.T) {
 			DNSPropagation{Resolvers: []string{"NS.example:53", "ns.example:053"}},
 			`resolver "ns.example:053" is listed twice (canonical form ns.example:53)`,
 		},
+		{
+			// IP literals canonicalise too: an expanded IPv6 address and
+			// its compressed form are one resolver.
+			"resolver listed twice in another IPv6 spelling",
+			DNSPropagation{Resolvers: []string{"[2001:db8::1]:53", "[2001:0db8:0:0:0:0:0:1]:53"}},
+			`is listed twice (canonical form [2001:db8::1]:53)`,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -576,7 +583,7 @@ func TestDNS01_AwaitPropagation_NoPolicyUsesTheFixedDelay(t *testing.T) {
 func TestResolveDNSPropagation_CanonicalisesResolvers(t *testing.T) {
 	t.Parallel()
 	got := resolvePropagation(t, &DNSPropagation{
-		Resolvers: []string{"NS.EXAMPLE.test:0053", "[2001:DB8::1]:53"},
+		Resolvers: []string{"NS.EXAMPLE.test:0053", "[2001:0db8:0:0:0:0:0:1]:53"},
 	})
 	want := []string{"ns.example.test:53", "[2001:db8::1]:53"}
 	if !slices.Equal(got.Resolvers, want) {
@@ -660,6 +667,49 @@ func TestDNS01_AwaitPropagation_FirstRoundIsImmediate(t *testing.T) {
 	defer cancel()
 	if err := s.awaitPropagation(ctx, propRecord, propValue); err != nil {
 		t.Fatalf("awaitPropagation: %v — the first round must not wait an interval", err)
+	}
+}
+
+// TestDNS01_AwaitPropagation_BlackholeDoesNotStarveOthers — a resolver
+// that consumes its whole probe budget, listed first, with Timeout equal
+// to Interval: probed sequentially it would spend the entire polling
+// window and the healthy resolver after it would only ever see an expired
+// context, so the deadline error would blame both and swap with
+// declaration order. Rounds probe concurrently, so the healthy resolver
+// is satisfied in the first round and the error names only the black
+// hole.
+func TestDNS01_AwaitPropagation_BlackholeDoesNotStarveOthers(t *testing.T) {
+	t.Parallel()
+	const window = 150 * time.Millisecond
+	s := &dns01Solver{
+		prop: &resolved.DNSPropagation{
+			Timeout:   window,
+			Interval:  window,
+			Resolvers: []string{"blackhole:53", "healthy:53"},
+		},
+		lookupTXT: func(ctx context.Context, resolver, _ string) ([]string, error) {
+			switch resolver {
+			case "blackhole:53":
+				<-ctx.Done()
+				return nil, ctx.Err()
+			case "healthy:53":
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				return []string{propValue}, nil
+			}
+			panic("unexpected resolver " + resolver)
+		},
+	}
+	err := s.awaitPropagation(context.Background(), propRecord, propValue)
+	if err == nil {
+		t.Fatal("want a deadline error naming the black hole")
+	}
+	if !strings.Contains(err.Error(), "blackhole:53") {
+		t.Errorf("error %q does not name the black hole", err)
+	}
+	if strings.Contains(err.Error(), "healthy:53") {
+		t.Errorf("error %q blames the healthy resolver; it served the value and its probe must not wait behind the black hole's", err)
 	}
 }
 

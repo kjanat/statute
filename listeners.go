@@ -188,21 +188,24 @@ type DNSPropagation struct {
 	// of Delay. Empty defaults to "2m". Must be positive and at most 10m.
 	// Only meaningful with Resolvers.
 	Timeout string
-	// Interval is the cadence between polling rounds, and the budget one
-	// probe of one resolver gets before the loop moves on. Empty defaults
-	// to "5s", clamped down to Timeout when Timeout is shorter. An
-	// explicit value must be at least 100ms and at most Timeout. The
-	// first round runs immediately after Delay, not one interval later.
-	// Only meaningful with Resolvers.
+	// Interval is the cadence between polling rounds, and the budget each
+	// resolver's probe gets within a round. A round probes every
+	// still-pending resolver concurrently, so one unreachable resolver
+	// spends its own probe budget, never another's. Empty defaults to
+	// "5s", clamped down to Timeout when Timeout is shorter. An explicit
+	// value must be at least 100ms and at most Timeout. The first round
+	// runs immediately after Delay, not one interval later. Only
+	// meaningful with Resolvers.
 	Interval string
 	// Resolvers are the DNS servers to verify against, each as "host:port"
 	// (the port is explicit: "192.0.2.53:53", not "192.0.2.53"; an IPv6
 	// host is bracketed: "[2001:db8::1]:53"). A host may be an IP or a
 	// name. Every listed resolver must serve the expected TXT value before
 	// validation is requested. The resolved schema keeps declaration order
-	// but stores each address canonically — hostname lowercased, port in
-	// plain decimal — and one server listed twice in any spelling is a
-	// resolve error. Empty means no verification: only Delay applies.
+	// but stores each address canonically — IP literals in canonical text
+	// form, hostnames lowercased, ports in plain decimal — and one server
+	// listed twice in any spelling is a resolve error. Empty means no
+	// verification: only Delay applies.
 	Resolvers []string
 }
 
