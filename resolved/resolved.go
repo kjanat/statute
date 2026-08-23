@@ -49,6 +49,16 @@ type Listener struct {
 	EnableHTTP2 bool
 	HTTP3Addr   string // empty unless HTTP/3 is enabled
 
+	// AutoTLSSources and StaticTLSSources hold every TLS source declared on
+	// the listener, in declaration order. A listener may mix ACME challenge
+	// policies and static material on one port; the runtime picks a source
+	// per handshake by SNI hostname — exact name first, then wildcard
+	// pattern, then the hostless static fallback. AutoTLS and StaticTLS
+	// above mirror the first source of each kind so single-source tooling
+	// keeps working; multi-source aware tooling should read the slices.
+	AutoTLSSources   []*AutoTLS
+	StaticTLSSources []*StaticTLS
+
 	// BehindCloudflare indicates the listener is fronted by Cloudflare. The
 	// runtime suppresses TLS-ALPN-01 challenges (HTTP-01 only) and trusts
 	// CF-Connecting-IP / True-Client-IP for client IP attribution.
@@ -81,6 +91,12 @@ type CloudflareDNS01 struct {
 type StaticTLS struct {
 	CertFile string
 	KeyFile  string
+
+	// Host scopes the certificate to one SNI name — an exact hostname or a
+	// wildcard pattern like "*.bar.example" covering exactly one extra
+	// label. Empty means the source is the listener's fallback: it serves
+	// names no other source covers, and clients that send no SNI at all.
+	Host string
 }
 
 // Pool is a resolved upstream pool.

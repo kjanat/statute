@@ -6,8 +6,8 @@ type Listener struct {
 	scheme   string // "http" or "https"
 	redirect string // non-empty means this listener redirects to the named scheme
 
-	autoTLS      *AutoTLSConfig
-	staticTLS    *StaticTLSConfig
+	autoTLS      []*AutoTLSConfig
+	staticTLS    []*StaticTLSConfig
 	enableHTTP2  bool
 	http3Addr    string
 	behindCF     bool
@@ -21,6 +21,19 @@ func HTTP(addr string) *Listener {
 
 // HTTPS starts an HTTPS listener declaration on the given address. Options
 // configure TLS material, HTTP/2, and HTTP/3.
+//
+// A listener accepts any number of TLS sources — AutoTLS, StaticTLS, and
+// StaticTLSFor may be mixed freely — and selects one per handshake by SNI
+// hostname: an exact name wins over a wildcard pattern, and a hostless
+// StaticTLS acts as the fallback for names no source covers. Mixed
+// public/direct names, DNS-01 wildcards, and externally provisioned
+// certificates can therefore share one port:
+//
+//	statute.HTTPS(":443",
+//	    statute.AutoTLS("foo.example.com").HTTP01(),
+//	    statute.AutoTLS("*.bar.example").CloudflareDNS01(token),
+//	    statute.StaticTLSFor("baz.example.net", certFile, keyFile),
+//	)
 func HTTPS(addr string, opts ...ListenerOption) *Listener {
 	l := &Listener{addr: addr, scheme: schemeHTTPS}
 	for _, o := range opts {
@@ -41,12 +54,14 @@ type ListenerOption interface {
 	applyListener(l *Listener)
 }
 
-// AutoTLSConfig declares ACME-managed TLS material.
+// AutoTLSConfig declares ACME-managed TLS material. A listener may carry
+// several — each is one certificate source scoped to its domains.
 type AutoTLSConfig struct {
-	Domains []string
-	email   string
-	storage string
-	dns01   *cloudflareDNS01Config
+	Domains        []string
+	email          string
+	storage        string
+	dns01          *cloudflareDNS01Config
+	explicitHTTP01 bool
 }
 
 // AutoTLS configures ACME auto-provisioning for the given domains.
@@ -97,7 +112,17 @@ func (a *AutoTLSConfig) Zone(id string) *AutoTLSConfig {
 	return a
 }
 
-func (a *AutoTLSConfig) applyListener(l *Listener) { l.autoTLS = a }
+// HTTP01 pins this source to the HTTP-01 challenge. HTTP-01 is already the
+// default when CloudflareDNS01 is not called, so the method changes nothing
+// at runtime; it makes the challenge policy explicit where a listener mixes
+// sources. Calling both HTTP01 and CloudflareDNS01 on one source is a
+// resolve error rather than a silent precedence choice.
+func (a *AutoTLSConfig) HTTP01() *AutoTLSConfig {
+	a.explicitHTTP01 = true
+	return a
+}
+
+func (a *AutoTLSConfig) applyListener(l *Listener) { l.autoTLS = append(l.autoTLS, a) }
 
 // cloudflareDNS01Config carries the resolved-stage data for DNS-01.
 type cloudflareDNS01Config struct {
@@ -105,18 +130,37 @@ type cloudflareDNS01Config struct {
 	zoneID   string
 }
 
-// StaticTLSConfig declares pre-provisioned TLS material.
+// StaticTLSConfig declares pre-provisioned TLS material. A listener may
+// carry several; Host scopes each to one SNI name.
 type StaticTLSConfig struct {
 	CertFile string
 	KeyFile  string
+
+	// Host scopes the certificate to one SNI name — an exact hostname or a
+	// wildcard pattern like "*.bar.example". Empty makes the source the
+	// listener's fallback for unmatched names and SNI-less clients; at most
+	// one hostless source may exist per listener.
+	Host string
+
+	hostSet bool
 }
 
-// StaticTLS configures TLS using a static certificate and key on disk.
+// StaticTLS configures TLS using a static certificate and key on disk. The
+// source carries no hostname: alone on a listener it serves everything, and
+// alongside other sources it is the fallback for names none of them cover.
 func StaticTLS(certFile, keyFile string) *StaticTLSConfig {
 	return &StaticTLSConfig{CertFile: certFile, KeyFile: keyFile}
 }
 
-func (s *StaticTLSConfig) applyListener(l *Listener) { l.staticTLS = s }
+// StaticTLSFor configures a static certificate served only for the given
+// SNI hostname — an exact name or a wildcard pattern like "*.bar.example"
+// covering exactly one extra label. An empty host is a resolve error; use
+// StaticTLS for the hostless fallback.
+func StaticTLSFor(host, certFile, keyFile string) *StaticTLSConfig {
+	return &StaticTLSConfig{Host: host, CertFile: certFile, KeyFile: keyFile, hostSet: true}
+}
+
+func (s *StaticTLSConfig) applyListener(l *Listener) { l.staticTLS = append(l.staticTLS, s) }
 
 type http2Option struct{}
 

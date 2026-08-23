@@ -43,7 +43,8 @@ type server struct {
 	stats *stats
 
 	autocertMgr     *autocert.Manager
-	dns01Managers   map[string]*dns01Manager // keyed by listener address
+	dns01Managers   map[*resolved.AutoTLS]*dns01Manager // keyed by resolved source
+	certRouters     map[string]*certRouter              // keyed by listener address
 	tracingShutdown func(context.Context) error
 
 	mu      sync.Mutex
@@ -99,19 +100,22 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	return s, nil
 }
 
-// initDNS01Managers builds a dns01Manager for every listener configured
-// with Cloudflare DNS-01, keyed by listener address.
+// initDNS01Managers builds a dns01Manager for every DNS-01 AutoTLS source,
+// keyed by the resolved source so each listener's cert router can find the
+// manager for exactly the source it is dispatching to.
 func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
-	s.dns01Managers = make(map[string]*dns01Manager)
+	s.dns01Managers = make(map[*resolved.AutoTLS]*dns01Manager)
 	for _, l := range listeners {
-		if l.AutoTLS == nil || l.AutoTLS.DNS01 == nil {
-			continue
+		for _, a := range l.AutoTLSSources {
+			if a.DNS01 == nil {
+				continue
+			}
+			dm, err := newDNS01Manager(a)
+			if err != nil {
+				return fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
+			}
+			s.dns01Managers[a] = dm
 		}
-		dm, err := newDNS01Manager(l.AutoTLS)
-		if err != nil {
-			return fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
-		}
-		s.dns01Managers[l.Addr] = dm
 	}
 	return nil
 }
@@ -276,27 +280,20 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	return handler
 }
 
-// applyListenerTLS selects the TLS source for an HTTPS content listener and
-// installs it on hs. StaticTLS is intentionally a no-op here: its cert/key
-// paths are passed to ServeTLS at start time instead.
+// applyListenerTLS installs the listener's TLS material on hs: a cert
+// router over every declared source, dispatching per handshake by SNI. The
+// router is also stored by address so the listener's HTTP/3 server reuses
+// it instead of loading static key pairs a second time.
 func (s *server) applyListenerTLS(hs *http.Server, l *resolved.Listener) error {
-	switch {
-	case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
-		dm := s.dns01Managers[l.Addr]
-		if dm == nil {
-			return errors.New("auto_tls: dns01 manager not initialised")
-		}
-		hs.TLSConfig = dns01TLSConfig(dm, l.EnableHTTP2)
-	case l.AutoTLS != nil:
-		if s.autocertMgr == nil {
-			return errors.New("auto_tls: manager not initialised")
-		}
-		hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2, l.BehindCloudflare)
-	case l.StaticTLS != nil:
-		// TLS config left to ServeTLS; cert/key paths are passed at start.
-	default:
-		return errors.New("https listener has no TLS material")
+	cr, err := s.buildCertRouter(l)
+	if err != nil {
+		return err
 	}
+	if s.certRouters == nil {
+		s.certRouters = make(map[string]*certRouter)
+	}
+	s.certRouters[l.Addr] = cr
+	hs.TLSConfig = certRouterTLSConfig(cr, l)
 	return nil
 }
 
@@ -322,9 +319,9 @@ func (s *server) Start() error {
 	if s.started {
 		return errors.New("already started")
 	}
-	for addr, dm := range s.dns01Managers {
+	for src, dm := range s.dns01Managers {
 		if err := dm.start(); err != nil {
-			return fmt.Errorf("dns01 manager %s: %w", addr, err)
+			return fmt.Errorf("dns01 manager (%s): %w", strings.Join(src.Domains, ", "), err)
 		}
 	}
 	if err := s.startDocker(); err != nil {
@@ -357,19 +354,14 @@ func (s *server) Start() error {
 }
 
 // serveListener runs hs on ln, picking ServeTLS vs Serve based on the
-// resolved listener's TLS material. For AutoTLS the cert source lives on
-// hs.TLSConfig (autocert.Manager.GetCertificate or the dns01Manager
-// equivalent), so ServeTLS is called with empty paths.
+// listener's scheme. Certificate material always flows through the cert
+// router installed on hs.TLSConfig, so ServeTLS never receives file paths.
 func serveListener(hs *http.Server, l *resolved.Listener, ln net.Listener) {
-	isContentHTTPS := l != nil && l.Scheme == schemeHTTPS && l.Redirect == ""
-	switch {
-	case isContentHTTPS && l.StaticTLS != nil:
-		_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
-	case isContentHTTPS && l.AutoTLS != nil:
+	if l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" {
 		_ = hs.ServeTLS(ln, "", "")
-	default:
-		_ = hs.Serve(ln)
+		return
 	}
+	_ = hs.Serve(ln)
 }
 
 // goShutdown runs fn(ctx) in a WaitGroup-tracked goroutine, forwarding any

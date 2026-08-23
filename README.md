@@ -323,6 +323,21 @@ AutoTLS persistence is **mandatory**. The `Storage` directory holds the ACME acc
 
 The DNS-01 path is implemented in-tree using `golang.org/x/crypto/acme` directly + a tiny Cloudflare DNS API client. It does not pull in lego or certmagic. It supports wildcards and works without a publicly-reachable port 80. See [docs/cloudflare.md](docs/cloudflare.md) for setup details.
 
+**SNI-scoped sources.** One listener takes any number of TLS sources, mixed freely, and picks one per handshake by SNI hostname — an exact name wins over a wildcard pattern (which covers exactly one extra label), and a hostless `StaticTLS` is the fallback for unmatched names and clients that send no SNI. Mixed public/direct names, DNS-01 wildcards, and externally provisioned certificates can therefore share port 443:
+
+```go
+statute.HTTPS(":443",
+    statute.AutoTLS("foo.example.com").HTTP01().
+        Email("ops@example.com").Storage("/var/lib/statute/certs"),
+    statute.AutoTLS("*.bar.example").CloudflareDNS01(token).
+        Email("ops@example.com").Storage("/var/lib/statute/certs"),
+    statute.StaticTLSFor("baz.example.net", certFile, keyFile),
+    statute.StaticTLS(defaultCert, defaultKey), // fallback for everything else
+)
+```
+
+`HTTP01()` makes the default challenge explicit where sources mix; calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources or a second hostless fallback.
+
 ### HTTP/3
 
 ```go

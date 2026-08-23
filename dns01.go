@@ -394,23 +394,6 @@ func (m *dns01Manager) persistCert(host string, chain [][]byte, key *ecdsa.Priva
 	return writeECPrivateKey(filepath.Join(m.storage, host+".key"), key)
 }
 
-// dns01TLSConfig returns a *tls.Config that pulls certificates from the
-// given DNS-01 manager. ALPN includes h2 when HTTP/2 is enabled. Unlike
-// autocert, no "acme-tls/1" entry is needed because DNS-01 does not use
-// ALPN at all.
-func dns01TLSConfig(m *dns01Manager, http2 bool) *tls.Config {
-	cfg := &tls.Config{
-		GetCertificate: m.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
-	}
-	if http2 {
-		cfg.NextProtos = []string{alpnHTTP2, alpnHTTP1}
-	} else {
-		cfg.NextProtos = []string{alpnHTTP1}
-	}
-	return cfg
-}
-
 func parseECPrivateKey(data []byte) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {

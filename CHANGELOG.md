@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- SNI-scoped TLS and ACME policies on one listener: `HTTPS(":443", ...)`
+  accepts any number of TLS sources — `AutoTLS` (HTTP-01 or DNS-01),
+  `StaticTLSFor(host, cert, key)` scoped to one SNI name or wildcard
+  pattern, and hostless `StaticTLS` as the fallback — and a per-listener
+  certificate router picks one per handshake by SNI: exact name first,
+  then wildcard (covering exactly one extra label), then the fallback.
+  `AutoTLS(...).HTTP01()` makes the default challenge explicit; combining
+  it with `CloudflareDNS01` on one source, claiming one name from two
+  sources, or declaring a second hostless fallback is a resolve error, and
+  HTTP-01 sources reject wildcard domains outright. HTTP/3 shares the
+  router, static key pairs load at server construction, and the resolved
+  schema gains `Listener.AutoTLSSources`/`StaticTLSSources` (declaration
+  order; the singular fields mirror the first source of each kind) and
+  `StaticTLS.Host`.
 - Client-IP route matching: `Match(...).ClientIPs("10.0.0.0/8", ...)` makes
   client CIDRs part of route selection. A request from outside the ranges
   falls through to the next route — where `AllowIPs` middleware would

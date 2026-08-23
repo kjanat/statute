@@ -174,25 +174,6 @@ func TestDNS01_ECPrivateKeyRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDNS01_TLSConfig_NextProtos(t *testing.T) {
-	t.Parallel()
-	mgr := &dns01Manager{} // GetCertificate not invoked here
-	c1 := dns01TLSConfig(mgr, true)
-	if !slices.Equal(c1.NextProtos, []string{"h2", "http/1.1"}) {
-		t.Errorf("HTTP/2 protos: %v", c1.NextProtos)
-	}
-	c2 := dns01TLSConfig(mgr, false)
-	if !slices.Equal(c2.NextProtos, []string{"http/1.1"}) {
-		t.Errorf("HTTP/1.1 protos: %v", c2.NextProtos)
-	}
-	// DNS-01 does not need acme-tls/1, ever.
-	for _, p := range c1.NextProtos {
-		if p == "acme-tls/1" {
-			t.Errorf("DNS-01 TLS config must not advertise acme-tls/1")
-		}
-	}
-}
-
 func TestDNS01_NewManager_ValidatesConfig(t *testing.T) {
 	t.Parallel()
 	_, err := newDNS01Manager(nil)

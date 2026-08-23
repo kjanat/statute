@@ -293,22 +293,8 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		HTTP3Addr:        l.http3Addr,
 		BehindCloudflare: l.behindCF,
 	}
-	if err := validateListenerTLSPresence(l); err != nil {
+	if err := resolveListenerTLS(l, rl); err != nil {
 		return nil, err
-	}
-	if l.autoTLS != nil {
-		at, err := resolveAutoTLS(l.autoTLS)
-		if err != nil {
-			return nil, err
-		}
-		rl.AutoTLS = at
-	}
-	if l.staticTLS != nil {
-		st, err := resolveStaticTLS(l.staticTLS)
-		if err != nil {
-			return nil, err
-		}
-		rl.StaticTLS = st
 	}
 	if err := resolveTrustedProxy(l.trustedProxy, rl); err != nil {
 		return nil, err
@@ -346,8 +332,79 @@ func resolveTrustedProxy(t *TrustedProxyConfig, rl *resolved.Listener) error {
 // validateListenerTLSPresence rejects an HTTPS content listener that carries
 // no TLS material. Redirect-only listeners and plain HTTP need none.
 func validateListenerTLSPresence(l *Listener) error {
-	if l.scheme == schemeHTTPS && l.redirect == "" && l.autoTLS == nil && l.staticTLS == nil {
+	if l.scheme == schemeHTTPS && l.redirect == "" && len(l.autoTLS) == 0 && len(l.staticTLS) == 0 {
 		return errors.New("https listener requires AutoTLS or StaticTLS")
+	}
+	return nil
+}
+
+// resolveListenerTLS lowers every TLS source declared on the listener into
+// the resolved source slices, validates the combination, and mirrors the
+// first source of each kind into the legacy singular fields.
+func resolveListenerTLS(l *Listener, rl *resolved.Listener) error {
+	if err := validateListenerTLSPresence(l); err != nil {
+		return err
+	}
+	for _, a := range l.autoTLS {
+		at, err := resolveAutoTLS(a)
+		if err != nil {
+			return err
+		}
+		rl.AutoTLSSources = append(rl.AutoTLSSources, at)
+	}
+	for _, s := range l.staticTLS {
+		st, err := resolveStaticTLS(s)
+		if err != nil {
+			return err
+		}
+		rl.StaticTLSSources = append(rl.StaticTLSSources, st)
+	}
+	if err := validateTLSSourceCoverage(rl); err != nil {
+		return err
+	}
+	if len(rl.AutoTLSSources) > 0 {
+		rl.AutoTLS = rl.AutoTLSSources[0]
+	}
+	if len(rl.StaticTLSSources) > 0 {
+		rl.StaticTLS = rl.StaticTLSSources[0]
+	}
+	return nil
+}
+
+// validateTLSSourceCoverage rejects ambiguous SNI coverage on one listener:
+// a name (exact or wildcard pattern) claimed by two sources would make the
+// handshake-time choice arbitrary, and a second hostless static fallback
+// could never be selected. An exact name overlapping a wildcard from
+// another source is fine — the exact name wins at handshake time.
+func validateTLSSourceCoverage(rl *resolved.Listener) error {
+	claimed := make(map[string]string)
+	claim := func(name, source string) error {
+		key := strings.ToLower(name)
+		if prev, ok := claimed[key]; ok {
+			return fmt.Errorf("tls: %s and %s both claim %q; each SNI name may have one source per listener", prev, source, name)
+		}
+		claimed[key] = source
+		return nil
+	}
+	for i, a := range rl.AutoTLSSources {
+		for _, d := range a.Domains {
+			if err := claim(d, fmt.Sprintf("auto_tls[%d]", i)); err != nil {
+				return err
+			}
+		}
+	}
+	fallbackSeen := false
+	for i, st := range rl.StaticTLSSources {
+		if st.Host == "" {
+			if fallbackSeen {
+				return errors.New("static_tls: only one hostless fallback source per listener; scope the others with StaticTLSFor")
+			}
+			fallbackSeen = true
+			continue
+		}
+		if err := claim(st.Host, fmt.Sprintf("static_tls[%d]", i)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -363,6 +420,9 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	}
 	if a.storage == "" {
 		return nil, errors.New("auto_tls: storage path required for cert persistence")
+	}
+	if err := validateAutoTLSChallenge(a); err != nil {
+		return nil, err
 	}
 	at := &resolved.AutoTLS{
 		Domains: append([]string(nil), a.Domains...),
@@ -381,15 +441,39 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	return at, nil
 }
 
+// validateAutoTLSChallenge rejects contradictory or unsatisfiable challenge
+// policy on one ACME source: HTTP01 and CloudflareDNS01 cannot both be
+// declared, and a wildcard domain can only be issued over DNS-01.
+func validateAutoTLSChallenge(a *AutoTLSConfig) error {
+	if a.explicitHTTP01 && a.dns01 != nil {
+		return errors.New("auto_tls: HTTP01 and CloudflareDNS01 are mutually exclusive on one source")
+	}
+	if a.dns01 == nil {
+		for _, d := range a.Domains {
+			if strings.HasPrefix(d, "*.") {
+				return fmt.Errorf("auto_tls: wildcard domain %q requires CloudflareDNS01; HTTP-01 cannot issue wildcard certificates", d)
+			}
+		}
+	}
+	return nil
+}
+
 // resolveStaticTLS validates that both cert and key paths are set and
-// produces the resolved StaticTLS form.
+// produces the resolved StaticTLS form. The SNI host is canonicalised to
+// lower case; a StaticTLSFor call whose host is empty is rejected rather
+// than silently becoming the fallback source.
 func resolveStaticTLS(s *StaticTLSConfig) (*resolved.StaticTLS, error) {
 	if s.CertFile == "" || s.KeyFile == "" {
 		return nil, errors.New("static_tls: cert_file and key_file required")
 	}
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s.Host), "."))
+	if s.hostSet && host == "" {
+		return nil, errors.New("static_tls: host required; use StaticTLS for the hostless fallback")
+	}
 	return &resolved.StaticTLS{
 		CertFile: s.CertFile,
 		KeyFile:  s.KeyFile,
+		Host:     host,
 	}, nil
 }
 

@@ -205,9 +205,10 @@ func TestTrustedProxyGovernsAlone(t *testing.T) {
 	}
 }
 
-// writeSelfSignedCert writes a self-signed certificate and key pair into
-// dir, for listeners that need loadable static TLS material.
-func writeSelfSignedCert(t *testing.T) (certFile, keyFile string) {
+// writeSelfSignedCert writes a self-signed certificate and key pair for
+// the given SNI hosts into a temp dir, for listeners that need loadable
+// static TLS material.
+func writeSelfSignedCert(t *testing.T, hosts ...string) (certFile, keyFile string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -217,7 +218,7 @@ func writeSelfSignedCert(t *testing.T) (certFile, keyFile string) {
 		SerialNumber: big.NewInt(1),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
-		DNSNames:     []string{"x.example"},
+		DNSNames:     hosts,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
@@ -261,7 +262,7 @@ func assertTrustedProxyEnforced(t *testing.T, h http.Handler) {
 // for HTTP/3 clients only.
 func TestTrustedProxyListenerWiring(t *testing.T) {
 	t.Parallel()
-	certFile, keyFile := writeSelfSignedCert(t)
+	certFile, keyFile := writeSelfSignedCert(t, "x.example")
 	staticDir := t.TempDir()
 	writeFile(t, staticDir, "index.html", "ok")
 	r := mustResolve(t, Config{
