@@ -209,3 +209,15 @@ func TestLint_TLS002OnInsecureUpstream(t *testing.T) {
 		}
 	}
 }
+
+// TestNewServerRejectsBadRootCA — a pool whose CA file cannot be read fails
+// server construction with the file named, so a broken trust configuration
+// is a startup error rather than a silent fallback to the system roots.
+func TestNewServerRejectsBadRootCA(t *testing.T) {
+	t.Parallel()
+	cfg := tlsPoolConfig("https://127.0.0.1:1", Transport{RootCAFiles: []string{"/nonexistent/ca.pem"}})
+	_, err := newServer(mustResolve(t, cfg))
+	if err == nil || !strings.Contains(err.Error(), "/nonexistent/ca.pem") {
+		t.Errorf("got %v, want a construction error naming the CA file", err)
+	}
+}
