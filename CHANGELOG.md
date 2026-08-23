@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   declaration order and appear in the resolved and exported schema as
   `HeaderName` / `HeaderValue`. Names are canonicalised and values validated
   at resolve time, rejecting header injection and the request names Go carries
-  outside the header map (`Host`, `Content-Length`, `Transfer-Encoding`).
+  outside the header map (`Host`, `Content-Length`, `Transfer-Encoding`, `Trailer`).
   Operations apply once per request at the route's edges, so a `Retry` cannot
   repeat them per attempt; response mutations are applied when the final
   response header is committed — not on a 1xx preview — through a wrapper that

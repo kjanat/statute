@@ -2,9 +2,11 @@ package statute
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,6 +85,7 @@ func TestResolveHeaderMWErrors(t *testing.T) {
 		{"remove request host", RemoveRequestHeader("HOST"), `"Host" cannot be rewritten on a request`},
 		{"set request content-length", SetRequestHeader("content-length", "0"), `"Content-Length" cannot be rewritten on a request`},
 		{"remove request transfer-encoding", RemoveRequestHeader("Transfer-Encoding"), `"Transfer-Encoding" cannot be rewritten on a request`},
+		{"set request trailer", SetRequestHeader("trailer", "X-Checksum"), `"Trailer" cannot be rewritten on a request`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -103,7 +106,7 @@ func TestResolveHeaderMWErrors(t *testing.T) {
 // headers and stay allowed.
 func TestResponseHeaderUnsettableNamesAllowed(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"Host", "Content-Length", "Transfer-Encoding"} {
+	for _, name := range []string{"Host", "Content-Length", "Transfer-Encoding", "Trailer"} {
 		got := mustResolveMW(t, SetResponseHeader(name, "x"))
 		if got.HeaderName != name || got.HeaderValue != "x" {
 			t.Errorf("%s: got %q: %q", name, got.HeaderName, got.HeaderValue)
@@ -300,6 +303,42 @@ func (h *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, nil
 }
 
+// TestResponseHeaderMiddlewareReadFrom — the wrapper implements io.ReaderFrom
+// so a body copy keeps net/http's sendfile path: the copy commits the header
+// with the operations applied, and reaches the underlying writer's ReadFrom
+// when it has one.
+func TestResponseHeaderMiddlewareReadFrom(t *testing.T) {
+	t.Parallel()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := io.Copy(w, plainReader{strings.NewReader("file contents")}); err != nil {
+			t.Errorf("copy: %v", err)
+		}
+	})
+	h := chain(t, inner, SetResponseHeader("X-Robots-Tag", "noindex"))
+
+	t.Run("delegates", func(t *testing.T) {
+		t.Parallel()
+		rec := &readerFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "http://x/", nil))
+		if !rec.readFrom {
+			t.Error("copy did not reach the underlying ReadFrom")
+		}
+		assertHeader(t, rec.Header(), "X-Robots-Tag", "noindex")
+		if got := rec.Body.String(); got != "file contents" {
+			t.Errorf("body: got %q", got)
+		}
+	})
+	t.Run("falls back", func(t *testing.T) {
+		t.Parallel()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "http://x/", nil))
+		assertHeader(t, rec.Header(), "X-Robots-Tag", "noindex")
+		if got := rec.Body.String(); got != "file contents" {
+			t.Errorf("body: got %q", got)
+		}
+	})
+}
+
 // TestResponseHeaderMiddlewareHijack — an upgrade must still be able to take
 // the connection. The proxy reaches for it through http.ResponseController,
 // which follows Unwrap, so the wrapper cannot be what blocks a WebSocket.
@@ -377,4 +416,51 @@ func TestHeaderMiddlewareThroughProxy(t *testing.T) {
 	// so a client still cannot spoof it.
 	assertEchoHeader(t, echo, "X-Forwarded-Host", "x")
 	assertHeader(t, rec.Header(), "X-Robots-Tag", "noindex, nofollow")
+}
+
+// TestForwardedHeaderAddThroughProxy — Add on a proxy-owned field appends the
+// configured value after the derived client address, exactly once. The proxy
+// strips the client's own X-Forwarded-* fields from the outbound request
+// before Rewrite runs, so a spoofed inbound chain never reaches the upstream
+// and the reapply after SetXForwarded cannot double-count the configured
+// value.
+func TestForwardedHeaderAddThroughProxy(t *testing.T) {
+	t.Parallel()
+	backend := newEchoBackend(t)
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP(":0")},
+		Upstreams: Upstreams{
+			"api": Pool{Backends: []Backend{{Address: strings.TrimPrefix(backend.URL, "http://")}}},
+		},
+		Routes: Routes{
+			Match("/*").ProxyTo("api").With(
+				AddRequestHeader("X-Forwarded-For", "198.51.100.7"),
+			),
+		},
+	})
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, ph := range srv.pools {
+			ph.shutdown()
+		}
+	})
+
+	req := httptest.NewRequest("GET", "http://x/anything", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	rec := runRequest(t, srv.buildRouter(), req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	echo := decodeEcho(t, rec.Body)
+	// httptest.NewRequest pins RemoteAddr to 192.0.2.1:1234. The client's
+	// spoofed chain is gone, the derived address leads, and the configured
+	// value follows as a separate field line — present exactly once.
+	want := []string{"192.0.2.1", "198.51.100.7"}
+	if got := echo.Headers["X-Forwarded-For"]; !slices.Equal(got, want) {
+		t.Errorf("X-Forwarded-For: got %v, want %v", got, want)
+	}
 }

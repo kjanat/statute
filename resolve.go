@@ -528,13 +528,15 @@ func resolveSecurityHeadersMW(m *securityHeadersMW) (resolved.Middleware, error)
 
 // unsettableRequestHeaders are the request fields Go carries outside the
 // header map, where a mutation would be a silent no-op: net/http writes them
-// from Request.Host, Request.ContentLength, and Request.TransferEncoding and
-// excludes the header-map entries when it writes the request. Rejecting them
-// at resolve time turns a configuration that cannot work into a startup error.
+// from Request.Host, Request.ContentLength, Request.TransferEncoding, and
+// Request.Trailer and excludes the header-map entries when it writes the
+// request. Rejecting them at resolve time turns a configuration that cannot
+// work into a startup error.
 var unsettableRequestHeaders = map[string]string{
 	"Host":              "Go keeps the request authority in Request.Host",
 	"Content-Length":    "Go frames the body from Request.ContentLength",
 	"Transfer-Encoding": "Go frames the body from Request.TransferEncoding",
+	"Trailer":           "Go writes the trailer names from Request.Trailer",
 }
 
 // resolveHeaderMW validates one header mutation and canonicalises its name.

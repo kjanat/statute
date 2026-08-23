@@ -2,6 +2,7 @@ package statute
 
 import (
 	"context"
+	"io"
 	"net/http"
 
 	"statute.kjanat.dev/resolved"
@@ -23,12 +24,12 @@ func (*headerMW) statuteMiddleware() {}
 // when the configuration resolves, so "x-real-ip" and "X-Real-IP" name the
 // same header.
 //
-// Two names are rejected at resolve time because Go carries them outside the
+// Four names are rejected at resolve time because Go carries them outside the
 // header map, where a mutation here would be a silent no-op: Host (the request
-// authority) and Content-Length (the body framing, along with
-// Transfer-Encoding). Hop-by-hop headers — Connection, Upgrade, TE, and the
-// rest — can be set, but the reverse proxy strips them from the outbound
-// request, as RFC 9110 requires.
+// authority), Content-Length and Transfer-Encoding (the body framing), and
+// Trailer (the trailer names). Hop-by-hop headers — Connection, Upgrade, TE,
+// and the rest — can be set, but the reverse proxy strips them from the
+// outbound request, as RFC 9110 requires.
 func SetRequestHeader(name, value string) *headerMW {
 	return &headerMW{op: resolved.MWSetRequestHeader, name: name, value: value}
 }
@@ -222,6 +223,17 @@ func (w *headerResponseWriter) WriteHeader(code int) {
 func (w *headerResponseWriter) Write(b []byte) (int, error) {
 	w.applyOps()
 	return w.ResponseWriter.Write(b)
+}
+
+// ReadFrom applies the operations — a body copy commits the header just like
+// Write — and hands the copy to the underlying writer, so io.Copy keeps the
+// sendfile path net/http offers for file responses.
+func (w *headerResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	w.applyOps()
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(w.ResponseWriter, r)
 }
 
 // Flush applies the operations — a flush commits the header — and propagates

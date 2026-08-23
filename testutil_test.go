@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,10 +111,11 @@ func writeFile(t *testing.T, dir, name, contents string) {
 }
 
 // assertEchoHeader fails the test unless the upstream saw exactly one value
-// for the named header.
+// for the named header. Names are canonicalised before the lookup: the echo
+// map's keys come from http.Header, which only holds canonical ones.
 func assertEchoHeader(t *testing.T, e echoRequest, name, want string) {
 	t.Helper()
-	got := e.Headers[name]
+	got := e.Headers[textproto.CanonicalMIMEHeaderKey(name)]
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("upstream %s: got %v, want [%s]", name, got, want)
 	}
@@ -122,7 +124,24 @@ func assertEchoHeader(t *testing.T, e echoRequest, name, want string) {
 // assertNoEchoHeader fails the test if the upstream saw the named header.
 func assertNoEchoHeader(t *testing.T, e echoRequest, name string) {
 	t.Helper()
-	if got, ok := e.Headers[name]; ok {
+	if got, ok := e.Headers[textproto.CanonicalMIMEHeaderKey(name)]; ok {
 		t.Errorf("upstream saw %s: %v, want it absent", name, got)
 	}
 }
+
+// readerFromRecorder is a ResponseRecorder with an io.ReaderFrom, recording
+// whether a body copy was delegated to it rather than looped through Write.
+type readerFromRecorder struct {
+	*httptest.ResponseRecorder
+	readFrom bool
+}
+
+func (r *readerFromRecorder) ReadFrom(src io.Reader) (int64, error) {
+	r.readFrom = true
+	return io.Copy(r.ResponseRecorder, src)
+}
+
+// plainReader hides any WriterTo the wrapped reader has, forcing io.Copy to
+// consult the destination's ReadFrom — the same shape http.ServeContent
+// produces when it copies a file through io.CopyN.
+type plainReader struct{ io.Reader }

@@ -97,6 +97,19 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
+// ReadFrom treats the copy like Write — an un-preceded one is an implicit
+// 200 — and hands it to the underlying writer, so io.Copy keeps the sendfile
+// path net/http offers for file responses.
+func (s *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
+	if !s.wroteHeader {
+		s.wroteHeader = true
+	}
+	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(s.ResponseWriter, r)
+}
+
 // Flush propagates Flush calls so streaming responses still flush through us.
 func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {

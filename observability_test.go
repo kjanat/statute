@@ -3,8 +3,10 @@ package statute
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -127,6 +129,37 @@ func TestAccessLog_DisabledIsNoOp(t *testing.T) {
 
 // TestStats_PrometheusFormat — ensure the WritePrometheus output is
 // parseable text with the canonical counter names.
+// TestStatusRecorderReadFrom — the recorder implements io.ReaderFrom so a
+// body copy keeps net/http's sendfile path, and an un-preceded copy still
+// counts as the implicit 200.
+func TestStatusRecorderReadFrom(t *testing.T) {
+	t.Parallel()
+	rec := &readerFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+	ww := &statusRecorder{ResponseWriter: rec, status: 200}
+	if _, err := io.Copy(ww, plainReader{strings.NewReader("payload")}); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if !rec.readFrom {
+		t.Error("copy did not reach the underlying ReadFrom")
+	}
+	if !ww.wroteHeader || ww.status != 200 {
+		t.Errorf("recorder after copy: wroteHeader=%v status=%d, want implicit 200", ww.wroteHeader, ww.status)
+	}
+	if got := rec.Body.String(); got != "payload" {
+		t.Errorf("body: got %q", got)
+	}
+
+	// Without a ReaderFrom underneath, the copy falls back to a plain write.
+	plain := httptest.NewRecorder()
+	ww = &statusRecorder{ResponseWriter: plain, status: 200}
+	if _, err := io.Copy(ww, plainReader{strings.NewReader("payload")}); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if got := plain.Body.String(); got != "payload" {
+		t.Errorf("fallback body: got %q", got)
+	}
+}
+
 func TestStats_PrometheusFormat(t *testing.T) {
 	t.Parallel()
 	s := newStats()
