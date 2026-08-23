@@ -148,10 +148,11 @@ When `BehindCloudflare()` is enabled, statute checks headers in this order:
 
 1. `CF-Connecting-IP` — Cloudflare's primary header for the originating client's IP. Always present on requests via the CF proxy.
 2. `True-Client-IP` — only present on Cloudflare Enterprise plans. Same value as `CF-Connecting-IP` when both are present.
-3. `X-Forwarded-For` — falls back to the first entry (the originating client per RFC 7239) if neither CF header is present. **Forgeable** by clients on a non-CF path; only consult this if CF headers are absent (which on a pure-CF deployment shouldn't happen).
-4. `r.RemoteAddr` — the connecting peer (Cloudflare's edge node).
+3. `r.RemoteAddr` — the connecting peer (Cloudflare's edge node).
 
-This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash strategy, and access log all key on the real client IP. If statute receives a request that doesn't come via Cloudflare (someone discovered the origin and connected directly), the headers are absent and the code falls back to `r.RemoteAddr` — which is the attacker's real IP. So degraded behaviour is graceful, not insecure.
+`X-Forwarded-For` is deliberately not in the list: without explicit trust configuration it is a client-controlled header, and consulting it would let a direct client dictate the address used for rate limiting, IP lists, and client-IP route matching. Forwarded headers count only under a `TrustedProxy` policy or the Cloudflare pair above.
+
+This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash strategy, and access log all key on the real client IP. If statute receives a request that doesn't come via Cloudflare (someone discovered the origin and connected directly), the CF headers are absent and the code falls back to `r.RemoteAddr` — which is the attacker's real IP. So degraded behaviour is graceful, not insecure.
 
 ## Failure modes
 

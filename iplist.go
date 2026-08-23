@@ -21,6 +21,9 @@ func (*allowIPsMW) statuteMiddleware() {}
 // The client IP comes from clientIP(), which respects the listener's
 // TrustedProxy() policy and BehindCloudflare() (CF-Connecting-IP) when
 // configured.
+//
+// AllowIPs answers 403 and stops; to fall through to a later route for
+// outside clients instead, constrain the route itself with Route.ClientIPs.
 func AllowIPs(cidrs ...string) *allowIPsMW {
 	return &allowIPsMW{cidrs: cidrs}
 }

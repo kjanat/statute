@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Client-IP route matching: `Match(...).ClientIPs("10.0.0.0/8", ...)` makes
+  client CIDRs part of route selection. A request from outside the ranges
+  falls through to the next route — where `AllowIPs` middleware would
+  answer 403 and stop — enabling trusted-network routes with authenticated
+  fallbacks. The matcher uses the same verified client-IP resolution as
+  rate limiting, so the listener's `TrustedProxy` policy governs it, and
+  the canonical CIDRs appear on the resolved route as `ClientIPCIDRs`.
 - Verified trusted proxies alongside direct traffic: the
   `TrustedProxy("cidr", ...).ClientIPHeader("...")` listener option resolves
   the client IP from a forwarded header only when the connection's direct
@@ -59,6 +66,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `X-Forwarded-For`, `-Host`, or `-Proto` declaration is reapplied after the
   proxy derives its own, so the route's value wins without making the fields
   it leaves alone spoofable.
+
+### Security
+
+- `clientIP` no longer trusts `X-Forwarded-For` without explicit trust
+  configuration. The unconditional fallback let any client pick its own
+  identity for everything keyed on the client address — rate-limit
+  buckets, `AllowIPs`/`DenyIPs`, `IPHash` affinity, the access log's
+  `remote` field, and the new client-IP route matching, where a forged
+  header could select a trusted-network route past an authenticated
+  fallback. Forwarded headers now count only under a listener's
+  `TrustedProxy` policy or `BehindCloudflare`; otherwise the connecting
+  peer is the client.
 
 ### Fixed
 

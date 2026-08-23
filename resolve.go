@@ -405,6 +405,18 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 		Host:      r.host,
 		StaticDir: r.staticDir,
 	}
+	if r.clientIPsSet {
+		// An explicitly empty matcher would silently match every client —
+		// the constraint the caller reached for would just vanish.
+		if len(r.clientIPs) == 0 {
+			return nil, errors.New("client_ips: at least one CIDR required")
+		}
+		canon, err := resolveCIDRs(r.clientIPs)
+		if err != nil {
+			return nil, fmt.Errorf("client_ips: %w", err)
+		}
+		rr.ClientIPCIDRs = canon
+	}
 	if err := resolveRouteTarget(r, pools, rr); err != nil {
 		return nil, err
 	}

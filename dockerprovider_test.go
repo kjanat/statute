@@ -112,11 +112,11 @@ func TestDockerSyncBuildsRoutes(t *testing.T) {
 	}
 
 	// Wrong host: no match.
-	if h := findHandler(tab.routes, "other.example.com", "/"); h != nil {
+	if h := findHandler(tab.routes, "other.example.com", httptest.NewRequest("GET", "http://x/", nil)); h != nil {
 		t.Fatalf("route matched wrong host")
 	}
 	// Right host: proxies to the real backend.
-	h := findHandler(tab.routes, "app.example.com", "/x")
+	h := findHandler(tab.routes, "app.example.com", httptest.NewRequest("GET", "http://x/x", nil))
 	if h == nil {
 		t.Fatalf("no handler for app.example.com")
 	}
@@ -131,8 +131,24 @@ func TestDockerSyncBuildsRoutes(t *testing.T) {
 		t.Fatalf("host header not preserved: %q", got)
 	}
 	// Host matching is case-insensitive per RFC 9110.
-	if h := findHandler(tab.routes, "APP.Example.COM", "/x"); h == nil {
+	if h := findHandler(tab.routes, "APP.Example.COM", httptest.NewRequest("GET", "http://x/x", nil)); h == nil {
 		t.Fatal("host match is case-sensitive")
+	}
+}
+
+// TestDockerDynamicRoutesThroughRouter — dynamic routes dispatch through
+// buildRouter's fallback once the (empty) static table misses: the request
+// reaches the discovered pool (whose refused backend answers 502) instead
+// of the router's 404.
+func TestDockerDynamicRoutesThroughRouter(t *testing.T) {
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{}, []fakeDaemonContainer{{
+		name: "web-1", ip: "127.0.0.1", port: 1,
+		labels: map[string]string{"statute.enable": "true", "statute.host": "app.example.com"},
+	}})
+	mustSync(t, p)
+	rr := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://app.example.com/x", nil))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("router dispatch: got %d, want 502 from the discovered pool", rr.Code)
 	}
 }
 
@@ -157,10 +173,10 @@ func TestDockerSyncTraefikLabels(t *testing.T) {
 	if r.Upstream.Name != "app@traefik" || r.Upstream.Backends[0].Address != "10.0.0.9:3000" {
 		t.Fatalf("upstream = %+v", r.Upstream)
 	}
-	if h := findHandler(tab.routes, "legacy.example.com", "/api/users"); h == nil {
+	if h := findHandler(tab.routes, "legacy.example.com", httptest.NewRequest("GET", "http://x/api/users", nil)); h == nil {
 		t.Fatal("PathPrefix route did not match subpath")
 	}
-	if h := findHandler(tab.routes, "legacy.example.com", "/other"); h != nil {
+	if h := findHandler(tab.routes, "legacy.example.com", httptest.NewRequest("GET", "http://x/other", nil)); h != nil {
 		t.Fatal("route matched outside prefix")
 	}
 }
@@ -269,7 +285,7 @@ func TestDockerRouteSpecificityOrder(t *testing.T) {
 	}
 
 	// The /api path must hit the api pool even though the catch-all also matches.
-	h := findHandler(tab.routes, "x.example.com", "/api/v1")
+	h := findHandler(tab.routes, "x.example.com", httptest.NewRequest("GET", "http://x/api/v1", nil))
 	if h == nil {
 		t.Fatal("no handler")
 	}
