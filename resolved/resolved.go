@@ -317,6 +317,13 @@ type Middleware struct {
 	// HeaderValue is empty for the remove operations.
 	HeaderName  string
 	HeaderValue string
+
+	// Path rewrite — the Type discriminator selects the operation.
+	PathPrefix      string // strip/add: normalized prefix, leading "/", no trailing "/"
+	PathPattern     string // rewrite: RE2 source, compile-validated at resolve
+	PathReplacement string // replace: target path (escaped form as given); rewrite: replacement with $1 references
+	PathQuery       string // replace: explicit query without "?", only meaningful when PathQuerySet
+	PathQuerySet    bool   // replace: true when the target carried a "?" (distinguishes clearing from preserving)
 }
 
 // MiddlewareType discriminates resolved middleware values.
@@ -345,6 +352,10 @@ const (
 	MWSetResponseHeader
 	MWAddResponseHeader
 	MWRemoveResponseHeader
+	MWStripPrefix
+	MWAddPrefix
+	MWReplacePath
+	MWRewritePath
 )
 
 // RateLimitKey mirrors the surface key.

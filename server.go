@@ -798,7 +798,8 @@ func (ph *poolHandler) shutdown() {
 
 // wrapMiddleware wraps the base handler with each middleware in declaration
 // order. The first middleware in the list runs outermost. Header operations
-// are hoisted to the outside of the whole chain — see withHeaderMiddleware.
+// and path rewrites are hoisted to the outside of the whole chain — see
+// withHeaderMiddleware and withPathRewrite.
 func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
 	if base == nil {
 		base = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -809,7 +810,7 @@ func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
 	for _, mw := range slices.Backward(mws) {
 		h = applyMiddleware(mw, h)
 	}
-	return withHeaderMiddleware(mws, h)
+	return withHeaderMiddleware(mws, withPathRewrite(mws, h))
 }
 
 // middlewareBuilders maps each resolved middleware type to the constructor
@@ -830,9 +831,10 @@ var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, h
 	resolved.MWBasicAuth:       basicAuthHandler,
 	resolved.MWAllowIPs:        allowIPsHandler,
 	resolved.MWDenyIPs:         denyIPsHandler,
-	// The header operations are deliberately absent: withHeaderMiddleware
-	// hoists them out of the chain so a retry cannot apply them per attempt.
-	// They fall through applyMiddleware as pass-throughs.
+	// The header operations and the path rewrites are deliberately absent:
+	// withHeaderMiddleware and withPathRewrite hoist them out of the chain so
+	// a retry cannot apply them per attempt. They fall through
+	// applyMiddleware as pass-throughs.
 }
 
 // buildTimeout adapts http.TimeoutHandler to the middlewareBuilders signature.
