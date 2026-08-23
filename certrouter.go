@@ -12,8 +12,8 @@ import (
 )
 
 // canonicalTLSName reduces a configured or ClientHello TLS name to the one
-// form certificate routing compares: trimmed, one trailing dot stripped,
-// and the IDNA A-label lookup form — the same canonicalisation autocert
+// form certificate routing compares: trimmed, trailing dots stripped, and
+// the IDNA A-label lookup form — the same canonicalisation autocert
 // applies — falling back to plain lowercasing for names the IDNA profile
 // rejects, so unusual-but-working static hostnames keep matching. A
 // leading "*." wildcard marker is preserved and its suffix canonicalised
@@ -21,15 +21,43 @@ import (
 // and the router applies it to every SNI lookup, so both sides always
 // agree.
 func canonicalTLSName(name string) string {
-	n := strings.TrimSuffix(strings.TrimSpace(name), ".")
+	n, _ := canonicalTLSNameStrict(name)
+	return n
+}
+
+// canonicalTLSNameStrict canonicalises like canonicalTLSName but also
+// reports the IDNA lookup failure behind the lowercase fallback. ACME
+// domains must take the strict form: autocert.HostWhitelist keeps only
+// names idna.Lookup.ToASCII accepts and silently drops the rest, and a CA
+// rejects an order for an identifier that is not a valid A-label, so a
+// name that only survives the fallback can never be issued.
+func canonicalTLSNameStrict(name string) (string, error) {
+	n := trimTLSName(name)
 	prefix := ""
 	if strings.HasPrefix(n, "*.") {
 		prefix, n = "*.", n[2:]
 	}
-	if a, err := idna.Lookup.ToASCII(n); err == nil {
-		n = a
+	a, err := idna.Lookup.ToASCII(n)
+	if err != nil {
+		return prefix + strings.ToLower(n), err
 	}
-	return prefix + strings.ToLower(n)
+	return prefix + strings.ToLower(a), nil
+}
+
+// trimTLSName strips surrounding space and trailing dots until the value
+// stops changing. Trimming once is not enough: canonicalisation must be a
+// fixed point, or a name like "example.com.." would canonicalise to
+// "example.com." — distinct from "example.com" for duplicate-coverage
+// validation, yet equal to it once certRouter.add canonicalises again,
+// silently dropping one of the two configured sources.
+func trimTLSName(name string) string {
+	for {
+		t := strings.TrimSuffix(strings.TrimSpace(name), ".")
+		if t == name {
+			return name
+		}
+		name = t
+	}
 }
 
 // certGetter resolves the certificate for one TLS handshake. Both
@@ -99,7 +127,9 @@ func (cr *certRouter) indexACMESources(s *server, sources []*resolved.AutoTLS) e
 			cr.hasACMETLS = true
 		}
 		for _, d := range a.Domains {
-			cr.add(d, g)
+			if err := cr.add(d, g); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -116,18 +146,28 @@ func (cr *certRouter) indexStaticSources(sources []*resolved.StaticTLS) error {
 			cr.fallback = g
 			continue
 		}
-		cr.add(st.Host, g)
+		if err := cr.add(st.Host, g); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (cr *certRouter) add(pattern string, g certGetter) {
+// add indexes one source under its canonical pattern. A name already
+// claimed is an error, not an overwrite: resolve-time coverage validation
+// makes it unreachable, and losing a configured certificate to map-write
+// order must stay structurally impossible if that validation ever slips.
+func (cr *certRouter) add(pattern string, g certGetter) error {
 	p := canonicalTLSName(pattern)
+	table := cr.exact
 	if strings.HasPrefix(p, "*.") {
-		cr.wildcards[p] = g
-		return
+		table = cr.wildcards
 	}
-	cr.exact[p] = g
+	if _, ok := table[p]; ok {
+		return fmt.Errorf("tls: %q is claimed by two sources on this listener", p)
+	}
+	table[p] = g
+	return nil
 }
 
 // GetCertificate satisfies tls.Config.GetCertificate. A wildcard pattern

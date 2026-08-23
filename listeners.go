@@ -64,7 +64,12 @@ type AutoTLSConfig struct {
 	explicitHTTP01 bool
 }
 
-// AutoTLS configures ACME auto-provisioning for the given domains.
+// AutoTLS configures ACME auto-provisioning for the given domains. Each
+// domain must be a valid IDNA lookup name — trailing dots, case, and
+// U-labels are normalised, but a name the profile rejects (an underscore,
+// say) is a resolve error: autocert's host policy drops it and a CA
+// refuses the order, so it could never be issued. A wildcard is written
+// "*.suffix" and requires CloudflareDNS01.
 func AutoTLS(domains ...string) *AutoTLSConfig {
 	return &AutoTLSConfig{Domains: append([]string(nil), domains...)}
 }
@@ -118,10 +123,13 @@ func (a *AutoTLSConfig) Zone(id string) *AutoTLSConfig {
 // HTTP-01. A pinned source instead issues through statute's in-tree ACME
 // manager (the same machinery DNS-01 uses), which only ever attempts
 // HTTP-01 — TLS-ALPN-01 is never tried, advertised, or deliberately
-// failed. HTTP-01 requires a plain-HTTP listener reachable on port 80; it
-// serves the challenge responses automatically. Calling both HTTP01 and
-// CloudflareDNS01 on one source is a resolve error rather than a silent
-// precedence choice.
+// failed. HTTP-01 requires a plain-HTTP listener whose port 80 is
+// reachable from the CA — a RedirectTo listener counts, since the
+// challenge responses are served ahead of the redirect. Calling both
+// HTTP01 and CloudflareDNS01 on one source is a resolve error rather than
+// a silent precedence choice, and so is pinning a source when the config
+// declares no plain HTTP listener at all: nothing would serve the tokens,
+// so every issuance attempt would fail validation.
 func (a *AutoTLSConfig) HTTP01() *AutoTLSConfig {
 	a.explicitHTTP01 = true
 	return a
@@ -159,8 +167,10 @@ func StaticTLS(certFile, keyFile string) *StaticTLSConfig {
 
 // StaticTLSFor configures a static certificate served only for the given
 // SNI hostname — an exact name or a wildcard pattern like "*.bar.example"
-// covering exactly one extra label. An empty host is a resolve error; use
-// StaticTLS for the hostless fallback.
+// covering exactly one extra label. A "*" anywhere else, and a bare "*",
+// are resolve errors: no ClientHello can send that name, so the source
+// would be silently unreachable. An empty host is a resolve error too;
+// use StaticTLS for the hostless fallback.
 func StaticTLSFor(host, certFile, keyFile string) *StaticTLSConfig {
 	return &StaticTLSConfig{Host: host, CertFile: certFile, KeyFile: keyFile, hostSet: true}
 }
@@ -229,10 +239,15 @@ type behindCloudflareOption struct{}
 // First, when AutoTLS is configured on the listener, the TLS-ALPN-01 challenge
 // is suppressed (the "acme-tls/1" entry is dropped from ALPN). Cloudflare
 // terminates TLS at its edge and does not forward custom ALPN protocols, so
-// TLS-ALPN-01 cannot succeed. Provisioning falls back to HTTP-01, which is
+// TLS-ALPN-01 cannot succeed. Suppressing the protocol does not stop
+// autocert from trying it: its challenge preference is hard-coded to
+// tls-alpn-01 first, so the automatic policy burns one failed validation
+// per issuance and only then opens a fresh order for HTTP-01, which is
 // served by the redirect listener on :80 — Cloudflare proxies that path
 // transparently provided "Always Use HTTPS" is disabled for
-// /.well-known/acme-challenge/*.
+// /.well-known/acme-challenge/*. Pin the source with HTTP01() to skip that
+// attempt entirely; the in-tree manager never advertises or attempts
+// TLS-ALPN-01.
 //
 // Second, the request handling path trusts the CF-Connecting-IP and
 // True-Client-IP headers as the originating client address. Other proxy

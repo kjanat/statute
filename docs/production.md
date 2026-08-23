@@ -69,18 +69,26 @@ Don't. There is no good reason. The proxy handles untrusted input from the netwo
 
 ## Persistent storage
 
-AutoTLS (both HTTP-01 and DNS-01) requires persistent storage for the ACME account key, issued certs, and renewal state. The directory layout:
+AutoTLS (every challenge policy) requires persistent storage for the ACME account key, issued certs, and renewal state. The directory layout depends on the policy each source declares:
 
 ```
 <storage>/
-├── acme_account+key            # autocert account state (HTTP-01 mode)
-├── example.com                 # autocert cert files (HTTP-01 mode)
+├── acme_account+key            # autocert account state (automatic policy)
+├── example.com                 # autocert cert files (automatic policy)
 ├── api.example.com
-└── dns01/                      # DNS-01 mode subdirectory
+├── dns01/                      # CloudflareDNS01() sources
+│   ├── account.key
+│   ├── example.com.crt
+│   └── example.com.key
+└── http01/                     # HTTP01()-pinned sources
     ├── account.key
-    ├── example.com.crt
-    └── example.com.key
+    ├── api.example.com.crt
+    └── api.example.com.key
 ```
+
+The flat files at the root belong to autocert, which backs the automatic policy (TLS-ALPN-01 attempted first, HTTP-01 as fallback). Each pinned source instead issues through statute's in-tree ACME manager, which keeps its state under a subdirectory named for its challenge.
+
+**Each subdirectory carries its own ACME account key**, registered independently of the autocert account at the root. Persist the whole storage root: losing any one of these directories means a fresh account registration and a fresh issuance for the sources it served.
 
 The standard mistakes that get deployments rate-limited:
 

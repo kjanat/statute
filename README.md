@@ -306,10 +306,19 @@ Observability: statute.Observability{
 // Static cert from disk
 statute.StaticTLS("/etc/ssl/cert.pem", "/etc/ssl/key.pem")
 
-// Auto-provisioned via Let's Encrypt with HTTP-01 (default)
+// Auto-provisioned via Let's Encrypt, automatic challenge policy (default):
+// TLS-ALPN-01 is attempted first where the listener advertises acme-tls/1,
+// with HTTP-01 as the fallback.
 statute.AutoTLS("example.com", "api.example.com").
     Email("ops@example.com").
     Storage("/var/lib/statute/certs")
+
+// Pinned to HTTP-01: issues through the in-tree ACME manager, which never
+// attempts TLS-ALPN-01. Requires a plain HTTP listener in the config.
+statute.AutoTLS("example.com", "api.example.com").
+    Email("ops@example.com").
+    Storage("/var/lib/statute/certs").
+    HTTP01()
 
 // Auto-provisioned via Let's Encrypt with DNS-01 + Cloudflare
 // (required for wildcards and when port 80 is not reachable)
@@ -336,7 +345,7 @@ statute.HTTPS(":443",
 )
 ```
 
-`HTTP01()` pins a source to the HTTP-01 challenge: instead of the shared autocert manager — whose challenge preference is hard-coded to attempt TLS-ALPN-01 first — the source issues through statute's in-tree ACME manager (the same machinery as DNS-01), which only ever attempts HTTP-01 and never advertises `acme-tls/1`. The default policy without it stays automatic: TLS-ALPN-01 where advertisable, HTTP-01 otherwise. Calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources or a second hostless fallback. All names — AutoTLS domains, static hosts, and incoming SNI — are canonicalised the same way (case, trailing dot, IDNA A-label), so `foo.example.com.` and `FOO.example.com` are one name to both routing and duplicate detection.
+`HTTP01()` pins a source to the HTTP-01 challenge: instead of the shared autocert manager — whose challenge preference is hard-coded to attempt TLS-ALPN-01 first — the source issues through statute's in-tree ACME manager (the same machinery as DNS-01), which only ever attempts HTTP-01 and never advertises `acme-tls/1`. The default policy without it stays automatic: TLS-ALPN-01 where advertisable, HTTP-01 otherwise. Calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources, a second hostless fallback, and a pinned source in a config with no plain HTTP listener to serve its challenge tokens. All names — AutoTLS domains, static hosts, and incoming SNI — are canonicalised the same way (case, trailing dots, IDNA A-label), so `foo.example.com.` and `FOO.example.com` are one name to both routing and duplicate detection; ACME domains must additionally survive the strict IDNA lookup, since a name autocert's host policy would drop can never be issued. Across listeners, resolve also rejects one ACME domain claimed twice (two managers would race to issue and overwrite one stored key pair) and pinned sources that share an ACME account directory but disagree on `Email`.
 
 ### HTTP/3
 

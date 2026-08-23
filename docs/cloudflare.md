@@ -6,13 +6,21 @@ This guide covers the operational details of deploying statute as an origin serv
 
 ```go
 // HTTP-01 mode (no API key). Works for non-wildcard certs.
-// Requires public :80 reachable.
+// Requires public :80 reachable and a plain HTTP listener in the config.
+statute.HTTP(":80").RedirectTo("https"),
 statute.HTTPS(":443",
-    statute.AutoTLS("example.com").Email("ops@example.com").Storage("/var/lib/statute/certs"),
+    statute.AutoTLS("example.com").
+        Email("ops@example.com").
+        Storage("/var/lib/statute/certs").
+        HTTP01(),
     statute.HTTP2(),
     statute.BehindCloudflare(),
 )
 ```
+
+`.HTTP01()` is the recommended pin behind Cloudflare: without it the source
+takes the automatic policy, which attempts TLS-ALPN-01 first — a challenge
+Cloudflare's edge can never deliver. See below.
 
 ```go
 // DNS-01 mode (API token required). Works for wildcards. Does not need :80.
@@ -39,7 +47,11 @@ For request handling: every request to the origin arrives via Cloudflare's IP ra
 
 `BehindCloudflare()` is a listener option that fixes both. It does two things:
 
-1. **Drops `acme-tls/1` from the listener's ALPN advertisement.** autocert's TLS config normally lists `["h2", "http/1.1", "acme-tls/1"]`. Behind Cloudflare we want `["h2", "http/1.1"]` so autocert does not try (and silently fail) TLS-ALPN-01 — provisioning falls back to HTTP-01 cleanly.
+1. **Drops `acme-tls/1` from the listener's ALPN advertisement.** autocert's TLS config normally lists `["h2", "http/1.1", "acme-tls/1"]`. Behind Cloudflare we want `["h2", "http/1.1"]`, because a validator that negotiates `acme-tls/1` against the origin never gets there — Cloudflare terminates the handshake at the edge.
+
+   Dropping the protocol does not stop autocert from _attempting_ the challenge. `Manager.supportedChallengeTypes` hard-codes `tls-alpn-01` first (`http-01` is appended only once `HTTPHandler` has been installed, which statute does only when the config has a plain HTTP listener), and `verifyRFC` picks the first supported type on a freshly created order. Suppressing the ALPN entry therefore turns the TLS-ALPN-01 attempt into a _failure_ rather than a hang: one invalid authorization and one abandoned order per issuance, after which `verifyRFC` loops, opens a **new** order, and tries HTTP-01 — which only exists as a fallback if a plain HTTP listener is in the config.
+
+   To skip the burned attempt entirely, pin the source with `.HTTP01()`. A pinned source issues through statute's in-tree ACME manager, which only ever attempts HTTP-01: no `acme-tls/1` advertisement, no failed validation, no extra order. Behind Cloudflare that is the recommended configuration; `BehindCloudflare()` still matters for client-IP attribution, and for any unpinned source on the listener.
 2. **Tags the request context.** A small middleware sets a context key on every request received on this listener. `clientIP()` reads it and returns `CF-Connecting-IP` (or `True-Client-IP` as a fallback) instead of `r.RemoteAddr` and `X-Forwarded-For`. CF-Connecting-IP is populated by Cloudflare's edge and is not user-controllable on the path through the proxy.
 
 The option does not enforce that the request actually came from a Cloudflare IP range. Adding that would require keeping the CF IP list current; a stale list can DOS the deployment if CF rotates ranges, so we instead trust the network path the operator has configured.
@@ -57,11 +69,13 @@ statute.HTTPS(":443",
 
 ## HTTP-01 vs DNS-01: when to use which
 
-**Use HTTP-01 (the default) when**:
+**Use HTTP-01 (`.HTTP01()`) when**:
 
 - You don't need wildcard certs
 - Port 80 is reachable from the public internet
 - You want the smallest possible attack surface (no API token to leak)
+
+HTTP-01 is not the default policy: an `AutoTLS` source with neither `.HTTP01()` nor `CloudflareDNS01()` takes the automatic policy and attempts TLS-ALPN-01 first. `.HTTP01()` also makes the requirement explicit at resolve time — a pinned source without a plain HTTP listener anywhere in the config is a resolve error, not a silent per-start validation failure.
 
 **Use DNS-01 when**:
 
@@ -126,19 +140,25 @@ statute.AutoTLS("api.example.com").
 
 The zone ID is shown on the zone overview page in the Cloudflare dashboard.
 
-## Storage layout for DNS-01
+## Storage layout for the pinned challenges
 
-DNS-01 mode persists state under `<storage>/dns01/`:
+Each pinned source persists state under `<storage>/<challenge>/` — `dns01/` for `CloudflareDNS01()`, `http01/` for `.HTTP01()`:
 
 ```
 <storage>/
-└── dns01/
-    ├── account.key        # ACME account private key (ECDSA P-256, PEM)
-    ├── example.com.crt    # full cert chain (PEM, leaf first)
-    └── example.com.key    # cert private key (PEM, ECDSA P-256)
+├── dns01/
+│   ├── account.key        # ACME account private key (ECDSA P-256, PEM)
+│   ├── example.com.crt    # full cert chain (PEM, leaf first)
+│   └── example.com.key    # cert private key (PEM, ECDSA P-256)
+└── http01/
+    ├── account.key        # a separate ACME account, registered on its own
+    ├── api.example.com.crt
+    └── api.example.com.key
 ```
 
-The directory must persist across restarts. The standard mistakes — wiping it on every container build, mounting it as `tmpfs`, or forgetting to back it up — all cause re-issuance on every restart and rate-limit lockout in production.
+Each subdirectory carries its own ACME account key, so a DNS-01 and an HTTP-01 source under one storage root register independently and may use different contact emails. Sources that do share a subdirectory share the account: statute rejects at resolve time a config whose sources disagree on `Email` there, because the second registration would return `ErrAccountAlreadyExists` and drop its contact.
+
+The whole storage root must persist across restarts. The standard mistakes — wiping it on every container build, mounting it as `tmpfs`, or forgetting to back it up — all cause re-issuance on every restart and rate-limit lockout in production.
 
 A renewal goroutine wakes hourly. Any cert whose leaf expires within 30 days is re-issued. Renewal failures are logged but do not crash the process; the previous valid cert continues serving until it actually expires.
 
@@ -182,6 +202,7 @@ This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash 
 
 For HTTP-01 deployment behind Cloudflare:
 
+- [ ] `AutoTLS(...).HTTP01()` on the source, and a plain HTTP listener in the config
 - [ ] Cloudflare SSL/TLS mode is **Full (Strict)**
 - [ ] Page Rule disables "Always Use HTTPS" for `/.well-known/acme-challenge/*` (or globally)
 - [ ] WAF Skip rule for `/.well-known/acme-challenge/*`

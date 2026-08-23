@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/acme/autocert"
+
 	"statute.kjanat.dev/resolved"
 )
 
@@ -24,18 +26,27 @@ func tlsRouterConfig(opts ...ListenerOption) Config {
 	}
 }
 
+// withPlainHTTP appends a plain HTTP listener to cfg. An HTTP-01 source
+// requires one — the challenge tokens are served on "http" listeners only,
+// so resolve rejects the config without it. Appended last so the HTTPS
+// listener under test stays Listeners[0].
+func withPlainHTTP(cfg Config) Config {
+	cfg.Listeners = append(cfg.Listeners, HTTP(":80"))
+	return cfg
+}
+
 // TestResolveMultiSourceTLS — the issue #36 shape: one listener mixing an
 // HTTP-01 source, a DNS-01 wildcard source, and per-host plus fallback
 // static material. All four lower into the source slices in declaration
 // order, and the legacy singular fields mirror the first of each kind.
 func TestResolveMultiSourceTLS(t *testing.T) {
 	t.Parallel()
-	cfg := tlsRouterConfig(
+	cfg := withPlainHTTP(tlsRouterConfig(
 		AutoTLS("foo.example.com").Email("ops@example.com").Storage("/var/lib/c").HTTP01(),
 		AutoTLS("*.bar.example").Email("ops@example.com").Storage("/var/lib/c").CloudflareDNS01("tok"),
 		StaticTLSFor("BAZ.example.net.", "cert.pem", "key.pem"),
 		StaticTLS("fb.pem", "fbk.pem"),
-	)
+	))
 	r := mustResolve(t, cfg)
 	l := r.Listeners[0]
 
@@ -151,6 +162,15 @@ func TestResolveTLSSourceErrors(t *testing.T) {
 	}
 }
 
+// mustAdd indexes one pattern in the router, failing the test if the name
+// is already claimed.
+func mustAdd(t *testing.T, cr *certRouter, pattern string, g certGetter) {
+	t.Helper()
+	if err := cr.add(pattern, g); err != nil {
+		t.Fatalf("add %q: %v", pattern, err)
+	}
+}
+
 // TestCertRouterSelection drives GetCertificate through a hand-built router
 // whose getters record which source served the handshake.
 func TestCertRouterSelection(t *testing.T) {
@@ -163,8 +183,8 @@ func TestCertRouterSelection(t *testing.T) {
 	}
 	var hit string
 	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
-	cr.add("foo.bar.example", tag("exact", &hit))
-	cr.add("*.bar.example", tag("wildcard", &hit))
+	mustAdd(t, cr, "foo.bar.example", tag("exact", &hit))
+	mustAdd(t, cr, "*.bar.example", tag("wildcard", &hit))
 
 	cases := []struct {
 		name, sni, want string
@@ -205,7 +225,7 @@ func TestCertRouterSelection(t *testing.T) {
 func TestCertRouterMisses(t *testing.T) {
 	t.Parallel()
 	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
-	cr.add("*.bar.example", func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	mustAdd(t, cr, "*.bar.example", func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		return &tls.Certificate{}, nil
 	})
 
@@ -404,8 +424,8 @@ func TestCertRouterCanonicalLookup(t *testing.T) {
 		}
 	}
 	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
-	cr.add("foo.example.com.", tag("dotted"))
-	cr.add("münchen.example", tag("idn"))
+	mustAdd(t, cr, "foo.example.com.", tag("dotted"))
+	mustAdd(t, cr, "münchen.example", tag("idn"))
 
 	cases := []struct{ sni, want string }{
 		{"foo.example.com", "dotted"},
@@ -429,9 +449,9 @@ func TestCertRouterCanonicalLookup(t *testing.T) {
 // acme-tls/1 on its behalf.
 func TestHTTP01PinIsEnforced(t *testing.T) {
 	t.Parallel()
-	r := mustResolve(t, tlsRouterConfig(
+	r := mustResolve(t, withPlainHTTP(tlsRouterConfig(
 		AutoTLS("foo.example.com").HTTP01().Email("x@x").Storage(t.TempDir()),
-	))
+	)))
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -678,4 +698,250 @@ func TestNewServerDNS01SourceGetsOwnManager(t *testing.T) {
 	if cr.fallback == nil {
 		t.Error("hostless static source must become the fallback")
 	}
+}
+
+// TestCanonicalTLSNameIdempotent — canonicalisation must be a fixed point.
+// Resolve compares canonical names for duplicate coverage and
+// certRouter.add canonicalises again when it indexes the source, so a name
+// whose second pass differs from its first would pass validation as
+// distinct from its own other spelling and then collide in the router's
+// map, dropping one configured certificate.
+func TestCanonicalTLSNameIdempotent(t *testing.T) {
+	t.Parallel()
+	nasty := []string{
+		"example.com..",
+		"example.com .",
+		"  EXAMPLE.com . . ",
+		"*.example.com..",
+		"*.MÜNCHEN.example. .",
+		"foo_bar.internal..",
+		"*.",
+		"*..",
+		"*",
+		".",
+		"..",
+		"",
+	}
+	for _, in := range nasty {
+		once := canonicalTLSName(in)
+		if twice := canonicalTLSName(once); twice != once {
+			t.Errorf("canonicalTLSName(%q) = %q, not a fixed point: %q", in, once, twice)
+		}
+	}
+	fixed := []struct{ in, want string }{
+		{"example.com..", "example.com"},
+		{"example.com .", "example.com"},
+		{"*.example.com..", "*.example.com"},
+		{"*.", "*"},
+		{"..", ""},
+	}
+	for _, c := range fixed {
+		if got := canonicalTLSName(c.in); got != c.want {
+			t.Errorf("canonicalTLSName(%q): got %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestResolveRejectsRepeatedTrailingDots — "example.com.." and
+// "example.com" are one name for routing, so declaring both must collide
+// at resolve time rather than reaching the router, where the second source
+// would silently take the first source's map entry.
+func TestResolveRejectsRepeatedTrailingDots(t *testing.T) {
+	t.Parallel()
+	_, err := Resolve(tlsRouterConfig(
+		AutoTLS("example.com..").Email("x@x").Storage("/v"),
+		StaticTLSFor("example.com", "c.pem", "k.pem"),
+	))
+	if err == nil || !strings.Contains(err.Error(), "both claim") {
+		t.Errorf("repeated trailing dots must still collide: %v", err)
+	}
+}
+
+// TestCertRouterAddRejectsDuplicate — add refuses a name already indexed
+// instead of overwriting it. Resolve-time coverage validation should make
+// this unreachable; losing a configured certificate to map-write order
+// must be structurally impossible even if it ever slips.
+func TestCertRouterAddRejectsDuplicate(t *testing.T) {
+	t.Parallel()
+	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
+	g := func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &tls.Certificate{}, nil }
+	if err := cr.add("example.com..", g); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := cr.add("EXAMPLE.com.", g); err == nil || !strings.Contains(err.Error(), "claimed by two sources") {
+		t.Errorf("duplicate exact name: %v", err)
+	}
+	if err := cr.add("*.example.com", g); err != nil {
+		t.Fatalf("first wildcard add: %v", err)
+	}
+	if err := cr.add("*.EXAMPLE.com..", g); err == nil || !strings.Contains(err.Error(), "claimed by two sources") {
+		t.Errorf("duplicate wildcard pattern: %v", err)
+	}
+}
+
+// TestBuildCertRouterPropagatesDuplicate — the duplicate is an error out
+// of buildCertRouter, not a dropped source inside it.
+func TestBuildCertRouterPropagatesDuplicate(t *testing.T) {
+	t.Parallel()
+	s := &server{autocertMgr: &autocert.Manager{}}
+	l := &resolved.Listener{AutoTLSSources: []*resolved.AutoTLS{
+		{Domains: []string{"a.example"}},
+		{Domains: []string{"A.example."}},
+	}}
+	if _, err := s.buildCertRouter(l); err == nil || !strings.Contains(err.Error(), "claimed by two sources") {
+		t.Errorf("buildCertRouter must propagate the duplicate: %v", err)
+	}
+}
+
+// TestResolveStaticTLSKeepsLenientNames — the lowercase fallback for
+// IDNA-rejected names stays available to static hosts: an underscore
+// hostname is unusual but routes fine when the operator supplies the
+// certificate themselves.
+func TestResolveStaticTLSKeepsLenientNames(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, tlsRouterConfig(StaticTLSFor("MY_APP.example.com.", "c.pem", "k.pem")))
+	if got := r.Listeners[0].StaticTLSSources[0].Host; got != "my_app.example.com" {
+		t.Errorf("static host: got %q, want %q", got, "my_app.example.com")
+	}
+}
+
+// TestResolveTLSNameShapeErrors — names that canonicalise to something no
+// handshake can select, or that no CA can issue, are resolve errors rather
+// than silently dead configuration.
+func TestResolveTLSNameShapeErrors(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		opts []ListenerOption
+		want string
+	}{
+		{
+			"bare star static host",
+			[]ListenerOption{StaticTLSFor("*", "c.pem", "k.pem")},
+			"use StaticTLS for the hostless fallback",
+		},
+		{
+			"star dot static host",
+			[]ListenerOption{StaticTLSFor("*.", "c.pem", "k.pem")},
+			`"*" matches no SNI name`,
+		},
+		{
+			"nested wildcard static host",
+			[]ListenerOption{StaticTLSFor("*.*.example.com", "c.pem", "k.pem")},
+			`single leading "*." label`,
+		},
+		{
+			"bare star ACME domain",
+			[]ListenerOption{AutoTLS("*").Email("x@x").Storage("/v").CloudflareDNS01("tok")},
+			`"*" matches no SNI name`,
+		},
+		{
+			"nested wildcard ACME domain",
+			[]ListenerOption{AutoTLS("*.*.example.com").Email("x@x").Storage("/v").CloudflareDNS01("tok")},
+			`single leading "*." label`,
+		},
+		{
+			"underscore ACME domain",
+			[]ListenerOption{AutoTLS("my_app.example.com").Email("x@x").Storage("/v")},
+			"not a valid ACME identifier",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Resolve(tlsRouterConfig(c.opts...))
+			if err == nil {
+				t.Fatal("want resolve error")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %v missing %q", err, c.want)
+			}
+		})
+	}
+}
+
+// multiListenerConfig wraps the given listeners with the pool and route the
+// resolver requires, for the checks that only a whole config can fail.
+func multiListenerConfig(ls ...*Listener) Config {
+	return Config{
+		Listeners: ls,
+		Upstreams: Upstreams{"a": Pool{Backends: []Backend{{Address: "127.0.0.1:1"}}}},
+		Routes:    Routes{Match("/*").ProxyTo("a")},
+	}
+}
+
+// TestHTTP01RequiresPlainListener — the pinned manager's token table is
+// layered onto plain HTTP listeners only, so an HTTPS-only config can
+// never complete an HTTP-01 challenge; it must fail at resolve instead of
+// burning a failed validation per start. The bind address is not checked:
+// RFC 8555 §8.3 fixes the validator to port 80, but operators port-map.
+func TestHTTP01RequiresPlainListener(t *testing.T) {
+	t.Parallel()
+	pinned := func() ListenerOption {
+		return AutoTLS("foo.example.com").HTTP01().Email("x@x").Storage("/v")
+	}
+	_, err := Resolve(multiListenerConfig(HTTPS(":443", pinned())))
+	if err == nil {
+		t.Fatal("HTTP-01 source without a plain HTTP listener must not resolve")
+	}
+	if !strings.Contains(err.Error(), "requires a plain HTTP listener") {
+		t.Errorf("error %v missing the reason", err)
+	}
+	if !strings.Contains(err.Error(), "foo.example.com") {
+		t.Errorf("error must name the source's domains: %v", err)
+	}
+
+	mustResolve(t, multiListenerConfig(
+		HTTP(":8080"), // port-mapped to 80 upstream; the address is not checked
+		HTTPS(":443", pinned()),
+	))
+	mustResolve(t, multiListenerConfig(
+		HTTP(":80").RedirectTo("https"), // challenges are served ahead of the redirect
+		HTTPS(":443", pinned()),
+	))
+	mustResolve(t, multiListenerConfig(
+		HTTPS(":443", AutoTLS("foo.example.com").Email("x@x").Storage("/v")),
+	)) // the automatic policy may still reach HTTP-01, but never only that
+}
+
+// TestACMEDomainClaimedOnTwoListeners — one manager is built per AutoTLS
+// source, so two listeners claiming one domain race to issue it and
+// overwrite each other's stored key pair. Static hosts share no issuance
+// state and stay per-listener.
+func TestACMEDomainClaimedOnTwoListeners(t *testing.T) {
+	t.Parallel()
+	_, err := Resolve(multiListenerConfig(
+		HTTPS(":443", AutoTLS("dup.example").Email("x@x").Storage("/v")),
+		HTTPS(":8443", AutoTLS("DUP.example.").Email("x@x").Storage("/v")),
+	))
+	if err == nil || !strings.Contains(err.Error(), "two listeners") {
+		t.Errorf("duplicate ACME domain across listeners: %v", err)
+	}
+
+	mustResolve(t, multiListenerConfig(
+		HTTPS(":443", StaticTLSFor("dup.example", "c.pem", "k.pem")),
+		HTTPS(":8443", StaticTLSFor("dup.example", "c.pem", "k.pem")),
+	))
+}
+
+// TestPinnedACMEAccountEmailMismatch — pinned sources sharing
+// <storage>/<challenge>/account.key share one ACME account, and
+// Client.Register returns ErrAccountAlreadyExists for the second without
+// applying its contact, so one email would be lost by map iteration order.
+// Different challenge subdirectories are different accounts and may differ.
+func TestPinnedACMEAccountEmailMismatch(t *testing.T) {
+	t.Parallel()
+	_, err := Resolve(multiListenerConfig(
+		HTTPS(":443", AutoTLS("a.example").Email("a@example.com").Storage("/v").CloudflareDNS01("tok")),
+		HTTPS(":8443", AutoTLS("b.example").Email("b@example.com").Storage("/v").CloudflareDNS01("tok")),
+	))
+	if err == nil || !strings.Contains(err.Error(), "email mismatch") {
+		t.Errorf("divergent email on one ACME account: %v", err)
+	}
+
+	mustResolve(t, multiListenerConfig(
+		HTTP(":80"),
+		HTTPS(":443", AutoTLS("a.example").Email("a@example.com").Storage("/v").CloudflareDNS01("tok")),
+		HTTPS(":8443", AutoTLS("b.example").Email("b@example.com").Storage("/v").HTTP01()),
+	))
 }
