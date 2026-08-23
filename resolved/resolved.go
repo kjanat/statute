@@ -78,7 +78,25 @@ type AutoTLS struct {
 	Email   string
 	Storage string
 	DNS01   *CloudflareDNS01
+
+	// Challenge is the source's ACME challenge policy. ChallengeDNS01 holds
+	// exactly when DNS01 is non-nil.
+	Challenge Challenge
 }
+
+// Challenge identifies the ACME challenge policy of one AutoTLS source.
+type Challenge int
+
+const (
+	// ChallengeAuto lets the runtime pick: TLS-ALPN-01 where the listener
+	// can advertise it, with fallback to HTTP-01 (default).
+	ChallengeAuto Challenge = iota
+	// ChallengeHTTP01 pins issuance to HTTP-01. TLS-ALPN-01 is neither
+	// advertised on the listener for this source nor answered for its names.
+	ChallengeHTTP01
+	// ChallengeDNS01 issues over DNS-01 via the configured DNS provider.
+	ChallengeDNS01
+)
 
 // CloudflareDNS01 is the resolved DNS-01 configuration. When non-nil, the
 // runtime uses Cloudflare's DNS API to satisfy challenges instead of HTTP-01.

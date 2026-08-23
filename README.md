@@ -336,7 +336,7 @@ statute.HTTPS(":443",
 )
 ```
 
-`HTTP01()` makes the default challenge explicit where sources mix; calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources or a second hostless fallback.
+`HTTP01()` pins a source to the HTTP-01 challenge: the listener stops advertising `acme-tls/1` on its behalf and refuses TLS-ALPN-01 probes for its names, so issuance always falls back to HTTP-01 (the default policy without it is automatic: TLS-ALPN-01 where advertisable, HTTP-01 otherwise). Calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources or a second hostless fallback. All names — AutoTLS domains, static hosts, and incoming SNI — are canonicalised the same way (case, trailing dot, IDNA A-label), so `foo.example.com.` and `FOO.example.com` are one name to both routing and duplicate detection.
 
 ### HTTP/3
 

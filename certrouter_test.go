@@ -41,9 +41,7 @@ func TestResolveMultiSourceTLS(t *testing.T) {
 	if n := len(l.AutoTLSSources); n != 2 {
 		t.Fatalf("auto sources: got %d, want 2", n)
 	}
-	if l.AutoTLSSources[0].DNS01 != nil || l.AutoTLSSources[1].DNS01 == nil {
-		t.Errorf("challenge policies out of order: %+v", l.AutoTLSSources)
-	}
+	assertChallengePolicies(t, l)
 	if n := len(l.StaticTLSSources); n != 2 {
 		t.Fatalf("static sources: got %d, want 2", n)
 	}
@@ -55,6 +53,21 @@ func TestResolveMultiSourceTLS(t *testing.T) {
 	}
 	if l.AutoTLS != l.AutoTLSSources[0] || l.StaticTLS != l.StaticTLSSources[0] {
 		t.Errorf("singular fields must mirror the first source of each kind")
+	}
+}
+
+// assertChallengePolicies checks the two ACME sources of the multi-source
+// fixture kept their declaration order and resolved challenge policies.
+func assertChallengePolicies(t *testing.T, l *resolved.Listener) {
+	t.Helper()
+	if l.AutoTLSSources[0].DNS01 != nil || l.AutoTLSSources[1].DNS01 == nil {
+		t.Errorf("challenge policies out of order: %+v", l.AutoTLSSources)
+	}
+	if got := l.AutoTLSSources[0].Challenge; got != resolved.ChallengeHTTP01 {
+		t.Errorf("HTTP01() source challenge: got %v, want ChallengeHTTP01", got)
+	}
+	if got := l.AutoTLSSources[1].Challenge; got != resolved.ChallengeDNS01 {
+		t.Errorf("DNS-01 source challenge: got %v, want ChallengeDNS01", got)
 	}
 }
 
@@ -326,6 +339,141 @@ func TestNewServerStaticSourceLoadsEagerly(t *testing.T) {
 	}
 }
 
+// TestCanonicalTLSName — one canonicalisation for configured names and
+// ClientHello lookups: case, one trailing dot, IDNA A-labels, and wildcard
+// suffixes, with a lowercase fallback for names the IDNA lookup profile
+// rejects.
+func TestCanonicalTLSName(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"foo.example.com.", "foo.example.com"},
+		{"FOO.EXAMPLE.COM", "foo.example.com"},
+		{"münchen.example", "xn--mnchen-3ya.example"},
+		{"*.example.com.", "*.example.com"},
+		{"*.MÜNCHEN.example", "*.xn--mnchen-3ya.example"},
+		{"foo_bar.internal", "foo_bar.internal"}, // IDNA-invalid: lowercase fallback
+		{"  x.example  ", "x.example"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := canonicalTLSName(c.in); got != c.want {
+			t.Errorf("canonicalTLSName(%q): got %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestResolveCanonicalisesAutoTLSDomains — a trailing dot, mixed case, or
+// Unicode label in an AutoTLS domain must not defeat routing or duplicate
+// detection: the resolved domains carry the canonical form, and a name
+// spelled two ways still counts as one claim.
+func TestResolveCanonicalisesAutoTLSDomains(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, tlsRouterConfig(
+		AutoTLS("FOO.Example.COM.", "münchen.example").Email("x@x").Storage("/v"),
+	))
+	got := r.Listeners[0].AutoTLSSources[0].Domains
+	want := []string{"foo.example.com", "xn--mnchen-3ya.example"}
+	if !slices.Equal(got, want) {
+		t.Errorf("domains: got %v, want %v", got, want)
+	}
+
+	_, err := Resolve(tlsRouterConfig(
+		AutoTLS("foo.example.com.").Email("x@x").Storage("/v"),
+		StaticTLSFor("foo.example.com", "c.pem", "k.pem"),
+	))
+	if err == nil || !strings.Contains(err.Error(), "both claim") {
+		t.Errorf("trailing-dot spelling must still collide: %v", err)
+	}
+
+	_, err = Resolve(tlsRouterConfig(AutoTLS(".").Email("x@x").Storage("/v")))
+	if err == nil || !strings.Contains(err.Error(), "invalid domain") {
+		t.Errorf("dot-only domain: %v", err)
+	}
+}
+
+// TestCertRouterCanonicalLookup — a source configured with a trailing dot
+// or IDN U-label serves the ClientHello spelling of the same name.
+func TestCertRouterCanonicalLookup(t *testing.T) {
+	t.Parallel()
+	var hit string
+	tag := func(name string) certGetter {
+		return func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			hit = name
+			return &tls.Certificate{}, nil
+		}
+	}
+	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
+	cr.add("foo.example.com.", tag("dotted"))
+	cr.add("münchen.example", tag("idn"))
+
+	cases := []struct{ sni, want string }{
+		{"foo.example.com", "dotted"},
+		{"xn--mnchen-3ya.example", "idn"},
+	}
+	for _, c := range cases {
+		hit = ""
+		if _, err := cr.GetCertificate(&tls.ClientHelloInfo{ServerName: c.sni}); err != nil {
+			t.Fatalf("SNI %q: %v", c.sni, err)
+		}
+		if hit != c.want {
+			t.Errorf("SNI %q served by %q, want %q", c.sni, hit, c.want)
+		}
+	}
+}
+
+// TestHTTP01PinIsEnforced — HTTP01() is a policy, not a comment: the
+// listener does not advertise acme-tls/1 for a pinned source, and a
+// TLS-ALPN-01 challenge probe for its name is refused before it can reach
+// the shared autocert manager, forcing issuance to fall back to HTTP-01.
+func TestHTTP01PinIsEnforced(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, tlsRouterConfig(
+		AutoTLS("foo.example.com").HTTP01().Email("x@x").Storage("/v"),
+	))
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	l := r.Listeners[0]
+	cr := srv.certRouters[":443"]
+	if cr.hasACMETLS {
+		t.Error("pinned HTTP-01 source must not mark the listener TLS-ALPN-capable")
+	}
+	if protos := certRouterTLSConfig(cr, l).NextProtos; slices.Contains(protos, "acme-tls/1") {
+		t.Errorf("ALPN advertises acme-tls/1 for a pinned source: %v", protos)
+	}
+	_, err = cr.GetCertificate(&tls.ClientHelloInfo{
+		ServerName:      "foo.example.com",
+		SupportedProtos: []string{"acme-tls/1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "pinned to HTTP-01") {
+		t.Errorf("challenge probe: %v", err)
+	}
+}
+
+// TestAutoChallengeStaysTLSALPNCapable — without HTTP01() the automatic
+// policy keeps advertising acme-tls/1, exactly as before.
+func TestAutoChallengeStaysTLSALPNCapable(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, tlsRouterConfig(
+		AutoTLS("foo.example.com").Email("x@x").Storage("/v"),
+	))
+	if got := r.Listeners[0].AutoTLSSources[0].Challenge; got != resolved.ChallengeAuto {
+		t.Errorf("default challenge: got %v, want ChallengeAuto", got)
+	}
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	cr := srv.certRouters[":443"]
+	if !cr.hasACMETLS {
+		t.Error("automatic source must keep the listener TLS-ALPN-capable")
+	}
+	if protos := certRouterTLSConfig(cr, r.Listeners[0]).NextProtos; !slices.Contains(protos, "acme-tls/1") {
+		t.Errorf("ALPN must advertise acme-tls/1 for the automatic policy: %v", protos)
+	}
+}
+
 // TestBuildCertRouterGuards — the router refuses to index an ACME source
 // whose runtime manager is missing; these states are internal invariant
 // violations, so they must fail loudly instead of handing out nil getters.
@@ -333,16 +481,50 @@ func TestBuildCertRouterGuards(t *testing.T) {
 	t.Parallel()
 	s := &server{} // no managers initialised
 	dns01 := &resolved.Listener{AutoTLSSources: []*resolved.AutoTLS{
-		{Domains: []string{"*.a.example"}, DNS01: &resolved.CloudflareDNS01{APIToken: "t"}},
+		{
+			Domains:   []string{"*.a.example"},
+			DNS01:     &resolved.CloudflareDNS01{APIToken: "t"},
+			Challenge: resolved.ChallengeDNS01,
+		},
 	}}
 	if _, err := s.buildCertRouter(dns01); err == nil || !strings.Contains(err.Error(), "dns01 manager not initialised") {
 		t.Errorf("dns01 source without manager: %v", err)
 	}
-	http01 := &resolved.Listener{AutoTLSSources: []*resolved.AutoTLS{
+	auto := &resolved.Listener{AutoTLSSources: []*resolved.AutoTLS{
 		{Domains: []string{"a.example"}},
 	}}
-	if _, err := s.buildCertRouter(http01); err == nil || !strings.Contains(err.Error(), "manager not initialised") {
-		t.Errorf("HTTP-01 source without manager: %v", err)
+	if _, err := s.buildCertRouter(auto); err == nil || !strings.Contains(err.Error(), "manager not initialised") {
+		t.Errorf("automatic source without manager: %v", err)
+	}
+	pinned := &resolved.Listener{AutoTLSSources: []*resolved.AutoTLS{
+		{Domains: []string{"a.example"}, Challenge: resolved.ChallengeHTTP01},
+	}}
+	if _, err := s.buildCertRouter(pinned); err == nil || !strings.Contains(err.Error(), "manager not initialised") {
+		t.Errorf("pinned source without manager: %v", err)
+	}
+}
+
+// TestPinHTTP01PassesOrdinaryHellos — the pin refuses only the TLS-ALPN-01
+// challenge probe; every ordinary handshake reaches the wrapped getter.
+func TestPinHTTP01PassesOrdinaryHellos(t *testing.T) {
+	t.Parallel()
+	called := false
+	g := pinHTTP01(func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		called = true
+		return &tls.Certificate{}, nil
+	})
+	if _, err := g(&tls.ClientHelloInfo{
+		ServerName:      "a.example",
+		SupportedProtos: []string{"h2", "http/1.1"},
+	}); err != nil || !called {
+		t.Errorf("ordinary hello: err=%v called=%v", err, called)
+	}
+	called = false
+	if _, err := g(&tls.ClientHelloInfo{
+		ServerName:      "a.example",
+		SupportedProtos: []string{"acme-tls/1"},
+	}); err == nil || called {
+		t.Errorf("challenge hello: err=%v called=%v (must refuse before the getter)", err, called)
 	}
 }
 

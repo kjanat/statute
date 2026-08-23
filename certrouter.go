@@ -6,8 +6,31 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/net/idna"
+
 	"statute.kjanat.dev/resolved"
 )
+
+// canonicalTLSName reduces a configured or ClientHello TLS name to the one
+// form certificate routing compares: trimmed, one trailing dot stripped,
+// and the IDNA A-label lookup form — the same canonicalisation autocert
+// applies — falling back to plain lowercasing for names the IDNA profile
+// rejects, so unusual-but-working static hostnames keep matching. A
+// leading "*." wildcard marker is preserved and its suffix canonicalised
+// on its own. Resolve applies it to every AutoTLS domain and static host,
+// and the router applies it to every SNI lookup, so both sides always
+// agree.
+func canonicalTLSName(name string) string {
+	n := strings.TrimSuffix(strings.TrimSpace(name), ".")
+	prefix := ""
+	if strings.HasPrefix(n, "*.") {
+		prefix, n = "*.", n[2:]
+	}
+	if a, err := idna.Lookup.ToASCII(n); err == nil {
+		n = a
+	}
+	return prefix + strings.ToLower(n)
+}
 
 // certGetter resolves the certificate for one TLS handshake. Both
 // autocert.Manager.GetCertificate and dns01Manager.GetCertificate have this
@@ -57,13 +80,22 @@ func (s *server) buildCertRouter(l *resolved.Listener) (*certRouter, error) {
 func (cr *certRouter) indexACMESources(s *server, sources []*resolved.AutoTLS) error {
 	for _, a := range sources {
 		var g certGetter
-		if a.DNS01 != nil {
+		switch {
+		// Manager selection keys on the DNS-01 config itself, matching
+		// initDNS01Managers; Challenge is its resolved mirror and governs
+		// only the TLS-ALPN posture below.
+		case a.DNS01 != nil:
 			dm := s.dns01Managers[a]
 			if dm == nil {
 				return errors.New("auto_tls: dns01 manager not initialised")
 			}
 			g = dm.GetCertificate
-		} else {
+		case a.Challenge == resolved.ChallengeHTTP01:
+			if s.autocertMgr == nil {
+				return errors.New("auto_tls: manager not initialised")
+			}
+			g = pinHTTP01(s.autocertMgr.GetCertificate)
+		default: // ChallengeAuto
 			if s.autocertMgr == nil {
 				return errors.New("auto_tls: manager not initialised")
 			}
@@ -75,6 +107,29 @@ func (cr *certRouter) indexACMESources(s *server, sources []*resolved.AutoTLS) e
 		}
 	}
 	return nil
+}
+
+// pinHTTP01 wraps an autocert getter for a source pinned to the HTTP-01
+// challenge. The shared autocert manager always attempts TLS-ALPN-01 first
+// when the CA offers it, so pinning is enforced from the outside: the
+// listener does not advertise acme-tls/1 for this source (hasACMETLS stays
+// false), and — because another source on the same listener may still
+// advertise it — a challenge hello that reaches the source anyway is
+// refused, failing the manager's TLS-ALPN attempt so issuance falls back
+// to HTTP-01.
+func pinHTTP01(g certGetter) certGetter {
+	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if isACMEChallengeHello(hello) {
+			return nil, errors.New("tls: source pinned to HTTP-01; TLS-ALPN-01 challenge refused")
+		}
+		return g(hello)
+	}
+}
+
+// isACMEChallengeHello mirrors autocert's own detection of a TLS-ALPN-01
+// challenge probe: the CA offers exactly the ACME ALPN protocol.
+func isACMEChallengeHello(hello *tls.ClientHelloInfo) bool {
+	return len(hello.SupportedProtos) == 1 && hello.SupportedProtos[0] == alpnACMETLS
 }
 
 func (cr *certRouter) indexStaticSources(sources []*resolved.StaticTLS) error {
@@ -94,7 +149,7 @@ func (cr *certRouter) indexStaticSources(sources []*resolved.StaticTLS) error {
 }
 
 func (cr *certRouter) add(pattern string, g certGetter) {
-	p := strings.ToLower(pattern)
+	p := canonicalTLSName(pattern)
 	if strings.HasPrefix(p, "*.") {
 		cr.wildcards[p] = g
 		return
@@ -108,7 +163,7 @@ func (cr *certRouter) add(pattern string, g certGetter) {
 // 6125 certificate semantics, so the candidate pattern for a host is a
 // single map lookup on its first label replaced by "*".
 func (cr *certRouter) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	host := strings.ToLower(strings.TrimSuffix(hello.ServerName, "."))
+	host := canonicalTLSName(hello.ServerName)
 	if g, ok := cr.exact[host]; ok {
 		return g(hello)
 	}
@@ -127,10 +182,11 @@ func (cr *certRouter) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certifica
 }
 
 // certRouterTLSConfig builds the listener's *tls.Config around the router.
-// ALPN advertises h2 when HTTP/2 is enabled, and acme-tls/1 when an HTTP-01
-// ACME source must answer TLS-ALPN-01 challenges — unless the listener sits
-// behind Cloudflare, whose edge terminates TLS and cannot forward the
-// challenge protocol.
+// ALPN advertises h2 when HTTP/2 is enabled, and acme-tls/1 when a
+// ChallengeAuto ACME source may answer TLS-ALPN-01 challenges — sources
+// pinned to HTTP-01 or DNS-01 never advertise it, and neither does a
+// listener behind Cloudflare, whose edge terminates TLS and cannot forward
+// the challenge protocol.
 func certRouterTLSConfig(cr *certRouter, l *resolved.Listener) *tls.Config {
 	cfg := &tls.Config{
 		GetCertificate: cr.GetCertificate,

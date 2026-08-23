@@ -377,13 +377,14 @@ func resolveListenerTLS(l *Listener, rl *resolved.Listener) error {
 // could never be selected. An exact name overlapping a wildcard from
 // another source is fine — the exact name wins at handshake time.
 func validateTLSSourceCoverage(rl *resolved.Listener) error {
+	// Sources arrive with canonical names (canonicalTLSName), so claims
+	// compare byte-for-byte.
 	claimed := make(map[string]string)
 	claim := func(name, source string) error {
-		key := strings.ToLower(name)
-		if prev, ok := claimed[key]; ok {
+		if prev, ok := claimed[name]; ok {
 			return fmt.Errorf("tls: %s and %s both claim %q; each SNI name may have one source per listener", prev, source, name)
 		}
-		claimed[key] = source
+		claimed[name] = source
 		return nil
 	}
 	for i, a := range rl.AutoTLSSources {
@@ -424,12 +425,17 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	if err := validateAutoTLSChallenge(a); err != nil {
 		return nil, err
 	}
+	domains, err := canonicalAutoTLSDomains(a.Domains)
+	if err != nil {
+		return nil, err
+	}
 	at := &resolved.AutoTLS{
-		Domains: append([]string(nil), a.Domains...),
+		Domains: domains,
 		Email:   a.email,
 		Storage: a.storage,
 	}
-	if a.dns01 != nil {
+	switch {
+	case a.dns01 != nil:
 		if a.dns01.apiToken == "" {
 			return nil, errors.New("auto_tls.cloudflare_dns01: api token is required")
 		}
@@ -437,8 +443,26 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 			APIToken: a.dns01.apiToken,
 			ZoneID:   a.dns01.zoneID,
 		}
+		at.Challenge = resolved.ChallengeDNS01
+	case a.explicitHTTP01:
+		at.Challenge = resolved.ChallengeHTTP01
 	}
 	return at, nil
+}
+
+// canonicalAutoTLSDomains lowers every configured ACME domain to its
+// canonical routing form (case, trailing dot, IDNA A-label), rejecting
+// names that canonicalise to nothing.
+func canonicalAutoTLSDomains(domains []string) ([]string, error) {
+	canon := make([]string, len(domains))
+	for i, d := range domains {
+		cd := canonicalTLSName(d)
+		if cd == "" || cd == "*." {
+			return nil, fmt.Errorf("auto_tls: invalid domain %q", d)
+		}
+		canon[i] = cd
+	}
+	return canon, nil
 }
 
 // validateAutoTLSChallenge rejects contradictory or unsatisfiable challenge
@@ -450,7 +474,7 @@ func validateAutoTLSChallenge(a *AutoTLSConfig) error {
 	}
 	if a.dns01 == nil {
 		for _, d := range a.Domains {
-			if strings.HasPrefix(d, "*.") {
+			if strings.HasPrefix(strings.TrimSpace(d), "*.") {
 				return fmt.Errorf("auto_tls: wildcard domain %q requires CloudflareDNS01; HTTP-01 cannot issue wildcard certificates", d)
 			}
 		}
@@ -459,15 +483,16 @@ func validateAutoTLSChallenge(a *AutoTLSConfig) error {
 }
 
 // resolveStaticTLS validates that both cert and key paths are set and
-// produces the resolved StaticTLS form. The SNI host is canonicalised to
-// lower case; a StaticTLSFor call whose host is empty is rejected rather
-// than silently becoming the fallback source.
+// produces the resolved StaticTLS form. The SNI host is canonicalised via
+// canonicalTLSName so it compares equal to AutoTLS domains and ClientHello
+// names; a StaticTLSFor call whose host is empty is rejected rather than
+// silently becoming the fallback source.
 func resolveStaticTLS(s *StaticTLSConfig) (*resolved.StaticTLS, error) {
 	if s.CertFile == "" || s.KeyFile == "" {
 		return nil, errors.New("static_tls: cert_file and key_file required")
 	}
-	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s.Host), "."))
-	if s.hostSet && host == "" {
+	host := canonicalTLSName(s.Host)
+	if s.hostSet && (host == "" || host == "*.") {
 		return nil, errors.New("static_tls: host required; use StaticTLS for the hostless fallback")
 	}
 	return &resolved.StaticTLS{
