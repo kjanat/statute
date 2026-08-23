@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -129,6 +130,38 @@ func TestAccessLog_DisabledIsNoOp(t *testing.T) {
 
 // TestStats_PrometheusFormat — ensure the WritePrometheus output is
 // parseable text with the canonical counter names.
+// statusCapturingWriter records every status code forwarded to it — including
+// the informational ones httptest.ResponseRecorder would latch on.
+type statusCapturingWriter struct {
+	http.ResponseWriter
+	codes []int
+}
+
+func (w *statusCapturingWriter) WriteHeader(code int) { w.codes = append(w.codes, code) }
+
+// TestStatusRecorderInformationalStatus — a 1xx preview passes through
+// without latching, so the final status is still forwarded and is what the
+// access log and metrics record. Latching on the preview would swallow the
+// final WriteHeader; net/http would then commit an implicit 200, turning
+// e.g. a 404 behind these middlewares into a success.
+func TestStatusRecorderInformationalStatus(t *testing.T) {
+	t.Parallel()
+	spy := &statusCapturingWriter{ResponseWriter: httptest.NewRecorder()}
+	ww := &statusRecorder{ResponseWriter: spy, status: 200}
+	ww.WriteHeader(http.StatusEarlyHints)
+	ww.WriteHeader(http.StatusNotFound)
+	// A duplicate final status stays swallowed, shielding the underlying
+	// writer from a superfluous WriteHeader.
+	ww.WriteHeader(http.StatusInternalServerError)
+
+	if want := []int{http.StatusEarlyHints, http.StatusNotFound}; !slices.Equal(spy.codes, want) {
+		t.Errorf("forwarded codes: got %v, want %v", spy.codes, want)
+	}
+	if ww.status != http.StatusNotFound {
+		t.Errorf("recorded status: got %d, want %d", ww.status, http.StatusNotFound)
+	}
+}
+
 // TestStatusRecorderReadFrom — the recorder implements io.ReaderFrom so a
 // body copy keeps net/http's sendfile path, and an un-preceded copy still
 // counts as the implicit 200.

@@ -29,6 +29,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The access log and metrics record the final response status when an
+  upstream sends a 1xx preview. The status recorder used to latch on the
+  informational code, swallowing the final `WriteHeader` — behind those
+  middlewares, net/http then committed an implicit 200 whatever the handler
+  actually answered, and an Early Hints 404 reached the client as a success.
 - Exact-path static routes serve the file their pattern names instead of the
   served directory's root. `Match("/robots.txt").Serve("./public")` now serves
   `./public/robots.txt`; prefix stripping is applied only to trailing-wildcard

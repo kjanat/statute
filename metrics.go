@@ -78,8 +78,17 @@ type statusRecorder struct {
 	wroteHeader bool
 }
 
-// WriteHeader records the first status code written, then forwards it.
+// WriteHeader records the first final status written, then forwards it. A
+// 1xx is informational: net/http keeps the response open, so it passes
+// through without latching — the final status is still to come, and it is
+// the one the access log and metrics must see. Latching on the preview
+// would also swallow the final WriteHeader, leaving net/http to commit an
+// implicit 200 whatever the handler actually answered.
 func (s *statusRecorder) WriteHeader(code int) {
+	if code < 200 {
+		s.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if s.wroteHeader {
 		return
 	}
