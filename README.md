@@ -345,7 +345,28 @@ statute.HTTPS(":443",
 )
 ```
 
-`HTTP01()` pins a source to the HTTP-01 challenge: instead of the shared autocert manager — whose challenge preference is hard-coded to attempt TLS-ALPN-01 first — the source issues through statute's in-tree ACME manager (the same machinery as DNS-01), which only ever attempts HTTP-01 and never advertises `acme-tls/1`. The default policy without it stays automatic: TLS-ALPN-01 where advertisable, HTTP-01 otherwise. Calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources, a second hostless fallback, and a pinned source in a config with no plain HTTP listener to serve its challenge tokens. All names — AutoTLS domains, static hosts, and incoming SNI — are canonicalised the same way (case, trailing dots, IDNA A-label), so `foo.example.com.` and `FOO.example.com` are one name to both routing and duplicate detection; ACME domains must additionally survive the strict IDNA lookup, since a name autocert's host policy would drop can never be issued. Across listeners, resolve also rejects two pinned sources that would persist one domain to the same `<storage>/<challenge>/` path (their managers would race to rename over one stored key pair; the same domain on two automatic listeners stays legal — those feed one shared autocert manager) and pinned sources that share an ACME account directory but disagree on `Email`.
+`HTTP01()` pins a source to the HTTP-01 challenge: instead of the shared autocert manager — whose challenge preference is hard-coded to attempt TLS-ALPN-01 first — the source issues through statute's in-tree ACME manager (the same machinery as DNS-01), which only ever attempts HTTP-01 and never advertises `acme-tls/1`. The default policy without it stays automatic: TLS-ALPN-01 where advertisable, HTTP-01 otherwise. Calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources, a second hostless fallback, and a pinned source in a config with no plain HTTP listener to serve its challenge tokens. All names — AutoTLS domains, static hosts, and incoming SNI — are canonicalised the same way (case, trailing dots, IDNA A-label), so `foo.example.com.` and `FOO.example.com` are one name to both routing and duplicate detection; ACME domains must additionally survive the strict IDNA lookup, since a name autocert's host policy would drop can never be issued. Across listeners, resolve also rejects two pinned sources that would persist one domain to the same `<storage>/<challenge>/` path (their managers would race to rename over one stored key pair; the same domain on two automatic listeners stays legal — those feed one shared autocert manager) and pinned sources that share an ACME account directory but disagree on `Email`. The shapes it deliberately allows — one domain issued by two pinned sources with distinct storage roots or challenge kinds, or pinned on one source and automatic on another — are reported by the lint rule `TLS003`: each manager orders and renews that domain on its own, spending Let's Encrypt's duplicate-certificate limit once per manager.
+
+**Downstream TLS policy.** `TLSPolicy` sets the protocol version window and the permitted TLS 1.2 cipher suites for one HTTPS listener:
+
+```go
+statute.HTTPS(":443",
+    statute.AutoTLS("foo.example.test").
+        Email("ops@example.test").Storage("/var/lib/statute/acme"),
+    statute.TLSPolicy{
+        MinVersion: statute.TLS12,
+        MaxVersion: statute.TLS13,
+        CipherSuites: []statute.CipherSuite{
+            statute.TLSECDHEECDSAWithAES128GCM,
+            statute.TLSECDHERSAWithAES128GCM,
+        },
+    },
+)
+```
+
+Without a policy a listener keeps the defaults it has always had: minimum TLS 1.2, no upper bound, and Go's own TLS 1.2 suite selection. `MinVersion` and `MaxVersion` accept `statute.TLS12` or `statute.TLS13`, and resolve rejects every other value — there are deliberately no TLS 1.0/1.1 constants, so no option lowers the floor. `CipherSuites` governs TLS 1.2 handshakes only: TLS 1.3 suites are fixed by the protocol and `crypto/tls` accepts no override for them, so listing suites alongside `MinVersion: statute.TLS13` is a resolve error rather than a setting that quietly does nothing. Declaration order is preserved in the resolved schema, but `crypto/tls` ranks the listed suites itself when negotiating. All ten `TLSECDHE*` constants are ECDHE; six are AEAD (AES-GCM, ChaCha20-Poly1305) and four are CBC, which HTTP/2 never negotiates (RFC 9113).
+
+Resolve also rejects the combinations that could never serve. A suite list must include `TLSECDHEECDSAWithAES128GCM` or `TLSECDHERSAWithAES128GCM`: `net/http` checks every TLS 1.2 suite override for one of those two before it will serve TLS at all — HTTP/2 enabled or not — so a listener without them would bind and then never answer a handshake. `HTTP3()` under `MaxVersion: statute.TLS12` is an error, since QUIC is defined over TLS 1.3 alone; so is an RSA-only suite list under a 1.2 cap on a listener whose sources are all ACME, because ACME-issued certificates are always ECDSA and an `ECDHE_RSA` suite needs an RSA certificate to sign the key exchange. An unsupported version, an inverted window, an unknown suite, a suite listed twice, a second policy on one listener, and a policy on a redirect-only listener (which terminates no TLS) are errors too. One policy covers the whole listener — every TLS source on it and the HTTP/3 server sharing its certificates. The resolved schema and `-export` output carry it normalised: `"1.2"`/`"1.3"` for the versions, IANA names in declaration order for the suites.
 
 ### HTTP/3
 

@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Configurable downstream TLS protocol policy: `statute.TLSPolicy` is a
+  listener option carrying `MinVersion`, `MaxVersion` (`statute.TLS12` or
+  `statute.TLS13`; there are deliberately no TLS 1.0/1.1 constants and
+  resolve rejects any other value, so the floor cannot be lowered) and
+  `CipherSuites`, a list of ten ECDHE `statute.TLSECDHE*` constants.
+  Suites govern TLS 1.2 handshakes only — crypto/tls accepts no TLS 1.3
+  suite override — so pinning them under `MinVersion: TLS13` is a resolve
+  error rather than a dead setting. So are an unsupported version, an
+  inverted version window, an unknown or repeated suite, a second policy
+  on one listener, a policy on a redirect-only listener, `HTTP3()` under a
+  1.2 cap (QUIC is defined over TLS 1.3), a suite list omitting both
+  AES-128-GCM suites (net/http refuses to serve TLS with such an override
+  whether or not HTTP/2 is enabled, so the listener would bind and never
+  answer a handshake), and an RSA-only suite list under a 1.2 cap on a
+  listener whose sources are all ACME, whose certificates are always
+  ECDSA. The policy is applied where every listener's `tls.Config` is
+  built, so the TCP and QUIC listeners share it, and the resolved schema
+  gains `Listener.TLSPolicy` carrying the normalised form (`"1.2"`/`"1.3"`
+  and IANA suite names in declaration order) for the JSON export.
 - Lint rule `TLS003` (warning): a domain issued by more than one ACME
   certificate manager — two pinned sources with distinct storage roots or
   challenge kinds, or a pinned source and an automatic one — orders and
