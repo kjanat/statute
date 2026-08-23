@@ -151,15 +151,9 @@ func RewritePath(pattern, replacement string) *rewritePathMW {
 }
 
 // pathOp is one resolved path transform, compiled out of the middleware list
-// when the route is built. Only the fields its op uses are populated.
-type pathOp struct {
-	op          resolved.MiddlewareType
-	prefix      string
-	re          *regexp.Regexp
-	replacement string
-	query       string
-	querySet    bool
-}
+// when the route is built. Each closure captures exactly the fields its
+// operation needs and applies them to the request URL in place.
+type pathOp func(*url.URL)
 
 // withPathRewrite hoists a route's path rewrites out of the middleware chain
 // and applies them at the route's edge, before anything else on the route
@@ -205,7 +199,7 @@ func withPathRewrite(mws []resolved.Middleware, next http.Handler) http.Handler 
 		r2.URL = new(url.URL)
 		*r2.URL = *r.URL
 		for _, op := range ops {
-			op.apply(r2.URL)
+			op(r2.URL)
 		}
 		if r2.URL.Path == "" {
 			r2.URL.Path = "/"
@@ -220,38 +214,24 @@ func withPathRewrite(mws []resolved.Middleware, next http.Handler) http.Handler 
 // pattern that does not compile.
 func compilePathOp(m resolved.Middleware) (pathOp, bool) {
 	switch m.Type {
-	case resolved.MWStripPrefix, resolved.MWAddPrefix:
-		return pathOp{op: m.Type, prefix: m.PathPrefix}, true
+	case resolved.MWStripPrefix:
+		prefix := m.PathPrefix
+		return func(u *url.URL) { stripPathPrefix(u, prefix) }, true
+	case resolved.MWAddPrefix:
+		prefix := m.PathPrefix
+		return func(u *url.URL) { addPathPrefix(u, prefix) }, true
 	case resolved.MWReplacePath:
-		return pathOp{
-			op:          m.Type,
-			replacement: m.PathReplacement,
-			query:       m.PathQuery,
-			querySet:    m.PathQuerySet,
-		}, true
+		replacement, query, querySet := m.PathReplacement, m.PathQuery, m.PathQuerySet
+		return func(u *url.URL) { replaceURLPath(u, replacement, query, querySet) }, true
 	case resolved.MWRewritePath:
 		re, err := regexp.Compile(m.PathPattern)
 		if err != nil {
-			return pathOp{}, false
+			return nil, false
 		}
-		return pathOp{op: m.Type, re: re, replacement: m.PathReplacement}, true
+		replacement := m.PathReplacement
+		return func(u *url.URL) { rewriteURLPath(u, re, replacement) }, true
 	default:
-		return pathOp{}, false
-	}
-}
-
-// apply performs this transform on u in place.
-func (p pathOp) apply(u *url.URL) {
-	switch p.op {
-	case resolved.MWStripPrefix:
-		stripPathPrefix(u, p.prefix)
-	case resolved.MWAddPrefix:
-		addPathPrefix(u, p.prefix)
-	case resolved.MWReplacePath:
-		replaceURLPath(u, p)
-	case resolved.MWRewritePath:
-		rewriteURLPath(u, p.re, p.replacement)
-	default:
+		return nil, false
 	}
 }
 
@@ -300,23 +280,23 @@ func addPathPrefix(u *url.URL, prefix string) {
 // form the operator wrote, and replaces the query only when the target carried
 // a "?". The unescape cannot fail for a resolver-produced configuration, which
 // validated it; a hand-built one that fails skips the operation.
-func replaceURLPath(u *url.URL, p pathOp) {
-	decoded, err := url.PathUnescape(p.replacement)
+func replaceURLPath(u *url.URL, replacement, query string, querySet bool) {
+	decoded, err := url.PathUnescape(replacement)
 	if err != nil {
 		return
 	}
 	u.Path = decoded
-	if p.replacement != decoded {
-		u.RawPath = p.replacement
+	if replacement != decoded {
+		u.RawPath = replacement
 	} else {
 		u.RawPath = ""
 	}
-	if p.querySet {
+	if querySet {
 		// ForceQuery rides along from the inbound URL through the clone; a
 		// request for "/x?" carries it set with an empty RawQuery, which
 		// keeps RequestURI() emitting the "?". Clearing it here is what lets
 		// ReplacePath("/x?") actually drop the query.
-		u.RawQuery = p.query
+		u.RawQuery = query
 		u.ForceQuery = false
 	}
 }
