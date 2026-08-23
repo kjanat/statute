@@ -258,6 +258,11 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	if l.BehindCloudflare {
 		handler = behindCloudflareMiddleware(handler)
 	}
+	// The per-peer trust policy wraps outermost for the same reason; when
+	// both are configured, clientIP consults this policy alone.
+	if len(l.TrustedProxies) > 0 {
+		handler = trustedProxyMiddleware(l, handler)
+	}
 	return handler
 }
 

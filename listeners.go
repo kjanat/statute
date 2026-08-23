@@ -6,11 +6,12 @@ type Listener struct {
 	scheme   string // "http" or "https"
 	redirect string // non-empty means this listener redirects to the named scheme
 
-	autoTLS     *AutoTLSConfig
-	staticTLS   *StaticTLSConfig
-	enableHTTP2 bool
-	http3Addr   string
-	behindCF    bool
+	autoTLS      *AutoTLSConfig
+	staticTLS    *StaticTLSConfig
+	enableHTTP2  bool
+	http3Addr    string
+	behindCF     bool
+	trustedProxy *TrustedProxyConfig
 }
 
 // HTTP starts an HTTP/1.1 listener declaration on the given address.
@@ -133,6 +134,41 @@ func HTTP3(addr string) ListenerOption { return http3Option{addr: addr} }
 
 func (h http3Option) applyListener(l *Listener) { l.http3Addr = h.addr }
 
+// TrustedProxyConfig marks CIDR ranges whose members may assert the real
+// client IP through a forwarded header. Build it with TrustedProxy.
+type TrustedProxyConfig struct {
+	cidrs  []string
+	header string
+}
+
+// TrustedProxy trusts the given CIDR ranges as forwarding proxies on this
+// listener. When the direct peer of a connection falls inside one of the
+// ranges, the client IP is read from the forwarded header (ClientIPHeader,
+// X-Forwarded-For by default); every other peer is its own client and its
+// forwarded headers are ignored. Direct clients and proxied traffic can
+// therefore share one listener without the headers becoming spoofable.
+//
+//	statute.HTTPS(":443",
+//	    statute.TrustedProxy("203.0.113.0/24").ClientIPHeader("CF-Connecting-IP"),
+//	)
+//
+// Of a multi-valued header, the last value counts: with one layer of
+// trusted proxies that is the address the proxy itself observed, while the
+// earlier values arrived from outside and remain client-controlled.
+func TrustedProxy(cidrs ...string) *TrustedProxyConfig {
+	return &TrustedProxyConfig{cidrs: cidrs}
+}
+
+// ClientIPHeader names the forwarded header consulted when the direct peer
+// is a trusted proxy. Defaults to X-Forwarded-For; a Cloudflare-fronted
+// listener typically wants CF-Connecting-IP.
+func (t *TrustedProxyConfig) ClientIPHeader(name string) *TrustedProxyConfig {
+	t.header = name
+	return t
+}
+
+func (t *TrustedProxyConfig) applyListener(l *Listener) { l.trustedProxy = t }
+
 type behindCloudflareOption struct{}
 
 // BehindCloudflare marks the listener as sitting behind a Cloudflare proxy.
@@ -150,6 +186,12 @@ type behindCloudflareOption struct{}
 // True-Client-IP headers as the originating client address. Other proxy
 // headers (X-Forwarded-For) remain available but Cloudflare's are preferred
 // because they are populated by the proxy and not user-controllable.
+//
+// That trust applies to every connection on the listener. When the same
+// listener also receives direct traffic — a proxy-fronted hostname and a
+// direct-origin hostname sharing an address — prefer TrustedProxy with
+// Cloudflare's ranges and ClientIPHeader("CF-Connecting-IP"), which trusts
+// the headers only when the direct peer actually is Cloudflare.
 func BehindCloudflare() ListenerOption { return behindCloudflareOption{} }
 
 func (behindCloudflareOption) applyListener(l *Listener) { l.behindCF = true }

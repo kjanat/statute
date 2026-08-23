@@ -99,6 +99,12 @@ type jsonWriter interface {
 // listener that is not actually behind a trusted proxy — only enable trust
 // when you control the network path.
 func clientIP(r *http.Request) string {
+	// A listener-level TrustedProxy policy governs alone: it decides per
+	// peer whether forwarded headers count, so the blanket fallbacks below
+	// must not resurrect a header the policy just refused.
+	if p := trustedProxyFromContext(r); p != nil {
+		return p.clientIP(r)
+	}
 	if isBehindCloudflare(r) {
 		if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
 			return cf

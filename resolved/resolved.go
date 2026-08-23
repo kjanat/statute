@@ -53,6 +53,13 @@ type Listener struct {
 	// runtime suppresses TLS-ALPN-01 challenges (HTTP-01 only) and trusts
 	// CF-Connecting-IP / True-Client-IP for client IP attribution.
 	BehindCloudflare bool
+
+	// TrustedProxies are CIDR ranges whose members may assert the client IP
+	// through ClientIPHeader; peers outside them are their own clients and
+	// their forwarded headers are ignored. Empty means no per-peer trust is
+	// configured on this listener.
+	TrustedProxies []string
+	ClientIPHeader string
 }
 
 // AutoTLS is the resolved ACME configuration.

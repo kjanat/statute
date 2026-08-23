@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Verified trusted proxies alongside direct traffic: the
+  `TrustedProxy("cidr", ...).ClientIPHeader("...")` listener option resolves
+  the client IP from a forwarded header only when the connection's direct
+  peer falls inside an explicitly trusted CIDR range; every other peer is
+  its own client and its forwarded headers are ignored. Of a multi-valued
+  header the last value counts. The policy governs the access log, rate
+  limiting, `AllowIPs`/`DenyIPs`, and `IPHash`, and takes precedence over
+  `BehindCloudflare()`'s listener-wide trust.
 - A per-pool upstream `Host` header policy: `UpstreamHost` on `Pool`
   chooses between forwarding the client's `Host` (the default, today's
   behavior), sending each backend its own host (`TargetHost`), or sending
