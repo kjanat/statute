@@ -158,6 +158,10 @@ type Route struct {
 	StaticDir  string // empty unless this route serves static files
 	Middleware []Middleware
 	Redirect   *Redirect // nil unless this route redirects
+	// ClientIPCIDRs are canonical CIDR ranges the client must fall inside
+	// for the route to match; empty means any client. A non-matching client
+	// falls through to the next route.
+	ClientIPCIDRs []string
 }
 
 // Redirect is a resolved route redirect action: the route answers with

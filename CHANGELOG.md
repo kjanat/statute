@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Client-IP route matching: `Match(...).ClientIPs("10.0.0.0/8", ...)` makes
+  client CIDRs part of route selection. A request from outside the ranges
+  falls through to the next route — where `AllowIPs` middleware would
+  answer 403 and stop — enabling trusted-network routes with authenticated
+  fallbacks. The matcher uses the same verified client-IP resolution as
+  rate limiting, so the listener's `TrustedProxy` policy governs it, and
+  the canonical CIDRs appear on the resolved route as `ClientIPCIDRs`.
 - Verified trusted proxies alongside direct traffic: the
   `TrustedProxy("cidr", ...).ClientIPHeader("...")` listener option resolves
   the client IP from a forwarded header only when the connection's direct

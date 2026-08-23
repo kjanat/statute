@@ -4,6 +4,8 @@ package statute
 type Route struct {
 	pattern        string
 	host           string
+	clientIPs      []string
+	clientIPsSet   bool
 	upstream       string
 	staticDir      string
 	redirectTo     string
@@ -20,6 +22,25 @@ func Match(pattern string) *Route {
 // Host scopes this route to the given Host header value. Empty means any host.
 func (r *Route) Host(host string) *Route {
 	r.host = host
+	return r
+}
+
+// ClientIPs scopes this route to clients inside the given CIDR ranges, as a
+// matcher: a request from outside falls through to the next route instead
+// of being rejected, which is what AllowIPs middleware would do. That
+// enables conditional policies — a trusted-network route first, an
+// authenticated fallback beneath it:
+//
+//	statute.Match("/*").Host("admin.example.com").ClientIPs("10.0.0.0/8").ProxyTo("admin"),
+//	statute.Match("/*").Host("admin.example.com").ProxyTo("admin").With(statute.BasicAuth(...)),
+//
+// The client IP is the same verified resolution rate limiting and the IP
+// lists use: the listener's TrustedProxy policy decides whether forwarded
+// headers count. A client whose address cannot be parsed never matches a
+// constrained route.
+func (r *Route) ClientIPs(cidrs ...string) *Route {
+	r.clientIPs = append(r.clientIPs, cidrs...)
+	r.clientIPsSet = true
 	return r
 }
 

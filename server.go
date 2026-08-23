@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -449,17 +450,35 @@ func joinErrors(ch <-chan error) error {
 type compiledRoute struct {
 	route   *resolved.Route
 	handler http.Handler
+	// clientPrefixes is the parsed form of the route's ClientIPCIDRs; empty
+	// means the route matches any client.
+	clientPrefixes []netip.Prefix
 }
 
-// findHandler returns the first route matching host and path, in slice
-// order, or nil. Host comparison is case-insensitive per RFC 9110.
-func findHandler(routes []compiledRoute, host, path string) http.Handler {
+// findHandler returns the first route matching host, path, and — for routes
+// constrained with ClientIPs — the verified client address, in slice order,
+// or nil. Host comparison is case-insensitive per RFC 9110. The client
+// address resolves lazily, once, and only when a candidate route needs it;
+// a client that cannot be parsed never matches a constrained route and
+// falls through like any other mismatch.
+func findHandler(routes []compiledRoute, host string, req *http.Request) http.Handler {
+	var clientAddr netip.Addr
+	var clientResolved, clientOK bool
 	for _, c := range routes {
 		if c.route.Host != "" && !strings.EqualFold(c.route.Host, host) {
 			continue
 		}
-		if !matchPattern(c.route.Pattern, path) {
+		if !matchPattern(c.route.Pattern, req.URL.Path) {
 			continue
+		}
+		if len(c.clientPrefixes) > 0 {
+			if !clientResolved {
+				clientAddr, clientOK = parseClientAddr(req)
+				clientResolved = true
+			}
+			if !clientOK || !addrInPrefixes(clientAddr, c.clientPrefixes) {
+				continue
+			}
 		}
 		return c.handler
 	}
@@ -483,17 +502,21 @@ func (s *server) buildRouter() http.Handler {
 			base = redirectRouteHandler(r.Redirect)
 		}
 		h := wrapMiddleware(r.Middleware, base)
-		static = append(static, compiledRoute{route: r, handler: h})
+		static = append(static, compiledRoute{
+			route:          r,
+			handler:        h,
+			clientPrefixes: mustParsePrefixes(r.ClientIPCIDRs),
+		})
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host := stripPort(req.Host)
-		if h := findHandler(static, host, req.URL.Path); h != nil {
+		if h := findHandler(static, host, req); h != nil {
 			h.ServeHTTP(w, req)
 			return
 		}
 		if t := s.dynamic.Load(); t != nil {
-			if h := findHandler(t.routes, host, req.URL.Path); h != nil {
+			if h := findHandler(t.routes, host, req); h != nil {
 				h.ServeHTTP(w, req)
 				return
 			}

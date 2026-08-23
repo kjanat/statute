@@ -223,6 +223,15 @@ Routes are matched in declaration order; the first match wins. Patterns support 
 
 Each route declares exactly one action: a proxy (`ProxyTo("pool")`), a static-file serve (`Serve("./dir")`), or a redirect (`RedirectTo(target, status)`).
 
+`ClientIPs("10.0.0.0/8", ...)` makes client CIDRs part of route _selection_: a request from outside the ranges falls through to the next route, where `AllowIPs` middleware would answer 403 and stop. That enables conditional policies — a trusted-network route first, an authenticated fallback beneath it:
+
+```go
+statute.Match("/*").Host("admin.example.com").ClientIPs("10.0.0.0/8").ProxyTo("admin"),
+statute.Match("/*").Host("admin.example.com").ProxyTo("admin").With(statute.BasicAuth("admin", users)),
+```
+
+The matcher keys on the same verified client-IP resolution as rate limiting and the IP lists, so the listener's `TrustedProxy` policy decides whether forwarded headers count; a client whose address cannot be parsed never matches a constrained route.
+
 A wildcard static route strips its own prefix before looking in the directory, so `Match("/static/*").Serve("./public")` maps `/static/css/app.css` to `./public/css/app.css`. An exact static route keeps the whole path, so `Match("/robots.txt").Serve("./public")` serves `./public/robots.txt` — a single declared file rather than the directory root.
 
 A redirect route answers without an upstream:
