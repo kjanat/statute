@@ -360,6 +360,53 @@ func TestDockerDefaultMiddlewareOnNativeRoutes(t *testing.T) {
 	}
 }
 
+func TestDockerCrossContainerMiddlewareUnion(t *testing.T) {
+	// Two containers pool into one traefik service but reference different
+	// middlewares: the shared routes carry the union, deduplicated, in
+	// first-seen order — never silently missing a chain one container named.
+	cfg, err := resolveDocker(Docker().TraefikLabels().
+		Middleware("auth@file", Timeout("5s")).
+		Middleware("limit@file", RateLimit("10/s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
+		{
+			name: "app-1", ip: "10.0.0.1", port: 3000,
+			labels: map[string]string{
+				"traefik.enable":                      "true",
+				"traefik.http.routers.r1.rule":        "Host(`app.example.com`)",
+				"traefik.http.routers.r1.service":     "app",
+				"traefik.http.routers.r1.middlewares": "auth@file",
+			},
+		},
+		{
+			name: "app-2", ip: "10.0.0.2", port: 3000,
+			labels: map[string]string{
+				"traefik.enable":                      "true",
+				"traefik.http.routers.r2.rule":        "Host(`app.example.com`)",
+				"traefik.http.routers.r2.service":     "app",
+				"traefik.http.routers.r2.middlewares": "auth@file,limit@file",
+			},
+		},
+	})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 1 {
+		t.Fatalf("routes = %+v", tab.routes)
+	}
+	if got := tab.routes[0].route.Upstream.Backends; len(got) != 2 {
+		t.Fatalf("containers did not pool: %+v", got)
+	}
+	mws := tab.routes[0].route.Middleware
+	if len(mws) != 2 {
+		t.Fatalf("middleware = %+v", mws)
+	}
+	if mws[0].Type != resolved.MWTimeout || mws[1].Type != resolved.MWRateLimit {
+		t.Errorf("middleware order/types = %+v", mws)
+	}
+}
+
 func TestDockerUnknownMiddlewareNameDegrades(t *testing.T) {
 	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
 		name: "legacy", ip: "10.0.0.9", port: 3000,

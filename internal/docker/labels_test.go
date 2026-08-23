@@ -481,6 +481,57 @@ func TestExtractTraefikSharedServiceMiddlewareUnion(t *testing.T) {
 	}
 }
 
+func TestExtractTraefikSharedServiceMiddlewareUnionMerges(t *testing.T) {
+	// The second router repeats one of the first's names and adds a new
+	// one: the union keeps first-seen order, drops the duplicate, and
+	// warns about the disagreement.
+	c := webContainer(map[string]string{
+		"traefik.enable":                                     "true",
+		"traefik.http.routers.a.rule":                        "Host(`a.example.com`)",
+		"traefik.http.routers.a.middlewares":                 "auth@file",
+		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
+		"traefik.http.routers.b.middlewares":                 "auth@file,extra@file",
+		"traefik.http.services.web.loadbalancer.server.port": "8080",
+	})
+	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(svcs) != 1 {
+		t.Fatalf("got %d services: %+v", len(svcs), svcs)
+	}
+	want := []string{"auth@file", "extra@file"}
+	if !reflect.DeepEqual(svcs[0].Middlewares, want) {
+		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	}
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "different middlewares") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no union warning: %v", warns)
+	}
+}
+
+func TestExtractTraefikSharedServiceSameMiddlewares(t *testing.T) {
+	// Routers agreeing on middlewares merge without a warning and without
+	// duplicating the shared name.
+	c := webContainer(map[string]string{
+		"traefik.enable":                                     "true",
+		"traefik.http.routers.a.rule":                        "Host(`a.example.com`)",
+		"traefik.http.routers.a.middlewares":                 "auth@file",
+		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
+		"traefik.http.routers.b.middlewares":                 "auth@file",
+		"traefik.http.services.web.loadbalancer.server.port": "8080",
+	})
+	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(warns) != 0 {
+		t.Fatalf("warns = %v", warns)
+	}
+	if want := []string{"auth@file"}; !reflect.DeepEqual(svcs[0].Middlewares, want) {
+		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	}
+}
+
 func TestExtractBothSchemas(t *testing.T) {
 	// statute labels take the container; traefik labels on the same
 	// container still register their own routers.
