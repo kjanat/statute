@@ -151,7 +151,7 @@ func (f *fakeACME) handle(w http.ResponseWriter, r *http.Request) {
 		})
 	case "/authz/1":
 		f.handleAuthz(w, r)
-	case "/chal/http", "/chal/alpn":
+	case "/chal/http", "/chal/alpn", "/chal/dns":
 		f.handleChallenge(w, r)
 	case "/finalize/1":
 		f.handleFinalize(w, r)
@@ -188,6 +188,7 @@ func (f *fakeACME) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		"challenges": []map[string]string{
 			{"type": "tls-alpn-01", "url": f.url("/chal/alpn"), "token": fakeACMEToken, "status": "pending"},
 			{"type": "http-01", "url": f.url("/chal/http"), "token": fakeACMEToken, "status": "pending"},
+			{"type": "dns-01", "url": f.url("/chal/dns"), "token": fakeACMEToken, "status": "pending"},
 		},
 	})
 }
@@ -238,10 +239,7 @@ func (f *fakeACME) authzStatus() string {
 // a status poll, which a client waiting on the authorization — the object
 // RFC 8555 §7.5.1 gives a status of its own — never sends.
 func (f *fakeACME) handleChallenge(w http.ResponseWriter, r *http.Request) {
-	typ := "http-01"
-	if r.URL.Path == "/chal/alpn" {
-		typ = "tls-alpn-01"
-	}
+	typ := challengeTypeForPath(r.URL.Path)
 	if f.jwsPayload(r) == nil {
 		f.writeJSON(w, http.StatusOK, map[string]string{
 			"type": typ, "url": f.url(r.URL.Path), "token": fakeACMEToken, "status": f.authzStatus(),
@@ -251,12 +249,32 @@ func (f *fakeACME) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.accepted = append(f.accepted, typ)
 	f.mu.Unlock()
-	if typ == "http-01" {
+	switch typ {
+	case "http-01":
 		f.validateHTTP01()
+	case "dns-01":
+		// The fake CA has no DNS to query: a DNS-01 accept validates on
+		// the spot, so a solver test can assert what the challenge
+		// endpoint saw rather than mock a resolver twice.
+		f.mu.Lock()
+		f.authzValid = true
+		f.mu.Unlock()
 	}
 	f.writeJSON(w, http.StatusOK, map[string]string{
 		"type": typ, "url": f.url(r.URL.Path), "token": fakeACMEToken, "status": "processing",
 	})
+}
+
+// challengeTypeForPath maps a fake challenge endpoint to its ACME type.
+func challengeTypeForPath(path string) string {
+	switch path {
+	case "/chal/alpn":
+		return "tls-alpn-01"
+	case "/chal/dns":
+		return "dns-01"
+	default:
+		return "http-01"
+	}
 }
 
 // handleFinalize signs the order's CSR with the fake CA.

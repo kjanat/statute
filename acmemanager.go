@@ -84,6 +84,13 @@ type acmeManager struct {
 	storage string
 	solver  acmeSolver
 
+	// issueTimeout caps one whole order, validation included. It is
+	// acmeIssueTimeout plus whatever propagation budget a DNS-01 source
+	// declared: a policy allowed to wait ten minutes for its TXT record
+	// must not have the order cancelled out from under it at five, which
+	// would abandon the authorization and burn the wait for nothing.
+	issueTimeout time.Duration
+
 	// directoryURL is the ACME directory. Let's Encrypt in production;
 	// tests point it at a local fake.
 	directoryURL string
@@ -131,10 +138,22 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 		email:        cfg.Email,
 		storage:      dir,
 		solver:       solver,
+		issueTimeout: acmeIssueTimeout + dns01PropagationBudget(cfg),
 		directoryURL: acme.LetsEncryptURL,
 		cache:        make(map[string]*tls.Certificate),
 		issuing:      make(map[string]*issueState),
 	}, nil
+}
+
+// dns01PropagationBudget is the wall-clock time a source's DNS-01
+// propagation policy may spend inside one order: the fixed delay plus the
+// polling deadline. It is zero without a policy — the built-in
+// dns01PropagationDelay fits inside acmeIssueTimeout with room to spare.
+func dns01PropagationBudget(cfg *resolved.AutoTLS) time.Duration {
+	if cfg.DNS01 == nil || cfg.DNS01.Propagation == nil {
+		return 0
+	}
+	return cfg.DNS01.Propagation.Delay + cfg.DNS01.Propagation.Timeout
 }
 
 // start loads or registers the ACME account and begins the renewal loop.
@@ -336,7 +355,14 @@ func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certific
 			return st.cert, st.err
 		}
 	}
-	ictx, cancel := context.WithTimeout(m.runContext(), acmeIssueTimeout)
+	timeout := m.issueTimeout
+	if timeout <= 0 {
+		// Every production manager gets issueTimeout from newACMEManager;
+		// zero means a hand-built test literal, and an already-expired
+		// order context would be a miserable way to find that out.
+		timeout = acmeIssueTimeout
+	}
+	ictx, cancel := context.WithTimeout(m.runContext(), timeout)
 	defer cancel()
 	//nolint:contextcheck // detached from the caller on purpose: see this function's doc comment
 	st.cert, st.err = m.issue(ictx, host)

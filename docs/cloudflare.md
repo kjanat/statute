@@ -122,12 +122,45 @@ DNS-01 needs essentially nothing on the Cloudflare side beyond the API token. Th
 1. statute calls Let's Encrypt to start a cert order
 2. Let's Encrypt returns a DNS-01 challenge token per identifier
 3. statute computes the TXT value and writes a `_acme-challenge.<host>` record via Cloudflare's API
-4. statute waits 15s for propagation, then tells Let's Encrypt to validate
+4. statute waits for propagation, then tells Let's Encrypt to validate
 5. Let's Encrypt queries DNS, sees the TXT record, marks the challenge valid
 6. statute finalises the order and persists the cert
 7. statute deletes the TXT record (best-effort cleanup)
 
-Cloudflare's authoritative DNS is fast (~10s propagation) so the 15-second wait is conservative. The library does not poll DNS itself before telling Let's Encrypt to validate — Let's Encrypt does its own retries.
+Step 4 is the one you can configure. By default it is a fixed 15-second sleep: Cloudflare's authoritative DNS is fast (~10s propagation), so the wait is conservative and Let's Encrypt's own retries cover the rest. `Propagation` replaces that default when 15 seconds is the wrong number.
+
+## Propagation: waiting for the TXT record
+
+`Propagation` takes a `statute.DNSPropagation` and applies to the one `AutoTLS` source it is called on. It has two halves, and a policy must use at least one:
+
+```go
+statute.AutoTLS("*.foo.example.test").
+    Email("ops@example.test").
+    Storage("/var/lib/statute/acme").
+    CloudflareDNS01(token).
+    Propagation(statute.DNSPropagation{
+        Delay:     "30s",
+        Resolvers: []string{"192.0.2.53:53", "198.51.100.53:53"},
+    })
+```
+
+**Fixed delay.** `Delay` on its own is the default's shape with a duration you choose — sleep, then ask the CA to validate. Use it when you know your propagation time and don't want to name resolvers. Maximum 10 minutes.
+
+**Resolver-verified polling.** `Resolvers` turns the wait into a check. After `Delay` (which may be omitted entirely, in which case polling starts immediately), statute queries each listed DNS server for `_acme-challenge.<host>` and does not ask the CA to validate until **every one of them** returns the expected TXT value. Each resolver is a `host:port` — the port is explicit, so `192.0.2.53:53`, not `192.0.2.53`, and an IPv6 host is bracketed, `[2001:db8::1]:53` — and a host may be an IP or a name. The resolved schema stores each address canonically (hostname lowercased, port in plain decimal), and one server listed twice in any spelling is a resolve error. A resolver that has served the value once is not queried again, and a single probe is given at most one `Interval` before the loop moves on, so one unreachable resolver cannot starve the others of rounds.
+
+`Timeout` (default `"2m"`, maximum 10 minutes) is the deadline for that loop, measured from the end of `Delay`. `Interval` (default `"5s"`, clamped down to `Timeout` when the timeout is shorter; an explicit value must be at least 100ms and at most `Timeout`) is the cadence; the first round runs immediately rather than one interval later. Both govern polling alone, so setting either without `Resolvers` is a resolve error rather than a setting nothing reads. So are a negative or over-long delay, a zero or over-long timeout, an explicit interval below the floor or above the timeout, a resolver that is not a `host:port` with a port in 1–65535, a resolver listed twice in any spelling, a policy that waits for nothing (no positive delay and no resolvers — `Delay: "0s"` alone counts), and `Propagation` on a source with no `CloudflareDNS01` — no other challenge publishes a DNS record to wait for.
+
+**Verification fails closed.** If the deadline passes with any resolver still not serving the value, issuance fails with an error naming the record and the laggards, and the CA is never asked to validate. That is the point: a failed check on our side costs nothing, while a failed CA validation spends one of the five validation failures Let's Encrypt allows per hostname per hour. The retry happens on the next handshake or renewal pass, after the usual cooldown.
+
+Lookup errors during polling are not failures. A record that has not propagated yet is indistinguishable from `NXDOMAIN` or a `SERVFAIL` from a resolver still holding a negative answer, so an error only leaves that resolver unsatisfied for the round.
+
+The whole propagation budget (`Delay` + `Timeout`) is added to the five-minute cap on one ACME order, so a long policy is not cancelled halfway through the wait it authorised.
+
+The budget also shapes startup: DNS-01 certificates are issued synchronously before the listeners open, one domain after another, so a policy that ends up waiting its full `Delay` + `Timeout` delays the proxy's first accepted connection by that much per uncached domain. Size the policy for the zone, not for the worst imaginable case.
+
+Which resolvers to list: the authoritative nameservers for the zone are the strongest signal, since that is what Let's Encrypt's validators ultimately query (Cloudflare shows them on the zone overview page). Public recursives such as `1.1.1.1:53` or `8.8.8.8:53` test a different thing — cache convergence — and can be slower to agree than the CA is.
+
+The resolved schema and `-export` output carry the normalised policy under each DNS-01 source, defaults filled in and durations in nanoseconds.
 
 If you have many zones in the account, pin the zone explicitly to skip auto-discovery:
 
@@ -216,5 +249,6 @@ For DNS-01 deployment behind Cloudflare:
 - [ ] API token created with Zone.DNS:Edit, scoped to the relevant zone(s)
 - [ ] Token wired in via environment variable (don't hardcode)
 - [ ] `CloudflareDNS01(token)` on the AutoTLS chain
+- [ ] `Propagation(...)` if the default 15s wait is wrong for the zone — a longer `Delay`, or `Resolvers` to verify against before validating
 - [ ] `BehindCloudflare()` if CF actually proxies the traffic (still recommended for client IP attribution even with DNS-01)
 - [ ] `Storage` directory persistent and backed up

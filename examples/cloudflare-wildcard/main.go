@@ -31,7 +31,15 @@ func main() {
 				statute.AutoTLS("*.example.com", "example.com").
 					Email("ops@example.com").
 					Storage("/var/lib/statute/certs").
-					CloudflareDNS01(token),
+					CloudflareDNS01(token).
+					// Verify the challenge record against the zone's own
+					// nameservers instead of sleeping a fixed 15s; validation
+					// is requested as soon as both serve it. Cloudflare
+					// assigns each zone its pair — yours are on the zone
+					// overview page.
+					Propagation(statute.DNSPropagation{
+						Resolvers: []string{"matt.ns.cloudflare.com:53", "reza.ns.cloudflare.com:53"},
+					}),
 				statute.HTTP2(),
 			),
 		},

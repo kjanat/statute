@@ -125,6 +125,37 @@ const (
 type CloudflareDNS01 struct {
 	APIToken string
 	ZoneID   string // optional; empty means auto-discover
+
+	// Propagation is the source's DNS propagation policy: how long the
+	// runtime waits, and which resolvers it verifies against, after
+	// publishing the challenge TXT record and before asking the CA to
+	// validate it. Nil means none was declared and the runtime's fixed
+	// default wait applies.
+	Propagation *DNSPropagation
+}
+
+// DNSPropagation is a resolved DNS-01 propagation policy. It has two
+// independent halves, either or both of which may be active: a fixed Delay
+// that always elapses first, and — when Resolvers is non-empty — a polling
+// loop that queries every listed resolver for the challenge TXT record
+// until they all serve the expected value.
+type DNSPropagation struct {
+	// Delay is the fixed wait after publishing the record, before any
+	// polling or validation. Zero means none: with Resolvers set, polling
+	// begins immediately.
+	Delay time.Duration
+	// Timeout is the deadline for the polling loop, measured from the end
+	// of Delay. Zero exactly when Resolvers is empty, since there is then
+	// nothing to poll.
+	Timeout time.Duration
+	// Interval is the cadence between polling rounds; the first round runs
+	// immediately, not after one interval. Zero exactly when Resolvers is
+	// empty.
+	Interval time.Duration
+	// Resolvers are the "host:port" DNS servers that must all serve the
+	// expected TXT value before validation is requested, in declaration
+	// order. Empty means no polling: only Delay applies.
+	Resolvers []string
 }
 
 // StaticTLS is the resolved static-cert configuration.

@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- DNS-01 propagation controls: `AutoTLS(...).CloudflareDNS01(token)` takes
+  a `Propagation(statute.DNSPropagation{...})` policy replacing the fixed
+  15-second wait between publishing the challenge TXT record and asking
+  the CA to validate it. A `Delay` alone is that wait with a duration you
+  choose; a list of `Resolvers` (`host:port`) turns it into a check —
+  after the delay, statute polls every listed resolver and requests
+  validation only once all of them serve the expected TXT value, on a
+  `Timeout` (default `"2m"`) and `Interval` (default `"5s"`) window whose
+  first round runs immediately and which never re-queries a resolver that
+  has already answered. Lookup errors leave a resolver unsatisfied rather
+  than failing, since an unpropagated record is indistinguishable from
+  `NXDOMAIN`; the deadline does fail, naming the record and the laggards,
+  without spending one of the five validation failures Let's Encrypt
+  allows per hostname per hour. The delay plus timeout is added to the
+  five-minute per-order cap so a long policy is not cancelled mid-wait.
+  Resolve rejects the shapes that would do nothing or could not work: a
+  policy that waits for nothing (a zero delay with no resolvers),
+  `Timeout` or `Interval` without `Resolvers`, a delay or timeout above
+  10 minutes, a non-positive timeout, an explicit interval below 100ms or
+  above the timeout (the 5s default clamps down to a shorter timeout), a
+  resolver that is not `host:port` with a port in 1–65535, and a resolver
+  repeated in any spelling — addresses are canonicalised (hostname
+  lowercased, decimal port) into the resolved schema — plus `Propagation`
+  on a source without `CloudflareDNS01`. The resolved schema gains
+  `CloudflareDNS01.Propagation` carrying the normalised policy for the
+  JSON export.
 - Configurable downstream TLS protocol policy: `statute.TLSPolicy` is a
   listener option carrying `MinVersion`, `MaxVersion` (`statute.TLS12` or
   `statute.TLS13`; there are deliberately no TLS 1.0/1.1 constants and
