@@ -352,20 +352,38 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 	return rr, nil
 }
 
-// resolveRouteTarget validates the ProxyTo/Serve choice and, for a proxy
-// route, dereferences the named upstream into rr.Upstream.
+// resolveRouteTarget validates that the route declares exactly one action —
+// ProxyTo, Serve, or RedirectTo — and resolves it: a proxy route
+// dereferences the named upstream into rr.Upstream, a redirect route
+// validates its target and status into rr.Redirect.
 func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.Route) error {
+	// A RedirectTo call with an empty target still declares the redirect
+	// action — the status betrays it — so it fails on its own emptiness
+	// rather than as an action-less route.
+	redirected := r.redirectTo != "" || r.redirectStatus != 0
+	declared := 0
+	for _, set := range []bool{r.upstream != "", r.staticDir != "", redirected} {
+		if set {
+			declared++
+		}
+	}
 	switch {
-	case r.upstream != "" && r.staticDir != "":
-		return errors.New("route has both ProxyTo and Serve; pick one")
-	case r.upstream == "" && r.staticDir == "":
-		return errors.New("route has neither ProxyTo nor Serve")
+	case declared > 1:
+		return errors.New("route declares more than one of ProxyTo, Serve, and RedirectTo; pick one")
+	case declared == 0:
+		return errors.New("route has none of ProxyTo, Serve, or RedirectTo")
 	case r.upstream != "":
 		pool, ok := pools[r.upstream]
 		if !ok {
 			return fmt.Errorf("unknown upstream %q", r.upstream)
 		}
 		rr.Upstream = pool
+	case redirected:
+		rd, err := resolveRedirect(r.redirectTo, r.redirectStatus)
+		if err != nil {
+			return err
+		}
+		rr.Redirect = rd
 	}
 	return nil
 }

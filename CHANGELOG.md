@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- First-class redirect route actions: `Match(...).RedirectTo(target, status)`
+  answers matching requests with an HTTP redirect instead of proxying or
+  serving files, and appears in the resolved schema as an explicit
+  `Redirect` action (`Target`, `Status`). Statuses 301, 302, 303, 307, and
+  308 are allowed; the target may be fixed or preserve parts of the request
+  through the `{request_uri}`, `{path}`, `{query}`, and `{host}`
+  placeholders. Targets are validated at resolve time — unknown
+  placeholders, non-redirect statuses, and header-breaking bytes are
+  startup errors — and substituted request data is never rescanned for
+  placeholders.
 - A `statutehttp` `go/analysis` linter, integrated into the repository's
   custom golangci-lint build, rejects attempts to mutate Go request special
   fields (`Host`, `Content-Length`, `Transfer-Encoding`, and `Trailer`) through
