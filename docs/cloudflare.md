@@ -44,7 +44,16 @@ For request handling: every request to the origin arrives via Cloudflare's IP ra
 
 The option does not enforce that the request actually came from a Cloudflare IP range. Adding that would require keeping the CF IP list current; a stale list can DOS the deployment if CF rotates ranges, so we instead trust the network path the operator has configured.
 
-**This means**: if the listener is reachable directly (not only via Cloudflare), `BehindCloudflare()` becomes a security hole. Any client can send a forged `CF-Connecting-IP` header and dictate the IP statute uses for rate limiting and access logging. Only enable it when you control the network path.
+**This means**: if the listener is reachable directly (not only via Cloudflare), `BehindCloudflare()` alone becomes a security hole. Any client can send a forged `CF-Connecting-IP` header and dictate the IP statute uses for rate limiting and access logging. For that shared-listener topology, keep `BehindCloudflare()` — it still owns the ACME behaviour above — and add a peer-scoped trust policy beside it:
+
+```go
+statute.HTTPS(":443",
+    statute.BehindCloudflare(),
+    statute.TrustedProxy(cfRanges...).ClientIPHeader("CF-Connecting-IP"),
+)
+```
+
+`TrustedProxy` takes precedence over `BehindCloudflare()`'s blanket header trust wherever the client IP is resolved: the CF headers count only when the connection's direct peer is inside the declared Cloudflare ranges, and every other peer is attributed by its own address, forged headers ignored. The ranges are static CIDRs you maintain (Cloudflare publishes them at cloudflare.com/ips); statute deliberately does not fetch the list, since a stale auto-refreshed list can take a deployment down when ranges rotate.
 
 ## HTTP-01 vs DNS-01: when to use which
 

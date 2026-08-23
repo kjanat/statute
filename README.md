@@ -140,6 +140,16 @@ statute.HTTPS(":443",
 
 `HTTP` and `HTTPS` declare a listener; `RedirectTo` turns a listener into a permanent redirect. The HTTPS variant takes options as variadic arguments — TLS material, HTTP/2, HTTP/3, Cloudflare-awareness — composed flat rather than nested.
 
+`TrustedProxy` scopes forwarded-header trust to the direct peer instead of the whole listener:
+
+```go
+statute.HTTPS(":443",
+    statute.TrustedProxy("203.0.113.0/24").ClientIPHeader("CF-Connecting-IP"),
+)
+```
+
+When a connection's direct peer falls inside one of the ranges, the client IP — as seen by the access log, rate limiting, `AllowIPs`/`DenyIPs`, and `IPHash` — comes from the configured header (`X-Forwarded-For` by default; of a multi-valued header the last value counts, the one the trusted proxy itself observed). Any other peer is its own client and its forwarded headers are ignored, so proxy-fronted and direct-origin hostnames can share a listener without the headers becoming spoofable. It applies identically over HTTP/1.1, HTTP/2, and HTTP/3 — every transport shares the listener's middleware chain. Behind Cloudflare, use it _alongside_ `BehindCloudflare()` rather than instead of it: the trust policy takes precedence for client IPs, while `BehindCloudflare()` keeps suppressing the TLS-ALPN-01 challenge that Cloudflare's edge cannot forward.
+
 When AutoTLS is configured anywhere in the config, the plain-HTTP listener automatically serves `/.well-known/acme-challenge/*` so HTTP-01 validation works without separate plumbing.
 
 ### Upstreams

@@ -310,7 +310,37 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		}
 		rl.StaticTLS = st
 	}
+	if err := resolveTrustedProxy(l.trustedProxy, rl); err != nil {
+		return nil, err
+	}
 	return rl, nil
+}
+
+// resolveTrustedProxy canonicalises the listener's peer-trust declaration:
+// the CIDRs every trusted peer must fall inside, and the forwarded header —
+// X-Forwarded-For unless configured — consulted when one does.
+func resolveTrustedProxy(t *TrustedProxyConfig, rl *resolved.Listener) error {
+	if t == nil {
+		return nil
+	}
+	if len(t.cidrs) == 0 {
+		return errors.New("trusted_proxy: at least one CIDR required")
+	}
+	canon, err := resolveCIDRs(t.cidrs)
+	if err != nil {
+		return fmt.Errorf("trusted_proxy: %w", err)
+	}
+	rl.TrustedProxies = canon
+	// No empty-name fallback here: TrustedProxy() seeds the default, so an
+	// empty name at this point was configured explicitly — likely a value
+	// that went missing — and silently trusting X-Forwarded-For instead
+	// would change the security policy. parse.HeaderName rejects it.
+	name, err := parse.HeaderName(t.header)
+	if err != nil {
+		return fmt.Errorf("trusted_proxy: %w", err)
+	}
+	rl.ClientIPHeader = name
+	return nil
 }
 
 // validateListenerTLSPresence rejects an HTTPS content listener that carries

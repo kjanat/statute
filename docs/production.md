@@ -151,7 +151,7 @@ statute is fine as the front door, but it also works as a middle layer. Common p
 
 **Cloudflare → statute → backends**: see [docs/cloudflare.md](cloudflare.md). Use `BehindCloudflare()` for client IP attribution.
 
-**ELB/ALB → statute → backends**: similar to the Cloudflare case, but trust `X-Forwarded-For` instead of `CF-Connecting-IP`. The current API doesn't have a generic "trust forwarded headers" toggle — `BehindCloudflare()` is Cloudflare-specific. Use static cert mode in this case (the load balancer terminates TLS) and accept that `r.RemoteAddr` shows the LB's IP.
+**ELB/ALB → statute → backends**: similar to the Cloudflare case, but trust `X-Forwarded-For` instead of `CF-Connecting-IP`. Declare the load balancer's address range as a trusted proxy on the listener — `TrustedProxy("10.0.0.0/8")` (the default header is `X-Forwarded-For`) — and the access log, rate limiter, IP lists, and IP-hash strategy key on the real client IP whenever the direct peer is the LB, while any other peer is attributed by its own address. Use static cert mode in this case (the load balancer terminates TLS).
 
 **Service mesh sidecar (Envoy/Linkerd) → statute → backends**: don't. The sidecar already proxies. Either remove statute or remove the sidecar — running both is purely overhead.
 

@@ -18,8 +18,9 @@ func (*allowIPsMW) statuteMiddleware() {}
 // CIDRs are parsed at resolve time via net/netip; both IPv4 and IPv6 are
 // supported. Examples: "10.0.0.0/8", "2001:db8::/32", "203.0.113.5/32".
 //
-// The client IP comes from clientIP(), which respects BehindCloudflare()
-// (CF-Connecting-IP) when configured on the listener.
+// The client IP comes from clientIP(), which respects the listener's
+// TrustedProxy() policy and BehindCloudflare() (CF-Connecting-IP) when
+// configured.
 func AllowIPs(cidrs ...string) *allowIPsMW {
 	return &allowIPsMW{cidrs: cidrs}
 }
