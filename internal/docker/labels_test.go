@@ -431,16 +431,18 @@ func TestExtractTraefikMiddlewares(t *testing.T) {
 	if len(svcs) != 1 {
 		t.Fatalf("router with middlewares label was dropped: %+v", svcs)
 	}
-	if want := []string{"auth@docker"}; !reflect.DeepEqual(svcs[0].Middlewares, want) {
-		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	want := []Matcher{{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@docker"}}}
+	if !reflect.DeepEqual(svcs[0].Routes, want) {
+		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
 }
 
 func TestExtractTraefikMiddlewaresMultiple(t *testing.T) {
-	// Whitespace is trimmed, empty fragments dropped, label order kept.
+	// Whitespace is trimmed, empty fragments dropped, label order kept,
+	// and every matcher a rule expands to carries the router's references.
 	c := webContainer(map[string]string{
 		"traefik.enable":                       "true",
-		"traefik.http.routers.web.rule":        "Host(`a.example.com`)",
+		"traefik.http.routers.web.rule":        "Host(`a.example.com`) || Host(`b.example.com`)",
 		"traefik.http.routers.web.middlewares": " auth@file , ratelimit@docker,,",
 	})
 	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
@@ -448,87 +450,39 @@ func TestExtractTraefikMiddlewaresMultiple(t *testing.T) {
 		t.Fatalf("warns = %v", warns)
 	}
 	want := []string{"auth@file", "ratelimit@docker"}
-	if !reflect.DeepEqual(svcs[0].Middlewares, want) {
-		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	if len(svcs[0].Routes) != 2 {
+		t.Fatalf("Routes = %+v", svcs[0].Routes)
 	}
-}
-
-func TestExtractTraefikSharedServiceMiddlewareUnion(t *testing.T) {
-	// Two routers bind the sole service but disagree on middlewares: the
-	// service carries the union, with a warning about the difference.
-	c := webContainer(map[string]string{
-		"traefik.enable":                                     "true",
-		"traefik.http.routers.a.rule":                        "Host(`a.example.com`)",
-		"traefik.http.routers.a.middlewares":                 "auth@file",
-		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
-		"traefik.http.services.web.loadbalancer.server.port": "8080",
-	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
-	if len(svcs) != 1 {
-		t.Fatalf("got %d services: %+v", len(svcs), svcs)
-	}
-	if want := []string{"auth@file"}; !reflect.DeepEqual(svcs[0].Middlewares, want) {
-		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
-	}
-	found := false
-	for _, w := range warns {
-		if strings.Contains(w, "different middlewares") {
-			found = true
+	for _, r := range svcs[0].Routes {
+		if !reflect.DeepEqual(r.Middlewares, want) {
+			t.Errorf("route %s Middlewares = %+v, want %+v", r.Host, r.Middlewares, want)
 		}
 	}
-	if !found {
-		t.Errorf("no union warning: %v", warns)
-	}
 }
 
-func TestExtractTraefikSharedServiceMiddlewareUnionMerges(t *testing.T) {
-	// The second router repeats one of the first's names and adds a new
-	// one: the union keeps first-seen order, drops the duplicate, and
-	// warns about the disagreement.
+func TestExtractTraefikRouterScopedMiddlewares(t *testing.T) {
+	// Routers sharing one service keep their own middleware references on
+	// their own routes, as in Traefik — nothing leaks across routers.
 	c := webContainer(map[string]string{
 		"traefik.enable":                                     "true",
 		"traefik.http.routers.a.rule":                        "Host(`a.example.com`)",
 		"traefik.http.routers.a.middlewares":                 "auth@file",
 		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
-		"traefik.http.routers.b.middlewares":                 "auth@file,extra@file",
-		"traefik.http.services.web.loadbalancer.server.port": "8080",
-	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
-	if len(svcs) != 1 {
-		t.Fatalf("got %d services: %+v", len(svcs), svcs)
-	}
-	want := []string{"auth@file", "extra@file"}
-	if !reflect.DeepEqual(svcs[0].Middlewares, want) {
-		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
-	}
-	found := false
-	for _, w := range warns {
-		if strings.Contains(w, "different middlewares") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("no union warning: %v", warns)
-	}
-}
-
-func TestExtractTraefikSharedServiceSameMiddlewares(t *testing.T) {
-	// Routers agreeing on middlewares merge without a warning and without
-	// duplicating the shared name.
-	c := webContainer(map[string]string{
-		"traefik.enable":                                     "true",
-		"traefik.http.routers.a.rule":                        "Host(`a.example.com`)",
-		"traefik.http.routers.a.middlewares":                 "auth@file",
-		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
-		"traefik.http.routers.b.middlewares":                 "auth@file",
 		"traefik.http.services.web.loadbalancer.server.port": "8080",
 	})
 	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(warns) != 0 {
 		t.Fatalf("warns = %v", warns)
 	}
-	if want := []string{"auth@file"}; !reflect.DeepEqual(svcs[0].Middlewares, want) {
-		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	if len(svcs) != 1 {
+		t.Fatalf("got %d services: %+v", len(svcs), svcs)
+	}
+	want := []Matcher{
+		{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@file"}},
+		{Host: "b.example.com", Path: "/*"},
+	}
+	if !reflect.DeepEqual(svcs[0].Routes, want) {
+		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
 }
 

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -14,6 +15,19 @@ type Matcher struct {
 	// prefix ("/api/*"). Defaults to "/*" when the rule constrains only
 	// the host.
 	Path string
+	// Middlewares are names of code-registered middleware chains the
+	// originating router referenced, in label order. They are
+	// router-scoped, as in Traefik: matchers derived from different
+	// routers on one service may carry different names. Nil for
+	// native-schema routes. Resolution against the registry happens in
+	// the provider.
+	Middlewares []string
+}
+
+// Equal reports whether two matchers match the same traffic and carry the
+// same middleware references.
+func (m Matcher) Equal(o Matcher) bool {
+	return m.Host == o.Host && m.Path == o.Path && slices.Equal(m.Middlewares, o.Middlewares)
 }
 
 // maxRuleMatchers caps the disjunctive expansion of a single rule so a

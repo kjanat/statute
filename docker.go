@@ -44,8 +44,9 @@ package statute
 // parentheses. Routers using unsupported matchers (HostRegexp, Header,
 // Query, negation, …) are skipped with a logged warning rather than
 // mis-routed. Traefik middleware references resolve against the code-owned
-// registry declared with Middleware; unregistered names are dropped with a
-// warning.
+// registry declared with Middleware, scoped to their router; a router
+// referencing an unregistered name is omitted with a warning rather than
+// served without the middleware it asked for.
 type DockerConfig struct {
 	endpoint          string
 	network           string
@@ -104,10 +105,12 @@ func (d *DockerConfig) Refresh(interval string) *DockerConfig {
 
 // Middleware registers a named, code-owned middleware chain that container
 // labels may reference — a traefik.http.routers.<r>.middlewares entry
-// naming it verbatim attaches the chain to that router's routes. The
-// mapping keeps the config-as-code trust boundary: labels can only select
-// policies compiled into the binary, never define new ones. Registering
-// the same name again replaces the earlier chain.
+// naming it verbatim attaches the chain to that router's routes, and only
+// those. The mapping keeps the config-as-code trust boundary: labels can
+// only select policies compiled into the binary, never define new ones. A
+// router referencing an unregistered name fails closed — its routes are
+// omitted with a warning. Registering the same name again replaces the
+// earlier chain.
 func (d *DockerConfig) Middleware(name string, mws ...Middleware) *DockerConfig {
 	if d.middleware == nil {
 		d.middleware = map[string][]Middleware{}

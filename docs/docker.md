@@ -123,7 +123,7 @@ without editing compose files. Supported:
 | `traefik.http.services.<s>.loadbalancer.server.scheme`                               | `https` for TLS backends. `h2c` is not supported — such services are skipped with a warning instead of being proxied over the wrong protocol.                                                            |
 | `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks.                                                                                                                                                                  |
 | `traefik.docker.network`                                                             | Same as `statute.network`.                                                                                                                                                                               |
-| `traefik.http.routers.<r>.middlewares`                                               | Comma-separated names resolved against the code-owned registry declared with `Middleware(name, ...)` — see below.                                                                                        |
+| `traefik.http.routers.<r>.middlewares`                                               | Comma-separated names resolved against the code-owned registry declared with `Middleware(name, ...)`, scoped to that router's routes — see below.                                                        |
 
 Deliberately ignored (harmless, handled at the listener level in statute):
 `entrypoints`, `tls`, `tls.certresolver`, `priority`.
@@ -132,8 +132,9 @@ Skipped **with a logged warning** rather than silently mis-routed:
 
 - routers whose rule uses unsupported matchers (`HostRegexp`, `Header`,
   `Query`, `ClientIP`, negation, …),
-- `middlewares` names that no `Middleware(name, ...)` registration covers —
-  only the unregistered name is dropped; the router still routes,
+- routers whose `middlewares` label names a chain no
+  `Middleware(name, ...)` registration covers — the router's routes are
+  omitted (fail closed) while sibling routers and services keep routing,
 - `traefik.tcp.*` / `traefik.udp.*` routers.
 
 ### Label-referenced middleware
@@ -149,18 +150,23 @@ Docker: statute.Docker().TraefikLabels().
 
 A `traefik.http.routers.<r>.middlewares` label naming `edge-security@file`
 — the label value must match the registered name **verbatim**, `@provider`
-suffix included — attaches that chain to the router's routes. This keeps
-the config-as-code trust boundary: a label can only pick policies compiled
-into the binary, and existing container labels migrate without edits.
+suffix included — attaches that chain to the routes derived from that
+router, and only those. References are **router-scoped**, as in Traefik:
+routers sharing one service keep their own chains while pooling into the
+same backends. This keeps the config-as-code trust boundary: a label can
+only pick policies compiled into the binary, and existing container labels
+migrate without edits.
 
-Per route, the chain order is: `DefaultMiddleware` outermost, then
-label-referenced chains in label order, then the `statute.timeout` /
-`statute.ratelimit` / `statute.compress` hints. An unregistered name is
-dropped with a warning; everything else still applies. Routers that share
-one service but disagree on `middlewares` get the union of their
-references on all of the service's routes, with a warning — middleware
-attaches per service, and silently dropping a chain (an auth policy, say)
-from some routes would be worse.
+Per route, the chain order is: `DefaultMiddleware` outermost, then the
+router's referenced chains in label order, then the `statute.timeout` /
+`statute.ratelimit` / `statute.compress` hints.
+
+A reference to an unregistered name **fails closed**: that router's routes
+are omitted from the generation, with a warning naming the missing
+middleware. A route that asked for an auth policy must never be served
+without it, so a broken middleware dependency means a broken router — as
+in Traefik — not a middleware-free one. Other routers on the same service,
+and every other service, are unaffected.
 
 Traefik-derived pools are namespaced (`api` becomes `api@traefik`), so they
 can't collide with pools from native labels or static `Upstreams`.

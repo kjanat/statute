@@ -16,16 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and ignored — now resolves its comma-separated names against the
   registry, matching the registered name verbatim (`@provider` suffix
   included), so containers already labeled for Traefik migrate without
-  edits while labels stay unable to define middleware of their own. Per
-  route the chain runs defaults first, then label-referenced chains in
-  label order, then the `statute.timeout` / `statute.ratelimit` /
-  `statute.compress` hints. An unregistered name is dropped with a warning
-  while the router keeps routing, and routers sharing one service but
-  disagreeing on `middlewares` get the union of their references on all
-  the service's routes, warned, rather than silently losing a chain. Both
-  chains resolve at startup through the standard middleware resolver, and
-  the resolved schema carries them as `Docker.Middleware` and
-  `Docker.DefaultMiddleware`.
+  edits while labels stay unable to define middleware of their own.
+  References are router-scoped, as in Traefik: routers sharing one service
+  keep their own chains on their own routes while pooling into the same
+  backends. Per route the chain runs defaults first, then the router's
+  referenced chains in label order, then the `statute.timeout` /
+  `statute.ratelimit` / `statute.compress` hints. A router referencing an
+  unregistered name fails closed — its routes are omitted from the
+  generation with a warning naming the missing middleware, so a route that
+  asked for an auth policy is never served without it, while sibling
+  routers and services keep routing. Both chains resolve at startup
+  through the standard middleware resolver, and the resolved schema
+  carries them as `Docker.Middleware` and `Docker.DefaultMiddleware`.
 
 - Path rewrite middleware: four primitives transform the request path
   before it is proxied or served. `StripPrefix(prefix)` removes a prefix,

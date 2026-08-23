@@ -243,21 +243,15 @@ func (p *dockerProvider) warn(warns []string) {
 }
 
 // mergeService folds a same-named registration from another container into
-// base: the backend joins the pool, unseen routes and middleware
-// references are appended, and pool settings keep base's (first container
-// wins). Middleware unions rather than first-wins so a chain one
-// container references is never silently absent from the shared routes.
+// base: the backend joins the pool, unseen routes are appended, and pool
+// settings keep base's (first container wins). Routes differing only in
+// middleware references stay separate — the references are router-scoped.
 func mergeService(base *docker.Service, add docker.Service) {
 	base.Extra = append(base.Extra, add.Backend)
 	base.Extra = append(base.Extra, add.Extra...)
 	for _, r := range add.Routes {
-		if !slices.Contains(base.Routes, r) {
+		if !slices.ContainsFunc(base.Routes, r.Equal) {
 			base.Routes = append(base.Routes, r)
-		}
-	}
-	for _, n := range add.Middlewares {
-		if !slices.Contains(base.Middlewares, n) {
-			base.Middlewares = append(base.Middlewares, n)
 		}
 	}
 }
@@ -289,7 +283,9 @@ func (p *dockerProvider) buildTable(services []docker.Service, prev *dynamicTabl
 
 // addService resolves one service into a pool handler and its routes,
 // appending them to next. Invalid label values skip the service with a
-// warning rather than poisoning the whole generation.
+// warning rather than poisoning the whole generation; a route whose
+// router references an unregistered middleware name is omitted the same
+// way, so the rest of the service keeps routing.
 func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTable) {
 	pool, warn := servicePool(svc)
 	if warn != "" {
@@ -300,38 +296,65 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		p.warn([]string{fmt.Sprintf("service %q: %v, skipping", svc.Name, err)})
 		return
 	}
-	fp := poolFingerprint(rp)
 
-	ph := next.pools[svc.Name]
+	hints, warns := serviceHints(svc)
+	p.warn(warns)
+	type routeChain struct {
+		m   docker.Matcher
+		mws []resolved.Middleware
+	}
+	var kept []routeChain
+	for _, m := range svc.Routes {
+		mws, warn := p.routeMiddleware(svc, m, hints)
+		if warn != "" {
+			p.warn([]string{warn})
+			continue
+		}
+		kept = append(kept, routeChain{m: m, mws: mws})
+	}
+	if len(kept) == 0 {
+		return
+	}
+
+	ph := p.servicePoolHandler(svc.Name, rp, prev, next)
 	if ph == nil {
-		if prev != nil && prev.fingerprints[svc.Name] == fp {
-			ph = prev.pools[svc.Name]
+		return
+	}
+	for _, rc := range kept {
+		next.routes = append(next.routes, compiledRoute{
+			route: &resolved.Route{
+				Pattern:    rc.m.Path,
+				Host:       rc.m.Host,
+				Upstream:   rp,
+				Middleware: rc.mws,
+			},
+			handler: wrapMiddleware(rc.mws, ph),
+		})
+	}
+}
+
+// servicePoolHandler returns the pool handler for the named service,
+// reusing prev's handler — keeping its health state and connections —
+// when the resolved pool config is unchanged. Nil means the handler could
+// not be built; the warning has been logged.
+func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, prev, next *dynamicTable) *poolHandler {
+	fp := poolFingerprint(rp)
+	ph := next.pools[name]
+	if ph == nil {
+		if prev != nil && prev.fingerprints[name] == fp {
+			ph = prev.pools[name]
 		} else {
 			var err error
 			ph, err = newPoolHandler(rp)
 			if err != nil {
-				p.warn([]string{fmt.Sprintf("service %q: %v, skipping", svc.Name, err)})
-				return
+				p.warn([]string{fmt.Sprintf("service %q: %v, skipping", name, err)})
+				return nil
 			}
 		}
-		next.pools[svc.Name] = ph
-		next.fingerprints[svc.Name] = fp
+		next.pools[name] = ph
+		next.fingerprints[name] = fp
 	}
-
-	mws, warns := p.serviceMiddleware(svc)
-	p.warn(warns)
-	handler := wrapMiddleware(mws, ph)
-	for _, m := range svc.Routes {
-		next.routes = append(next.routes, compiledRoute{
-			route: &resolved.Route{
-				Pattern:    m.Path,
-				Host:       m.Host,
-				Upstream:   rp,
-				Middleware: mws,
-			},
-			handler: handler,
-		})
-	}
+	return ph
 }
 
 // servicePool builds the surface Pool for a derived service so the standard
@@ -375,24 +398,12 @@ func parseStrategy(service, s string) (Strategy, string) {
 	return RoundRobin, fmt.Sprintf("service %q: unknown strategy %q, using %s", service, s, RoundRobin)
 }
 
-// serviceMiddleware builds the route middleware chain for a service:
-// provider-wide defaults outermost, then the registered chains its labels
-// reference by name, then the label hints. An unregistered name or an
-// invalid hint drops only itself, with a warning.
-func (p *dockerProvider) serviceMiddleware(svc *docker.Service) ([]resolved.Middleware, []string) {
-	var out []resolved.Middleware
-	var warns []string
-	out = append(out, p.cfg.DefaultMiddleware...)
-	for _, name := range svc.Middlewares {
-		chain, ok := p.cfg.Middleware[name]
-		if !ok {
-			warns = append(warns, fmt.Sprintf("service %q: unknown middleware %q, dropping it (register it with Docker().Middleware)", svc.Name, name))
-			continue
-		}
-		out = append(out, chain...)
-	}
-
+// serviceHints resolves the service-level middleware hints
+// (statute.timeout / statute.ratelimit / statute.compress), dropping
+// invalid values with a warning.
+func serviceHints(svc *docker.Service) ([]resolved.Middleware, []string) {
 	var mws []Middleware
+	var warns []string
 	if svc.Timeout != "" {
 		mws = append(mws, Timeout(svc.Timeout))
 	}
@@ -408,11 +419,30 @@ func (p *dockerProvider) serviceMiddleware(svc *docker.Service) ([]resolved.Midd
 			mws = append(mws, Compress(algos...))
 		}
 	}
-	hints, err := resolveMiddlewares(mws)
+	out, err := resolveMiddlewares(mws)
 	if err != nil {
-		return out, append(warns, fmt.Sprintf("service %q: %v, dropping label middleware", svc.Name, err))
+		return nil, append(warns, fmt.Sprintf("service %q: %v, dropping label middleware", svc.Name, err))
 	}
-	return append(out, hints...), warns
+	return out, warns
+}
+
+// routeMiddleware assembles one route's chain: provider-wide defaults
+// outermost, then the chains this route's router referenced by name in
+// label order, then the service-level label hints. A reference to an
+// unregistered name fails closed — the returned warning tells the caller
+// to omit the route, because serving it without the middleware it asked
+// for (an auth policy, say) is the one unacceptable failure mode.
+func (p *dockerProvider) routeMiddleware(svc *docker.Service, m docker.Matcher, hints []resolved.Middleware) ([]resolved.Middleware, string) {
+	var out []resolved.Middleware
+	out = append(out, p.cfg.DefaultMiddleware...)
+	for _, name := range m.Middlewares {
+		chain, ok := p.cfg.Middleware[name]
+		if !ok {
+			return nil, fmt.Sprintf("service %q: unknown middleware %q, dropping route %s%s (register it with Docker().Middleware)", svc.Name, name, m.Host, m.Path)
+		}
+		out = append(out, chain...)
+	}
+	return append(out, hints...), ""
 }
 
 // parseCompressAlgos parses a "gzip,br" style label value.

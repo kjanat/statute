@@ -44,11 +44,6 @@ type Service struct {
 	Timeout   string
 	RateLimit string
 	Compress  string
-
-	// Middlewares are names of code-registered middleware chains referenced
-	// by the container's labels (traefik router middlewares), in label
-	// order. Resolution against the registry happens in the provider.
-	Middlewares []string
 }
 
 // Backend is one container's contribution to a service pool.
@@ -449,8 +444,10 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []string) {
 		if svc == nil {
 			continue
 		}
-		if w := mergeTraefikService(c, out, svc); w != "" {
-			warns = append(warns, w)
+		if existing, ok := out[svc.Name]; ok {
+			existing.Routes = append(existing.Routes, svc.Routes...)
+		} else {
+			out[svc.Name] = svc
 		}
 	}
 	var list []Service
@@ -569,6 +566,7 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, skipping", c.Name, r.name, err))
 		return nil, warns
 	}
+	stampMiddlewares(matchers, r.middlewares)
 
 	svcName, warn := traefikServiceName(c, r, serviceNames)
 	if warn != "" {
@@ -607,10 +605,22 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		HealthCheckPath:     ts.hcPath,
 		HealthCheckInterval: ts.hcInterval,
 		HealthCheckTimeout:  ts.hcTimeout,
-
-		Middlewares: splitMiddlewareNames(r.middlewares),
 	}
 	return svc, warns
+}
+
+// stampMiddlewares copies a router's middleware references onto each
+// matcher its rule expanded to. References are router-scoped, as in
+// Traefik: they ride on the router's matchers, not the service, so
+// routers sharing a pool keep their own chains.
+func stampMiddlewares(matchers []Matcher, middlewares string) {
+	names := splitMiddlewareNames(middlewares)
+	if names == nil {
+		return
+	}
+	for i := range matchers {
+		matchers[i].Middlewares = names
+	}
 }
 
 // splitMiddlewareNames parses a comma-separated middlewares label value
@@ -623,44 +633,6 @@ func splitMiddlewareNames(v string) []string {
 		}
 	}
 	return names
-}
-
-// mergeTraefikService folds a router's service into out. On a name
-// collision the routes append and — because middleware attaches per
-// service — the middleware references union, which is safer than silently
-// dropping a chain from some of the routes; the returned warning reports
-// when the routers disagreed.
-func mergeTraefikService(c Container, out map[string]*Service, svc *Service) string {
-	existing, ok := out[svc.Name]
-	if !ok {
-		out[svc.Name] = svc
-		return ""
-	}
-	existing.Routes = append(existing.Routes, svc.Routes...)
-	if mergeMiddlewareNames(existing, svc.Middlewares) {
-		return fmt.Sprintf("container %s: routers sharing service %q declare different middlewares, applying the union to all its routes", c.Name, svc.Name)
-	}
-	return ""
-}
-
-// mergeMiddlewareNames folds names into base's middleware references,
-// preserving first-seen order and dropping duplicates. It reports whether
-// the two lists named different sets.
-func mergeMiddlewareNames(base *Service, names []string) bool {
-	seen := map[string]bool{}
-	for _, n := range base.Middlewares {
-		seen[n] = true
-	}
-	differ := len(names) != len(base.Middlewares)
-	for _, n := range names {
-		if seen[n] {
-			continue
-		}
-		seen[n] = true
-		base.Middlewares = append(base.Middlewares, n)
-		differ = true
-	}
-	return differ
 }
 
 func sortedKeys[V any](m map[string]V) []string {
