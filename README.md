@@ -306,10 +306,19 @@ Observability: statute.Observability{
 // Static cert from disk
 statute.StaticTLS("/etc/ssl/cert.pem", "/etc/ssl/key.pem")
 
-// Auto-provisioned via Let's Encrypt with HTTP-01 (default)
+// Auto-provisioned via Let's Encrypt, automatic challenge policy (default):
+// TLS-ALPN-01 is attempted first where the listener advertises acme-tls/1,
+// with HTTP-01 as the fallback.
 statute.AutoTLS("example.com", "api.example.com").
     Email("ops@example.com").
     Storage("/var/lib/statute/certs")
+
+// Pinned to HTTP-01: issues through the in-tree ACME manager, which never
+// attempts TLS-ALPN-01. Requires a plain HTTP listener in the config.
+statute.AutoTLS("example.com", "api.example.com").
+    Email("ops@example.com").
+    Storage("/var/lib/statute/certs").
+    HTTP01()
 
 // Auto-provisioned via Let's Encrypt with DNS-01 + Cloudflare
 // (required for wildcards and when port 80 is not reachable)
@@ -322,6 +331,21 @@ statute.AutoTLS("*.example.com", "example.com").
 AutoTLS persistence is **mandatory**. The `Storage` directory holds the ACME account key, issued certs, and renewal state; without it, every restart re-registers and re-issues, blowing through Let's Encrypt rate limits in days.
 
 The DNS-01 path is implemented in-tree using `golang.org/x/crypto/acme` directly + a tiny Cloudflare DNS API client. It does not pull in lego or certmagic. It supports wildcards and works without a publicly-reachable port 80. See [docs/cloudflare.md](docs/cloudflare.md) for setup details.
+
+**SNI-scoped sources.** One listener takes any number of TLS sources, mixed freely, and picks one per handshake by SNI hostname — an exact name wins over a wildcard pattern (which covers exactly one extra label), and a hostless `StaticTLS` is the fallback for unmatched names and clients that send no SNI. Mixed public/direct names, DNS-01 wildcards, and externally provisioned certificates can therefore share port 443:
+
+```go
+statute.HTTPS(":443",
+    statute.AutoTLS("foo.example.com").HTTP01().
+        Email("ops@example.com").Storage("/var/lib/statute/certs"),
+    statute.AutoTLS("*.bar.example").CloudflareDNS01(token).
+        Email("ops@example.com").Storage("/var/lib/statute/certs"),
+    statute.StaticTLSFor("baz.example.net", certFile, keyFile),
+    statute.StaticTLS(defaultCert, defaultKey), // fallback for everything else
+)
+```
+
+`HTTP01()` pins a source to the HTTP-01 challenge: instead of the shared autocert manager — whose challenge preference is hard-coded to attempt TLS-ALPN-01 first — the source issues through statute's in-tree ACME manager (the same machinery as DNS-01), which only ever attempts HTTP-01 and never advertises `acme-tls/1`. The default policy without it stays automatic: TLS-ALPN-01 where advertisable, HTTP-01 otherwise. Calling it together with `CloudflareDNS01` on one source is a resolve error, as is the same name claimed by two sources, a second hostless fallback, and a pinned source in a config with no plain HTTP listener to serve its challenge tokens. All names — AutoTLS domains, static hosts, and incoming SNI — are canonicalised the same way (case, trailing dots, IDNA A-label), so `foo.example.com.` and `FOO.example.com` are one name to both routing and duplicate detection; ACME domains must additionally survive the strict IDNA lookup, since a name autocert's host policy would drop can never be issued. Across listeners, resolve also rejects two pinned sources that would persist one domain to the same `<storage>/<challenge>/` path (their managers would race to rename over one stored key pair; the same domain on two automatic listeners stays legal — those feed one shared autocert manager) and pinned sources that share an ACME account directory but disagree on `Email`.
 
 ### HTTP/3
 

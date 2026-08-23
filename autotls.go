@@ -1,7 +1,6 @@
 package statute
 
 import (
-	"crypto/tls"
 	"errors"
 	"fmt"
 
@@ -10,12 +9,14 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-// buildAutocertManager scans all HTTPS listeners with HTTP-01 AutoTLS and
-// constructs a single autocert.Manager that covers the union of their
-// domains. DNS-01 listeners are excluded — they use a separate
-// per-listener cert manager (dns01Manager). Email and storage path must
-// agree across all HTTP-01 AutoTLS listeners; running multiple independent
-// ACME accounts from a single binary is intentionally unsupported.
+// buildAutocertManager scans every automatic-challenge AutoTLS source
+// across all listeners and constructs a single autocert.Manager covering
+// the union of their domains. Pinned sources are excluded — DNS-01 and
+// explicit HTTP-01 each get their own in-tree acmeManager, because
+// autocert's challenge preference is hard-coded (TLS-ALPN-01 first) and
+// cannot be pinned. Email and storage path must agree across all automatic
+// sources; running multiple independent ACME accounts from one autocert
+// manager is intentionally unsupported.
 func buildAutocertManager(listeners []*resolved.Listener) (*autocert.Manager, error) {
 	var (
 		domains []string
@@ -24,26 +25,25 @@ func buildAutocertManager(listeners []*resolved.Listener) (*autocert.Manager, er
 		seen    bool
 	)
 	for _, l := range listeners {
-		if l.AutoTLS == nil {
-			continue
-		}
-		// DNS-01 listeners get their own manager.
-		if l.AutoTLS.DNS01 != nil {
-			continue
-		}
-		if !seen {
-			email = l.AutoTLS.Email
-			storage = l.AutoTLS.Storage
-			seen = true
-		} else {
-			if email != l.AutoTLS.Email {
-				return nil, fmt.Errorf("auto_tls: email mismatch across listeners (%q vs %q)", email, l.AutoTLS.Email)
+		for _, a := range l.AutoTLSSources {
+			// Pinned sources get their own in-tree manager.
+			if a.DNS01 != nil || a.Challenge == resolved.ChallengeHTTP01 {
+				continue
 			}
-			if storage != l.AutoTLS.Storage {
-				return nil, fmt.Errorf("auto_tls: storage mismatch across listeners (%q vs %q)", storage, l.AutoTLS.Storage)
+			if !seen {
+				email = a.Email
+				storage = a.Storage
+				seen = true
+			} else {
+				if email != a.Email {
+					return nil, fmt.Errorf("auto_tls: email mismatch across sources (%q vs %q)", email, a.Email)
+				}
+				if storage != a.Storage {
+					return nil, fmt.Errorf("auto_tls: storage mismatch across sources (%q vs %q)", storage, a.Storage)
+				}
 			}
+			domains = append(domains, a.Domains...)
 		}
-		domains = append(domains, l.AutoTLS.Domains...)
 	}
 	if !seen {
 		return nil, nil
@@ -57,23 +57,4 @@ func buildAutocertManager(listeners []*resolved.Listener) (*autocert.Manager, er
 		Cache:      autocert.DirCache(storage),
 		HostPolicy: autocert.HostWhitelist(domains...),
 	}, nil
-}
-
-// autocertTLSConfig returns a *tls.Config that uses the given manager for
-// dynamic certificate provisioning. ALPN advertises h2 when HTTP/2 is enabled
-// on the listener; tls-alpn-01 is included so the manager can satisfy
-// challenges without needing an HTTP-01 fallback — except when behindCF is
-// true, in which case tls-alpn-01 is dropped because Cloudflare's edge
-// terminates TLS and will not forward the custom ALPN protocol.
-func autocertTLSConfig(m *autocert.Manager, http2, behindCF bool) *tls.Config {
-	cfg := m.TLSConfig()
-	protos := []string{alpnHTTP1}
-	if http2 {
-		protos = append([]string{alpnHTTP2}, protos...)
-	}
-	if !behindCF {
-		protos = append(protos, alpnACMETLS)
-	}
-	cfg.NextProtos = protos
-	return cfg
 }

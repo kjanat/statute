@@ -8,6 +8,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- SNI-scoped TLS and ACME policies on one listener: `HTTPS(":443", ...)`
+  accepts any number of TLS sources — `AutoTLS` (HTTP-01 or DNS-01),
+  `StaticTLSFor(host, cert, key)` scoped to one SNI name or wildcard
+  pattern, and hostless `StaticTLS` as the fallback — and a per-listener
+  certificate router picks one per handshake by SNI: exact name first,
+  then wildcard (covering exactly one extra label), then the fallback.
+  `AutoTLS(...).HTTP01()` pins a source to the HTTP-01 challenge: it
+  issues through the in-tree ACME manager (the same machinery as DNS-01)
+  rather than autocert, whose hard-coded preference would attempt
+  TLS-ALPN-01 first, so a pinned source never advertises `acme-tls/1` and
+  never burns a failed validation. The default remains automatic
+  (TLS-ALPN-01 where advertisable, HTTP-01 fallback). Combining it with
+  `CloudflareDNS01` on one source, claiming one name from two sources, or
+  declaring a second hostless fallback is a resolve error, and HTTP-01
+  sources reject wildcard domains outright. Every name — AutoTLS domains,
+  static hosts, incoming SNI — is canonicalised identically (case,
+  trailing dot, IDNA A-label) before routing and duplicate detection.
+  HTTP/3 shares the router, static key pairs load at server construction,
+  and the resolved schema gains `Listener.AutoTLSSources`/
+  `StaticTLSSources` (declaration order; the singular fields mirror the
+  first source of each kind), `StaticTLS.Host`, and the per-source
+  `AutoTLS.Challenge` policy (`ChallengeAuto`/`ChallengeHTTP01`/
+  `ChallengeDNS01`).
+  Name canonicalisation is a fixed point, so no spelling of a name (any
+  number of trailing dots or surrounding spaces) can pass duplicate
+  detection as distinct and then collide in the router; ACME domains are
+  additionally held to the strict IDNA lookup form, since a name autocert's
+  host policy would drop can never be issued, while static hosts keep the
+  lenient fallback. `"*"`, `"*."`, and a `*` outside a single leading
+  `"*."` label are resolve errors rather than a catch-all no handshake can
+  select. Three checks span the whole config: an `HTTP01()` source with no
+  plain HTTP listener anywhere (nothing would serve the challenge tokens),
+  two pinned sources persisting one domain to the same
+  `<storage>/<challenge>/` path (two managers racing to rename over one
+  stored key pair — the same domain on two automatic listeners stays
+  legal, unioned into the shared autocert manager), and pinned sources
+  sharing an ACME
+  account directory but disagreeing on `Email` (the second registration
+  returns `ErrAccountAlreadyExists` and its contact is silently dropped).
+- The in-tree ACME manager (DNS-01 and pinned HTTP-01) gained the
+  robustness autocert has: a usable certificate keeps serving handshakes
+  while its replacement is issued (renewal is a separate predicate from
+  validity), orders are deduplicated per host with a one-minute cooldown
+  after a failure and run on the manager's own context rather than a
+  handshake's, certificates persist through a temp file and rename (key
+  first) so a crash cannot leave a chain without its key, authorizations
+  are polled at the authorization URL — the only place terminal states
+  appear — pending authorizations are deactivated after a failed order to
+  spare rate-limit quota, the CSR is SAN-only (RFC 8555 §7.4), and
+  start/warm-up/stop have a defined lifecycle that `Shutdown` drives before
+  the listeners close.
 - Client-IP route matching: `Match(...).ClientIPs("10.0.0.0/8", ...)` makes
   client CIDRs part of route selection. A request from outside the ranges
   falls through to the next route — where `AllowIPs` middleware would

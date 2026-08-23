@@ -43,7 +43,8 @@ type server struct {
 	stats *stats
 
 	autocertMgr     *autocert.Manager
-	dns01Managers   map[string]*dns01Manager // keyed by listener address
+	acmeManagers    map[*resolved.AutoTLS]*acmeManager // keyed by resolved source
+	certRouters     map[string]*certRouter             // keyed by listener address
 	tracingShutdown func(context.Context) error
 
 	mu      sync.Mutex
@@ -63,7 +64,7 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	}
 	s.autocertMgr = mgr
 
-	if err := s.initDNS01Managers(cfg.Listeners); err != nil {
+	if err := s.initACMEManagers(cfg.Listeners); err != nil {
 		return nil, err
 	}
 
@@ -99,19 +100,32 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	return s, nil
 }
 
-// initDNS01Managers builds a dns01Manager for every listener configured
-// with Cloudflare DNS-01, keyed by listener address.
-func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
-	s.dns01Managers = make(map[string]*dns01Manager)
+// initACMEManagers builds an in-tree acmeManager for every AutoTLS source
+// with a pinned challenge — DNS-01 via Cloudflare, or explicit HTTP-01 —
+// keyed by the resolved source so each listener's cert router can find the
+// manager for exactly the source it is dispatching to. Automatic sources
+// stay on the shared autocert manager.
+func (s *server) initACMEManagers(listeners []*resolved.Listener) error {
+	s.acmeManagers = make(map[*resolved.AutoTLS]*acmeManager)
 	for _, l := range listeners {
-		if l.AutoTLS == nil || l.AutoTLS.DNS01 == nil {
-			continue
+		for _, a := range l.AutoTLSSources {
+			var (
+				m   *acmeManager
+				err error
+			)
+			switch {
+			case a.DNS01 != nil:
+				m, err = newDNS01Manager(a)
+			case a.Challenge == resolved.ChallengeHTTP01:
+				m, err = newHTTP01Manager(a)
+			default:
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("acme manager %s: %w", l.Addr, err)
+			}
+			s.acmeManagers[a] = m
 		}
-		dm, err := newDNS01Manager(l.AutoTLS)
-		if err != nil {
-			return fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
-		}
-		s.dns01Managers[l.Addr] = dm
 	}
 	return nil
 }
@@ -236,11 +250,10 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 		handler = content
 	}
 
-	// When AutoTLS is configured anywhere, the plain-HTTP listener must serve
-	// /.well-known/acme-challenge/* so HTTP-01 can complete. autocert.HTTPHandler
-	// transparently passes other paths through to the wrapped handler.
-	if l.Scheme == schemeHTTP && s.autocertMgr != nil {
-		handler = s.autocertMgr.HTTPHandler(handler)
+	// When AutoTLS is configured anywhere, the plain-HTTP listener must
+	// serve /.well-known/acme-challenge/* so HTTP-01 can complete.
+	if l.Scheme == schemeHTTP {
+		handler = s.wrapACMEChallenges(handler)
 	}
 
 	// When HTTP/3 is enabled on a sibling listener, advertise it via Alt-Svc
@@ -276,27 +289,54 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	return handler
 }
 
-// applyListenerTLS selects the TLS source for an HTTPS content listener and
-// installs it on hs. StaticTLS is intentionally a no-op here: its cert/key
-// paths are passed to ServeTLS at start time instead.
-func (s *server) applyListenerTLS(hs *http.Server, l *resolved.Listener) error {
-	switch {
-	case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
-		dm := s.dns01Managers[l.Addr]
-		if dm == nil {
-			return errors.New("auto_tls: dns01 manager not initialised")
+// warmACMEManagers eagerly issues missing certificates for one warm-up
+// phase. afterListeners false selects the managers whose CA validation
+// needs no local listener (DNS-01) — they warm synchronously before the
+// listeners open, keeping the first handshake fast. afterListeners true
+// selects the HTTP-01 managers, warmed through warmAsync once the plain
+// HTTP listeners are serving and can answer the CA's token fetch; the
+// manager tracks that goroutine so Shutdown waits for it.
+func (s *server) warmACMEManagers(afterListeners bool) {
+	for _, m := range s.acmeManagers {
+		if m.warmsAfterListeners() != afterListeners {
+			continue
 		}
-		hs.TLSConfig = dns01TLSConfig(dm, l.EnableHTTP2)
-	case l.AutoTLS != nil:
-		if s.autocertMgr == nil {
-			return errors.New("auto_tls: manager not initialised")
+		if afterListeners {
+			m.warmAsync()
+		} else {
+			m.warm()
 		}
-		hs.TLSConfig = autocertTLSConfig(s.autocertMgr, l.EnableHTTP2, l.BehindCloudflare)
-	case l.StaticTLS != nil:
-		// TLS config left to ServeTLS; cert/key paths are passed at start.
-	default:
-		return errors.New("https listener has no TLS material")
 	}
+}
+
+// wrapACMEChallenges layers every HTTP-01 challenge responder over next on
+// a plain HTTP listener: the shared autocert manager's handler covers
+// automatic sources, and each pinned HTTP-01 manager serves its own token
+// table. All of them pass other paths through to the wrapped handler.
+func (s *server) wrapACMEChallenges(next http.Handler) http.Handler {
+	if s.autocertMgr != nil {
+		next = s.autocertMgr.HTTPHandler(next)
+	}
+	for _, m := range s.acmeManagers {
+		next = m.wrapHTTPChallenges(next)
+	}
+	return next
+}
+
+// applyListenerTLS installs the listener's TLS material on hs: a cert
+// router over every declared source, dispatching per handshake by SNI. The
+// router is also stored by address so the listener's HTTP/3 server reuses
+// it instead of loading static key pairs a second time.
+func (s *server) applyListenerTLS(hs *http.Server, l *resolved.Listener) error {
+	cr, err := s.buildCertRouter(l)
+	if err != nil {
+		return err
+	}
+	if s.certRouters == nil {
+		s.certRouters = make(map[string]*certRouter)
+	}
+	s.certRouters[l.Addr] = cr
+	hs.TLSConfig = certRouterTLSConfig(cr, l)
 	return nil
 }
 
@@ -322,11 +362,12 @@ func (s *server) Start() error {
 	if s.started {
 		return errors.New("already started")
 	}
-	for addr, dm := range s.dns01Managers {
-		if err := dm.start(); err != nil {
-			return fmt.Errorf("dns01 manager %s: %w", addr, err)
+	for src, m := range s.acmeManagers {
+		if err := m.start(); err != nil {
+			return fmt.Errorf("%s manager (%s): %w", m.name, strings.Join(src.Domains, ", "), err)
 		}
 	}
+	s.warmACMEManagers(false)
 	if err := s.startDocker(); err != nil {
 		return err
 	}
@@ -344,6 +385,7 @@ func (s *server) Start() error {
 	for _, h3 := range s.http3Servers {
 		go func() { _ = h3.Serve() }()
 	}
+	s.warmACMEManagers(true)
 	if s.metricsServer != nil {
 		ms := s.metricsServer
 		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", ms.Addr)
@@ -357,19 +399,14 @@ func (s *server) Start() error {
 }
 
 // serveListener runs hs on ln, picking ServeTLS vs Serve based on the
-// resolved listener's TLS material. For AutoTLS the cert source lives on
-// hs.TLSConfig (autocert.Manager.GetCertificate or the dns01Manager
-// equivalent), so ServeTLS is called with empty paths.
+// listener's scheme. Certificate material always flows through the cert
+// router installed on hs.TLSConfig, so ServeTLS never receives file paths.
 func serveListener(hs *http.Server, l *resolved.Listener, ln net.Listener) {
-	isContentHTTPS := l != nil && l.Scheme == schemeHTTPS && l.Redirect == ""
-	switch {
-	case isContentHTTPS && l.StaticTLS != nil:
-		_ = hs.ServeTLS(ln, l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
-	case isContentHTTPS && l.AutoTLS != nil:
+	if l != nil && l.Scheme == schemeHTTPS && l.Redirect == "" {
 		_ = hs.ServeTLS(ln, "", "")
-	default:
-		_ = hs.Serve(ln)
+		return
 	}
+	_ = hs.Serve(ln)
 }
 
 // goShutdown runs fn(ctx) in a WaitGroup-tracked goroutine, forwarding any
@@ -388,6 +425,15 @@ func goShutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error, fn f
 func (s *server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Shutdown.GracePeriod)
 	defer cancel()
+
+	// Stop the ACME managers before the listeners: a warm-up still in
+	// flight must be cancelled while the plain HTTP listener that serves
+	// its HTTP-01 tokens is still accepting, or the CA's token fetch hits a
+	// closed port and the account pays for a failed validation on the way
+	// out. stop also waits for that goroutine, so nothing outlives Shutdown.
+	for _, m := range s.acmeManagers {
+		m.stop()
+	}
 
 	var wg sync.WaitGroup
 	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+1)
@@ -409,9 +455,6 @@ func (s *server) Shutdown() error {
 	// shutdown of the metrics server.
 	for _, ph := range s.pools {
 		ph.shutdown()
-	}
-	for _, dm := range s.dns01Managers {
-		dm.stop()
 	}
 
 	// Flush pending spans last so traces produced during shutdown still ship.

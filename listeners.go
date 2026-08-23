@@ -6,8 +6,8 @@ type Listener struct {
 	scheme   string // "http" or "https"
 	redirect string // non-empty means this listener redirects to the named scheme
 
-	autoTLS      *AutoTLSConfig
-	staticTLS    *StaticTLSConfig
+	autoTLS      []*AutoTLSConfig
+	staticTLS    []*StaticTLSConfig
 	enableHTTP2  bool
 	http3Addr    string
 	behindCF     bool
@@ -21,6 +21,19 @@ func HTTP(addr string) *Listener {
 
 // HTTPS starts an HTTPS listener declaration on the given address. Options
 // configure TLS material, HTTP/2, and HTTP/3.
+//
+// A listener accepts any number of TLS sources — AutoTLS, StaticTLS, and
+// StaticTLSFor may be mixed freely — and selects one per handshake by SNI
+// hostname: an exact name wins over a wildcard pattern, and a hostless
+// StaticTLS acts as the fallback for names no source covers. Mixed
+// public/direct names, DNS-01 wildcards, and externally provisioned
+// certificates can therefore share one port:
+//
+//	statute.HTTPS(":443",
+//	    statute.AutoTLS("foo.example.com").HTTP01(),
+//	    statute.AutoTLS("*.bar.example").CloudflareDNS01(token),
+//	    statute.StaticTLSFor("baz.example.net", certFile, keyFile),
+//	)
 func HTTPS(addr string, opts ...ListenerOption) *Listener {
 	l := &Listener{addr: addr, scheme: schemeHTTPS}
 	for _, o := range opts {
@@ -41,15 +54,22 @@ type ListenerOption interface {
 	applyListener(l *Listener)
 }
 
-// AutoTLSConfig declares ACME-managed TLS material.
+// AutoTLSConfig declares ACME-managed TLS material. A listener may carry
+// several — each is one certificate source scoped to its domains.
 type AutoTLSConfig struct {
-	Domains []string
-	email   string
-	storage string
-	dns01   *cloudflareDNS01Config
+	Domains        []string
+	email          string
+	storage        string
+	dns01          *cloudflareDNS01Config
+	explicitHTTP01 bool
 }
 
-// AutoTLS configures ACME auto-provisioning for the given domains.
+// AutoTLS configures ACME auto-provisioning for the given domains. Each
+// domain must be a valid IDNA lookup name — trailing dots, case, and
+// U-labels are normalised, but a name the profile rejects (an underscore,
+// say) is a resolve error: autocert's host policy drops it and a CA
+// refuses the order, so it could never be issued. A wildcard is written
+// "*.suffix" and requires CloudflareDNS01.
 func AutoTLS(domains ...string) *AutoTLSConfig {
 	return &AutoTLSConfig{Domains: append([]string(nil), domains...)}
 }
@@ -97,7 +117,25 @@ func (a *AutoTLSConfig) Zone(id string) *AutoTLSConfig {
 	return a
 }
 
-func (a *AutoTLSConfig) applyListener(l *Listener) { l.autoTLS = a }
+// HTTP01 pins this source to the HTTP-01 challenge. Without it the source
+// uses the automatic policy: the shared autocert manager, which attempts
+// TLS-ALPN-01 first where the listener advertises it and falls back to
+// HTTP-01. A pinned source instead issues through statute's in-tree ACME
+// manager (the same machinery DNS-01 uses), which only ever attempts
+// HTTP-01 — TLS-ALPN-01 is never tried, advertised, or deliberately
+// failed. HTTP-01 requires a plain-HTTP listener whose port 80 is
+// reachable from the CA — a RedirectTo listener counts, since the
+// challenge responses are served ahead of the redirect. Calling both
+// HTTP01 and CloudflareDNS01 on one source is a resolve error rather than
+// a silent precedence choice, and so is pinning a source when the config
+// declares no plain HTTP listener at all: nothing would serve the tokens,
+// so every issuance attempt would fail validation.
+func (a *AutoTLSConfig) HTTP01() *AutoTLSConfig {
+	a.explicitHTTP01 = true
+	return a
+}
+
+func (a *AutoTLSConfig) applyListener(l *Listener) { l.autoTLS = append(l.autoTLS, a) }
 
 // cloudflareDNS01Config carries the resolved-stage data for DNS-01.
 type cloudflareDNS01Config struct {
@@ -105,18 +143,39 @@ type cloudflareDNS01Config struct {
 	zoneID   string
 }
 
-// StaticTLSConfig declares pre-provisioned TLS material.
+// StaticTLSConfig declares pre-provisioned TLS material. A listener may
+// carry several; Host scopes each to one SNI name.
 type StaticTLSConfig struct {
 	CertFile string
 	KeyFile  string
+
+	// Host scopes the certificate to one SNI name — an exact hostname or a
+	// wildcard pattern like "*.bar.example". Empty makes the source the
+	// listener's fallback for unmatched names and SNI-less clients; at most
+	// one hostless source may exist per listener.
+	Host string
+
+	hostSet bool
 }
 
-// StaticTLS configures TLS using a static certificate and key on disk.
+// StaticTLS configures TLS using a static certificate and key on disk. The
+// source carries no hostname: alone on a listener it serves everything, and
+// alongside other sources it is the fallback for names none of them cover.
 func StaticTLS(certFile, keyFile string) *StaticTLSConfig {
 	return &StaticTLSConfig{CertFile: certFile, KeyFile: keyFile}
 }
 
-func (s *StaticTLSConfig) applyListener(l *Listener) { l.staticTLS = s }
+// StaticTLSFor configures a static certificate served only for the given
+// SNI hostname — an exact name or a wildcard pattern like "*.bar.example"
+// covering exactly one extra label. A "*" anywhere else, and a bare "*",
+// are resolve errors: no ClientHello can send that name, so the source
+// would be silently unreachable. An empty host is a resolve error too;
+// use StaticTLS for the hostless fallback.
+func StaticTLSFor(host, certFile, keyFile string) *StaticTLSConfig {
+	return &StaticTLSConfig{Host: host, CertFile: certFile, KeyFile: keyFile, hostSet: true}
+}
+
+func (s *StaticTLSConfig) applyListener(l *Listener) { l.staticTLS = append(l.staticTLS, s) }
 
 type http2Option struct{}
 
@@ -180,10 +239,15 @@ type behindCloudflareOption struct{}
 // First, when AutoTLS is configured on the listener, the TLS-ALPN-01 challenge
 // is suppressed (the "acme-tls/1" entry is dropped from ALPN). Cloudflare
 // terminates TLS at its edge and does not forward custom ALPN protocols, so
-// TLS-ALPN-01 cannot succeed. Provisioning falls back to HTTP-01, which is
+// TLS-ALPN-01 cannot succeed. Suppressing the protocol does not stop
+// autocert from trying it: its challenge preference is hard-coded to
+// tls-alpn-01 first, so the automatic policy burns one failed validation
+// per issuance and only then opens a fresh order for HTTP-01, which is
 // served by the redirect listener on :80 — Cloudflare proxies that path
 // transparently provided "Always Use HTTPS" is disabled for
-// /.well-known/acme-challenge/*.
+// /.well-known/acme-challenge/*. Pin the source with HTTP01() to skip that
+// attempt entirely; the in-tree manager never advertises or attempts
+// TLS-ALPN-01.
 //
 // Second, the request handling path trusts the CF-Connecting-IP and
 // True-Client-IP headers as the originating client address. Other proxy

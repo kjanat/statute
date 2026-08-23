@@ -49,6 +49,16 @@ type Listener struct {
 	EnableHTTP2 bool
 	HTTP3Addr   string // empty unless HTTP/3 is enabled
 
+	// AutoTLSSources and StaticTLSSources hold every TLS source declared on
+	// the listener, in declaration order. A listener may mix ACME challenge
+	// policies and static material on one port; the runtime picks a source
+	// per handshake by SNI hostname — exact name first, then wildcard
+	// pattern, then the hostless static fallback. AutoTLS and StaticTLS
+	// above mirror the first source of each kind so single-source tooling
+	// keeps working; multi-source aware tooling should read the slices.
+	AutoTLSSources   []*AutoTLS
+	StaticTLSSources []*StaticTLS
+
 	// BehindCloudflare indicates the listener is fronted by Cloudflare. The
 	// runtime suppresses TLS-ALPN-01 challenges (HTTP-01 only) and trusts
 	// CF-Connecting-IP / True-Client-IP for client IP attribution.
@@ -68,7 +78,25 @@ type AutoTLS struct {
 	Email   string
 	Storage string
 	DNS01   *CloudflareDNS01
+
+	// Challenge is the source's ACME challenge policy. ChallengeDNS01 holds
+	// exactly when DNS01 is non-nil.
+	Challenge Challenge
 }
+
+// Challenge identifies the ACME challenge policy of one AutoTLS source.
+type Challenge int
+
+const (
+	// ChallengeAuto lets the runtime pick: TLS-ALPN-01 where the listener
+	// can advertise it, with fallback to HTTP-01 (default).
+	ChallengeAuto Challenge = iota
+	// ChallengeHTTP01 pins issuance to HTTP-01 through the in-tree ACME
+	// manager; TLS-ALPN-01 is never attempted or advertised for the source.
+	ChallengeHTTP01
+	// ChallengeDNS01 issues over DNS-01 via the configured DNS provider.
+	ChallengeDNS01
+)
 
 // CloudflareDNS01 is the resolved DNS-01 configuration. When non-nil, the
 // runtime uses Cloudflare's DNS API to satisfy challenges instead of HTTP-01.
@@ -81,6 +109,12 @@ type CloudflareDNS01 struct {
 type StaticTLS struct {
 	CertFile string
 	KeyFile  string
+
+	// Host scopes the certificate to one SNI name — an exact hostname or a
+	// wildcard pattern like "*.bar.example" covering exactly one extra
+	// label. Empty means the source is the listener's fallback: it serves
+	// names no other source covers, and clients that send no SNI at all.
+	Host string
 }
 
 // Pool is a resolved upstream pool.

@@ -142,15 +142,15 @@ func ruleSingleBackend(c *resolved.Config) []Finding {
 func ruleAutoTLSStorage(c *resolved.Config) []Finding {
 	var out []Finding
 	for i, l := range c.Listeners {
-		if l.AutoTLS == nil {
-			continue
-		}
-		if strings.HasPrefix(l.AutoTLS.Storage, "/tmp/") || l.AutoTLS.Storage == "/tmp" {
+		for j, a := range l.AutoTLSSources {
+			if !strings.HasPrefix(a.Storage, "/tmp/") && a.Storage != "/tmp" {
+				continue
+			}
 			out = append(out, Finding{
 				Severity: SeverityError,
 				Code:     "TLS001",
 				Message:  "AutoTLS storage path is under /tmp; will be wiped on reboot and trigger Let's Encrypt rate-limit lockout. Use a persistent volume.",
-				Path:     fmt.Sprintf("listeners[%d].auto_tls.storage", i),
+				Path:     fmt.Sprintf("listeners[%d].auto_tls[%d].storage", i, j),
 			})
 		}
 	}

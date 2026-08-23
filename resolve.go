@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -71,7 +72,8 @@ func resolveUpstreams(in map[string]Pool, out map[string]*resolved.Pool) error {
 	return nil
 }
 
-// resolveListeners resolves every surface listener and appends it to out.
+// resolveListeners resolves every surface listener and appends it to out,
+// then validates the TLS decisions that only the whole set can settle.
 func resolveListeners(in []*Listener, out *resolved.Config) error {
 	for i, l := range in {
 		rl, err := resolveListener(l)
@@ -80,7 +82,116 @@ func resolveListeners(in []*Listener, out *resolved.Config) error {
 		}
 		out.Listeners = append(out.Listeners, rl)
 	}
+	return validateTLSAcrossListeners(out.Listeners)
+}
+
+// validateTLSAcrossListeners rejects ACME configurations that are only
+// broken in combination: a per-listener check cannot see the plain-HTTP
+// listener that serves HTTP-01 tokens, the pinned source on another
+// listener persisting a domain to the same file, or the sibling source
+// sharing an ACME account.
+func validateTLSAcrossListeners(listeners []*resolved.Listener) error {
+	if err := validateHTTP01HasPlainListener(listeners); err != nil {
+		return err
+	}
+	if err := validatePinnedDomainCollisions(listeners); err != nil {
+		return err
+	}
+	return validatePinnedACMEAccounts(listeners)
+}
+
+// validateHTTP01HasPlainListener rejects an HTTP-01-pinned source in a
+// config with no plain HTTP listener. The in-tree manager's token table is
+// layered onto "http" listeners only (server.buildListenerHandler calls
+// wrapACMEChallenges under that scheme), so the validator would find
+// nothing serving /.well-known/acme-challenge/* and the source burns a
+// failed validation on every start. RFC 8555 §8.3 fixes http-01 to port 80
+// at the validator, but the bind address is not checked here: operators
+// port-map, and a listener on :8080 behind a NAT rule is a working
+// deployment.
+func validateHTTP01HasPlainListener(listeners []*resolved.Listener) error {
+	for _, l := range listeners {
+		if l.Scheme == schemeHTTP {
+			return nil
+		}
+	}
+	for _, l := range listeners {
+		for _, a := range l.AutoTLSSources {
+			if a.Challenge == resolved.ChallengeHTTP01 {
+				return fmt.Errorf("auto_tls: HTTP-01 source for %s requires a plain HTTP listener to serve the challenge tokens; add statute.HTTP(\":80\") (a RedirectTo listener counts)", strings.Join(a.Domains, ", "))
+			}
+		}
+	}
 	return nil
+}
+
+// validatePinnedDomainCollisions rejects two pinned sources whose
+// certificate for one domain would live at the same path. The runtime
+// builds one in-tree manager per pinned source (server.initACMEManagers),
+// and each persists to <storage>/<challenge>/<domain>.{crt,key} — two
+// managers sharing that path race to issue and rename over each other's
+// key pair. Only the file matters: the same domain on two automatic
+// sources is fine (they feed one shared autocert manager, which unions
+// its domains), and so are pinned sources with distinct storage roots or
+// challenge kinds. Within one listener validateTLSSourceCoverage already
+// rejects any duplicate name.
+func validatePinnedDomainCollisions(listeners []*resolved.Listener) error {
+	owner := make(map[string]*resolved.Listener)
+	for _, l := range listeners {
+		for _, a := range l.AutoTLSSources {
+			if a.Challenge == resolved.ChallengeAuto {
+				continue
+			}
+			for _, d := range a.Domains {
+				path := filepath.Join(a.Storage, acmeChallengeDir(a), d)
+				if prev, ok := owner[path]; ok {
+					return fmt.Errorf("auto_tls: domain %q on listeners %s and %s stores its certificate at the same path (%s.crt); give the sources distinct storage roots or issue the domain from one listener", d, prev.Addr, l.Addr, path)
+				}
+				owner[path] = l
+			}
+		}
+	}
+	return nil
+}
+
+// validatePinnedACMEAccounts rejects pinned sources that share one ACME
+// account but disagree on the contact email. A pinned source keeps its
+// account key at <storage>/<challenge>/account.key (newACMEManager), so
+// two sources share an account exactly when both the storage root and the
+// challenge subdirectory match. x/crypto's Client.Register then returns
+// ErrAccountAlreadyExists for the second source without applying its
+// contact, so one of the two addresses is silently lost and which one
+// depends on map iteration order. Mirrors the email agreement
+// buildAutocertManager requires of the automatic sources.
+func validatePinnedACMEAccounts(listeners []*resolved.Listener) error {
+	first := make(map[string]*resolved.AutoTLS)
+	for _, l := range listeners {
+		for _, a := range l.AutoTLSSources {
+			if a.Challenge == resolved.ChallengeAuto {
+				continue // autocert's shared account; buildAutocertManager checks it
+			}
+			account := filepath.Join(a.Storage, acmeChallengeDir(a))
+			prev, ok := first[account]
+			if !ok {
+				first[account] = a
+				continue
+			}
+			if prev.Email != a.Email {
+				return fmt.Errorf("auto_tls: email mismatch across sources sharing the ACME account at %s (%q vs %q)", account, prev.Email, a.Email)
+			}
+		}
+	}
+	return nil
+}
+
+// acmeChallengeDir names the storage subdirectory the in-tree manager
+// creates for a pinned source — the names newDNS01Manager and
+// newHTTP01Manager pass to newACMEManager.
+func acmeChallengeDir(a *resolved.AutoTLS) string {
+	if a.DNS01 != nil {
+		return "dns01"
+	}
+	return "http01"
 }
 
 // resolveRoutes resolves every surface route and appends it to out.
@@ -293,22 +404,8 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		HTTP3Addr:        l.http3Addr,
 		BehindCloudflare: l.behindCF,
 	}
-	if err := validateListenerTLSPresence(l); err != nil {
+	if err := resolveListenerTLS(l, rl); err != nil {
 		return nil, err
-	}
-	if l.autoTLS != nil {
-		at, err := resolveAutoTLS(l.autoTLS)
-		if err != nil {
-			return nil, err
-		}
-		rl.AutoTLS = at
-	}
-	if l.staticTLS != nil {
-		st, err := resolveStaticTLS(l.staticTLS)
-		if err != nil {
-			return nil, err
-		}
-		rl.StaticTLS = st
 	}
 	if err := resolveTrustedProxy(l.trustedProxy, rl); err != nil {
 		return nil, err
@@ -346,8 +443,80 @@ func resolveTrustedProxy(t *TrustedProxyConfig, rl *resolved.Listener) error {
 // validateListenerTLSPresence rejects an HTTPS content listener that carries
 // no TLS material. Redirect-only listeners and plain HTTP need none.
 func validateListenerTLSPresence(l *Listener) error {
-	if l.scheme == schemeHTTPS && l.redirect == "" && l.autoTLS == nil && l.staticTLS == nil {
+	if l.scheme == schemeHTTPS && l.redirect == "" && len(l.autoTLS) == 0 && len(l.staticTLS) == 0 {
 		return errors.New("https listener requires AutoTLS or StaticTLS")
+	}
+	return nil
+}
+
+// resolveListenerTLS lowers every TLS source declared on the listener into
+// the resolved source slices, validates the combination, and mirrors the
+// first source of each kind into the legacy singular fields.
+func resolveListenerTLS(l *Listener, rl *resolved.Listener) error {
+	if err := validateListenerTLSPresence(l); err != nil {
+		return err
+	}
+	for _, a := range l.autoTLS {
+		at, err := resolveAutoTLS(a)
+		if err != nil {
+			return err
+		}
+		rl.AutoTLSSources = append(rl.AutoTLSSources, at)
+	}
+	for _, s := range l.staticTLS {
+		st, err := resolveStaticTLS(s)
+		if err != nil {
+			return err
+		}
+		rl.StaticTLSSources = append(rl.StaticTLSSources, st)
+	}
+	if err := validateTLSSourceCoverage(rl); err != nil {
+		return err
+	}
+	if len(rl.AutoTLSSources) > 0 {
+		rl.AutoTLS = rl.AutoTLSSources[0]
+	}
+	if len(rl.StaticTLSSources) > 0 {
+		rl.StaticTLS = rl.StaticTLSSources[0]
+	}
+	return nil
+}
+
+// validateTLSSourceCoverage rejects ambiguous SNI coverage on one listener:
+// a name (exact or wildcard pattern) claimed by two sources would make the
+// handshake-time choice arbitrary, and a second hostless static fallback
+// could never be selected. An exact name overlapping a wildcard from
+// another source is fine — the exact name wins at handshake time.
+func validateTLSSourceCoverage(rl *resolved.Listener) error {
+	// Sources arrive with canonical names (canonicalTLSName), so claims
+	// compare byte-for-byte.
+	claimed := make(map[string]string)
+	claim := func(name, source string) error {
+		if prev, ok := claimed[name]; ok {
+			return fmt.Errorf("tls: %s and %s both claim %q; each SNI name may have one source per listener", prev, source, name)
+		}
+		claimed[name] = source
+		return nil
+	}
+	for i, a := range rl.AutoTLSSources {
+		for _, d := range a.Domains {
+			if err := claim(d, fmt.Sprintf("auto_tls[%d]", i)); err != nil {
+				return err
+			}
+		}
+	}
+	fallbackSeen := false
+	for i, st := range rl.StaticTLSSources {
+		if st.Host == "" {
+			if fallbackSeen {
+				return errors.New("static_tls: only one hostless fallback source per listener; scope the others with StaticTLSFor")
+			}
+			fallbackSeen = true
+			continue
+		}
+		if err := claim(st.Host, fmt.Sprintf("static_tls[%d]", i)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -364,12 +533,20 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	if a.storage == "" {
 		return nil, errors.New("auto_tls: storage path required for cert persistence")
 	}
+	if err := validateAutoTLSChallenge(a); err != nil {
+		return nil, err
+	}
+	domains, err := canonicalAutoTLSDomains(a.Domains)
+	if err != nil {
+		return nil, err
+	}
 	at := &resolved.AutoTLS{
-		Domains: append([]string(nil), a.Domains...),
+		Domains: domains,
 		Email:   a.email,
 		Storage: a.storage,
 	}
-	if a.dns01 != nil {
+	switch {
+	case a.dns01 != nil:
 		if a.dns01.apiToken == "" {
 			return nil, errors.New("auto_tls.cloudflare_dns01: api token is required")
 		}
@@ -377,19 +554,98 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 			APIToken: a.dns01.apiToken,
 			ZoneID:   a.dns01.zoneID,
 		}
+		at.Challenge = resolved.ChallengeDNS01
+	case a.explicitHTTP01:
+		at.Challenge = resolved.ChallengeHTTP01
 	}
 	return at, nil
 }
 
+// canonicalAutoTLSDomains lowers every configured ACME domain to its
+// canonical routing form (case, trailing dots, IDNA A-label), rejecting
+// names that canonicalise to nothing, unroutable wildcards, and — unlike a
+// static host — names the IDNA lookup profile rejects. canonicalTLSName's
+// lowercase fallback exists for unusual-but-working static hostnames; an
+// ACME domain that needs it cannot be issued at all: autocert.HostWhitelist
+// keeps only the names idna.Lookup.ToASCII accepts and drops the rest, so
+// the SNI is refused at handshake time, and a pinned source submits an
+// order the CA rejects on every attempt.
+func canonicalAutoTLSDomains(domains []string) ([]string, error) {
+	canon := make([]string, len(domains))
+	for i, d := range domains {
+		cd, err := canonicalTLSNameStrict(d)
+		if cd == "" {
+			return nil, fmt.Errorf("auto_tls: invalid domain %q", d)
+		}
+		if werr := validateTLSWildcard(cd); werr != nil {
+			return nil, fmt.Errorf("auto_tls: invalid domain %q: %w", d, werr)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("auto_tls: domain %q is not a valid ACME identifier: %w", d, err)
+		}
+		canon[i] = cd
+	}
+	return canon, nil
+}
+
+// validateTLSWildcard rejects a canonical name whose "*" cannot route. A
+// bare "*" (which "*." also canonicalises to, the trailing dot being
+// stripped first) is not a name any ClientHello can send, so indexing it
+// leaves the operator's intended catch-all dead — StaticTLS, the hostless
+// fallback, is the way to serve unmatched names. Any other "*" — an inner
+// label as in "*.*.example.com", or one inside a label — fails the IDNA
+// lookup and would otherwise survive on the lowercase fallback.
+func validateTLSWildcard(canonical string) error {
+	if canonical == "*" || canonical == "*." {
+		return errors.New(`"*" matches no SNI name`)
+	}
+	if strings.Contains(strings.TrimPrefix(canonical, "*."), "*") {
+		return errors.New(`"*" is only allowed as a single leading "*." label`)
+	}
+	return nil
+}
+
+// validateAutoTLSChallenge rejects contradictory or unsatisfiable challenge
+// policy on one ACME source: HTTP01 and CloudflareDNS01 cannot both be
+// declared, and a wildcard domain can only be issued over DNS-01.
+func validateAutoTLSChallenge(a *AutoTLSConfig) error {
+	if a.explicitHTTP01 && a.dns01 != nil {
+		return errors.New("auto_tls: HTTP01 and CloudflareDNS01 are mutually exclusive on one source")
+	}
+	if a.dns01 == nil {
+		for _, d := range a.Domains {
+			if strings.HasPrefix(strings.TrimSpace(d), "*.") {
+				return fmt.Errorf("auto_tls: wildcard domain %q requires CloudflareDNS01; HTTP-01 cannot issue wildcard certificates", d)
+			}
+		}
+	}
+	return nil
+}
+
 // resolveStaticTLS validates that both cert and key paths are set and
-// produces the resolved StaticTLS form.
+// produces the resolved StaticTLS form. The SNI host is canonicalised via
+// canonicalTLSName — the lenient variant, so a hostname the IDNA lookup
+// profile rejects still routes — so it compares equal to AutoTLS domains
+// and ClientHello names; a StaticTLSFor call whose host is empty or an
+// unroutable wildcard is rejected rather than silently becoming, or
+// shadowing, the fallback source.
 func resolveStaticTLS(s *StaticTLSConfig) (*resolved.StaticTLS, error) {
 	if s.CertFile == "" || s.KeyFile == "" {
 		return nil, errors.New("static_tls: cert_file and key_file required")
 	}
+	host := canonicalTLSName(s.Host)
+	if s.hostSet {
+		if host == "" {
+			return nil, errors.New("static_tls: host required; use StaticTLS for the hostless fallback")
+		}
+		if err := validateTLSWildcard(host); err != nil {
+			return nil, fmt.Errorf("static_tls: host %q: %w; use StaticTLS for the hostless fallback", s.Host, err)
+		}
+	}
 	return &resolved.StaticTLS{
 		CertFile: s.CertFile,
 		KeyFile:  s.KeyFile,
+		Host:     host,
 	}, nil
 }
 

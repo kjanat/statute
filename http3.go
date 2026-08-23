@@ -2,7 +2,6 @@ package statute
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
@@ -35,32 +34,16 @@ func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler) (*
 		return nil, fmt.Errorf("http3 listener address is empty")
 	}
 
-	var tlsCfg *tls.Config
-	switch {
-	case l.AutoTLS != nil && l.AutoTLS.DNS01 != nil:
-		dm := s.dns01Managers[l.Addr]
-		if dm == nil {
-			return nil, fmt.Errorf("auto_tls: dns01 manager not initialised")
-		}
-		tlsCfg = dns01TLSConfig(dm, true)
-	case l.AutoTLS != nil:
-		if s.autocertMgr == nil {
-			return nil, fmt.Errorf("auto_tls: manager not initialised")
-		}
-		tlsCfg = autocertTLSConfig(s.autocertMgr, true, l.BehindCloudflare)
-	case l.StaticTLS != nil:
-		cert, err := tls.LoadX509KeyPair(l.StaticTLS.CertFile, l.StaticTLS.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("load static TLS material: %w", err)
-		}
-		tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}}
-	default:
+	// The parent HTTPS listener's cert router (stored by applyListenerTLS,
+	// which initListeners runs first) dispatches certificates for QUIC
+	// handshakes exactly as it does for TCP.
+	cr := s.certRouters[l.Addr]
+	if cr == nil {
 		return nil, fmt.Errorf("http3 listener requires AutoTLS or StaticTLS on the parent HTTPS listener")
 	}
-
+	tlsCfg := certRouterTLSConfig(cr, l)
 	// HTTP/3 mandates ALPN "h3".
-	tlsCfg = tlsCfg.Clone()
-	tlsCfg.NextProtos = []string{"h3"}
+	tlsCfg.NextProtos = []string{alpnHTTP3}
 
 	srv := &http3.Server{
 		Addr:      addr,
