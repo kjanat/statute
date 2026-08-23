@@ -2,6 +2,7 @@ package statute
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,6 +69,7 @@ var lintRules = []func(*resolved.Config) []Finding{
 	ruleRateLimitMinimum,
 	ruleBasicAuthOverHTTP,
 	ruleGracePeriod,
+	ruleDuplicateACMEOrders,
 }
 
 func ruleReadHeaderTimeout(c *resolved.Config) []Finding {
@@ -226,4 +228,55 @@ func ruleGracePeriod(c *resolved.Config) []Finding {
 		}}
 	}
 	return nil
+}
+
+// ruleDuplicateACMEOrders reports a domain issued by more than one ACME
+// certificate manager. The runtime builds one in-tree manager per pinned
+// source (Challenge != ChallengeAuto) and one shared autocert manager for
+// every automatic source in the config, so two pinned sources — or a
+// pinned source and an automatic one — naming the same domain each open
+// and renew their own order for it. Two automatic sources do not: they
+// feed the one autocert manager, whose domain set is the union, so that
+// shape is deliberately legal and never reported here.
+func ruleDuplicateACMEOrders(c *resolved.Config) []Finding {
+	// One identity stands in for every automatic source, since they all
+	// resolve to the same shared manager. Pinned sources are their own
+	// identity — the pointer is enough, as each gets its own manager.
+	shared := &resolved.AutoTLS{}
+	issuers := make(map[string][]*resolved.AutoTLS)
+	var out []Finding
+	for i, l := range c.Listeners {
+		for j, a := range l.AutoTLSSources {
+			id := a
+			if a.Challenge == resolved.ChallengeAuto {
+				id = shared
+			}
+			for _, d := range a.Domains {
+				seen := issuers[d]
+				if slices.Contains(seen, id) {
+					continue
+				}
+				issuers[d] = append(seen, id)
+				if len(seen) == 0 {
+					continue
+				}
+				out = append(out, duplicateACMEOrderFinding(d, i, j))
+			}
+		}
+	}
+	return out
+}
+
+// duplicateACMEOrderFinding describes one domain that a second certificate
+// manager also issues, pointing at the source that introduced it.
+func duplicateACMEOrderFinding(domain string, listener, source int) Finding {
+	return Finding{
+		Severity: SeverityWarning,
+		Code:     "TLS003",
+		Message: fmt.Sprintf(
+			"Domain %q is issued by more than one ACME manager; each orders and renews it independently, spending Let's Encrypt's duplicate-certificate limit (5 per week) once per manager. Issue the domain from one source.",
+			domain,
+		),
+		Path: fmt.Sprintf("listeners[%d].auto_tls[%d]", listener, source),
+	}
 }

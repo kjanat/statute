@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Lint rule `TLS003` (warning): a domain issued by more than one ACME
+  certificate manager — two pinned sources with distinct storage roots or
+  challenge kinds, or a pinned source and an automatic one — orders and
+  renews that domain once per manager, spending Let's Encrypt's
+  duplicate-certificate limit (5 per week) several times over. Two
+  automatic sources are not reported: they feed the one shared autocert
+  manager, whose domain set is the union.
 - SNI-scoped TLS and ACME policies on one listener: `HTTPS(":443", ...)`
   accepts any number of TLS sources — `AutoTLS` (HTTP-01 or DNS-01),
   `StaticTLSFor(host, cert, key)` scoped to one SNI name or wildcard
