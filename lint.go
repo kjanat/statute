@@ -64,6 +64,7 @@ var lintRules = []func(*resolved.Config) []Finding{
 	ruleObservability,
 	ruleSingleBackend,
 	ruleAutoTLSStorage,
+	ruleInsecureUpstreamTLS,
 	ruleRateLimitMinimum,
 	ruleBasicAuthOverHTTP,
 	ruleGracePeriod,
@@ -150,6 +151,21 @@ func ruleAutoTLSStorage(c *resolved.Config) []Finding {
 				Code:     "TLS001",
 				Message:  "AutoTLS storage path is under /tmp; will be wiped on reboot and trigger Let's Encrypt rate-limit lockout. Use a persistent volume.",
 				Path:     fmt.Sprintf("listeners[%d].auto_tls.storage", i),
+			})
+		}
+	}
+	return out
+}
+
+func ruleInsecureUpstreamTLS(c *resolved.Config) []Finding {
+	var out []Finding
+	for name, pool := range c.Upstreams {
+		if pool.Transport.InsecureSkipVerify {
+			out = append(out, Finding{
+				Severity: SeverityWarning,
+				Code:     "TLS002",
+				Message:  "Backend certificate verification is disabled; anyone on the path to this pool can impersonate it. Prefer RootCAFiles with ServerName.",
+				Path:     fmt.Sprintf("upstreams[%q].transport.insecure_skip_verify", name),
 			})
 		}
 	}

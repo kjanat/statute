@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Per-upstream TLS verification settings on `Transport`: `ServerName`
+  overrides the hostname verified (and sent as SNI) against the backend
+  certificate, `RootCAFiles` replaces the system roots with internal-CA PEM
+  files, and `InsecureSkipVerify` is an explicit escape hatch that the new
+  lint rule `TLS002` warns about. Reverse-proxy requests and active
+  health-check probes share the pool's transport, so both sides always
+  apply the same policy. CA files load at server construction, keeping
+  `Resolve` pure.
 - First-class redirect route actions: `Match(...).RedirectTo(target, status)`
   answers matching requests with an HTTP redirect instead of proxying or
   serving files, and appears in the resolved schema as an explicit

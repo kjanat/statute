@@ -178,6 +178,20 @@ The picker filters to healthy primary backends; when no primary is healthy, it f
 
 `Transport` tunes the HTTP transport reused across all backends in the pool. The default `MaxIdleConnsPerHost` (32) is a much better default for a proxy than Go's stdlib value (2); leave it alone unless you know why you're changing it.
 
+A backend with an `https://` address gets its certificate verified against the system roots by default. `Transport` carries the pool's verification policy when that is not enough:
+
+```go
+"internal": statute.Pool{
+    Backends: []statute.Backend{{Address: "https://10.0.0.10:8443"}},
+    Transport: statute.Transport{
+        ServerName:  "foo.internal.example",
+        RootCAFiles: []string{"/etc/webserver/internal-ca.pem"},
+    },
+}
+```
+
+`ServerName` overrides the hostname verified (and sent as SNI) when backends are dialed by IP but present a certificate for a DNS name; `RootCAFiles` replaces the system roots with your internal CA. Reverse-proxy requests and active health-check probes share the same transport, so one policy covers both. `InsecureSkipVerify: true` is the explicit escape hatch that disables verification entirely — the lint rule `TLS002` warns whenever it is set.
+
 ### Routes and middleware
 
 ```go

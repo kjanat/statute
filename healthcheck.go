@@ -24,12 +24,16 @@ type healthChecker struct {
 	done   chan struct{}
 }
 
-func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState) *healthChecker {
+// newHealthChecker builds a prober whose client rides the given transport —
+// the pool hands over its proxy transport, so probes verify backend TLS under
+// exactly the policy proxied requests use. A nil transport means Go's default.
+func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper) *healthChecker {
 	return &healthChecker{
 		cfg:      cfg,
 		backends: backends,
 		client: &http.Client{
-			Timeout: cfg.Timeout,
+			Timeout:   cfg.Timeout,
+			Transport: transport,
 		},
 		successes: make(map[*backendState]int),
 		failures:  make(map[*backendState]int),

@@ -2,12 +2,15 @@ package statute
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -547,10 +550,15 @@ type poolHandler struct {
 }
 
 func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
+	tlsCfg, err := backendTLSConfig(p.Transport)
+	if err != nil {
+		return nil, err
+	}
 	transport := &http.Transport{
 		MaxIdleConnsPerHost: p.Transport.MaxIdleConnsPerHost,
 		IdleConnTimeout:     p.Transport.IdleConnTimeout,
 		TLSHandshakeTimeout: p.Transport.TLSHandshakeTimeout,
+		TLSClientConfig:     tlsCfg,
 		DialContext: (&net.Dialer{
 			Timeout:   p.Transport.DialTimeout,
 			KeepAlive: 30 * time.Second,
@@ -582,9 +590,41 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 	}
 
 	all := append(append([]*backendState{}, ph.primary...), ph.backup...)
-	ph.hc = newHealthChecker(p.HealthCheck, all)
+	// The prober rides the same transport as proxy traffic, so both sides
+	// see one TLS verification policy that cannot drift apart.
+	ph.hc = newHealthChecker(p.HealthCheck, all, transport)
 	ph.hc.start()
 	return ph, nil
+}
+
+// backendTLSConfig builds the pool's backend-verification policy, or nil
+// when the pool leaves TLS at Go's defaults. CA files load here rather than
+// at Resolve time, keeping Resolve pure the way listener TLS material does.
+func backendTLSConfig(t resolved.Transport) (*tls.Config, error) {
+	if t.ServerName == "" && len(t.RootCAFiles) == 0 && !t.InsecureSkipVerify {
+		return nil, nil
+	}
+	cfg := &tls.Config{
+		ServerName: t.ServerName,
+		MinVersion: tls.VersionTLS12,
+		// The escape hatch the surface API documents; lint warns on it
+		// (TLS002) so it cannot slip into production unnoticed.
+		InsecureSkipVerify: t.InsecureSkipVerify, //nolint:gosec // G402: explicit operator opt-out, surfaced by lint
+	}
+	if len(t.RootCAFiles) > 0 {
+		roots := x509.NewCertPool()
+		for _, f := range t.RootCAFiles {
+			pemBytes, err := os.ReadFile(f) //nolint:gosec // G304: operator-configured CA path
+			if err != nil {
+				return nil, fmt.Errorf("root CA file: %w", err)
+			}
+			if !roots.AppendCertsFromPEM(pemBytes) {
+				return nil, fmt.Errorf("root CA file %s: no certificates found", f)
+			}
+		}
+		cfg.RootCAs = roots
+	}
+	return cfg, nil
 }
 
 func newBackendProxy(target *url.URL, transport *http.Transport) *httputil.ReverseProxy {

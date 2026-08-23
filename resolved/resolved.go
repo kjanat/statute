@@ -114,12 +114,17 @@ type HealthCheck struct {
 	Unhealthy int
 }
 
-// Transport is a resolved transport configuration.
+// Transport is a resolved transport configuration. The TLS fields form the
+// pool's one backend-verification policy, shared by proxy requests and
+// health-check probes.
 type Transport struct {
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
 	DialTimeout         time.Duration
 	TLSHandshakeTimeout time.Duration
+	ServerName          string
+	RootCAFiles         []string
+	InsecureSkipVerify  bool
 }
 
 // Route is a resolved route.
