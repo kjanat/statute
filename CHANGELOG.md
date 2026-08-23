@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A `statutehttp` `go/analysis` linter, integrated into the repository's
+  custom golangci-lint build, rejects attempts to mutate Go request special
+  fields (`Host`, `Content-Length`, `Transfer-Encoding`, and `Trailer`) through
+  `http.Request.Header` or Statute's generic request-header middleware.
 - Request and response header middleware: `SetRequestHeader`,
   `AddRequestHeader`, `RemoveRequestHeader`, `SetResponseHeader`,
   `AddResponseHeader`, and `RemoveResponseHeader`. Operations run in

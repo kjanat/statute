@@ -62,6 +62,10 @@ linters:
     - usestdlibvars
     - usetesting
     - wastedassign
+    # golangci-lint custom builds ./custom-gcl; it may produce no output on success.
+    # Rebuild custom-gcl whenever the analyzer or its dependencies change.
+    # For this repository, make lint is now the canonical command.
+    - statutehttp
   settings:
     errcheck:
       check-type-assertions: false
@@ -73,6 +77,10 @@ linters:
       rules: [name: var-naming, name: package-comments, { name: exported, severity: warning }]
     gocritic: { disabled-checks: [ifElseChain] }
     gocyclo: { min-complexity: 10 }
+    custom:
+      statutehttp:
+        type: module
+        description: Reject ineffective mutations of net/http request special fields through Header.
     # A switch whose default branch deliberately handles the remaining enum
     # values (e.g. RateLimitKey defaulting to ClientIP) is exhaustive.
     exhaustive: { default-signifies-exhaustive: true }
@@ -81,6 +89,6 @@ linters:
       # Test relaxation: noctx on every httptest call, error-checking every
       # stub Encode, and http.MethodGet over "GET" in table tests all waste
       # everyone's afternoon. usestdlibvars/noctx still apply to prod code.
-      - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, usestdlibvars] }
+      - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, statutehttp, usestdlibvars] }
       - { path: examples/, linters: [errcheck] }
       - { path: dns01\.go, linters: [bodyclose] }

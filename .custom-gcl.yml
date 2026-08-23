@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://golangci-lint.run/jsonschema/custom-gcl.jsonschema.json
+---
+version: v2.13.1
+name: custom-gcl
+destination: .
+plugins:
+  - module: statute.kjanat.dev
+    import: statute.kjanat.dev/analyzers/statutehttp
+    path: .

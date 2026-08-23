@@ -343,7 +343,7 @@ go run ./examples/cloudflare-wildcard       # needs CLOUDFLARE_API_TOKEN
 ```sh
 go test ./...           # all unit tests
 go vet ./...            # vet
-golangci-lint run ./... # lint
+make lint               # built-in + statute-specific linters
 ```
 
 The race detector (`go test -race`) does not work on Raspberry Pi / older 64-bit Arm kernels with VMA range < 48; this is a TSAN limitation, not a code issue.
