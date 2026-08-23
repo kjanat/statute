@@ -108,3 +108,21 @@ func writeFile(t *testing.T, dir, name, contents string) {
 		t.Fatalf("write %s: %v", name, err)
 	}
 }
+
+// assertEchoHeader fails the test unless the upstream saw exactly one value
+// for the named header.
+func assertEchoHeader(t *testing.T, e echoRequest, name, want string) {
+	t.Helper()
+	got := e.Headers[name]
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("upstream %s: got %v, want [%s]", name, got, want)
+	}
+}
+
+// assertNoEchoHeader fails the test if the upstream saw the named header.
+func assertNoEchoHeader(t *testing.T, e echoRequest, name string) {
+	t.Helper()
+	if got, ok := e.Headers[name]; ok {
+		t.Errorf("upstream saw %s: %v, want it absent", name, got)
+	}
+}

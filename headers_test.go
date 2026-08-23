@@ -365,26 +365,16 @@ func TestHeaderMiddlewareThroughProxy(t *testing.T) {
 		t.Fatalf("status: got %d, want 200", rec.Code)
 	}
 	echo := decodeEcho(t, rec.Body)
-	if got := echo.Headers["X-Api-Version"]; len(got) != 1 || got[0] != "2" {
-		t.Errorf("upstream X-Api-Version: got %v, want [2]", got)
-	}
-	if got, ok := echo.Headers["X-Secret"]; ok {
-		t.Errorf("upstream still saw X-Secret: %v", got)
-	}
+	assertEchoHeader(t, echo, "X-Api-Version", "2")
+	assertNoEchoHeader(t, echo, "X-Secret")
 	// SetXForwarded derives the X-Forwarded-* fields from the real connection
 	// and overwrites whatever was in the header map — including a value the
 	// route configured. An explicit route declaration has to survive that, or
 	// the example in the issue would be a silent no-op.
-	if got := echo.Headers["X-Forwarded-Proto"]; len(got) != 1 || got[0] != "https" {
-		t.Errorf("upstream X-Forwarded-Proto: got %v, want [https] from the route", got)
-	}
-	if got, ok := echo.Headers["X-Forwarded-For"]; ok {
-		t.Errorf("upstream still saw X-Forwarded-For: %v", got)
-	}
+	assertEchoHeader(t, echo, "X-Forwarded-Proto", "https")
+	assertNoEchoHeader(t, echo, "X-Forwarded-For")
 	// A field the route said nothing about keeps the proxy's derived value,
 	// so a client still cannot spoof it.
-	if got := echo.Headers["X-Forwarded-Host"]; len(got) != 1 || got[0] != "x" {
-		t.Errorf("upstream X-Forwarded-Host: got %v, want [x] from the proxy", got)
-	}
+	assertEchoHeader(t, echo, "X-Forwarded-Host", "x")
 	assertHeader(t, rec.Header(), "X-Robots-Tag", "noindex, nofollow")
 }
