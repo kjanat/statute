@@ -14,10 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   pattern, and hostless `StaticTLS` as the fallback — and a per-listener
   certificate router picks one per handshake by SNI: exact name first,
   then wildcard (covering exactly one extra label), then the fallback.
-  `AutoTLS(...).HTTP01()` pins a source to the HTTP-01 challenge — the
-  listener stops advertising `acme-tls/1` for it and refuses TLS-ALPN-01
-  probes for its names — while the default remains automatic (TLS-ALPN-01
-  where advertisable, HTTP-01 fallback). Combining it with
+  `AutoTLS(...).HTTP01()` pins a source to the HTTP-01 challenge: it
+  issues through the in-tree ACME manager (the same machinery as DNS-01)
+  rather than autocert, whose hard-coded preference would attempt
+  TLS-ALPN-01 first, so a pinned source never advertises `acme-tls/1` and
+  never burns a failed validation. The default remains automatic
+  (TLS-ALPN-01 where advertisable, HTTP-01 fallback). Combining it with
   `CloudflareDNS01` on one source, claiming one name from two sources, or
   declaring a second hostless fallback is a resolve error, and HTTP-01
   sources reject wildcard domains outright. Every name — AutoTLS domains,

@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -421,33 +422,43 @@ func TestCertRouterCanonicalLookup(t *testing.T) {
 	}
 }
 
-// TestHTTP01PinIsEnforced — HTTP01() is a policy, not a comment: the
-// listener does not advertise acme-tls/1 for a pinned source, and a
-// TLS-ALPN-01 challenge probe for its name is refused before it can reach
-// the shared autocert manager, forcing issuance to fall back to HTTP-01.
+// TestHTTP01PinIsEnforced — HTTP01() is a policy, not a comment: a pinned
+// source never enters the shared autocert manager (whose challenge
+// preference is hard-coded to attempt TLS-ALPN-01 first), gets its own
+// HTTP-01-only acmeManager instead, and the listener does not advertise
+// acme-tls/1 on its behalf.
 func TestHTTP01PinIsEnforced(t *testing.T) {
 	t.Parallel()
 	r := mustResolve(t, tlsRouterConfig(
-		AutoTLS("foo.example.com").HTTP01().Email("x@x").Storage("/v"),
+		AutoTLS("foo.example.com").HTTP01().Email("x@x").Storage(t.TempDir()),
 	))
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	l := r.Listeners[0]
+	if srv.autocertMgr != nil {
+		t.Error("pinned source must not feed the shared autocert manager")
+	}
+	src := r.Listeners[0].AutoTLSSources[0]
+	m := srv.acmeManagers[src]
+	if m == nil {
+		t.Fatal("pinned source has no in-tree acme manager")
+	}
+	if _, ok := m.solver.(*http01Solver); !ok {
+		t.Errorf("solver: got %T, want *http01Solver", m.solver)
+	}
+	if got := m.solver.challengeType(); got != "http-01" {
+		t.Errorf("challenge type: got %q", got)
+	}
 	cr := srv.certRouters[":443"]
 	if cr.hasACMETLS {
 		t.Error("pinned HTTP-01 source must not mark the listener TLS-ALPN-capable")
 	}
-	if protos := certRouterTLSConfig(cr, l).NextProtos; slices.Contains(protos, "acme-tls/1") {
+	if protos := certRouterTLSConfig(cr, r.Listeners[0]).NextProtos; slices.Contains(protos, "acme-tls/1") {
 		t.Errorf("ALPN advertises acme-tls/1 for a pinned source: %v", protos)
 	}
-	_, err = cr.GetCertificate(&tls.ClientHelloInfo{
-		ServerName:      "foo.example.com",
-		SupportedProtos: []string{"acme-tls/1"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "pinned to HTTP-01") {
-		t.Errorf("challenge probe: %v", err)
+	if _, ok := cr.exact["foo.example.com"]; !ok {
+		t.Errorf("router must index the pinned domain: %v", cr.exact)
 	}
 }
 
@@ -474,6 +485,36 @@ func TestAutoChallengeStaysTLSALPNCapable(t *testing.T) {
 	}
 }
 
+// TestHTTP01TokensServedOnPlainListener — the plain HTTP listener's handler
+// chain consults every pinned HTTP-01 manager's token table, so challenges
+// complete on :80 exactly like autocert's do.
+func TestHTTP01TokensServedOnPlainListener(t *testing.T) {
+	t.Parallel()
+	cfg := tlsRouterConfig(AutoTLS("foo.example.com").HTTP01().Email("x@x").Storage(t.TempDir()))
+	cfg.Listeners = append(Listeners{HTTP(":80")}, cfg.Listeners...)
+	r := mustResolve(t, cfg)
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	src := r.Listeners[1].AutoTLSSources[0]
+	solver, ok := srv.acmeManagers[src].solver.(*http01Solver)
+	if !ok {
+		t.Fatalf("solver: got %T", srv.acmeManagers[src].solver)
+	}
+	path := "/.well-known/acme-challenge/tok-9"
+	solver.mu.Lock()
+	solver.tokens[path] = "tok-9.keyauth"
+	solver.mu.Unlock()
+
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://foo.example.com"+path, nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "tok-9.keyauth" {
+		t.Errorf("challenge on plain listener: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 // TestBuildCertRouterGuards — the router refuses to index an ACME source
 // whose runtime manager is missing; these states are internal invariant
 // violations, so they must fail loudly instead of handing out nil getters.
@@ -487,7 +528,7 @@ func TestBuildCertRouterGuards(t *testing.T) {
 			Challenge: resolved.ChallengeDNS01,
 		},
 	}}
-	if _, err := s.buildCertRouter(dns01); err == nil || !strings.Contains(err.Error(), "dns01 manager not initialised") {
+	if _, err := s.buildCertRouter(dns01); err == nil || !strings.Contains(err.Error(), "acme manager not initialised") {
 		t.Errorf("dns01 source without manager: %v", err)
 	}
 	auto := &resolved.Listener{AutoTLSSources: []*resolved.AutoTLS{
@@ -504,27 +545,41 @@ func TestBuildCertRouterGuards(t *testing.T) {
 	}
 }
 
-// TestPinHTTP01PassesOrdinaryHellos — the pin refuses only the TLS-ALPN-01
-// challenge probe; every ordinary handshake reaches the wrapped getter.
-func TestPinHTTP01PassesOrdinaryHellos(t *testing.T) {
+// TestHTTP01SolverServesTokens — the pinned manager's token table answers
+// exactly the pending challenge paths on the plain HTTP listener and passes
+// everything else through.
+func TestHTTP01SolverServesTokens(t *testing.T) {
 	t.Parallel()
-	called := false
-	g := pinHTTP01(func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-		called = true
-		return &tls.Certificate{}, nil
+	solver := newHTTP01Solver()
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
 	})
-	if _, err := g(&tls.ClientHelloInfo{
-		ServerName:      "a.example",
-		SupportedProtos: []string{"h2", "http/1.1"},
-	}); err != nil || !called {
-		t.Errorf("ordinary hello: err=%v called=%v", err, called)
+	h := solver.wrap(next)
+
+	path := "/.well-known/acme-challenge/tok-1"
+	solver.mu.Lock()
+	solver.tokens[path] = "tok-1.keyauth"
+	solver.mu.Unlock()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "tok-1.keyauth" {
+		t.Errorf("challenge path: code=%d body=%q", rec.Code, rec.Body.String())
 	}
-	called = false
-	if _, err := g(&tls.ClientHelloInfo{
-		ServerName:      "a.example",
-		SupportedProtos: []string{"acme-tls/1"},
-	}); err == nil || called {
-		t.Errorf("challenge hello: err=%v called=%v (must refuse before the getter)", err, called)
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/other", nil))
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("pass-through: code=%d, want 418", rec.Code)
+	}
+
+	solver.mu.Lock()
+	delete(solver.tokens, path)
+	solver.mu.Unlock()
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("expired token must fall through: code=%d, want 418", rec.Code)
 	}
 }
 
@@ -551,7 +606,7 @@ func TestNewServerDNS01BadStorage(t *testing.T) {
 		AutoTLS("*.bar.example").Email("x@x").Storage(f).CloudflareDNS01("tok"),
 	))
 	_, err := newServer(r)
-	if err == nil || !strings.Contains(err.Error(), "dns01 manager") {
+	if err == nil || !strings.Contains(err.Error(), "acme manager") {
 		t.Errorf("error: %v", err)
 	}
 }
@@ -607,8 +662,8 @@ func TestNewServerDNS01SourceGetsOwnManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	if n := len(srv.dns01Managers); n != 1 {
-		t.Fatalf("dns01 managers: got %d, want 1", n)
+	if n := len(srv.acmeManagers); n != 1 {
+		t.Fatalf("acme managers: got %d, want 1", n)
 	}
 	cr := srv.certRouters[":443"]
 	if cr == nil {

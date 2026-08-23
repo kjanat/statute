@@ -43,8 +43,8 @@ type server struct {
 	stats *stats
 
 	autocertMgr     *autocert.Manager
-	dns01Managers   map[*resolved.AutoTLS]*dns01Manager // keyed by resolved source
-	certRouters     map[string]*certRouter              // keyed by listener address
+	acmeManagers    map[*resolved.AutoTLS]*acmeManager // keyed by resolved source
+	certRouters     map[string]*certRouter             // keyed by listener address
 	tracingShutdown func(context.Context) error
 
 	mu      sync.Mutex
@@ -64,7 +64,7 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	}
 	s.autocertMgr = mgr
 
-	if err := s.initDNS01Managers(cfg.Listeners); err != nil {
+	if err := s.initACMEManagers(cfg.Listeners); err != nil {
 		return nil, err
 	}
 
@@ -100,21 +100,31 @@ func newServer(cfg *resolved.Config) (*server, error) {
 	return s, nil
 }
 
-// initDNS01Managers builds a dns01Manager for every DNS-01 AutoTLS source,
+// initACMEManagers builds an in-tree acmeManager for every AutoTLS source
+// with a pinned challenge — DNS-01 via Cloudflare, or explicit HTTP-01 —
 // keyed by the resolved source so each listener's cert router can find the
-// manager for exactly the source it is dispatching to.
-func (s *server) initDNS01Managers(listeners []*resolved.Listener) error {
-	s.dns01Managers = make(map[*resolved.AutoTLS]*dns01Manager)
+// manager for exactly the source it is dispatching to. Automatic sources
+// stay on the shared autocert manager.
+func (s *server) initACMEManagers(listeners []*resolved.Listener) error {
+	s.acmeManagers = make(map[*resolved.AutoTLS]*acmeManager)
 	for _, l := range listeners {
 		for _, a := range l.AutoTLSSources {
-			if a.DNS01 == nil {
+			var (
+				m   *acmeManager
+				err error
+			)
+			switch {
+			case a.DNS01 != nil:
+				m, err = newDNS01Manager(a)
+			case a.Challenge == resolved.ChallengeHTTP01:
+				m, err = newHTTP01Manager(a)
+			default:
 				continue
 			}
-			dm, err := newDNS01Manager(a)
 			if err != nil {
-				return fmt.Errorf("dns01 manager %s: %w", l.Addr, err)
+				return fmt.Errorf("acme manager %s: %w", l.Addr, err)
 			}
-			s.dns01Managers[a] = dm
+			s.acmeManagers[a] = m
 		}
 	}
 	return nil
@@ -240,11 +250,10 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 		handler = content
 	}
 
-	// When AutoTLS is configured anywhere, the plain-HTTP listener must serve
-	// /.well-known/acme-challenge/* so HTTP-01 can complete. autocert.HTTPHandler
-	// transparently passes other paths through to the wrapped handler.
-	if l.Scheme == schemeHTTP && s.autocertMgr != nil {
-		handler = s.autocertMgr.HTTPHandler(handler)
+	// When AutoTLS is configured anywhere, the plain-HTTP listener must
+	// serve /.well-known/acme-challenge/* so HTTP-01 can complete.
+	if l.Scheme == schemeHTTP {
+		handler = s.wrapACMEChallenges(handler)
 	}
 
 	// When HTTP/3 is enabled on a sibling listener, advertise it via Alt-Svc
@@ -278,6 +287,20 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 		handler = trustedProxyMiddleware(l, handler)
 	}
 	return handler
+}
+
+// wrapACMEChallenges layers every HTTP-01 challenge responder over next on
+// a plain HTTP listener: the shared autocert manager's handler covers
+// automatic sources, and each pinned HTTP-01 manager serves its own token
+// table. All of them pass other paths through to the wrapped handler.
+func (s *server) wrapACMEChallenges(next http.Handler) http.Handler {
+	if s.autocertMgr != nil {
+		next = s.autocertMgr.HTTPHandler(next)
+	}
+	for _, m := range s.acmeManagers {
+		next = m.wrapHTTPChallenges(next)
+	}
+	return next
 }
 
 // applyListenerTLS installs the listener's TLS material on hs: a cert
@@ -319,9 +342,9 @@ func (s *server) Start() error {
 	if s.started {
 		return errors.New("already started")
 	}
-	for src, dm := range s.dns01Managers {
-		if err := dm.start(); err != nil {
-			return fmt.Errorf("dns01 manager (%s): %w", strings.Join(src.Domains, ", "), err)
+	for src, m := range s.acmeManagers {
+		if err := m.start(); err != nil {
+			return fmt.Errorf("%s manager (%s): %w", m.name, strings.Join(src.Domains, ", "), err)
 		}
 	}
 	if err := s.startDocker(); err != nil {
@@ -402,8 +425,8 @@ func (s *server) Shutdown() error {
 	for _, ph := range s.pools {
 		ph.shutdown()
 	}
-	for _, dm := range s.dns01Managers {
-		dm.stop()
+	for _, m := range s.acmeManagers {
+		m.stop()
 	}
 
 	// Flush pending spans last so traces produced during shutdown still ship.

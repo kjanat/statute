@@ -113,13 +113,15 @@ func (a *AutoTLSConfig) Zone(id string) *AutoTLSConfig {
 }
 
 // HTTP01 pins this source to the HTTP-01 challenge. Without it the source
-// uses the automatic policy: TLS-ALPN-01 where the listener can advertise
-// it, with fallback to HTTP-01. Pinning is enforced, not cosmetic — the
-// listener stops advertising acme-tls/1 on this source's behalf, and a
-// TLS-ALPN-01 challenge probe for one of its names is refused so issuance
-// always falls back to HTTP-01 (which needs the plain-HTTP listener to be
-// reachable on port 80). Calling both HTTP01 and CloudflareDNS01 on one
-// source is a resolve error rather than a silent precedence choice.
+// uses the automatic policy: the shared autocert manager, which attempts
+// TLS-ALPN-01 first where the listener advertises it and falls back to
+// HTTP-01. A pinned source instead issues through statute's in-tree ACME
+// manager (the same machinery DNS-01 uses), which only ever attempts
+// HTTP-01 — TLS-ALPN-01 is never tried, advertised, or deliberately
+// failed. HTTP-01 requires a plain-HTTP listener reachable on port 80; it
+// serves the challenge responses automatically. Calling both HTTP01 and
+// CloudflareDNS01 on one source is a resolve error rather than a silent
+// precedence choice.
 func (a *AutoTLSConfig) HTTP01() *AutoTLSConfig {
 	a.explicitHTTP01 = true
 	return a

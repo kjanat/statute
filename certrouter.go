@@ -81,20 +81,16 @@ func (cr *certRouter) indexACMESources(s *server, sources []*resolved.AutoTLS) e
 	for _, a := range sources {
 		var g certGetter
 		switch {
-		// Manager selection keys on the DNS-01 config itself, matching
-		// initDNS01Managers; Challenge is its resolved mirror and governs
-		// only the TLS-ALPN posture below.
-		case a.DNS01 != nil:
-			dm := s.dns01Managers[a]
-			if dm == nil {
-				return errors.New("auto_tls: dns01 manager not initialised")
+		// A pinned source — DNS-01 config present, or an explicit HTTP-01
+		// declaration — dispatches to its own in-tree manager, which only
+		// ever attempts that challenge. Only the automatic policy rides
+		// the shared autocert manager and keeps TLS-ALPN-01 on the table.
+		case a.DNS01 != nil, a.Challenge == resolved.ChallengeHTTP01:
+			m := s.acmeManagers[a]
+			if m == nil {
+				return errors.New("auto_tls: acme manager not initialised")
 			}
-			g = dm.GetCertificate
-		case a.Challenge == resolved.ChallengeHTTP01:
-			if s.autocertMgr == nil {
-				return errors.New("auto_tls: manager not initialised")
-			}
-			g = pinHTTP01(s.autocertMgr.GetCertificate)
+			g = m.GetCertificate
 		default: // ChallengeAuto
 			if s.autocertMgr == nil {
 				return errors.New("auto_tls: manager not initialised")
@@ -107,29 +103,6 @@ func (cr *certRouter) indexACMESources(s *server, sources []*resolved.AutoTLS) e
 		}
 	}
 	return nil
-}
-
-// pinHTTP01 wraps an autocert getter for a source pinned to the HTTP-01
-// challenge. The shared autocert manager always attempts TLS-ALPN-01 first
-// when the CA offers it, so pinning is enforced from the outside: the
-// listener does not advertise acme-tls/1 for this source (hasACMETLS stays
-// false), and — because another source on the same listener may still
-// advertise it — a challenge hello that reaches the source anyway is
-// refused, failing the manager's TLS-ALPN attempt so issuance falls back
-// to HTTP-01.
-func pinHTTP01(g certGetter) certGetter {
-	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		if isACMEChallengeHello(hello) {
-			return nil, errors.New("tls: source pinned to HTTP-01; TLS-ALPN-01 challenge refused")
-		}
-		return g(hello)
-	}
-}
-
-// isACMEChallengeHello mirrors autocert's own detection of a TLS-ALPN-01
-// challenge probe: the CA offers exactly the ACME ALPN protocol.
-func isACMEChallengeHello(hello *tls.ClientHelloInfo) bool {
-	return len(hello.SupportedProtos) == 1 && hello.SupportedProtos[0] == alpnACMETLS
 }
 
 func (cr *certRouter) indexStaticSources(sources []*resolved.StaticTLS) error {

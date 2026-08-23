@@ -21,7 +21,7 @@ import (
 // requiring an ACME server.
 func TestDNS01_CoversHost(t *testing.T) {
 	t.Parallel()
-	m := &dns01Manager{domains: []string{"example.com", "api.example.com", "*.test.example.com"}}
+	m := &acmeManager{name: "dns01", domains: []string{"example.com", "api.example.com", "*.test.example.com"}}
 	cases := []struct {
 		host string
 		want bool
@@ -48,7 +48,8 @@ func TestDNS01_CoversHost(t *testing.T) {
 func TestDNS01_GetCertificate_ReusesWildcard(t *testing.T) {
 	t.Parallel()
 	cert := testCertificate(t, time.Now().Add(90*24*time.Hour))
-	m := &dns01Manager{
+	m := &acmeManager{
+		name:    "dns01",
 		domains: []string{"*.example.com"},
 		cache:   map[string]*tls.Certificate{"*.example.com": cert},
 	}
@@ -76,7 +77,8 @@ func TestDNS01_GetCertificate_PrefersExactOverWildcard(t *testing.T) {
 
 	// The wildcard is listed first on purpose: precedence must come from the
 	// match rule, not from configuration order.
-	m := &dns01Manager{
+	m := &acmeManager{
+		name:    "dns01",
 		domains: []string{"*.example.com", "foo.example.com"},
 		cache: map[string]*tls.Certificate{
 			"*.example.com":   wildcard,
@@ -213,11 +215,15 @@ func TestDNS01_NewManager_BuildsManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDNS01Manager: %v", err)
 	}
-	if m.cf == nil {
+	solver, ok := m.solver.(*dns01Solver)
+	if !ok {
+		t.Fatalf("solver: got %T, want *dns01Solver", m.solver)
+	}
+	if solver.cf == nil {
 		t.Error("cloudflare client not constructed")
 	}
-	if m.email != "ops@example.com" || m.zoneID != "zone-1" {
-		t.Errorf("fields not wired: email=%q zoneID=%q", m.email, m.zoneID)
+	if m.email != "ops@example.com" || solver.zoneID != "zone-1" {
+		t.Errorf("fields not wired: email=%q zoneID=%q", m.email, solver.zoneID)
 	}
 	if !slices.Equal(m.domains, []string{"example.com"}) {
 		t.Errorf("domains not wired: %v", m.domains)
