@@ -62,7 +62,7 @@ What's implemented:
 - Upstream pools with round-robin, least-connections, IP-hash, and smooth weighted round-robin strategies
 - Backup tier failover when all primary backends are unhealthy
 - Active health checks with configurable thresholds
-- Per-route middleware: timeout, rate limit (token bucket), retry (idempotent-method only, gRPC-aware), cache, gzip + brotli compression, ETag
+- Per-route middleware: timeout, rate limit (token bucket), retry (idempotent-method only, gRPC-aware), cache, gzip + brotli compression, ETag, header rewriting, and path rewriting (strip prefix, add prefix, replace path, regex rewrite)
 - Static file serving
 - WebSocket pass-through (default httputil.ReverseProxy behaviour)
 - Structured JSON access logging with sampling
@@ -243,7 +243,7 @@ statute.Match("/*").Host("old.example.com").RedirectTo(
 )
 ```
 
-The status must be 301, 302, 303, 307, or 308. The target may be fixed, or preserve parts of the request through placeholders substituted at request time: `{request_uri}` (path and query as sent), `{path}`, `{query}` (raw, without the `?`), and `{host}` (port stripped). The target is validated when the config resolves — unknown placeholders, non-redirect statuses, and header-breaking bytes are startup errors — and substituted values come straight from net/http's request parsing, so placeholder-shaped text arriving in a request stays literal in the `Location` header. This is the route-level counterpart of the listener-level `RedirectTo("https")`, which redirects a whole listener to another scheme.
+The status must be 301, 302, 303, 307, or 308. The target may be fixed, or preserve parts of the request through placeholders substituted at request time: `{request_uri}` (path and query as sent), `{path}`, `{query}` (raw, without the `?`), and `{host}` (port stripped). The target is validated when the config resolves — unknown placeholders, non-redirect statuses, and header-breaking bytes are startup errors — and substituted values come straight from net/http's request parsing, so placeholder-shaped text arriving in a request stays literal in the `Location` header. A `Location` that would come out protocol-relative (a leading `//` or `/\`, whether from a `//evil.com` request path or a `StripPrefix` that exposes one) is collapsed to a single leading slash, so a client cannot steer a relative redirect off-site. This is the route-level counterpart of the listener-level `RedirectTo("https")`, which redirects a whole listener to another scheme.
 
 Middleware:
 
@@ -255,10 +255,18 @@ Middleware:
 - **`ETag()`** — adds an SHA-256-based ETag to 200 responses; answers 304 on `If-None-Match` match.
 - **`SetRequestHeader(name, value)`, `AddRequestHeader(name, value)`, `RemoveRequestHeader(name)`** — rewrite the request before it reaches the proxy or file handler. Names are canonicalised and values validated when the config resolves, so a bad header is a startup error rather than a malformed request.
 - **`SetResponseHeader(name, value)`, `AddResponseHeader(name, value)`, `RemoveResponseHeader(name)`** — rewrite the response on the way out: `Set` overrides whatever the upstream sent, `Add` appends a value while keeping the upstream's, and `Remove` drops every value of the name. Applied when the response header is committed, so streaming and protocol upgrades are unaffected.
+- **`StripPrefix(prefix)`** — removes `prefix` from the request path before it is proxied or served, so `/api/users` reaches the upstream as `/users`. Stripping the whole path leaves `/`; a path the prefix does not cover passes through untouched rather than 404ing.
+- **`AddPrefix(prefix)`** — prepends `prefix` to the request path, the inverse: `/users` reaches an upstream mounted under `/v2` as `/v2/users`.
+- **`ReplacePath(path)`** — discards the request path and substitutes a fixed one. An optional `?query` suffix explicitly replaces the query string (`ReplacePath("/healthz?")` clears it) — the one place in the set where the query changes.
+- **`RewritePath(pattern, replacement)`** — rewrites the path through an RE2 regexp with `$1`-style capture references, following `regexp.ReplaceAllString`: `RewritePath("^/api/v(\\d+)/(.*)$", "/v$1/$2")` turns `/api/v1/users` into `/v1/users`. A result that loses its leading slash gets one back; one that empties the path becomes `/`.
 
 Header operations run in declaration order, request and response alike: the last `Set` of a name wins, and a `Remove` after a `Set` clears it. They apply at the route's edges rather than interleaved with the other middleware — request mutations before the chain runs, response mutations when the header commits — so a `Retry` underneath cannot apply them a second time per attempt.
 
 On a proxy route, an explicit `X-Forwarded-For`, `-Host`, or `-Proto` declaration is reapplied after the proxy derives its own, so your value wins while the fields you leave alone keep the derived, unspoofable ones. Four names are rejected on requests because Go carries them outside the header map, where the mutation would do nothing: `Host`, `Content-Length`, `Transfer-Encoding`, and `Trailer`. Hop-by-hop headers can be set but the proxy strips them, as RFC 9110 requires, and a protocol-upgrade handshake is written straight to the hijacked connection, so response operations do not reach it.
+
+Path rewrites are normalised when the config resolves — trailing slashes are trimmed, so `StripPrefix("/api/")` and `StripPrefix("/api")` are one declaration and the resolved export shows `/api` — and an empty, slash-only, `?`/`#`/`%`-carrying, or doubled-leading-slash (`//`, `/\`) prefix, an unrooted, protocol-relative, or badly escaped `ReplacePath` target (query included: a space or control byte there is a startup error, not a per-request 400), and an uncompilable `RewritePath` pattern are all startup errors. A `StripPrefix`/`AddPrefix` prefix is a decoded literal; `ReplacePath` takes an escaped target, so it is the primitive for a path that must carry an escaped `%2F`. The query string is carried through untouched by every one of them except `ReplacePath`'s explicit `?query` form.
+
+Like the header operations, path rewrites apply at the route's edge — before every other middleware, in declaration order among themselves — rather than interleaved with the chain, so where a rewrite sits in the `.With(...)` list does not change the result: the cache key, the remaining middleware, and the upstream all see the same rewritten path, and a `Retry` beneath never observes a half-rewritten one. Route matching and the access log see the original path. (A rewrite works on a clone of the request rather than mutating it, which is what keeps it exactly-once when a retry re-serves the same request.)
 
 ### Docker discovery
 

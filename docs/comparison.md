@@ -53,21 +53,22 @@ A comparison of statute against the three reverse proxies it most often shares a
 
 ## Middleware
 
-|                           | statute                                      | nginx                           | Caddy           | Traefik                    |
-| ------------------------- | -------------------------------------------- | ------------------------------- | --------------- | -------------------------- |
-| Timeout (per route)       | ✅                                           | ✅                              | ✅              | ✅                         |
-| Rate limit (per key)      | ✅ (token bucket; ClientIP/Host)             | ✅                              | ✅              | ✅                         |
-| Retry on status           | ✅ (idempotent + gRPC-aware)                 | ✅                              | ✅              | ✅                         |
-| Cache                     | ✅ (in-process TTL)                          | ✅                              | ✅              | ❌ (delegates to upstream) |
-| Gzip / Brotli compression | ✅                                           | ✅ / ✅ (with module)           | ✅              | ✅                         |
-| ETag                      | ✅                                           | ✅                              | ✅              | ❌                         |
-| Body size limit           | ✅                                           | ✅ (`client_max_body_size`)     | ✅              | ✅                         |
-| Basic auth (bcrypt)       | ✅                                           | ✅                              | ✅              | ✅                         |
-| IP allow / deny           | ✅ (CIDR)                                    | ✅                              | ✅              | ✅                         |
-| CORS                      | ✅ (preflight, credentialed-wildcard reject) | ✅                              | ✅ (handler)    | ✅                         |
-| Security headers          | ✅                                           | ✅ (manual)                     | ✅              | ✅                         |
-| Request ID propagation    | ✅                                           | ✅ (manual)                     | ✅              | ✅                         |
-| JWT validation            | ❌                                           | ✅ (nginx-plus or auth_request) | ✅ (jwt module) | ✅ (middleware)            |
+|                           | statute                                      | nginx                           | Caddy                         | Traefik                                |
+| ------------------------- | -------------------------------------------- | ------------------------------- | ----------------------------- | -------------------------------------- |
+| Timeout (per route)       | ✅                                           | ✅                              | ✅                            | ✅                                     |
+| Rate limit (per key)      | ✅ (token bucket; ClientIP/Host)             | ✅                              | ✅                            | ✅                                     |
+| Retry on status           | ✅ (idempotent + gRPC-aware)                 | ✅                              | ✅                            | ✅                                     |
+| Cache                     | ✅ (in-process TTL)                          | ✅                              | ✅                            | ❌ (delegates to upstream)             |
+| Gzip / Brotli compression | ✅                                           | ✅ / ✅ (with module)           | ✅                            | ✅                                     |
+| ETag                      | ✅                                           | ✅                              | ✅                            | ❌                                     |
+| Body size limit           | ✅                                           | ✅ (`client_max_body_size`)     | ✅                            | ✅                                     |
+| Basic auth (bcrypt)       | ✅                                           | ✅                              | ✅                            | ✅                                     |
+| IP allow / deny           | ✅ (CIDR)                                    | ✅                              | ✅                            | ✅                                     |
+| CORS                      | ✅ (preflight, credentialed-wildcard reject) | ✅                              | ✅ (handler)                  | ✅                                     |
+| Security headers          | ✅                                           | ✅ (manual)                     | ✅                            | ✅                                     |
+| Request ID propagation    | ✅                                           | ✅ (manual)                     | ✅                            | ✅                                     |
+| Path rewrite              | ✅ (strip / add prefix, replace, regex)      | ✅ (`rewrite`)                  | ✅ (`rewrite`, `handle_path`) | ✅ (`StripPrefix`, `ReplacePathRegex`) |
+| JWT validation            | ❌                                           | ✅ (nginx-plus or auth_request) | ✅ (jwt module)               | ✅ (middleware)                        |
 
 ## Observability
 

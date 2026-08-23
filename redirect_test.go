@@ -150,6 +150,79 @@ func TestRedirectRoutePlaceholders(t *testing.T) {
 	}
 }
 
+// TestRedirectRouteProtocolRelative — a client-controlled placeholder that
+// would make the Location protocol-relative ("//evil.com") is collapsed to a
+// same-origin absolute path, so the redirect cannot be steered off-site. This
+// covers the raw client path directly and the StripPrefix-induced form.
+func TestRedirectRouteProtocolRelative(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cfg  Config
+		url  string
+		want string
+	}{
+		{
+			// The pre-existing vector: a bare "//evil.com" request path on a
+			// {path} redirect, no rewrite involved.
+			name: "raw client path via {path}",
+			cfg:  redirectConfig("{path}", http.StatusFound),
+			url:  "http://old.example.com//evil.com/x",
+			want: "/evil.com/x",
+		},
+		{
+			name: "raw client path via {request_uri}",
+			cfg:  redirectConfig("{request_uri}", http.StatusFound),
+			url:  "http://old.example.com//evil.com/x?a=1",
+			want: "/evil.com/x?a=1",
+		},
+		{
+			// StripPrefix turns "/api//evil.com" into "//evil.com".
+			name: "strip-prefix induced",
+			cfg: Config{
+				Listeners: Listeners{HTTP(":0")},
+				Routes: Routes{
+					Match("/api/*").RedirectTo("{path}", http.StatusFound).With(StripPrefix("/api")),
+				},
+			},
+			url:  "http://old.example.com/api//evil.com/x",
+			want: "/evil.com/x",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			router := redirectRouter(t, c.cfg)
+			rec := runRequest(t, router, httptest.NewRequest("GET", c.url, nil))
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status: got %d, want 302", rec.Code)
+			}
+			assertHeader(t, rec.Header(), "Location", c.want)
+		})
+	}
+}
+
+// TestSafeRedirectLocation — the unit boundary: only a "//"/"/\"-leading value
+// is collapsed; scheme, single-slash, and mid-string doubled slashes are kept.
+func TestSafeRedirectLocation(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"//evil.com/x", "/evil.com/x"},
+		{"/\\evil.com", "/evil.com"},
+		{"///evil.com", "/evil.com"},
+		{"https://new.example.com/x", "https://new.example.com/x"},
+		{"/users", "/users"},
+		{"/a//b", "/a//b"},
+		{"", ""},
+		{"/", "/"},
+	}
+	for _, c := range cases {
+		if got := safeRedirectLocation(c.in); got != c.want {
+			t.Errorf("safeRedirectLocation(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // TestRedirectRouteNoRescan — placeholder-shaped text arriving in the request
 // is substituted literally, never expanded a second time.
 func TestRedirectRouteNoRescan(t *testing.T) {

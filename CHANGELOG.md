@@ -8,6 +8,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Path rewrite middleware: four primitives transform the request path
+  before it is proxied or served. `StripPrefix(prefix)` removes a prefix,
+  `AddPrefix(prefix)` prepends one, `ReplacePath(path)` substitutes a fixed
+  path, and `RewritePath(pattern, replacement)` rewrites through an RE2
+  regexp with `$1`-style capture references, following
+  `regexp.ReplaceAllString`. Stripping the whole path leaves `/`, a path
+  the prefix does not cover passes through untouched rather than 404ing,
+  and a regexp result that loses its leading slash or empties the path is
+  normalised back to a rooted one. The query string is carried through
+  untouched except by `ReplacePath`'s explicit `?query` suffix, which
+  replaces it — a trailing `?` clears it, no `?` at all preserves it. Like
+  the header operations, the rewrites are hoisted out of the middleware
+  chain and applied at the route's edge, before every other middleware and
+  in declaration order among themselves, so where a rewrite sits in the
+  `With(...)` list does not change the result: the cache key, the remaining
+  middleware, and the upstream all see the same rewritten path, and a
+  `Retry` beneath never observes a half-rewritten one. Each rewrite works
+  on a clone of the request rather than mutating it, which keeps it
+  exactly-once when a retry re-serves the same request. Route matching and
+  the access log observe the original path. A `StripPrefix`/`AddPrefix`
+  prefix is a decoded literal, while `ReplacePath` takes an escaped target,
+  so it is the primitive for a path that must carry an escaped `%2F`;
+  `RewritePath` matches the decoded path, so a client's escaped `%2F`
+  becomes a real separator to the pattern. `StripPrefix` matches on the
+  decoded path — the form the router matched — so a request routed under
+  the prefix always has it stripped, even through an escaped boundary slash
+  (`/api%2Ffoo`) or a percent-encoded prefix (`/a%70i`); the boundary slash
+  becomes the new root and every later `%2F` stays escaped, so
+  `/api/foo%2Fbar` and `/api%2Ffoo%2Fbar` both reach the upstream as
+  `/foo%2Fbar`, never the decoded `/foo/bar`. Prefixes are normalised at
+  resolve time — every trailing slash trimmed, so `StripPrefix("/api/")`
+  and `StripPrefix("/api")` are one declaration and the resolved export
+  publishes `/api` — and resolve rejects what could not work: an empty,
+  slash-only, `?`/`#`/`%`-carrying, or doubled-leading-slash (`//`, `/\`)
+  prefix, a `ReplacePath` target that is not rooted, is protocol-relative,
+  carries a `#`, holds an invalid `%`-escape, or whose explicit query
+  carries a space or control byte, and a `RewritePath` pattern that is
+  empty or does not compile. The resolved schema gains `PathPrefix`,
+  `PathPattern`, `PathReplacement`, `PathQuery`, and `PathQuerySet`
+  carrying the normalised transform for the JSON export.
 - DNS-01 propagation controls: `AutoTLS(...).CloudflareDNS01(token)` takes
   a `Propagation(statute.DNSPropagation{...})` policy replacing the fixed
   15-second wait between publishing the challenge TXT record and asking
@@ -193,6 +233,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Redirect routes no longer emit a protocol-relative `Location`. A
+  client-controlled `{path}` or `{request_uri}` of `//evil.com` — sent
+  directly as a `//evil.com` request path, or produced by a `StripPrefix`
+  that exposes the leading segment of `/api//evil.com` — would otherwise
+  become a `Location: //evil.com` that browsers follow off-site (an open
+  redirect). A `Location` that comes out with a doubled leading slash
+  (`//` or `/\`) is now collapsed to a single leading slash, keeping the
+  redirect same-origin. The core case predates the path-rewrite work; it
+  was surfaced by CodeQL on this change.
 - HTTP/3 requests pass through the listener middleware chain — trusted-proxy
   policy, Cloudflare tagging, access log, metrics, tracing — exactly as
   HTTP/1.1 and HTTP/2 do. The QUIC server previously received the raw

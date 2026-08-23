@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -995,6 +997,11 @@ func (m *basicAuthMW) resolve() (resolved.Middleware, error) { return resolveBas
 func (m *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(m) }
 func (m *headerMW) resolve() (resolved.Middleware, error)    { return resolveHeaderMW(m) }
 
+func (m *stripPrefixMW) resolve() (resolved.Middleware, error) { return resolveStripPrefixMW(m) }
+func (m *addPrefixMW) resolve() (resolved.Middleware, error)   { return resolveAddPrefixMW(m) }
+func (m *replacePathMW) resolve() (resolved.Middleware, error) { return resolveReplacePathMW(m) }
+func (m *rewritePathMW) resolve() (resolved.Middleware, error) { return resolveRewritePathMW(m) }
+
 // resolveTimeoutMW parses the timeout duration string.
 func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 	d, err := parse.Duration(m.dur)
@@ -1112,6 +1119,121 @@ func resolveHeaderMW(m *headerMW) (resolved.Middleware, error) {
 		return resolved.Middleware{}, fmt.Errorf("%s: %q cannot be rewritten on a request; %s", label, name, reason)
 	}
 	return resolved.Middleware{Type: m.op, HeaderName: name, HeaderValue: value}, nil
+}
+
+// normalizePathPrefix validates and normalises a strip/add prefix: trailing
+// slashes are trimmed, so "/api/" and "/api" are one declaration, and what
+// survives has to be a rooted path naming at least one segment. A "?" or "#"
+// belongs to the query or fragment, neither of which a prefix operation can
+// touch, so carrying one is a configuration mistake rather than a literal.
+//
+// A "%" is rejected too: a prefix is a decoded literal that is matched against
+// the decoded request path and prepended to it. A percent-escape has no
+// consistent meaning in that role — StripPrefix would compare the literal
+// "%2F" against a decoded "/" and never match, and AddPrefix would re-escape
+// the "%" and send "%252F" upstream — so it is a mistake rather than a value.
+// ReplacePath, which does operate on an escaped target, is the primitive for
+// escaped paths.
+func normalizePathPrefix(prefix string) (string, error) {
+	if strings.ContainsAny(prefix, "?#%") {
+		return "", fmt.Errorf("prefix %q must not contain %q, %q, or %q", prefix, "?", "#", "%")
+	}
+	p := strings.TrimRight(prefix, "/")
+	if !strings.HasPrefix(p, "/") || len(p) < 2 {
+		return "", fmt.Errorf("prefix %q must start with %q and name at least one path segment", prefix, "/")
+	}
+	if p[1] == '/' || p[1] == '\\' {
+		return "", fmt.Errorf("prefix %q must not start with %q or %q: a doubled leading slash is a protocol-relative URL, not a path", prefix, "//", "/\\")
+	}
+	return p, nil
+}
+
+// resolveStripPrefixMW normalises the prefix to strip.
+func resolveStripPrefixMW(m *stripPrefixMW) (resolved.Middleware, error) {
+	p, err := normalizePathPrefix(m.prefix)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("strip_prefix: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWStripPrefix, PathPrefix: p}, nil
+}
+
+// resolveAddPrefixMW normalises the prefix to prepend.
+func resolveAddPrefixMW(m *addPrefixMW) (resolved.Middleware, error) {
+	p, err := normalizePathPrefix(m.prefix)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("add_prefix: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWAddPrefix, PathPrefix: p}, nil
+}
+
+// splitReplacePath validates a ReplacePath target and splits it at the first
+// "?" into the path and the explicit query. querySet distinguishes a target
+// that clears the query ("/x?") from one that leaves it alone ("/x"). The
+// path is returned in the escaped form it was written in, so an operator who
+// spelled "%2F" gets a literal slash inside a segment rather than a separator.
+//
+// The query half is checked too: it is written straight onto the outgoing
+// request-target, so a space or a control byte there is not a value but a
+// malformed request the upstream answers with 400, or a CR/LF the transport
+// refuses outright. Rejecting them here makes such a target a startup error,
+// the way a bad header value is, rather than a per-request failure.
+func splitReplacePath(target string) (string, string, bool, error) {
+	if strings.Contains(target, "#") {
+		return "", "", false, fmt.Errorf("target %q must not contain %q", target, "#")
+	}
+	path, query, querySet := strings.Cut(target, "?")
+	if !strings.HasPrefix(path, "/") {
+		return "", "", false, fmt.Errorf("target path %q must start with %q", path, "/")
+	}
+	if len(path) >= 2 && (path[1] == '/' || path[1] == '\\') {
+		return "", "", false, fmt.Errorf("target path %q must not start with %q or %q: a doubled leading slash is a protocol-relative URL, and on a redirect route it points off-site", path, "//", "/\\")
+	}
+	if _, err := url.PathUnescape(path); err != nil {
+		return "", "", false, fmt.Errorf("target path %q: %w", path, err)
+	}
+	if i := strings.IndexFunc(query, invalidQueryByte); i >= 0 {
+		return "", "", false, fmt.Errorf("target query %q must not contain spaces or control characters (byte %#x at %d; escape it as %%20)", query, query[i], i)
+	}
+	return path, query, querySet, nil
+}
+
+// invalidQueryByte reports whether r cannot appear literally in a request
+// target's query: the space and every ASCII control byte, including CR and LF.
+func invalidQueryByte(r rune) bool {
+	return r <= ' ' || r == 0x7f
+}
+
+// resolveReplacePathMW validates the fixed target path and splits off an
+// explicit query.
+func resolveReplacePathMW(m *replacePathMW) (resolved.Middleware, error) {
+	path, query, querySet, err := splitReplacePath(m.path)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("replace_path: %w", err)
+	}
+	return resolved.Middleware{
+		Type:            resolved.MWReplacePath,
+		PathReplacement: path,
+		PathQuery:       query,
+		PathQuerySet:    querySet,
+	}, nil
+}
+
+// resolveRewritePathMW compiles the rewrite pattern so a bad regexp is a
+// startup error, and stores its canonical source. The replacement is carried
+// through as written; an empty one deletes what the pattern matches.
+func resolveRewritePathMW(m *rewritePathMW) (resolved.Middleware, error) {
+	if m.pattern == "" {
+		return resolved.Middleware{}, errors.New("rewrite_path: pattern must not be empty")
+	}
+	re, err := regexp.Compile(m.pattern)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("rewrite_path: %w", err)
+	}
+	return resolved.Middleware{
+		Type:            resolved.MWRewritePath,
+		PathPattern:     re.String(),
+		PathReplacement: m.replacement,
+	}, nil
 }
 
 // resolveAllowIPsMW canonicalises the allow-list CIDRs.
