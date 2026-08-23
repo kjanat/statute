@@ -134,6 +134,12 @@ func TestDockerSyncBuildsRoutes(t *testing.T) {
 	if h := findHandler(tab.routes, "APP.Example.COM", httptest.NewRequest("GET", "http://x/x", nil)); h == nil {
 		t.Fatal("host match is case-sensitive")
 	}
+	// The same route dispatches through buildRouter's dynamic fallback once
+	// the (empty) static table misses.
+	rr := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://app.example.com/x", nil))
+	if rr.Code != http.StatusOK || rr.Body.String() != "hello from backend" {
+		t.Fatalf("router dispatch: %d %q", rr.Code, rr.Body.String())
+	}
 }
 
 func TestDockerSyncTraefikLabels(t *testing.T) {

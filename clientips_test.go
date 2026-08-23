@@ -151,3 +151,19 @@ func TestResolveClientIPs(t *testing.T) {
 		})
 	}
 }
+
+// TestClientIPsSpoofWithoutTrustConfig — on a plain listener with no
+// TrustedProxy policy and no BehindCloudflare, a spoofed X-Forwarded-For
+// must not select the trusted-network route past the authenticated
+// fallback: without explicit trust configuration, the connecting peer is
+// the client.
+func TestClientIPsSpoofWithoutTrustConfig(t *testing.T) {
+	t.Parallel()
+	router := clientIPRouter(t)
+	req := httptest.NewRequest("GET", "http://admin.example.com/", nil)
+	req.RemoteAddr = "198.51.100.66:4321"
+	req.Header.Set("X-Forwarded-For", "10.0.0.1")
+	if rec := runRequest(t, router, req); rec.Body.String() != "outside" {
+		t.Errorf("spoofed XFF on an unconfigured listener: got %q, want %q", rec.Body.String(), "outside")
+	}
+}

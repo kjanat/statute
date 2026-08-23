@@ -31,13 +31,13 @@ One JSON line per request, written to the configured destination (`Stdout`, `Std
 
 ### Client IP attribution
 
-The `remote` field comes from `clientIP()`, which checks headers in order:
+The `remote` field comes from `clientIP()`, which resolves in order:
 
-1. If the request was received on a `BehindCloudflare()` listener: `CF-Connecting-IP`, then `True-Client-IP`.
-2. Otherwise: first entry of `X-Forwarded-For` if present.
+1. If the listener declares a `TrustedProxy()` policy: the policy decides — a trusted direct peer speaks through the configured forwarded header, any other peer is its own client.
+2. Otherwise, on a `BehindCloudflare()` listener: `CF-Connecting-IP`, then `True-Client-IP`.
 3. Fallback: `r.RemoteAddr`.
 
-Headers from non-CF sources are forgeable. Only enable `BehindCloudflare()` when the listener is actually fronted by Cloudflare; otherwise clients can dictate their own `remote` value.
+`X-Forwarded-For` is never consulted without explicit trust configuration — it is client-controlled, and rate limiting, the IP lists, and client-IP route matching all key on this value. The raw header still lands in the `forwarded_for` log field, unparsed, for forensics.
 
 ### Sampling
 

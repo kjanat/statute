@@ -48,12 +48,16 @@ func TestStripPort(t *testing.T) {
 	}
 }
 
+// TestClientIPXFF — without explicit trust configuration, X-Forwarded-For
+// is a client-controlled header and must not decide attribution: rate-limit
+// buckets, IP lists, and ClientIPs route matching all key on clientIP, so
+// an unconditional fallback would let any client pick its own identity.
 func TestClientIPXFF(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "10.0.0.1:1234"
 	r.Header.Set("X-Forwarded-For", "203.0.113.5, 198.51.100.1")
-	if got := clientIP(r); got != "203.0.113.5" {
-		t.Errorf("XFF: got %q, want %q", got, "203.0.113.5")
+	if got := clientIP(r); got != "10.0.0.1:1234" {
+		t.Errorf("unconfigured XFF trust: got %q, want the peer %q", got, "10.0.0.1:1234")
 	}
 
 	r2 := httptest.NewRequest("GET", "/", nil)
@@ -64,14 +68,15 @@ func TestClientIPXFF(t *testing.T) {
 }
 
 func TestClientIPCloudflare(t *testing.T) {
-	// Without the BehindCloudflare flag in context, CF-Connecting-IP must
-	// not be trusted — that header is forgeable from arbitrary clients.
+	// Without the BehindCloudflare flag in context, neither CF-Connecting-IP
+	// nor X-Forwarded-For is trusted — both are forgeable from arbitrary
+	// clients, so attribution stays with the connecting peer.
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "10.0.0.1:1234"
 	r.Header.Set("CF-Connecting-IP", "203.0.113.5")
 	r.Header.Set("X-Forwarded-For", "198.51.100.1")
-	if got := clientIP(r); got != "198.51.100.1" {
-		t.Errorf("untrusted: got %q, want XFF first entry", got)
+	if got := clientIP(r); got != "10.0.0.1:1234" {
+		t.Errorf("untrusted: got %q, want the peer address", got)
 	}
 
 	// Wrap the request in the BehindCloudflare middleware; CF header is now trusted.

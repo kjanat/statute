@@ -67,6 +67,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   proxy derives its own, so the route's value wins without making the fields
   it leaves alone spoofable.
 
+### Security
+
+- `clientIP` no longer trusts `X-Forwarded-For` without explicit trust
+  configuration. The unconditional fallback let any client pick its own
+  identity for everything keyed on the client address — rate-limit
+  buckets, `AllowIPs`/`DenyIPs`, `IPHash` affinity, the access log's
+  `remote` field, and the new client-IP route matching, where a forged
+  header could select a trusted-network route past an authenticated
+  fallback. Forwarded headers now count only under a listener's
+  `TrustedProxy` policy or `BehindCloudflare`; otherwise the connecting
+  peer is the client.
+
 ### Fixed
 
 - HTTP/3 requests pass through the listener middleware chain — trusted-proxy
