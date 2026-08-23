@@ -59,37 +59,94 @@ func (plugin) GetLoadMode() string {
 func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
 		ast.Inspect(file, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok || len(call.Args) == 0 {
-				return true
+			switch n := node.(type) {
+			case *ast.CallExpr:
+				checkCall(pass, n)
+			case *ast.AssignStmt:
+				checkHeaderIndexAssign(pass, n)
 			}
-
-			name, ok := constantString(pass, call.Args[0])
-			if !ok {
-				return true
-			}
-			canonical := textproto.CanonicalMIMEHeaderKey(name)
-			field, special := requestSpecialFields[canonical]
-			if !special {
-				return true
-			}
-
-			switch {
-			case isDirectRequestHeaderMutation(pass, call):
-				pass.Reportf(call.Args[0].Pos(),
-					"request header %q is represented by http.Request.%s; mutating Request.Header is ignored",
-					canonical, field)
-			case isStatuteRequestHeaderConstructor(pass, call):
-				pass.Reportf(call.Args[0].Pos(),
-					"%s cannot mutate request header %q because net/http uses http.Request.%s; use field-aware middleware or reject the configuration",
-					calledFunction(pass, call).Name(), canonical, field)
-			}
-
 			return true
 		})
 	}
 
 	return nil, nil
+}
+
+func checkCall(pass *analysis.Pass, call *ast.CallExpr) {
+	if name, arg, ok := deleteFromRequestHeader(pass, call); ok {
+		if field, special := requestSpecialFields[name]; special {
+			pass.Reportf(arg.Pos(),
+				"request header %q is represented by http.Request.%s; mutating Request.Header is ignored",
+				name, field)
+		}
+		return
+	}
+
+	if len(call.Args) == 0 {
+		return
+	}
+	name, ok := constantString(pass, call.Args[0])
+	if !ok {
+		return
+	}
+	canonical := textproto.CanonicalMIMEHeaderKey(name)
+	field, special := requestSpecialFields[canonical]
+	if !special {
+		return
+	}
+
+	switch {
+	case isDirectRequestHeaderMutation(pass, call):
+		pass.Reportf(call.Args[0].Pos(),
+			"request header %q is represented by http.Request.%s; mutating Request.Header is ignored",
+			canonical, field)
+	case isStatuteRequestHeaderConstructor(pass, call):
+		pass.Reportf(call.Args[0].Pos(),
+			"%s cannot mutate request header %q because net/http uses http.Request.%s; use field-aware middleware or reject the configuration",
+			calledFunction(pass, call).Name(), canonical, field)
+	}
+}
+
+// checkHeaderIndexAssign flags r.Header["Host"] = ... map-index writes. Raw
+// map access does not canonicalise, so only the exact canonical key names the
+// field net/http serializes around; a differently-cased key is a different
+// (and serialized) map entry.
+func checkHeaderIndexAssign(pass *analysis.Pass, assign *ast.AssignStmt) {
+	for _, lhs := range assign.Lhs {
+		index, ok := lhs.(*ast.IndexExpr)
+		if !ok || !isRequestHeaderExpr(pass, index.X) {
+			continue
+		}
+		name, ok := constantString(pass, index.Index)
+		if !ok {
+			continue
+		}
+		field, special := requestSpecialFields[name]
+		if !special {
+			continue
+		}
+		pass.Reportf(index.Index.Pos(),
+			"request header %q is represented by http.Request.%s; mutating Request.Header is ignored",
+			name, field)
+	}
+}
+
+// deleteFromRequestHeader matches delete(r.Header, "Name") and returns the
+// key with the argument that carries it. Like map indexing, the delete
+// builtin does not canonicalise, so the key is matched exactly as written.
+func deleteFromRequestHeader(pass *analysis.Pass, call *ast.CallExpr) (string, ast.Expr, bool) {
+	id, ok := call.Fun.(*ast.Ident)
+	if !ok || id.Name != "delete" || len(call.Args) != 2 {
+		return "", nil, false
+	}
+	if _, builtin := pass.TypesInfo.Uses[id].(*types.Builtin); !builtin {
+		return "", nil, false
+	}
+	if !isRequestHeaderExpr(pass, call.Args[0]) {
+		return "", nil, false
+	}
+	name, ok := constantString(pass, call.Args[1])
+	return name, call.Args[1], ok
 }
 
 func constantString(pass *analysis.Pass, expr ast.Expr) (string, bool) {
@@ -106,12 +163,18 @@ func isDirectRequestHeaderMutation(pass *analysis.Pass, call *ast.CallExpr) bool
 		return false
 	}
 
-	header, ok := method.X.(*ast.SelectorExpr)
-	if !ok || header.Sel.Name != "Header" {
+	return isRequestHeaderExpr(pass, method.X)
+}
+
+// isRequestHeaderExpr reports whether expr is the Header field of an
+// http.Request.
+func isRequestHeaderExpr(pass *analysis.Pass, expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Header" {
 		return false
 	}
 
-	return isHTTPRequest(pass.TypesInfo.TypeOf(header.X))
+	return isHTTPRequest(pass.TypesInfo.TypeOf(sel.X))
 }
 
 func isHTTPRequest(t types.Type) bool {

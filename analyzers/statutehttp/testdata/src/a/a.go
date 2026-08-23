@@ -16,6 +16,17 @@ func directMutations(r *http.Request) {
 	r.Header.Set("X-Ordinary", "allowed")
 }
 
+func mapMutations(r *http.Request) {
+	r.Header["Host"] = []string{"statute.internal"} // want `request header "Host" is represented by http.Request.Host`
+	delete(r.Header, "Content-Length")              // want `request header "Content-Length" is represented by http.Request.ContentLength`
+	r.Header["X-Ordinary"] = []string{"allowed"}
+	delete(r.Header, "X-Ordinary")
+	// Raw map access does not canonicalise, so a differently-cased key is a
+	// different — and serialized — map entry, not the special field.
+	r.Header["trailer"] = nil
+	delete(r.Header, "trailer")
+}
+
 func statuteMiddleware() {
 	statute.SetRequestHeader("Content-Length", "1")       // want `SetRequestHeader cannot mutate request header "Content-Length"`
 	statute.AddRequestHeader("Transfer-Encoding", "gzip") // want `AddRequestHeader cannot mutate request header "Transfer-Encoding"`
