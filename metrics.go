@@ -78,8 +78,17 @@ type statusRecorder struct {
 	wroteHeader bool
 }
 
-// WriteHeader records the first status code written, then forwards it.
+// WriteHeader records the first final status written, then forwards it. A
+// 1xx is informational: net/http keeps the response open, so it passes
+// through without latching — the final status is still to come, and it is
+// the one the access log and metrics must see. Latching on the preview
+// would also swallow the final WriteHeader, leaving net/http to commit an
+// implicit 200 whatever the handler actually answered.
 func (s *statusRecorder) WriteHeader(code int) {
+	if code < 200 {
+		s.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if s.wroteHeader {
 		return
 	}
@@ -95,6 +104,19 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 		s.wroteHeader = true
 	}
 	return s.ResponseWriter.Write(b)
+}
+
+// ReadFrom treats the copy like Write — an un-preceded one is an implicit
+// 200 — and hands it to the underlying writer, so io.Copy keeps the sendfile
+// path net/http offers for file responses.
+func (s *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
+	if !s.wroteHeader {
+		s.wroteHeader = true
+	}
+	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(s.ResponseWriter, r)
 }
 
 // Flush propagates Flush calls so streaming responses still flush through us.

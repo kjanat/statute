@@ -22,7 +22,7 @@
 ## Test plan
 
 - [ ] `go test ./...` passes
-- [ ] `golangci-lint run ./...` clean
+- [ ] `make lint` clean
 - [ ] If new middleware: includes `${name}_test.go` covering happy path + at least one edge case
 - [ ] If new CLI flag: mutual exclusion against existing flags verified
 - [ ] If touching the access log: old log shape preserved (additive fields only)

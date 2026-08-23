@@ -207,6 +207,12 @@ Middleware:
 - **`Cache(ttl)`** — in-process cache for 2xx GET/HEAD responses. Replace with a real LRU for high-cardinality deployments.
 - **`Compress(Gzip, Brotli)`** — negotiates content encoding via `Accept-Encoding`. Brotli preferred when the client advertises both.
 - **`ETag()`** — adds an SHA-256-based ETag to 200 responses; answers 304 on `If-None-Match` match.
+- **`SetRequestHeader(name, value)`, `AddRequestHeader(name, value)`, `RemoveRequestHeader(name)`** — rewrite the request before it reaches the proxy or file handler. Names are canonicalised and values validated when the config resolves, so a bad header is a startup error rather than a malformed request.
+- **`SetResponseHeader(name, value)`, `AddResponseHeader(name, value)`, `RemoveResponseHeader(name)`** — rewrite the response on the way out: `Set` overrides whatever the upstream sent, `Add` appends a value while keeping the upstream's, and `Remove` drops every value of the name. Applied when the response header is committed, so streaming and protocol upgrades are unaffected.
+
+Header operations run in declaration order, request and response alike: the last `Set` of a name wins, and a `Remove` after a `Set` clears it. They apply at the route's edges rather than interleaved with the other middleware — request mutations before the chain runs, response mutations when the header commits — so a `Retry` underneath cannot apply them a second time per attempt.
+
+On a proxy route, an explicit `X-Forwarded-For`, `-Host`, or `-Proto` declaration is reapplied after the proxy derives its own, so your value wins while the fields you leave alone keep the derived, unspoofable ones. Four names are rejected on requests because Go carries them outside the header map, where the mutation would do nothing: `Host`, `Content-Length`, `Transfer-Encoding`, and `Trailer`. Hop-by-hop headers can be set but the proxy strips them, as RFC 9110 requires, and a protocol-upgrade handshake is written straight to the hijacked connection, so response operations do not reach it.
 
 ### Docker discovery
 
@@ -337,7 +343,7 @@ go run ./examples/cloudflare-wildcard       # needs CLOUDFLARE_API_TOKEN
 ```sh
 go test ./...           # all unit tests
 go vet ./...            # vet
-golangci-lint run ./... # lint
+make lint               # built-in + statute-specific linters
 ```
 
 The race detector (`go test -race`) does not work on Raspberry Pi / older 64-bit Arm kernels with VMA range < 48; this is a TSAN limitation, not a code issue.

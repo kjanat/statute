@@ -435,6 +435,7 @@ func (m *allowIPsMW) resolve() (resolved.Middleware, error)  { return resolveAll
 func (m *denyIPsMW) resolve() (resolved.Middleware, error)   { return resolveDenyIPsMW(m) }
 func (m *basicAuthMW) resolve() (resolved.Middleware, error) { return resolveBasicAuthMW(m) }
 func (m *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(m) }
+func (m *headerMW) resolve() (resolved.Middleware, error)    { return resolveHeaderMW(m) }
 
 // resolveTimeoutMW parses the timeout duration string.
 func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
@@ -523,6 +524,36 @@ func resolveSecurityHeadersMW(m *securityHeadersMW) (resolved.Middleware, error)
 		SecReferrerPolicy:     m.referrerPolicy,
 		SecPermissionsPolicy:  m.permissionsPolicy,
 	}, nil
+}
+
+// unsettableRequestHeaders are the request fields Go carries outside the
+// header map, where a mutation would be a silent no-op: net/http writes them
+// from Request.Host, Request.ContentLength, Request.TransferEncoding, and
+// Request.Trailer and excludes the header-map entries when it writes the
+// request. Rejecting them at resolve time turns a configuration that cannot
+// work into a startup error.
+var unsettableRequestHeaders = map[string]string{
+	"Host":              "Go keeps the request authority in Request.Host",
+	"Content-Length":    "Go frames the body from Request.ContentLength",
+	"Transfer-Encoding": "Go frames the body from Request.TransferEncoding",
+	"Trailer":           "Go writes the trailer names from Request.Trailer",
+}
+
+// resolveHeaderMW validates one header mutation and canonicalises its name.
+func resolveHeaderMW(m *headerMW) (resolved.Middleware, error) {
+	label := headerMWLabel(m.op)
+	name, err := parse.HeaderName(m.name)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("%s: %w", label, err)
+	}
+	value, err := parse.HeaderValue(m.value)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("%s: %w", label, err)
+	}
+	if reason, ok := unsettableRequestHeaders[name]; ok && isRequestHeaderOp(m.op) {
+		return resolved.Middleware{}, fmt.Errorf("%s: %q cannot be rewritten on a request; %s", label, name, reason)
+	}
+	return resolved.Middleware{Type: m.op, HeaderName: name, HeaderValue: value}, nil
 }
 
 // resolveAllowIPsMW canonicalises the allow-list CIDRs.

@@ -183,6 +183,12 @@ type Middleware struct {
 
 	// IP allow/deny — only one direction is populated per middleware.
 	IPCIDRs []string // canonical "1.2.3.0/24"
+
+	// Header mutation — the Type discriminator selects request or response
+	// and set, add, or remove. HeaderName is canonical ("X-Robots-Tag");
+	// HeaderValue is empty for the remove operations.
+	HeaderName  string
+	HeaderValue string
 }
 
 // MiddlewareType discriminates resolved middleware values.
@@ -205,6 +211,12 @@ const (
 	MWBasicAuth
 	MWAllowIPs
 	MWDenyIPs
+	MWSetRequestHeader
+	MWAddRequestHeader
+	MWRemoveRequestHeader
+	MWSetResponseHeader
+	MWAddResponseHeader
+	MWRemoveResponseHeader
 )
 
 // RateLimitKey mirrors the surface key.

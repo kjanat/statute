@@ -6,6 +6,7 @@
 
 GO              ?= go
 GOLANGCI_LINT   ?= golangci-lint
+CUSTOM_GCL      ?= ./custom-gcl
 COVER_PROFILE   ?= cover.out
 FUZZ_TIME       ?= 30s
 
@@ -22,8 +23,9 @@ test: ## Run all unit tests
 test-race: ## Run tests with the race detector (x86 only; Pi cannot run -race)
 	$(GO) test -race ./...
 
-lint: ## Run golangci-lint
-	$(GOLANGCI_LINT) run ./...
+lint: ## Build the custom golangci-lint and run all linters
+	$(GOLANGCI_LINT) custom
+	$(CUSTOM_GCL) run ./...
 
 cover: ## Write coverage profile and print summary
 	$(GO) test -coverprofile=$(COVER_PROFILE) -covermode=atomic ./...
@@ -64,5 +66,5 @@ tidy: ## Run go mod tidy
 	$(GO) mod tidy
 
 clean: ## Remove build artefacts
-	rm -f $(COVER_PROFILE)
+	rm -f $(COVER_PROFILE) $(CUSTOM_GCL)
 	$(GO) clean -testcache
