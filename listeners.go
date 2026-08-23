@@ -156,12 +156,15 @@ type TrustedProxyConfig struct {
 // trusted proxies that is the address the proxy itself observed, while the
 // earlier values arrived from outside and remain client-controlled.
 func TrustedProxy(cidrs ...string) *TrustedProxyConfig {
-	return &TrustedProxyConfig{cidrs: cidrs}
+	return &TrustedProxyConfig{cidrs: cidrs, header: "X-Forwarded-For"}
 }
 
 // ClientIPHeader names the forwarded header consulted when the direct peer
 // is a trusted proxy. Defaults to X-Forwarded-For; a Cloudflare-fronted
-// listener typically wants CF-Connecting-IP.
+// listener typically wants CF-Connecting-IP. An empty name is a resolve
+// error, not a fallback to the default — a header name that went missing
+// (an unset environment variable, say) must not silently change which
+// header is trusted.
 func (t *TrustedProxyConfig) ClientIPHeader(name string) *TrustedProxyConfig {
 	t.header = name
 	return t
@@ -189,9 +192,13 @@ type behindCloudflareOption struct{}
 //
 // That trust applies to every connection on the listener. When the same
 // listener also receives direct traffic — a proxy-fronted hostname and a
-// direct-origin hostname sharing an address — prefer TrustedProxy with
-// Cloudflare's ranges and ClientIPHeader("CF-Connecting-IP"), which trusts
-// the headers only when the direct peer actually is Cloudflare.
+// direct-origin hostname sharing an address — add TrustedProxy with
+// Cloudflare's ranges and ClientIPHeader("CF-Connecting-IP") alongside this
+// option: the trust policy then governs client IPs per peer, while
+// BehindCloudflare keeps doing its ACME job of suppressing TLS-ALPN-01,
+// which Cloudflare's edge cannot forward. Dropping BehindCloudflare in
+// favour of TrustedProxy alone would re-advertise acme-tls/1 and can break
+// AutoTLS issuance behind Cloudflare.
 func BehindCloudflare() ListenerOption { return behindCloudflareOption{} }
 
 func (behindCloudflareOption) applyListener(l *Listener) { l.behindCF = true }

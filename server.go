@@ -178,7 +178,13 @@ func (s *server) initPools(upstreams map[string]*resolved.Pool) error {
 // for every resolved listener, sharing the given handler.
 func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler) error {
 	for _, l := range listeners {
-		hs, err := s.buildHTTPServer(l, mux)
+		// One wrapped handler per listener, shared by the TCP server and
+		// the QUIC server, so HTTP/3 requests pass through exactly the
+		// middleware HTTP/1.1 and HTTP/2 do — trusted-proxy policy and
+		// observability included. Two transports with separately-assembled
+		// chains would drift apart.
+		handler := s.buildListenerHandler(l, mux)
+		hs, err := s.buildHTTPServer(l, handler)
 		if err != nil {
 			return fmt.Errorf("listener %s: %w", l.Addr, err)
 		}
@@ -187,7 +193,7 @@ func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler)
 		if l.HTTP3Addr == "" {
 			continue
 		}
-		h3, err := s.buildHTTP3Server(l, mux)
+		h3, err := s.buildHTTP3Server(l, handler)
 		if err != nil {
 			return fmt.Errorf("listener %s http3: %w", l.Addr, err)
 		}
@@ -196,10 +202,13 @@ func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler)
 	return nil
 }
 
-func (s *server) buildHTTPServer(l *resolved.Listener, content http.Handler) (*http.Server, error) {
+// buildHTTPServer wires the listener's already-wrapped handler into a TCP
+// http.Server; initListeners builds that handler once and shares it with
+// the listener's QUIC server.
+func (s *server) buildHTTPServer(l *resolved.Listener, handler http.Handler) (*http.Server, error) {
 	hs := &http.Server{
 		Addr:              l.Addr,
-		Handler:           s.buildListenerHandler(l, content),
+		Handler:           handler,
 		ReadHeaderTimeout: s.cfg.Defaults.ReadHeaderTimeout,
 		ReadTimeout:       s.cfg.Defaults.ReadTimeout,
 		WriteTimeout:      s.cfg.Defaults.WriteTimeout,

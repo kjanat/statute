@@ -62,6 +62,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- HTTP/3 requests pass through the listener middleware chain — trusted-proxy
+  policy, Cloudflare tagging, access log, metrics, tracing — exactly as
+  HTTP/1.1 and HTTP/2 do. The QUIC server previously received the raw
+  router, so listener-scoped behavior silently did not apply to HTTP/3
+  traffic.
 - The access log and metrics record the final response status when an
   upstream sends a 1xx preview. The status recorder used to latch on the
   informational code, swallowing the final `WriteHeader` — behind those

@@ -51,12 +51,19 @@ func trustedProxyFromContext(r *http.Request) *trustedProxyPolicy {
 // earlier values arrived from outside and remain client-controlled.
 func (p *trustedProxyPolicy) clientIP(r *http.Request) string {
 	peer, err := netip.ParseAddrPort(r.RemoteAddr)
-	if err != nil || !addrInPrefixes(peer.Addr(), p.prefixes) {
+	if err != nil {
 		return r.RemoteAddr
+	}
+	// The bare peer address, not host:port: the raw RemoteAddr would give a
+	// reconnecting client a fresh rate-limit bucket and new IPHash affinity
+	// with every source port.
+	peerIP := peer.Addr().Unmap().String()
+	if !addrInPrefixes(peer.Addr(), p.prefixes) {
+		return peerIP
 	}
 	vals := r.Header.Values(p.header)
 	if len(vals) == 0 {
-		return r.RemoteAddr
+		return peerIP
 	}
 	last := vals[len(vals)-1]
 	if i := strings.LastIndexByte(last, ','); i >= 0 {
@@ -65,7 +72,7 @@ func (p *trustedProxyPolicy) clientIP(r *http.Request) string {
 	if trimmed := strings.TrimSpace(last); trimmed != "" {
 		return trimmed
 	}
-	return r.RemoteAddr
+	return peerIP
 }
 
 // addrInPrefixes reports whether addr falls inside any of the prefixes.

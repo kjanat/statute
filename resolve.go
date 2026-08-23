@@ -331,11 +331,11 @@ func resolveTrustedProxy(t *TrustedProxyConfig, rl *resolved.Listener) error {
 		return fmt.Errorf("trusted_proxy: %w", err)
 	}
 	rl.TrustedProxies = canon
-	header := t.header
-	if header == "" {
-		header = "X-Forwarded-For"
-	}
-	name, err := parse.HeaderName(header)
+	// No empty-name fallback here: TrustedProxy() seeds the default, so an
+	// empty name at this point was configured explicitly — likely a value
+	// that went missing — and silently trusting X-Forwarded-For instead
+	// would change the security policy. parse.HeaderName rejects it.
+	name, err := parse.HeaderName(t.header)
 	if err != nil {
 		return fmt.Errorf("trusted_proxy: %w", err)
 	}
