@@ -38,7 +38,8 @@ func (*stripPrefixMW) statuteMiddleware() {}
 // prefix is a decoded literal, normalised when the configuration resolves:
 // trailing slashes are trimmed, so "/api/" and "/api" are the same
 // declaration, and a prefix that does not name at least one segment ("", "/",
-// "///") or that carries a "?", "#", or "%" is a startup error.
+// "///"), that carries a "?", "#", or "%", or that starts with a doubled slash
+// ("//", "/\") is a startup error.
 //
 // Stripping the whole path leaves "/". A path the prefix does not cover is
 // passed through untouched rather than rejected — the route pattern normally

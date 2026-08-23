@@ -35,12 +35,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   resolve time — every trailing slash trimmed, so `StripPrefix("/api/")`
   and `StripPrefix("/api")` are one declaration and the resolved export
   publishes `/api` — and resolve rejects what could not work: an empty,
-  slash-only, or `?`/`#`/`%`-carrying prefix, a `ReplacePath` target that
-  is not rooted, carries a `#`, holds an invalid `%`-escape, or whose
-  explicit query carries a space or control byte, and a `RewritePath`
-  pattern that is empty or does not compile. The resolved schema gains
-  `PathPrefix`, `PathPattern`, `PathReplacement`, `PathQuery`, and
-  `PathQuerySet` carrying the normalised transform for the JSON export.
+  slash-only, `?`/`#`/`%`-carrying, or doubled-leading-slash (`//`, `/\`)
+  prefix, a `ReplacePath` target that is not rooted, is protocol-relative,
+  carries a `#`, holds an invalid `%`-escape, or whose explicit query
+  carries a space or control byte, and a `RewritePath` pattern that is
+  empty or does not compile. The resolved schema gains `PathPrefix`,
+  `PathPattern`, `PathReplacement`, `PathQuery`, and `PathQuerySet`
+  carrying the normalised transform for the JSON export.
+
+### Fixed
+
+- Redirect routes no longer emit a protocol-relative `Location`. A
+  client-controlled `{path}` or `{request_uri}` of `//evil.com` — sent
+  directly as a `//evil.com` request path, or produced by a `StripPrefix`
+  that exposes the leading segment of `/api//evil.com` — would otherwise
+  become a `Location: //evil.com` that browsers follow off-site (an open
+  redirect). A `Location` that comes out with a doubled leading slash
+  (`//` or `/\`) is now collapsed to a single leading slash, keeping the
+  redirect same-origin. The core case predates the path-rewrite work; it
+  was surfaced by CodeQL on this change.
 - DNS-01 propagation controls: `AutoTLS(...).CloudflareDNS01(token)` takes
   a `Propagation(statute.DNSPropagation{...})` policy replacing the fixed
   15-second wait between publishing the challenge TXT record and asking

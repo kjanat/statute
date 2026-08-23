@@ -112,6 +112,22 @@ func redirectRouteHandler(rd *resolved.Redirect) http.Handler {
 				b.WriteString(stripPort(r.Host))
 			}
 		}
-		http.Redirect(w, r, b.String(), rd.Status)
+		http.Redirect(w, r, safeRedirectLocation(b.String()), rd.Status)
 	})
+}
+
+// safeRedirectLocation neutralises a protocol-relative Location. A target that
+// begins "//" or "/\" is a scheme-relative URL whose authority is the token
+// that follows, so a client-controlled {path} or {request_uri} of
+// "//evil.com" — sent as a "//evil.com" request path, or produced by a
+// StripPrefix that removes the leading segment of "/api//evil.com" — would
+// redirect off-site. Collapsing the leading slash run to a single "/" keeps it
+// a same-origin absolute path. A target that begins with a scheme
+// ("https://…"), a single "/", or anything else is already unambiguous and is
+// left untouched.
+func safeRedirectLocation(loc string) string {
+	if len(loc) >= 2 && loc[0] == '/' && (loc[1] == '/' || loc[1] == '\\') {
+		return "/" + strings.TrimLeft(loc, "/\\")
+	}
+	return loc
 }

@@ -1142,6 +1142,9 @@ func normalizePathPrefix(prefix string) (string, error) {
 	if !strings.HasPrefix(p, "/") || len(p) < 2 {
 		return "", fmt.Errorf("prefix %q must start with %q and name at least one path segment", prefix, "/")
 	}
+	if p[1] == '/' || p[1] == '\\' {
+		return "", fmt.Errorf("prefix %q must not start with %q or %q: a doubled leading slash is a protocol-relative URL, not a path", prefix, "//", "/\\")
+	}
 	return p, nil
 }
 
@@ -1181,6 +1184,9 @@ func splitReplacePath(target string) (string, string, bool, error) {
 	path, query, querySet := strings.Cut(target, "?")
 	if !strings.HasPrefix(path, "/") {
 		return "", "", false, fmt.Errorf("target path %q must start with %q", path, "/")
+	}
+	if len(path) >= 2 && (path[1] == '/' || path[1] == '\\') {
+		return "", "", false, fmt.Errorf("target path %q must not start with %q or %q: a doubled leading slash is a protocol-relative URL, and on a redirect route it points off-site", path, "//", "/\\")
 	}
 	if _, err := url.PathUnescape(path); err != nil {
 		return "", "", false, fmt.Errorf("target path %q: %w", path, err)
