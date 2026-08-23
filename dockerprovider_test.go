@@ -134,11 +134,21 @@ func TestDockerSyncBuildsRoutes(t *testing.T) {
 	if h := findHandler(tab.routes, "APP.Example.COM", httptest.NewRequest("GET", "http://x/x", nil)); h == nil {
 		t.Fatal("host match is case-sensitive")
 	}
-	// The same route dispatches through buildRouter's dynamic fallback once
-	// the (empty) static table misses.
+}
+
+// TestDockerDynamicRoutesThroughRouter — dynamic routes dispatch through
+// buildRouter's fallback once the (empty) static table misses: the request
+// reaches the discovered pool (whose refused backend answers 502) instead
+// of the router's 404.
+func TestDockerDynamicRoutesThroughRouter(t *testing.T) {
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{}, []fakeDaemonContainer{{
+		name: "web-1", ip: "127.0.0.1", port: 1,
+		labels: map[string]string{"statute.enable": "true", "statute.host": "app.example.com"},
+	}})
+	mustSync(t, p)
 	rr := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://app.example.com/x", nil))
-	if rr.Code != http.StatusOK || rr.Body.String() != "hello from backend" {
-		t.Fatalf("router dispatch: %d %q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("router dispatch: got %d, want 502 from the discovered pool", rr.Code)
 	}
 }
 
