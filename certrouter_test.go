@@ -904,19 +904,44 @@ func TestHTTP01RequiresPlainListener(t *testing.T) {
 	)) // the automatic policy may still reach HTTP-01, but never only that
 }
 
-// TestACMEDomainClaimedOnTwoListeners — one manager is built per AutoTLS
-// source, so two listeners claiming one domain race to issue it and
-// overwrite each other's stored key pair. Static hosts share no issuance
-// state and stay per-listener.
-func TestACMEDomainClaimedOnTwoListeners(t *testing.T) {
+// TestPinnedDomainCollisions — one in-tree manager is built per pinned
+// source and persists to <storage>/<challenge>/<domain>.{crt,key}, so two
+// pinned sources sharing that path race to rename over each other's key
+// pair and must not resolve. Everything without a shared file stays
+// legal: automatic sources feed one shared autocert manager whose domain
+// list is a union (the pre-PR two-listener shape keeps working), distinct
+// storage roots and distinct challenge kinds never collide, and static
+// hosts share no issuance state at all.
+func TestPinnedDomainCollisions(t *testing.T) {
 	t.Parallel()
 	_, err := Resolve(multiListenerConfig(
-		HTTPS(":443", AutoTLS("dup.example").Email("x@x").Storage("/v")),
-		HTTPS(":8443", AutoTLS("DUP.example.").Email("x@x").Storage("/v")),
+		HTTPS(":443", AutoTLS("dup.example").Email("x@x").Storage("/v").CloudflareDNS01("tok")),
+		HTTPS(":8443", AutoTLS("DUP.example.").Email("x@x").Storage("/v").CloudflareDNS01("tok")),
 	))
-	if err == nil || !strings.Contains(err.Error(), "two listeners") {
-		t.Errorf("duplicate ACME domain across listeners: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "same path") {
+		t.Errorf("pinned sources sharing one cert path: %v", err)
 	}
+
+	// The exact shape that works on master: one domain on two automatic
+	// listeners, unioned into the shared autocert manager.
+	mustResolve(t, multiListenerConfig(
+		HTTPS(":443", AutoTLS("dup.example").Email("x@x").Storage("/v")),
+		HTTPS(":8443", AutoTLS("dup.example").Email("x@x").Storage("/v")),
+	))
+
+	// Pinned, but distinct storage roots: two managers, two files.
+	mustResolve(t, multiListenerConfig(
+		HTTPS(":443", AutoTLS("dup.example").Email("x@x").Storage("/v1").CloudflareDNS01("tok")),
+		HTTPS(":8443", AutoTLS("dup.example").Email("x@x").Storage("/v2").CloudflareDNS01("tok")),
+	))
+
+	// Pinned, same root, different challenge kinds: dns01/ vs http01/.
+	cfg := multiListenerConfig(
+		HTTP(":80"),
+		HTTPS(":443", AutoTLS("dup.example").Email("x@x").Storage("/v").CloudflareDNS01("tok")),
+		HTTPS(":8443", AutoTLS("dup.example").Email("x@x").Storage("/v").HTTP01()),
+	)
+	mustResolve(t, cfg)
 
 	mustResolve(t, multiListenerConfig(
 		HTTPS(":443", StaticTLSFor("dup.example", "c.pem", "k.pem")),

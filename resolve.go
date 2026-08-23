@@ -87,13 +87,14 @@ func resolveListeners(in []*Listener, out *resolved.Config) error {
 
 // validateTLSAcrossListeners rejects ACME configurations that are only
 // broken in combination: a per-listener check cannot see the plain-HTTP
-// listener that serves HTTP-01 tokens, the second listener claiming the
-// same domain, or the sibling source sharing an ACME account.
+// listener that serves HTTP-01 tokens, the pinned source on another
+// listener persisting a domain to the same file, or the sibling source
+// sharing an ACME account.
 func validateTLSAcrossListeners(listeners []*resolved.Listener) error {
 	if err := validateHTTP01HasPlainListener(listeners); err != nil {
 		return err
 	}
-	if err := validateACMEDomainOwnership(listeners); err != nil {
+	if err := validatePinnedDomainCollisions(listeners); err != nil {
 		return err
 	}
 	return validatePinnedACMEAccounts(listeners)
@@ -124,23 +125,29 @@ func validateHTTP01HasPlainListener(listeners []*resolved.Listener) error {
 	return nil
 }
 
-// validateACMEDomainOwnership rejects one ACME domain claimed on two
-// listeners. The runtime builds one certificate manager per AutoTLS source
-// (server.initACMEManagers, and autocert's own account for the automatic
-// policy), so two listeners declaring the same domain race to issue it and
-// overwrite each other's stored key pair. Within one listener
-// validateTLSSourceCoverage already rejects the duplicate; static hosts
-// stay per-listener because they share no issuance state.
-func validateACMEDomainOwnership(listeners []*resolved.Listener) error {
+// validatePinnedDomainCollisions rejects two pinned sources whose
+// certificate for one domain would live at the same path. The runtime
+// builds one in-tree manager per pinned source (server.initACMEManagers),
+// and each persists to <storage>/<challenge>/<domain>.{crt,key} — two
+// managers sharing that path race to issue and rename over each other's
+// key pair. Only the file matters: the same domain on two automatic
+// sources is fine (they feed one shared autocert manager, which unions
+// its domains), and so are pinned sources with distinct storage roots or
+// challenge kinds. Within one listener validateTLSSourceCoverage already
+// rejects any duplicate name.
+func validatePinnedDomainCollisions(listeners []*resolved.Listener) error {
 	owner := make(map[string]*resolved.Listener)
 	for _, l := range listeners {
 		for _, a := range l.AutoTLSSources {
+			if a.Challenge == resolved.ChallengeAuto {
+				continue
+			}
 			for _, d := range a.Domains {
-				prev, ok := owner[d]
-				if ok && prev != l {
-					return fmt.Errorf("auto_tls: domain %q is claimed by ACME sources on two listeners (%s and %s); each ACME domain needs a single issuing source", d, prev.Addr, l.Addr)
+				path := filepath.Join(a.Storage, acmeChallengeDir(a), d)
+				if prev, ok := owner[path]; ok {
+					return fmt.Errorf("auto_tls: domain %q on listeners %s and %s stores its certificate at the same path (%s.crt); give the sources distinct storage roots or issue the domain from one listener", d, prev.Addr, l.Addr, path)
 				}
-				owner[d] = l
+				owner[path] = l
 			}
 		}
 	}

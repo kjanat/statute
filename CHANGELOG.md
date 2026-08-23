@@ -40,8 +40,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `"*."` label are resolve errors rather than a catch-all no handshake can
   select. Three checks span the whole config: an `HTTP01()` source with no
   plain HTTP listener anywhere (nothing would serve the challenge tokens),
-  one ACME domain claimed on two listeners (two managers racing to issue
-  and overwrite one stored key pair), and pinned sources sharing an ACME
+  two pinned sources persisting one domain to the same
+  `<storage>/<challenge>/` path (two managers racing to rename over one
+  stored key pair — the same domain on two automatic listeners stays
+  legal, unioned into the shared autocert manager), and pinned sources
+  sharing an ACME
   account directory but disagreeing on `Email` (the second registration
   returns `ErrAccountAlreadyExists` and its contact is silently dropped).
 - The in-tree ACME manager (DNS-01 and pinned HTTP-01) gained the
