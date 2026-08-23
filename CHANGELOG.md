@@ -22,8 +22,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   AES-128-GCM suites (net/http refuses to serve TLS with such an override
   whether or not HTTP/2 is enabled, so the listener would bind and never
   answer a handshake), and an RSA-only suite list under a 1.2 cap on a
-  listener whose sources are all ACME, whose certificates are always
-  ECDSA. The policy is applied where every listener's `tls.Config` is
+  listener with a pinned HTTP-01/DNS-01 source — the in-tree manager's
+  keys are always ECDSA P-256 and the SNI router never falls back past a
+  matching source, so no static fallback rescues those domains. The same
+  policy over automatic sources is lint rule `TLS004`, a warning rather
+  than an error: autocert picks each leaf's key type from the ClientHello,
+  so only clients without ECDSA support get servable RSA certificates, and
+  an advertised TLS-ALPN-01 challenge certificate (ECDSA P-256) fails
+  validation. The policy is applied where every listener's `tls.Config` is
   built, so the TCP and QUIC listeners share it, and the resolved schema
   gains `Listener.TLSPolicy` carrying the normalised form (`"1.2"`/`"1.3"`
   and IANA suite names in declaration order) for the JSON export.

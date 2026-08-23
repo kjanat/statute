@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -138,10 +139,13 @@ var tls12CipherSuites = []CipherSuite{
 }
 
 // tls12ECDSACipherSuites is the ECDHE_ECDSA subset of tls12CipherSuites —
-// the suites an ECDSA certificate can serve under TLS 1.2. Every ACME path
-// in this package produces ECDSA P-256 keys (the in-tree manager and
-// autocert both), so on an all-ACME listener these are the only suites
-// that can ever complete a 1.2 handshake.
+// the suites an ECDSA certificate can serve under TLS 1.2. The in-tree
+// ACME manager behind pinned HTTP-01/DNS-01 sources generates ECDSA P-256
+// keys without exception, so for a pinned source's domains these are the
+// only suites that can ever complete a 1.2 handshake. autocert
+// (ChallengeAuto) is different: it picks each leaf's key type from the
+// ClientHello — ECDSA P-256 unless the client advertises no ECDSA support,
+// RSA-2048 then.
 var tls12ECDSACipherSuites = []CipherSuite{
 	TLSECDHEECDSAWithAES128GCM,
 	TLSECDHEECDSAWithAES256GCM,
@@ -160,14 +164,20 @@ var cipherSuiteIDByName = func() map[string]uint16 {
 	return m
 }()
 
+// Resolved-schema names for the two versions a policy can express.
+const (
+	tlsVersionName12 = "1.2"
+	tlsVersionName13 = "1.3"
+)
+
 // tlsVersionName normalises a surface version to its resolved-schema form.
 // The zero value normalises to the empty string, meaning "unset".
 func tlsVersionName(v TLSVersion) string {
 	switch v {
 	case TLS12:
-		return "1.2"
+		return tlsVersionName12
 	case TLS13:
-		return "1.3"
+		return tlsVersionName13
 	default:
 		return ""
 	}
@@ -178,9 +188,9 @@ func tlsVersionName(v TLSVersion) string {
 // name the schema does not define, so callers leave the field alone.
 func tlsVersionID(name string) (uint16, bool) {
 	switch name {
-	case "1.2":
+	case tlsVersionName12:
 		return tls.VersionTLS12, true
-	case "1.3":
+	case tlsVersionName13:
 		return tls.VersionTLS13, true
 	default:
 		return 0, false
@@ -301,21 +311,50 @@ func validateTLSPolicyRequiredSuite(p TLSPolicy) error {
 	return errors.New("tls_policy: cipher_suites must include statute.TLSECDHEECDSAWithAES128GCM or statute.TLSECDHERSAWithAES128GCM; net/http refuses to serve TLS with a suite override that omits both, even with HTTP/2 disabled")
 }
 
-// validateTLSPolicyCertCompat rejects an RSA-only suite list on a listener
-// whose certificates are certain to be ECDSA: both ACME paths generate
-// ECDSA P-256 keys, and an ECDHE_RSA suite needs an RSA certificate to
-// sign the key exchange, so with TLS 1.3 capped away no handshake could
-// ever succeed. A static source may well hold an RSA certificate — resolve
-// does not read the file — so its presence clears the check.
+// validateTLSPolicyCertCompat rejects an RSA-only suite list that would
+// leave a pinned source's domains unservable. The judgement is per source,
+// not per listener: the SNI router picks the source that matches the name
+// and never falls back past it, so no other certificate on the listener —
+// static fallback included — can rescue a source whose own certificate the
+// policy cannot authenticate. The in-tree ACME manager behind every
+// pinned HTTP-01/DNS-01 source generates ECDSA P-256 keys without
+// exception, and an ECDHE_RSA suite needs an RSA certificate to sign the
+// key exchange, so with TLS 1.3 capped away those domains are provably
+// dead.
+//
+// ChallengeAuto sources are lint rule TLS004's territory instead of a
+// resolve error: autocert picks each leaf's key type from the ClientHello,
+// so their fate depends on the client population, not the config alone.
+// Static sources are never judged — resolve does not read the files, and
+// an RSA key pair serves an RSA-only policy fine.
 func validateTLSPolicyCertCompat(p TLSPolicy, rl *resolved.Listener) error {
-	if p.MaxVersion != TLS12 || len(p.CipherSuites) == 0 ||
-		len(rl.AutoTLSSources) == 0 || len(rl.StaticTLSSources) > 0 {
+	if p.MaxVersion != TLS12 || len(p.CipherSuites) == 0 || tlsPolicyHasECDSASuite(p.CipherSuites) {
 		return nil
 	}
-	for _, cs := range p.CipherSuites {
+	for _, a := range rl.AutoTLSSources {
+		if a.Challenge == resolved.ChallengeAuto {
+			continue
+		}
+		return fmt.Errorf("tls_policy: %s is pinned to %s and the in-tree ACME manager always generates ECDSA P-256 certificate keys, but max_version 1.2 with an RSA-only cipher_suites list cannot authenticate an ECDSA certificate, and the SNI router never falls back past the source that matched the name; add an ECDHE-ECDSA suite or lift max_version", strings.Join(a.Domains, ", "), acmeChallengeLabel(a))
+	}
+	return nil
+}
+
+// tlsPolicyHasECDSASuite reports whether the list holds at least one suite
+// an ECDSA certificate can serve.
+func tlsPolicyHasECDSASuite(suites []CipherSuite) bool {
+	for _, cs := range suites {
 		if slices.Contains(tls12ECDSACipherSuites, cs) {
-			return nil
+			return true
 		}
 	}
-	return errors.New("tls_policy: every TLS source on this listener is ACME-issued and therefore ECDSA, but max_version 1.2 with an RSA-only cipher_suites list leaves no handshake an ECDSA certificate can complete; add an ECDHE-ECDSA suite or lift max_version")
+	return false
+}
+
+// acmeChallengeLabel names a pinned source's challenge for error messages.
+func acmeChallengeLabel(a *resolved.AutoTLS) string {
+	if a.Challenge == resolved.ChallengeDNS01 {
+		return "DNS-01"
+	}
+	return "HTTP-01"
 }

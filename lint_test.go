@@ -253,3 +253,107 @@ func assertTLS003(t *testing.T, findings []Finding, wantPath string) {
 		t.Errorf("message does not name the domain: %s", f.Message)
 	}
 }
+
+// TestLint_TLS004RSAOnlyAutocert — a TLS 1.2-capped, RSA-only suite policy
+// on a listener with automatic ACME sources is a warning, not a resolve
+// error: autocert issues RSA leaves to clients without ECDSA support, so
+// the listener works for exactly that population. The finding mentions
+// the TLS-ALPN-01 hazard only where the listener advertises acme-tls/1.
+func TestLint_TLS004RSAOnlyAutocert(t *testing.T) {
+	t.Parallel()
+	rsaOnly := TLSPolicy{
+		MaxVersion:   TLS12,
+		CipherSuites: []CipherSuite{TLSECDHERSAWithAES128GCM},
+	}
+	auto := func() *AutoTLSConfig {
+		return AutoTLS("legacy.example").Email("ops@example.com").Storage("/var/lib/a")
+	}
+	cases := []struct {
+		name     string
+		cfg      Config
+		wantPath string // empty means the rule must not fire
+		wantALPN bool   // finding mentions the TLS-ALPN-01 challenge cert
+	}{
+		{
+			"RSA-only cap on an automatic source",
+			acmeLintConfig(HTTPS(":443", auto(), rsaOnly)),
+			"listeners[0].tls_policy",
+			true,
+		},
+		{
+			// Cloudflare's edge terminates acme-tls/1, so the challenge
+			// hazard disappears — the per-client leaf hazard stays.
+			"behind Cloudflare the ALPN clause drops",
+			acmeLintConfig(HTTPS(":443", auto(), rsaOnly, BehindCloudflare())),
+			"listeners[0].tls_policy",
+			false,
+		},
+		{
+			"an ECDSA suite silences the rule",
+			acmeLintConfig(HTTPS(":443", auto(), TLSPolicy{
+				MaxVersion: TLS12,
+				CipherSuites: []CipherSuite{
+					TLSECDHERSAWithAES128GCM,
+					TLSECDHEECDSAWithAES128GCM,
+				},
+			})),
+			"",
+			false,
+		},
+		{
+			"an uncapped policy silences the rule",
+			acmeLintConfig(HTTPS(":443", auto(), TLSPolicy{
+				CipherSuites: []CipherSuite{TLSECDHERSAWithAES128GCM},
+			})),
+			"",
+			false,
+		},
+		{
+			"static sources are not judged",
+			acmeLintConfig(HTTPS(":443", StaticTLS("cert.pem", "key.pem"), rsaOnly)),
+			"",
+			false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := Lint(c.cfg)
+			if err != nil {
+				t.Fatalf("Lint: %v", err)
+			}
+			assertTLS004(t, findings, c.wantPath, c.wantALPN)
+		})
+	}
+}
+
+// assertTLS004 checks the TLS004 findings: exactly one at wantPath whose
+// ALPN mention matches wantALPN, or none at all when wantPath is empty.
+func assertTLS004(t *testing.T, findings []Finding, wantPath string, wantALPN bool) {
+	t.Helper()
+	var hits []Finding
+	for _, f := range findings {
+		if f.Code == "TLS004" {
+			hits = append(hits, f)
+		}
+	}
+	if wantPath == "" {
+		if len(hits) != 0 {
+			t.Fatalf("TLS004 must not fire here; got %v", hits)
+		}
+		return
+	}
+	if len(hits) != 1 {
+		t.Fatalf("TLS004: got %d findings, want 1: %v", len(hits), hits)
+	}
+	f := hits[0]
+	if f.Severity != SeverityWarning {
+		t.Errorf("severity: got %q, want %q", f.Severity, SeverityWarning)
+	}
+	if f.Path != wantPath {
+		t.Errorf("path: got %q, want %q", f.Path, wantPath)
+	}
+	if got := strings.Contains(f.Message, "TLS-ALPN-01"); got != wantALPN {
+		t.Errorf("ALPN mention: got %v, want %v: %s", got, wantALPN, f.Message)
+	}
+}

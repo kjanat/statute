@@ -164,15 +164,20 @@ func TestResolveTLSPolicyErrors(t *testing.T) {
 			"must include statute.TLSECDHEECDSAWithAES128GCM",
 		},
 		{
-			"RSA-only suites on an all-ACME listener under a 1.2 cap",
-			tlsRouterConfig(
-				AutoTLS("foo.example.test").Email("ops@example.test").Storage("/var/lib/statute/acme"),
+			// The static fallback cannot rescue the pinned source's
+			// domain: the router picks the matching source and never
+			// falls back past it, so this must fail despite the RSA
+			// fallback certificate plausibly serving the policy fine.
+			"RSA-only suites cannot serve a pinned source's domains",
+			withPlainHTTP(tlsRouterConfig(
+				AutoTLS("foo.example.test").HTTP01().Email("ops@example.test").Storage("/var/lib/statute/acme"),
+				StaticTLS("cert.pem", "key.pem"),
 				TLSPolicy{
 					MaxVersion:   TLS12,
 					CipherSuites: []CipherSuite{TLSECDHERSAWithAES128GCM},
 				},
-			),
-			"no handshake an ECDSA certificate can complete",
+			)),
+			"never falls back past the source",
 		},
 		{
 			"policy on a redirect-only listener",
@@ -210,8 +215,10 @@ func TestResolveTLSPolicyErrors(t *testing.T) {
 // rejections that must stay legal: CBC suites riding alongside the
 // required AES-128-GCM one (h2 on and capped at 1.2 — h2 never negotiates
 // the CBC entry, but TLS 1.2 HTTP/1.1 clients can), an RSA-only list
-// rescued by TLS 1.3 staying available, and an RSA-only capped list on a
-// listener whose static source may well hold an RSA certificate.
+// rescued by TLS 1.3 staying available, an RSA-only capped list on
+// automatic sources (autocert issues RSA to RSA-only clients — lint rule
+// TLS004's territory, not resolve's), and one on static sources, whose
+// key type resolve cannot know.
 func TestResolveTLSPolicyLegalShapes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -240,9 +247,19 @@ func TestResolveTLSPolicyLegalShapes(t *testing.T) {
 			),
 		},
 		{
-			"RSA-only capped list with a static source present",
+			"RSA-only capped list on automatic sources",
 			tlsRouterConfig(
 				AutoTLS("foo.example.test").Email("ops@example.test").Storage("/var/lib/statute/acme"),
+				StaticTLS("cert.pem", "key.pem"),
+				TLSPolicy{
+					MaxVersion:   TLS12,
+					CipherSuites: []CipherSuite{TLSECDHERSAWithAES128GCM},
+				},
+			),
+		},
+		{
+			"RSA-only capped list on static sources",
+			tlsRouterConfig(
 				StaticTLS("cert.pem", "key.pem"),
 				TLSPolicy{
 					MaxVersion:   TLS12,

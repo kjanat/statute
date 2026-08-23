@@ -70,6 +70,7 @@ var lintRules = []func(*resolved.Config) []Finding{
 	ruleBasicAuthOverHTTP,
 	ruleGracePeriod,
 	ruleDuplicateACMEOrders,
+	ruleRSAOnlySuitesWithAutocert,
 }
 
 func ruleReadHeaderTimeout(c *resolved.Config) []Finding {
@@ -279,4 +280,62 @@ func duplicateACMEOrderFinding(domain string, listener, source int) Finding {
 		),
 		Path: fmt.Sprintf("listeners[%d].auto_tls[%d]", listener, source),
 	}
+}
+
+// ruleRSAOnlySuitesWithAutocert warns when a TLS 1.2-capped, RSA-only
+// cipher-suite policy governs a listener with automatic ACME sources.
+// autocert picks each certificate's key type from the ClientHello — ECDSA
+// P-256 unless the client advertises no ECDSA support — so every
+// ECDSA-capable client is handed a certificate the policy cannot
+// authenticate, and only legacy RSA-only clients connect. Where the
+// listener advertises acme-tls/1, the TLS-ALPN-01 challenge certificate
+// is ECDSA P-256 as well, so validations through this listener's
+// handshake fail too. This stays a warning rather than a resolve error
+// because the outcome depends on the client population and the certificate
+// cache, not on the config alone; a pinned source under the same policy is
+// a resolve error, since its keys are always ECDSA.
+func ruleRSAOnlySuitesWithAutocert(c *resolved.Config) []Finding {
+	var out []Finding
+	for i, l := range c.Listeners {
+		if !rsaOnlyTLS12Policy(l.TLSPolicy) || !hasAutomaticACMESource(l) {
+			continue
+		}
+		msg := "TLS policy caps at 1.2 with RSA-only cipher suites, but autocert issues ECDSA certificates to every client that supports them; only legacy RSA-only clients can connect."
+		if !l.BehindCloudflare {
+			msg += " The TLS-ALPN-01 challenge certificate is ECDSA too, so ACME validations through this listener will fail."
+		}
+		msg += " Add an ECDHE-ECDSA suite or lift the version cap."
+		out = append(out, Finding{
+			Severity: SeverityWarning,
+			Code:     "TLS004",
+			Message:  msg,
+			Path:     fmt.Sprintf("listeners[%d].tls_policy", i),
+		})
+	}
+	return out
+}
+
+// rsaOnlyTLS12Policy reports whether the policy caps at TLS 1.2 with a
+// suite list an ECDSA certificate cannot serve.
+func rsaOnlyTLS12Policy(p *resolved.TLSPolicy) bool {
+	if p == nil || p.MaxVersion != tlsVersionName12 || len(p.CipherSuites) == 0 {
+		return false
+	}
+	for _, name := range p.CipherSuites {
+		if strings.HasPrefix(name, "TLS_ECDHE_ECDSA_") {
+			return false
+		}
+	}
+	return true
+}
+
+// hasAutomaticACMESource reports whether the listener holds at least one
+// ChallengeAuto source (the ones served by the shared autocert manager).
+func hasAutomaticACMESource(l *resolved.Listener) bool {
+	for _, a := range l.AutoTLSSources {
+		if a.Challenge == resolved.ChallengeAuto {
+			return true
+		}
+	}
+	return false
 }
