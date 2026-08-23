@@ -418,24 +418,66 @@ func TestExtractTraefikUnsupportedRuleSkipsRouter(t *testing.T) {
 	}
 }
 
-func TestExtractTraefikMiddlewareWarns(t *testing.T) {
+func TestExtractTraefikMiddlewares(t *testing.T) {
 	c := webContainer(map[string]string{
 		"traefik.enable":                       "true",
 		"traefik.http.routers.web.rule":        "Host(`a.example.com`)",
 		"traefik.http.routers.web.middlewares": "auth@docker",
 	})
 	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(warns) != 0 {
+		t.Fatalf("warns = %v", warns)
+	}
 	if len(svcs) != 1 {
 		t.Fatalf("router with middlewares label was dropped: %+v", svcs)
 	}
+	if want := []string{"auth@docker"}; !reflect.DeepEqual(svcs[0].Middlewares, want) {
+		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	}
+}
+
+func TestExtractTraefikMiddlewaresMultiple(t *testing.T) {
+	// Whitespace is trimmed, empty fragments dropped, label order kept.
+	c := webContainer(map[string]string{
+		"traefik.enable":                       "true",
+		"traefik.http.routers.web.rule":        "Host(`a.example.com`)",
+		"traefik.http.routers.web.middlewares": " auth@file , ratelimit@docker,,",
+	})
+	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(warns) != 0 {
+		t.Fatalf("warns = %v", warns)
+	}
+	want := []string{"auth@file", "ratelimit@docker"}
+	if !reflect.DeepEqual(svcs[0].Middlewares, want) {
+		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	}
+}
+
+func TestExtractTraefikSharedServiceMiddlewareUnion(t *testing.T) {
+	// Two routers bind the sole service but disagree on middlewares: the
+	// service carries the union, with a warning about the difference.
+	c := webContainer(map[string]string{
+		"traefik.enable":                                     "true",
+		"traefik.http.routers.a.rule":                        "Host(`a.example.com`)",
+		"traefik.http.routers.a.middlewares":                 "auth@file",
+		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
+		"traefik.http.services.web.loadbalancer.server.port": "8080",
+	})
+	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(svcs) != 1 {
+		t.Fatalf("got %d services: %+v", len(svcs), svcs)
+	}
+	if want := []string{"auth@file"}; !reflect.DeepEqual(svcs[0].Middlewares, want) {
+		t.Errorf("Middlewares = %+v, want %+v", svcs[0].Middlewares, want)
+	}
 	found := false
 	for _, w := range warns {
-		if strings.Contains(w, "middlewares are not supported") {
+		if strings.Contains(w, "different middlewares") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("no middleware warning: %v", warns)
+		t.Errorf("no union warning: %v", warns)
 	}
 }
 

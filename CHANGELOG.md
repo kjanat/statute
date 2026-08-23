@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Docker label middleware mapping: `Docker().Middleware(name, mw...)`
+  registers a named, code-owned middleware chain that container labels may
+  reference, and `Docker().DefaultMiddleware(mw...)` declares a chain
+  applied to every Docker-discovered route, outermost. A
+  `traefik.http.routers.<r>.middlewares` label — previously warned about
+  and ignored — now resolves its comma-separated names against the
+  registry, matching the registered name verbatim (`@provider` suffix
+  included), so containers already labeled for Traefik migrate without
+  edits while labels stay unable to define middleware of their own. Per
+  route the chain runs defaults first, then label-referenced chains in
+  label order, then the `statute.timeout` / `statute.ratelimit` /
+  `statute.compress` hints. An unregistered name is dropped with a warning
+  while the router keeps routing, and routers sharing one service but
+  disagreeing on `middlewares` get the union of their references on all
+  the service's routes, warned, rather than silently losing a chain. Both
+  chains resolve at startup through the standard middleware resolver, and
+  the resolved schema carries them as `Docker.Middleware` and
+  `Docker.DefaultMiddleware`.
+
 - Path rewrite middleware: four primitives transform the request path
   before it is proxied or served. `StripPrefix(prefix)` removes a prefix,
   `AddPrefix(prefix)` prepends one, `ReplacePath(path)` substitutes a fixed

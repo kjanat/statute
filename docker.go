@@ -34,6 +34,7 @@ package statute
 //	traefik.enable=true
 //	traefik.http.routers.<r>.rule=Host(`app.example.com`) && PathPrefix(`/api`)
 //	traefik.http.routers.<r>.service=api
+//	traefik.http.routers.<r>.middlewares=edge-security@file  # names registered via Middleware
 //	traefik.http.services.<s>.loadbalancer.server.port=8080
 //	traefik.http.services.<s>.loadbalancer.server.scheme=https
 //	traefik.http.services.<s>.loadbalancer.healthcheck.path / .interval / .timeout
@@ -42,15 +43,17 @@ package statute
 // Rules support Host, Path, and PathPrefix combined with '&&', '||', and
 // parentheses. Routers using unsupported matchers (HostRegexp, Header,
 // Query, negation, …) are skipped with a logged warning rather than
-// mis-routed. Traefik middleware references are ignored with a warning;
-// attach statute.timeout / statute.ratelimit / statute.compress labels
-// instead.
+// mis-routed. Traefik middleware references resolve against the code-owned
+// registry declared with Middleware; unregistered names are dropped with a
+// warning.
 type DockerConfig struct {
-	endpoint         string
-	network          string
-	exposedByDefault bool
-	traefikLabels    bool
-	refresh          string
+	endpoint          string
+	network           string
+	exposedByDefault  bool
+	traefikLabels     bool
+	refresh           string
+	middleware        map[string][]Middleware
+	defaultMiddleware []Middleware
 }
 
 // Docker begins a Docker provider declaration with the default endpoint
@@ -96,5 +99,27 @@ func (d *DockerConfig) TraefikLabels() *DockerConfig {
 // the provider already re-lists whenever the event stream reconnects.
 func (d *DockerConfig) Refresh(interval string) *DockerConfig {
 	d.refresh = interval
+	return d
+}
+
+// Middleware registers a named, code-owned middleware chain that container
+// labels may reference — a traefik.http.routers.<r>.middlewares entry
+// naming it verbatim attaches the chain to that router's routes. The
+// mapping keeps the config-as-code trust boundary: labels can only select
+// policies compiled into the binary, never define new ones. Registering
+// the same name again replaces the earlier chain.
+func (d *DockerConfig) Middleware(name string, mws ...Middleware) *DockerConfig {
+	if d.middleware == nil {
+		d.middleware = map[string][]Middleware{}
+	}
+	d.middleware[name] = mws
+	return d
+}
+
+// DefaultMiddleware appends middleware applied to every Docker-discovered
+// route, outermost — before any label-referenced chains and the
+// statute.timeout / statute.ratelimit / statute.compress hints.
+func (d *DockerConfig) DefaultMiddleware(mws ...Middleware) *DockerConfig {
+	d.defaultMiddleware = append(d.defaultMiddleware, mws...)
 	return d
 }

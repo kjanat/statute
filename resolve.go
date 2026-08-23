@@ -3,6 +3,7 @@ package statute
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
@@ -385,13 +386,41 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 	if err != nil {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
+	registry, defaults, err := resolveDockerMiddleware(d)
+	if err != nil {
+		return nil, err
+	}
 	return &resolved.Docker{
-		Endpoint:         endpoint,
-		Network:          d.network,
-		ExposedByDefault: d.exposedByDefault,
-		TraefikLabels:    d.traefikLabels,
-		Refresh:          refresh,
+		Endpoint:          endpoint,
+		Network:           d.network,
+		ExposedByDefault:  d.exposedByDefault,
+		TraefikLabels:     d.traefikLabels,
+		Refresh:           refresh,
+		Middleware:        registry,
+		DefaultMiddleware: defaults,
 	}, nil
+}
+
+// resolveDockerMiddleware resolves the code-owned registry of named
+// middleware chains and the provider-wide default chain. Both stay nil
+// when undeclared.
+func resolveDockerMiddleware(d *DockerConfig) (map[string][]resolved.Middleware, []resolved.Middleware, error) {
+	var registry map[string][]resolved.Middleware
+	for _, name := range slices.Sorted(maps.Keys(d.middleware)) {
+		mws, err := resolveMiddlewares(d.middleware[name])
+		if err != nil {
+			return nil, nil, fmt.Errorf("middleware %q: %w", name, err)
+		}
+		if registry == nil {
+			registry = make(map[string][]resolved.Middleware, len(d.middleware))
+		}
+		registry[name] = mws
+	}
+	defaults, err := resolveMiddlewares(d.defaultMiddleware)
+	if err != nil {
+		return nil, nil, fmt.Errorf("default middleware: %w", err)
+	}
+	return registry, defaults, nil
 }
 
 func resolveListener(l *Listener) (*resolved.Listener, error) {

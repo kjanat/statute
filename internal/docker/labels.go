@@ -44,6 +44,11 @@ type Service struct {
 	Timeout   string
 	RateLimit string
 	Compress  string
+
+	// Middlewares are names of code-registered middleware chains referenced
+	// by the container's labels (traefik router middlewares), in label
+	// order. Resolution against the registry happens in the provider.
+	Middlewares []string
 }
 
 // Backend is one container's contribution to a service pool.
@@ -390,9 +395,10 @@ func namedRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 
 // traefikRouter accumulates traefik.http.routers.<name>.* labels.
 type traefikRouter struct {
-	name    string
-	rule    string
-	service string
+	name        string
+	rule        string
+	service     string
+	middlewares string
 }
 
 // traefikService accumulates traefik.http.services.<name>.loadbalancer.*.
@@ -443,10 +449,8 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []string) {
 		if svc == nil {
 			continue
 		}
-		if existing, ok := out[svc.Name]; ok {
-			existing.Routes = append(existing.Routes, svc.Routes...)
-		} else {
-			out[svc.Name] = svc
+		if w := mergeTraefikService(c, out, svc); w != "" {
+			warns = append(warns, w)
 		}
 	}
 	var list []Service
@@ -497,7 +501,7 @@ func traefikRouterLabel(c Container, routers map[string]*traefikRouter, k, v str
 		// Entrypoints and TLS are listener-level concerns in statute;
 		// harmless to ignore.
 	case "middlewares":
-		return []string{fmt.Sprintf("container %s: router %q: traefik middlewares are not supported, ignoring %q (use statute.timeout / statute.ratelimit / statute.compress labels)", c.Name, name, v)}
+		r.middlewares = v
 	default:
 		return []string{fmt.Sprintf("container %s: router %q: unsupported traefik router option %q ignored", c.Name, name, field)}
 	}
@@ -603,8 +607,60 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		HealthCheckPath:     ts.hcPath,
 		HealthCheckInterval: ts.hcInterval,
 		HealthCheckTimeout:  ts.hcTimeout,
+
+		Middlewares: splitMiddlewareNames(r.middlewares),
 	}
 	return svc, warns
+}
+
+// splitMiddlewareNames parses a comma-separated middlewares label value
+// into names, preserving label order and dropping empty fragments.
+func splitMiddlewareNames(v string) []string {
+	var names []string
+	for n := range strings.SplitSeq(v, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+// mergeTraefikService folds a router's service into out. On a name
+// collision the routes append and — because middleware attaches per
+// service — the middleware references union, which is safer than silently
+// dropping a chain from some of the routes; the returned warning reports
+// when the routers disagreed.
+func mergeTraefikService(c Container, out map[string]*Service, svc *Service) string {
+	existing, ok := out[svc.Name]
+	if !ok {
+		out[svc.Name] = svc
+		return ""
+	}
+	existing.Routes = append(existing.Routes, svc.Routes...)
+	if mergeMiddlewareNames(existing, svc.Middlewares) {
+		return fmt.Sprintf("container %s: routers sharing service %q declare different middlewares, applying the union to all its routes", c.Name, svc.Name)
+	}
+	return ""
+}
+
+// mergeMiddlewareNames folds names into base's middleware references,
+// preserving first-seen order and dropping duplicates. It reports whether
+// the two lists named different sets.
+func mergeMiddlewareNames(base *Service, names []string) bool {
+	seen := map[string]bool{}
+	for _, n := range base.Middlewares {
+		seen[n] = true
+	}
+	differ := len(names) != len(base.Middlewares)
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		base.Middlewares = append(base.Middlewares, n)
+		differ = true
+	}
+	return differ
 }
 
 func sortedKeys[V any](m map[string]V) []string {

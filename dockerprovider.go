@@ -243,14 +243,21 @@ func (p *dockerProvider) warn(warns []string) {
 }
 
 // mergeService folds a same-named registration from another container into
-// base: the backend joins the pool, unseen routes are appended, and pool
-// settings keep base's (first container wins).
+// base: the backend joins the pool, unseen routes and middleware
+// references are appended, and pool settings keep base's (first container
+// wins). Middleware unions rather than first-wins so a chain one
+// container references is never silently absent from the shared routes.
 func mergeService(base *docker.Service, add docker.Service) {
 	base.Extra = append(base.Extra, add.Backend)
 	base.Extra = append(base.Extra, add.Extra...)
 	for _, r := range add.Routes {
 		if !slices.Contains(base.Routes, r) {
 			base.Routes = append(base.Routes, r)
+		}
+	}
+	for _, n := range add.Middlewares {
+		if !slices.Contains(base.Middlewares, n) {
+			base.Middlewares = append(base.Middlewares, n)
 		}
 	}
 }
@@ -311,7 +318,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		next.fingerprints[svc.Name] = fp
 	}
 
-	mws, warns := serviceMiddleware(svc)
+	mws, warns := p.serviceMiddleware(svc)
 	p.warn(warns)
 	handler := wrapMiddleware(mws, ph)
 	for _, m := range svc.Routes {
@@ -368,11 +375,24 @@ func parseStrategy(service, s string) (Strategy, string) {
 	return RoundRobin, fmt.Sprintf("service %q: unknown strategy %q, using %s", service, s, RoundRobin)
 }
 
-// serviceMiddleware builds the route middleware chain from the service's
-// label hints, dropping invalid values with a warning.
-func serviceMiddleware(svc *docker.Service) ([]resolved.Middleware, []string) {
-	var mws []Middleware
+// serviceMiddleware builds the route middleware chain for a service:
+// provider-wide defaults outermost, then the registered chains its labels
+// reference by name, then the label hints. An unregistered name or an
+// invalid hint drops only itself, with a warning.
+func (p *dockerProvider) serviceMiddleware(svc *docker.Service) ([]resolved.Middleware, []string) {
+	var out []resolved.Middleware
 	var warns []string
+	out = append(out, p.cfg.DefaultMiddleware...)
+	for _, name := range svc.Middlewares {
+		chain, ok := p.cfg.Middleware[name]
+		if !ok {
+			warns = append(warns, fmt.Sprintf("service %q: unknown middleware %q, dropping it (register it with Docker().Middleware)", svc.Name, name))
+			continue
+		}
+		out = append(out, chain...)
+	}
+
+	var mws []Middleware
 	if svc.Timeout != "" {
 		mws = append(mws, Timeout(svc.Timeout))
 	}
@@ -388,11 +408,11 @@ func serviceMiddleware(svc *docker.Service) ([]resolved.Middleware, []string) {
 			mws = append(mws, Compress(algos...))
 		}
 	}
-	out, err := resolveMiddlewares(mws)
+	hints, err := resolveMiddlewares(mws)
 	if err != nil {
-		return nil, append(warns, fmt.Sprintf("service %q: %v, dropping label middleware", svc.Name, err))
+		return out, append(warns, fmt.Sprintf("service %q: %v, dropping label middleware", svc.Name, err))
 	}
-	return out, warns
+	return append(out, hints...), warns
 }
 
 // parseCompressAlgos parses a "gzip,br" style label value.
