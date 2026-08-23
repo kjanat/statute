@@ -392,9 +392,14 @@ func TestPathRewriteNoOps(t *testing.T) {
 	if got := withPathRewrite([]resolved.Middleware{{Type: resolved.MWTimeout}}, base); got != http.Handler(base) {
 		t.Error("a chain with no path rewrite should be handed back unwrapped")
 	}
+	// A hand-built resolved config can carry a rewrite Resolve would have
+	// rejected — an uncompilable pattern or a ReplacePath target with a bad
+	// %-escape. Each is skipped rather than fatal, the way mustParsePrefixes
+	// skips an unparseable CIDR, so the path arrives untouched.
 	got := runPathRewrite(t, []resolved.Middleware{
 		{Type: resolved.MWTimeout},
 		{Type: resolved.MWRewritePath, PathPattern: "[", PathReplacement: "/x"},
+		{Type: resolved.MWReplacePath, PathReplacement: "/%zz"},
 	}, "/api/users?q=1")
 	want := observedURL{path: "/api/users", rawQuery: "q=1", requestURI: "/api/users?q=1"}
 	if got != want {
