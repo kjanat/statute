@@ -241,14 +241,11 @@ func TestFlushIntervalStreamsThroughWrapperChain(t *testing.T) {
 			t.Errorf("Shutdown: %v", err)
 		}
 	}()
-	// LIFO: unblock the backend handler before Shutdown drains, or a
-	// failed assertion leaves Shutdown waiting on the held response.
+	// Runs before the Shutdown defer (LIFO) so the drain never waits on release.
 	defer releaseOnce()
 	waitForListen(t, addr)
 
-	// Headers only leave the front server on a flush; a bounded
-	// header timeout turns a broken flush path into a clean failure
-	// instead of a test-binary deadline panic.
+	// A broken flush path stalls before headers; fail fast, not by panic.
 	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 5 * time.Second}}
 	t.Cleanup(client.CloseIdleConnections)
 	resp, err := client.Get("http://" + addr + "/stream")
