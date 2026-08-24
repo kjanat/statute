@@ -390,9 +390,10 @@ func namedRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 
 // traefikRouter accumulates traefik.http.routers.<name>.* labels.
 type traefikRouter struct {
-	name    string
-	rule    string
-	service string
+	name        string
+	rule        string
+	service     string
+	middlewares string
 }
 
 // traefikService accumulates traefik.http.services.<name>.loadbalancer.*.
@@ -497,7 +498,7 @@ func traefikRouterLabel(c Container, routers map[string]*traefikRouter, k, v str
 		// Entrypoints and TLS are listener-level concerns in statute;
 		// harmless to ignore.
 	case "middlewares":
-		return []string{fmt.Sprintf("container %s: router %q: traefik middlewares are not supported, ignoring %q (use statute.timeout / statute.ratelimit / statute.compress labels)", c.Name, name, v)}
+		r.middlewares = v
 	default:
 		return []string{fmt.Sprintf("container %s: router %q: unsupported traefik router option %q ignored", c.Name, name, field)}
 	}
@@ -565,6 +566,7 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, skipping", c.Name, r.name, err))
 		return nil, warns
 	}
+	stampMiddlewares(matchers, r.middlewares)
 
 	svcName, warn := traefikServiceName(c, r, serviceNames)
 	if warn != "" {
@@ -605,6 +607,32 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		HealthCheckTimeout:  ts.hcTimeout,
 	}
 	return svc, warns
+}
+
+// stampMiddlewares copies a router's middleware references onto each
+// matcher its rule expanded to. References are router-scoped, as in
+// Traefik: they ride on the router's matchers, not the service, so
+// routers sharing a pool keep their own chains.
+func stampMiddlewares(matchers []Matcher, middlewares string) {
+	names := splitMiddlewareNames(middlewares)
+	if names == nil {
+		return
+	}
+	for i := range matchers {
+		matchers[i].Middlewares = names
+	}
+}
+
+// splitMiddlewareNames parses a comma-separated middlewares label value
+// into names, preserving label order and dropping empty fragments.
+func splitMiddlewareNames(v string) []string {
+	var names []string
+	for n := range strings.SplitSeq(v, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			names = append(names, n)
+		}
+	}
+	return names
 }
 
 func sortedKeys[V any](m map[string]V) []string {

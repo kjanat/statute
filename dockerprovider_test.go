@@ -311,6 +311,239 @@ func TestDockerLabelMiddleware(t *testing.T) {
 	}
 }
 
+func TestDockerMiddlewareRegistry(t *testing.T) {
+	cfg, err := resolveDocker(Docker().TraefikLabels().
+		Middleware("auth@file", RateLimit("10/s")).
+		DefaultMiddleware(Timeout("5s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{
+		name: "legacy", ip: "10.0.0.9", port: 3000,
+		labels: map[string]string{
+			"traefik.enable":                       "true",
+			"traefik.http.routers.app.rule":        "Host(`legacy.example.com`)",
+			"traefik.http.routers.app.middlewares": "auth@file",
+		},
+	}})
+	mustSync(t, p)
+	mws := srv.dynamic.Load().routes[0].route.Middleware
+	if len(mws) != 2 {
+		t.Fatalf("middleware = %+v", mws)
+	}
+	// The provider default runs outermost, then the label-referenced chain.
+	if mws[0].Type != resolved.MWTimeout || mws[1].Type != resolved.MWRateLimit {
+		t.Errorf("middleware order/types = %+v", mws)
+	}
+}
+
+func TestDockerDefaultMiddlewareOnNativeRoutes(t *testing.T) {
+	cfg, err := resolveDocker(Docker().DefaultMiddleware(Timeout("5s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{
+		name: "web-1", ip: "10.0.0.1", port: 80,
+		labels: map[string]string{
+			"statute.enable":    "true",
+			"statute.ratelimit": "10/s",
+		},
+	}})
+	mustSync(t, p)
+	mws := srv.dynamic.Load().routes[0].route.Middleware
+	if len(mws) != 2 {
+		t.Fatalf("middleware = %+v", mws)
+	}
+	// Default first, label hints after.
+	if mws[0].Type != resolved.MWTimeout || mws[1].Type != resolved.MWRateLimit {
+		t.Errorf("middleware order/types = %+v", mws)
+	}
+}
+
+func TestDockerRouterScopedMiddleware(t *testing.T) {
+	// Two routers share one service: each derived route carries only its
+	// own router's chain while both dispatch to the same pool handler.
+	cfg, err := resolveDocker(Docker().TraefikLabels().
+		Middleware("auth@file", RateLimit("10/s")).
+		Middleware("slow@file", Timeout("5s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{
+		name: "app-1", ip: "10.0.0.1", port: 3000,
+		labels: map[string]string{
+			"traefik.enable":                          "true",
+			"traefik.http.routers.public.rule":        "Host(`public.example.com`)",
+			"traefik.http.routers.public.service":     "app",
+			"traefik.http.routers.public.middlewares": "slow@file",
+			"traefik.http.routers.admin.rule":         "Host(`admin.example.com`)",
+			"traefik.http.routers.admin.service":      "app",
+			"traefik.http.routers.admin.middlewares":  "auth@file",
+		},
+	}})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 2 || len(tab.pools) != 1 {
+		t.Fatalf("routes/pools = %+v / %+v", tab.routes, tab.pools)
+	}
+	byHost := map[string]*resolved.Route{}
+	for _, r := range tab.routes {
+		byHost[r.route.Host] = r.route
+	}
+	adm, pub := byHost["admin.example.com"], byHost["public.example.com"]
+	if len(adm.Middleware) != 1 || adm.Middleware[0].Type != resolved.MWRateLimit {
+		t.Errorf("admin middleware = %+v", adm.Middleware)
+	}
+	if len(pub.Middleware) != 1 || pub.Middleware[0].Type != resolved.MWTimeout {
+		t.Errorf("public middleware = %+v", pub.Middleware)
+	}
+	if adm.Upstream != pub.Upstream {
+		t.Errorf("routers no longer share the pool: %p vs %p", adm.Upstream, pub.Upstream)
+	}
+}
+
+func TestDockerCrossContainerRouteDedup(t *testing.T) {
+	// Replicas registering the same router rule and middleware references
+	// pool together into one route with one chain.
+	cfg, err := resolveDocker(Docker().TraefikLabels().
+		Middleware("auth@file", RateLimit("10/s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := func(router string) map[string]string {
+		return map[string]string{
+			"traefik.enable": "true",
+			"traefik.http.routers." + router + ".rule":        "Host(`app.example.com`)",
+			"traefik.http.routers." + router + ".service":     "app",
+			"traefik.http.routers." + router + ".middlewares": "auth@file",
+		}
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
+		{name: "app-1", ip: "10.0.0.1", port: 3000, labels: labels("r1")},
+		{name: "app-2", ip: "10.0.0.2", port: 3000, labels: labels("r2")},
+	})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 1 {
+		t.Fatalf("routes = %+v", tab.routes)
+	}
+	r := tab.routes[0].route
+	if len(r.Upstream.Backends) != 2 {
+		t.Fatalf("containers did not pool: %+v", r.Upstream.Backends)
+	}
+	if len(r.Middleware) != 1 || r.Middleware[0].Type != resolved.MWRateLimit {
+		t.Errorf("middleware = %+v", r.Middleware)
+	}
+}
+
+func TestDockerCrossContainerDistinctRoutesKept(t *testing.T) {
+	// Containers whose routers share a rule but differ in middleware
+	// references keep separate routes over the shared pool — references
+	// are router-scoped, never collapsed across containers.
+	cfg, err := resolveDocker(Docker().TraefikLabels().
+		Middleware("auth@file", RateLimit("10/s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
+		{
+			name: "app-1", ip: "10.0.0.1", port: 3000,
+			labels: map[string]string{
+				"traefik.enable":                      "true",
+				"traefik.http.routers.r1.rule":        "Host(`app.example.com`)",
+				"traefik.http.routers.r1.service":     "app",
+				"traefik.http.routers.r1.middlewares": "auth@file",
+			},
+		},
+		{
+			name: "app-2", ip: "10.0.0.2", port: 3000,
+			labels: map[string]string{
+				"traefik.enable":                  "true",
+				"traefik.http.routers.r2.rule":    "Host(`app.example.com`)",
+				"traefik.http.routers.r2.service": "app",
+			},
+		},
+	})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 2 || len(tab.pools) != 1 {
+		t.Fatalf("routes/pools = %+v / %+v", tab.routes, tab.pools)
+	}
+	if len(tab.routes[0].route.Upstream.Backends) != 2 {
+		t.Fatalf("containers did not pool: %+v", tab.routes[0].route.Upstream.Backends)
+	}
+}
+
+func TestParseStrategy(t *testing.T) {
+	if st, warn := parseStrategy("svc", ""); st != RoundRobin || warn != "" {
+		t.Errorf("empty: %v %q", st, warn)
+	}
+	if st, warn := parseStrategy("svc", "least_connections"); st != LeastConnections || warn != "" {
+		t.Errorf("least_connections: %v %q", st, warn)
+	}
+	if st, warn := parseStrategy("svc", "bogus"); st != RoundRobin || !strings.Contains(warn, `unknown strategy "bogus"`) {
+		t.Errorf("bogus: %v %q", st, warn)
+	}
+}
+
+func TestDockerUnknownMiddlewareFailsClosed(t *testing.T) {
+	// A router referencing an unregistered middleware must not be served
+	// without it — the admin route is omitted, warned, while the sibling
+	// router on the same service and other containers keep routing.
+	cfg, err := resolveDocker(Docker().TraefikLabels().
+		Middleware("slow@file", Timeout("5s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{
+		name: "app-1", ip: "10.0.0.9", port: 3000,
+		labels: map[string]string{
+			"traefik.enable":                          "true",
+			"traefik.http.routers.public.rule":        "Host(`public.example.com`)",
+			"traefik.http.routers.public.service":     "app",
+			"traefik.http.routers.public.middlewares": "slow@file",
+			"traefik.http.routers.admin.rule":         "Host(`admin.example.com`)",
+			"traefik.http.routers.admin.service":      "app",
+			"traefik.http.routers.admin.middlewares":  "auth@file",
+		},
+	}})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 1 || tab.routes[0].route.Host != "public.example.com" {
+		t.Fatalf("routes = %+v, want only the public route", tab.routes)
+	}
+	if h := findHandler(tab.routes, "admin.example.com", httptest.NewRequest("GET", "http://x/", nil)); h != nil {
+		t.Fatal("unauthenticated admin route was served")
+	}
+	found := false
+	for w := range p.warned {
+		if strings.Contains(w, `unknown middleware "auth@file"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no unknown-middleware warning: %v", p.warned)
+	}
+}
+
+func TestDockerAllRoutesFailClosedSkipsPool(t *testing.T) {
+	// When every route of a service fails closed, no pool handler is
+	// created — nothing health-checks a pool no route can reach.
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
+		name: "app-1", ip: "10.0.0.9", port: 3000,
+		labels: map[string]string{
+			"traefik.enable":                       "true",
+			"traefik.http.routers.app.rule":        "Host(`app.example.com`)",
+			"traefik.http.routers.app.middlewares": "ghost@file",
+		},
+	}})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 0 || len(tab.pools) != 0 {
+		t.Fatalf("routes/pools = %+v / %+v", tab.routes, tab.pools)
+	}
+}
+
 func TestDockerInvalidLabelSkipsServiceNotGeneration(t *testing.T) {
 	p, srv, _ := newFakeProvider(t, &resolved.Docker{}, []fakeDaemonContainer{
 		{
@@ -370,6 +603,48 @@ func TestResolveDockerErrors(t *testing.T) {
 	}
 	if cfg, err := resolveDocker(nil); err != nil || cfg != nil {
 		t.Errorf("nil config: %v %v", cfg, err)
+	}
+}
+
+func TestResolveDockerMiddleware(t *testing.T) {
+	cfg, err := resolveDocker(Docker().
+		Middleware("auth@file", RateLimit("10/s")).
+		Middleware("slow@file", Timeout("30s")).
+		DefaultMiddleware(Timeout("5s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Middleware) != 2 {
+		t.Fatalf("registry = %+v", cfg.Middleware)
+	}
+	if got := cfg.Middleware["auth@file"]; len(got) != 1 || got[0].Type != resolved.MWRateLimit {
+		t.Errorf("auth@file = %+v", got)
+	}
+	if got := cfg.DefaultMiddleware; len(got) != 1 || got[0].Type != resolved.MWTimeout || got[0].Timeout != 5*time.Second {
+		t.Errorf("defaults = %+v", got)
+	}
+}
+
+func TestResolveDockerMiddlewareReregisterReplaces(t *testing.T) {
+	cfg, err := resolveDocker(Docker().
+		Middleware("auth@file", RateLimit("10/s")).
+		Middleware("auth@file", Timeout("30s")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Middleware["auth@file"]; len(got) != 1 || got[0].Type != resolved.MWTimeout {
+		t.Errorf("re-registered auth@file = %+v", got)
+	}
+}
+
+func TestResolveDockerMiddlewareErrors(t *testing.T) {
+	_, err := resolveDocker(Docker().Middleware("bad", Timeout("nope")))
+	if err == nil || !strings.Contains(err.Error(), `middleware "bad"`) {
+		t.Errorf("registry error = %v", err)
+	}
+	_, err = resolveDocker(Docker().DefaultMiddleware(Timeout("nope")))
+	if err == nil || !strings.Contains(err.Error(), "default middleware") {
+		t.Errorf("default-chain error = %v", err)
 	}
 }
 

@@ -170,3 +170,29 @@ func TestParseRuleExpansionCap(t *testing.T) {
 		t.Fatalf("rule at cap failed: %d matchers, err %v", len(got), err)
 	}
 }
+
+func TestMatcherEqual(t *testing.T) {
+	base := Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"auth", "strip"}}
+	cases := []struct {
+		name string
+		m    Matcher
+		want bool
+	}{
+		{"identical", Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"auth", "strip"}}, true},
+		{"different host", Matcher{Host: "b.example.com", Path: "/api/*", Middlewares: []string{"auth", "strip"}}, false},
+		{"different path", Matcher{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth", "strip"}}, false},
+		{"different middlewares", Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"auth"}}, false},
+		// Middleware order is semantic: order-only differences are
+		// different routes, never silently collapsed.
+		{"reordered middlewares", Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"strip", "auth"}}, false},
+	}
+	for _, tc := range cases {
+		if got := base.Equal(tc.m); got != tc.want {
+			t.Errorf("%s: Equal = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	none := Matcher{Path: "/*"}
+	if !none.Equal(Matcher{Path: "/*"}) {
+		t.Error("middleware-less matchers unequal")
+	}
+}

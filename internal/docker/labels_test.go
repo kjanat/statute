@@ -418,24 +418,71 @@ func TestExtractTraefikUnsupportedRuleSkipsRouter(t *testing.T) {
 	}
 }
 
-func TestExtractTraefikMiddlewareWarns(t *testing.T) {
+func TestExtractTraefikMiddlewares(t *testing.T) {
 	c := webContainer(map[string]string{
 		"traefik.enable":                       "true",
 		"traefik.http.routers.web.rule":        "Host(`a.example.com`)",
 		"traefik.http.routers.web.middlewares": "auth@docker",
 	})
 	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(warns) != 0 {
+		t.Fatalf("warns = %v", warns)
+	}
 	if len(svcs) != 1 {
 		t.Fatalf("router with middlewares label was dropped: %+v", svcs)
 	}
-	found := false
-	for _, w := range warns {
-		if strings.Contains(w, "middlewares are not supported") {
-			found = true
+	want := []Matcher{{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@docker"}}}
+	if !reflect.DeepEqual(svcs[0].Routes, want) {
+		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
+	}
+}
+
+func TestExtractTraefikMiddlewaresMultiple(t *testing.T) {
+	// Whitespace is trimmed, empty fragments dropped, label order kept,
+	// and every matcher a rule expands to carries the router's references.
+	c := webContainer(map[string]string{
+		"traefik.enable":                       "true",
+		"traefik.http.routers.web.rule":        "Host(`a.example.com`) || Host(`b.example.com`)",
+		"traefik.http.routers.web.middlewares": " auth@file , ratelimit@docker,,",
+	})
+	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(warns) != 0 {
+		t.Fatalf("warns = %v", warns)
+	}
+	want := []string{"auth@file", "ratelimit@docker"}
+	if len(svcs[0].Routes) != 2 {
+		t.Fatalf("Routes = %+v", svcs[0].Routes)
+	}
+	for _, r := range svcs[0].Routes {
+		if !reflect.DeepEqual(r.Middlewares, want) {
+			t.Errorf("route %s Middlewares = %+v, want %+v", r.Host, r.Middlewares, want)
 		}
 	}
-	if !found {
-		t.Errorf("no middleware warning: %v", warns)
+}
+
+func TestExtractTraefikRouterScopedMiddlewares(t *testing.T) {
+	// Routers sharing one service keep their own middleware references on
+	// their own routes, as in Traefik — nothing leaks across routers.
+	c := webContainer(map[string]string{
+		"traefik.enable":                                     "true",
+		"traefik.http.routers.a.rule":                        "Host(`a.example.com`)",
+		"traefik.http.routers.a.middlewares":                 "auth@file",
+		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
+		"traefik.http.services.web.loadbalancer.server.port": "8080",
+	})
+	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(warns) != 0 {
+		t.Fatalf("warns = %v", warns)
+	}
+	if len(svcs) != 1 {
+		t.Fatalf("got %d services: %+v", len(svcs), svcs)
+	}
+	want := []Matcher{
+		{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@file"}},
+		{Host: "b.example.com", Path: "/*"},
+	}
+	if !reflect.DeepEqual(svcs[0].Routes, want) {
+		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
 }
 

@@ -36,6 +36,14 @@ type Docker struct {
 	TraefikLabels    bool
 	// Refresh is the periodic full-resync interval; zero means events only.
 	Refresh time.Duration
+	// Middleware is the code-owned registry of named middleware chains that
+	// container label references (traefik.http.routers.<r>.middlewares)
+	// resolve against. Labels select these compiled policies by exact name;
+	// they never define middleware of their own.
+	Middleware map[string][]Middleware
+	// DefaultMiddleware is applied to every Docker-discovered route,
+	// outermost — before label-referenced chains and label hints.
+	DefaultMiddleware []Middleware
 }
 
 // Listener is a resolved listener.
