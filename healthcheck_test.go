@@ -132,27 +132,28 @@ func TestHealthCheckStatusesRedirect(t *testing.T) {
 		return b.isHealthy()
 	}
 
-	if probeOnce("/redirect-to-ok", "", []int{200}) {
-		t.Error("Statuses [200] accepted a 302 by following it to a 200")
+	cases := []struct {
+		name     string
+		path     string
+		host     string
+		statuses []int
+		healthy  bool
+		follows  int64
+	}{
+		{"Statuses [200] rejects the 302 without following it", "/redirect-to-ok", "", []int{200}, false, 0},
+		{"Statuses [302] accepts the 302 itself, not the 500 behind it", "/redirect-to-bad", "", []int{302}, true, 0},
+		{"default statuses follow the redirect to the 200", "/redirect-to-ok", "", nil, true, 1},
+		{"Host alone stops following; the 302 passes the default range", "/redirect-to-bad", "probe.example.test", nil, true, 0},
+		{"Host with Statuses [302] accepts without following", "/redirect-to-bad", "probe.example.test", []int{302}, true, 0},
 	}
-	if !probeOnce("/redirect-to-bad", "", []int{302}) {
-		t.Error("Statuses [302] rejected a 302 by following it to a 500")
-	}
-	if !probeOnce("/redirect-to-ok", "", nil) {
-		t.Error("default statuses no longer follow a redirect to a 200")
-	}
-	if got := followed.Load(); got != 1 {
-		t.Errorf("default probe followed the redirect %d time(s), want 1", got)
-	}
-	followed.Store(0)
-	if !probeOnce("/redirect-to-bad", "probe.example.test", nil) {
-		t.Error("probe Host alone rejected a 302 under the default range")
-	}
-	if !probeOnce("/redirect-to-bad", "probe.example.test", []int{302}) {
-		t.Error("probe Host with Statuses [302] rejected a 302")
-	}
-	if got := followed.Load(); got != 0 {
-		t.Errorf("probe with explicit Host followed a redirect %d time(s)", got)
+	for _, tc := range cases {
+		followed.Store(0)
+		if got := probeOnce(tc.path, tc.host, tc.statuses); got != tc.healthy {
+			t.Errorf("%s: healthy = %v, want %v", tc.name, got, tc.healthy)
+		}
+		if got := followed.Load(); got != tc.follows {
+			t.Errorf("%s: followed %d redirect(s), want %d", tc.name, got, tc.follows)
+		}
 	}
 }
 
