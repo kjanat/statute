@@ -3,6 +3,9 @@ package statute
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"statute.kjanat.dev/resolved"
 )
 
 func TestResolveHappyPath(t *testing.T) {
@@ -94,6 +97,133 @@ func TestResolveListenerlessFails(t *testing.T) {
 	_, err := Resolve(cfg)
 	if err == nil {
 		t.Fatal("want error for missing listener")
+	}
+}
+
+// poolConfig wraps one pool in an otherwise-valid Config.
+func poolConfig(p Pool) Config {
+	return Config{
+		Listeners: Listeners{HTTP(":8080")},
+		Upstreams: Upstreams{"api": p},
+		Routes:    Routes{Match("/*").ProxyTo("api")},
+	}
+}
+
+func TestResolveHealthCheckStatuses(t *testing.T) {
+	t.Parallel()
+	okBackends := []Backend{{Address: "127.0.0.1:9001"}}
+
+	r, err := Resolve(poolConfig(Pool{
+		Backends:    okBackends,
+		HealthCheck: HealthCheck{Path: "/h", Statuses: []int{200, 204}},
+	}))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got := r.Upstreams["api"].HealthCheck.Statuses
+	if len(got) != 2 || got[0] != 200 || got[1] != 204 {
+		t.Errorf("resolved Statuses: %v", got)
+	}
+
+	for _, bad := range []int{0, 99, 600, -1} {
+		_, err := Resolve(poolConfig(Pool{
+			Backends:    okBackends,
+			HealthCheck: HealthCheck{Path: "/h", Statuses: []int{200, bad}},
+		}))
+		if err == nil || !strings.Contains(err.Error(), "statuses[1]") {
+			t.Errorf("status %d: got %v, want statuses[1] error", bad, err)
+		}
+	}
+}
+
+// TestResolveProbeFieldsRequirePath — the new probe fields describe active
+// probing, so setting them without a Path is a policy drop and fails
+// Resolve. Passive health is independent of active probing and stays legal
+// with an empty Path.
+func TestResolveProbeFieldsRequirePath(t *testing.T) {
+	t.Parallel()
+	okBackends := []Backend{{Address: "127.0.0.1:9001"}}
+
+	_, err := Resolve(poolConfig(Pool{
+		Backends:    okBackends,
+		HealthCheck: HealthCheck{Host: "api.internal"},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "host: set but path is empty") {
+		t.Errorf("Host without Path: got %v", err)
+	}
+
+	_, err = Resolve(poolConfig(Pool{
+		Backends:    okBackends,
+		HealthCheck: HealthCheck{Statuses: []int{200}},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "statuses: set but path is empty") {
+		t.Errorf("Statuses without Path: got %v", err)
+	}
+
+	r, err := Resolve(poolConfig(Pool{
+		Backends:           okBackends,
+		PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+	}))
+	if err != nil {
+		t.Fatalf("passive without Path: %v", err)
+	}
+	if !r.Upstreams["api"].PassiveHealthCheck.Enabled {
+		t.Error("passive without Path did not resolve enabled")
+	}
+}
+
+func TestResolvePassiveHealthCheck(t *testing.T) {
+	t.Parallel()
+	okBackends := []Backend{{Address: "127.0.0.1:9001"}}
+	resolve := func(p PassiveHealthCheck) (*resolved.PassiveHealthCheck, error) {
+		r, err := Resolve(poolConfig(Pool{Backends: okBackends, PassiveHealthCheck: p}))
+		if err != nil {
+			return nil, err
+		}
+		phc := r.Upstreams["api"].PassiveHealthCheck
+		return &phc, nil
+	}
+
+	phc, err := resolve(PassiveHealthCheck{})
+	if err != nil || phc.Enabled {
+		t.Errorf("zero value: got %+v, %v, want disabled", phc, err)
+	}
+
+	phc, err = resolve(PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3})
+	if err != nil {
+		t.Fatalf("valid: %v", err)
+	}
+	if !phc.Enabled || phc.FailureWindow != 30*time.Second || phc.MaxFailures != 3 {
+		t.Errorf("valid: got %+v", phc)
+	}
+}
+
+// TestResolvePassiveHealthCheckErrors — a half-set or unparsable policy is
+// rejected rather than guessed, under the passive_health_check prefix.
+func TestResolvePassiveHealthCheckErrors(t *testing.T) {
+	t.Parallel()
+	okBackends := []Backend{{Address: "127.0.0.1:9001"}}
+	cases := map[string]struct {
+		cfg  PassiveHealthCheck
+		want string
+	}{
+		"window only":      {PassiveHealthCheck{FailureWindow: "30s"}, "set together"},
+		"failures only":    {PassiveHealthCheck{MaxFailures: 3}, "set together"},
+		"bad window":       {PassiveHealthCheck{FailureWindow: "nope", MaxFailures: 3}, "failure_window:"},
+		"zero window":      {PassiveHealthCheck{FailureWindow: "0s", MaxFailures: 3}, "failure_window:"},
+		"negative counter": {PassiveHealthCheck{FailureWindow: "30s", MaxFailures: -1}, "MaxFailures is negative"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Resolve(poolConfig(Pool{Backends: okBackends, PassiveHealthCheck: tc.cfg}))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want substring %q", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), "passive_health_check") {
+				t.Errorf("error %q lacks the passive_health_check prefix", err)
+			}
+		})
 	}
 }
 

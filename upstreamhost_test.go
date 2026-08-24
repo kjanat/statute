@@ -82,7 +82,7 @@ func TestProbeHostPolicy(t *testing.T) {
 	targetHost := strings.TrimPrefix(backend.URL, "http://")
 	cfg := resolved.HealthCheck{
 		Enabled: true, Path: "/healthz",
-		Interval: time.Hour, Timeout: time.Second,
+		Interval: time.Hour, Timeout: 10 * time.Second,
 		Healthy: 1, Unhealthy: 1,
 	}
 
@@ -111,6 +111,115 @@ func TestProbeHostPolicy(t *testing.T) {
 	}
 	if got := probeOnce("api.internal.example"); got != "api.internal.example" {
 		t.Errorf("explicit probe Host: got %q, want %q", got, "api.internal.example")
+	}
+}
+
+// TestProbeHostPrecedence — one precedence rule for the probe Host:
+// HealthCheck.Host when set, else derived from the pool's UpstreamHost
+// policy exactly as before. Proxied requests follow UpstreamHost in every
+// cell; the override never leaks into proxy traffic.
+func TestProbeHostPrecedence(t *testing.T) {
+	t.Parallel()
+	const probeOverride = "probe.internal.example"
+	cases := []struct {
+		name        string
+		policy      UpstreamHost
+		hcHost      string
+		wantProbe   string // "@target" means the backend's own host
+		wantProxied string
+	}{
+		{"client host, no override", ClientHost, "", "@target", "client.example.com"},
+		{"target host, no override", TargetHost, "", "@target", "@target"},
+		{"explicit host, no override", HostValue("pool.internal.example"), "", "pool.internal.example", "pool.internal.example"},
+		{"client host, override", ClientHost, probeOverride, probeOverride, "client.example.com"},
+		{"target host, override", TargetHost, probeOverride, probeOverride, "@target"},
+		{"explicit host, override", HostValue("pool.internal.example"), probeOverride, probeOverride, "pool.internal.example"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			probeHosts := make(chan string, 4)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/healthz" {
+					probeHosts <- r.Host
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				w.Header().Set("X-Seen-Host", r.Host)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(backend.Close)
+			targetHost := strings.TrimPrefix(backend.URL, "http://")
+			want := func(s string) string {
+				if s == "@target" {
+					return targetHost
+				}
+				return s
+			}
+
+			cfg := hostPoolConfig(backend.URL, c.policy)
+			pool := cfg.Upstreams["api"]
+			pool.HealthCheck = HealthCheck{
+				Path: "/healthz", Interval: "1h", Timeout: "10s",
+				Healthy: 1, Unhealthy: 1,
+				Host: c.hcHost,
+			}
+			cfg.Upstreams["api"] = pool
+			srv, err := newServer(mustResolve(t, cfg))
+			if err != nil {
+				t.Fatalf("newServer: %v", err)
+			}
+			ph := srv.pools["api"]
+			t.Cleanup(ph.transport.CloseIdleConnections)
+
+			run := ph.hc.start()
+			t.Cleanup(run.stop)
+			select {
+			case got := <-probeHosts:
+				if got != want(c.wantProbe) {
+					t.Errorf("probe Host: got %q, want %q", got, want(c.wantProbe))
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("no probe observed")
+			}
+
+			req := httptest.NewRequest("GET", "http://client.example.com/x", nil)
+			rec := runRequest(t, srv.buildRouter(), req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("proxied status: %d", rec.Code)
+			}
+			if got := rec.Header().Get("X-Seen-Host"); got != want(c.wantProxied) {
+				t.Errorf("proxied Host: got %q, want %q", got, want(c.wantProxied))
+			}
+		})
+	}
+}
+
+// TestResolveHealthCheckHostValidation — the probe Host override is a header
+// value bound for the wire and gets exactly HostValue's validation.
+func TestResolveHealthCheckHostValidation(t *testing.T) {
+	t.Parallel()
+	withHost := func(host string) Config {
+		cfg := hostPoolConfig("http://127.0.0.1:9001", ClientHost)
+		pool := cfg.Upstreams["api"]
+		pool.HealthCheck = HealthCheck{Path: "/healthz", Host: host}
+		cfg.Upstreams["api"] = pool
+		return cfg
+	}
+
+	r := mustResolve(t, withHost("api.internal:8443"))
+	if got := r.Upstreams["api"].HealthCheck.Host; got != "api.internal:8443" {
+		t.Errorf("resolved probe Host: got %q", got)
+	}
+
+	for name, bad := range map[string]string{
+		"blank":     "   ",
+		"injection": "evil\r\nX-Injected: yes",
+	} {
+		_, err := Resolve(withHost(bad))
+		if err == nil || !strings.Contains(err.Error(), "health_check") {
+			t.Errorf("%s probe Host: got %v, want health_check error", name, err)
+		}
 	}
 }
 

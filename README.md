@@ -167,6 +167,11 @@ Upstreams: statute.Upstreams{
         HealthCheck: statute.HealthCheck{
             Path: "/healthz", Interval: "10s", Timeout: "2s",
             Healthy: 2, Unhealthy: 3,
+            Host:     "probe.internal.example", // optional probe Host override
+            Statuses: []int{200, 204},          // optional; default accepts 200-399
+        },
+        PassiveHealthCheck: statute.PassiveHealthCheck{
+            FailureWindow: "30s", MaxFailures: 5,
         },
         Transport: statute.Transport{
             MaxIdleConnsPerHost: 32,
@@ -185,9 +190,13 @@ Strategies:
 - `IPHash` — consistent per-client routing for session affinity.
 - `Weighted` — smooth weighted round-robin (Nginx-style).
 
-`UpstreamHost` selects the `Host` header backends receive. The default forwards the client's own `Host` unchanged; `statute.TargetHost` sends each backend its own host (what a plain client dialing it directly would send — hostname-sensitive upstreams that reject the client's `Host` usually want this); `statute.HostValue("api.internal.example")` sends a fixed name. The policy also covers active health-check probes: an explicit value is carried on every probe, and the other policies leave probes on each backend's own host, since a probe has no client `Host` to preserve.
+`UpstreamHost` selects the `Host` header backends receive. The default forwards the client's own `Host` unchanged; `statute.TargetHost` sends each backend its own host (what a plain client dialing it directly would send — hostname-sensitive upstreams that reject the client's `Host` usually want this); `statute.HostValue("api.internal.example")` sends a fixed name. The policy also covers active health-check probes: an explicit value is carried on every probe, and the other policies leave probes on each backend's own host, since a probe has no client `Host` to preserve. `HealthCheck.Host`, when set, overrides the probe `Host` alone — it takes precedence over the derivation above, is validated exactly like `HostValue`, and never touches proxied requests, which keep following `UpstreamHost`.
+
+`HealthCheck.Statuses` narrows (or widens) what a probe accepts as healthy: leave it empty for the default 200–399 range, or list the exact statuses (`[]int{200, 204}` demotes a backend that answers 301). Each entry must be within 100–599. Setting `Host` or `Statuses` stops probes from following redirects, so the health endpoint's own status is what is judged; default probes follow redirects and judge the final response, as before.
 
 The picker filters to healthy primary backends; when no primary is healthy, it falls through to the backup tier; when none of those are healthy either, it goes degraded and tries primaries anyway. Active health checks demote and promote backends in the background based on consecutive success/failure thresholds.
+
+`PassiveHealthCheck` demotes backends from real traffic instead of probes: a backend that accumulates `MaxFailures` failed attempts — a transport error or a 5xx response — inside the sliding `FailureWindow` is excluded from selection. A request canceled by its own client does not count — a client abort is not a backend fault, and counting it would let any client demote backends pool-wide — while a deadline that expires waiting on the backend does. Failures are windowed, not consecutive: a success in between neither clears nor extends the window, and the backend is re-admitted only as failures age out. Counting is per backend attempt, so under a `Retry` middleware every attempt counts against the backend that served it even when the client-visible request succeeds elsewhere. Passive and active health are independent — either works alone, and an active probe success never clears a passive window. Degraded mode is unchanged: when every backend in a pool is demoted — in particular, a single-backend pool whose only backend is passively demoted — the pool keeps sending traffic to its primaries rather than manufacturing 503s, so passive demotion never stops traffic on its own. Both fields must be set together; the zero value disables passive health.
 
 `Transport` tunes the HTTP transport reused across all backends in the pool. The default `MaxIdleConnsPerHost` (32) is a much better default for a proxy than Go's stdlib value (2); leave it alone unless you know why you're changing it.
 

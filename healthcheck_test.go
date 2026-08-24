@@ -1,10 +1,12 @@
 package statute
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +50,110 @@ func TestHealthCheck_RecordTransitions(t *testing.T) {
 	run.recordSuccess(b)
 	if !b.isHealthy() {
 		t.Errorf("backend should be healthy after 2 successes")
+	}
+}
+
+// TestHealthCheckStatuses — configured Statuses replace the 200-399
+// default exactly: a 304 that the default accepts demotes under [200,204],
+// and an empty list keeps today's range.
+func TestHealthCheckStatuses(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(srv.Close)
+
+	probeOnce := func(statuses []int) bool {
+		t.Helper()
+		cfg := resolved.HealthCheck{
+			Enabled: true, Path: "/healthz",
+			Interval: time.Hour, Timeout: 10 * time.Second,
+			Healthy: 1, Unhealthy: 1,
+			Statuses: statuses,
+		}
+		b := &backendState{backend: &resolved.Backend{Address: strings.TrimPrefix(srv.URL, "http://")}}
+		b.markHealthy(true)
+		hc := newHealthChecker(cfg, []*backendState{b}, nil, "")
+		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
+		run.active.Store(true)
+		run.probe(context.Background(), b)
+		return b.isHealthy()
+	}
+
+	if !probeOnce(nil) {
+		t.Error("default statuses rejected a 304")
+	}
+	if probeOnce([]int{200, 204}) {
+		t.Error("Statuses [200,204] accepted a 304")
+	}
+	if !probeOnce([]int{200, 304}) {
+		t.Error("Statuses [200,304] rejected a 304")
+	}
+}
+
+// TestHealthCheckStatusesRedirect — an explicit probe policy judges the
+// health endpoint's own response: Statuses accept or reject the 3xx
+// itself instead of whatever the redirect lands on, and a probe Host
+// never follows a redirect elsewhere. Default probes keep following
+// redirects (200-399 on the final response), today's behavior.
+func TestHealthCheckStatusesRedirect(t *testing.T) {
+	t.Parallel()
+	var followed atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok":
+			followed.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case "/bad":
+			followed.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/redirect-to-ok":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		default:
+			http.Redirect(w, r, "/bad", http.StatusFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	probeOnce := func(path, host string, statuses []int) bool {
+		t.Helper()
+		cfg := resolved.HealthCheck{
+			Enabled: true, Path: path,
+			Interval: time.Hour, Timeout: 10 * time.Second,
+			Healthy: 1, Unhealthy: 1,
+			Host: host, Statuses: statuses,
+		}
+		b := &backendState{backend: &resolved.Backend{Address: strings.TrimPrefix(srv.URL, "http://")}}
+		b.markHealthy(true)
+		hc := newHealthChecker(cfg, []*backendState{b}, nil, host)
+		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
+		run.active.Store(true)
+		run.probe(context.Background(), b)
+		return b.isHealthy()
+	}
+
+	cases := []struct {
+		name     string
+		path     string
+		host     string
+		statuses []int
+		healthy  bool
+		follows  int64
+	}{
+		{"Statuses [200] rejects the 302 without following it", "/redirect-to-ok", "", []int{200}, false, 0},
+		{"Statuses [302] accepts the 302 itself, not the 500 behind it", "/redirect-to-bad", "", []int{302}, true, 0},
+		{"default statuses follow the redirect to the 200", "/redirect-to-ok", "", nil, true, 1},
+		{"Host alone stops following; the 302 passes the default range", "/redirect-to-bad", "probe.example.test", nil, true, 0},
+		{"Host with Statuses [302] accepts without following", "/redirect-to-bad", "probe.example.test", []int{302}, true, 0},
+	}
+	for _, tc := range cases {
+		followed.Store(0)
+		if got := probeOnce(tc.path, tc.host, tc.statuses); got != tc.healthy {
+			t.Errorf("%s: healthy = %v, want %v", tc.name, got, tc.healthy)
+		}
+		if got := followed.Load(); got != tc.follows {
+			t.Errorf("%s: followed %d redirect(s), want %d", tc.name, got, tc.follows)
+		}
 	}
 }
 

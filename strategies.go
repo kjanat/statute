@@ -21,11 +21,15 @@ type backendState struct {
 func (b *backendState) markHealthy(v bool) { b.healthy.Store(v) }
 func (b *backendState) isHealthy() bool    { return b.healthy.Load() }
 
-// healthy returns the subset of states whose healthy flag is set.
-func healthy(states []*backendState) []*backendState {
+// available returns the subset of states that are candidates for selection:
+// actively healthy and, when a passive generation is running, not passively
+// demoted. The two predicates are independent — an active probe success
+// never clears a passive window, so a backend can be probe-healthy yet
+// still excluded until its failures age out.
+func available(states []*backendState, run *passiveRun) []*backendState {
 	out := make([]*backendState, 0, len(states))
 	for _, s := range states {
-		if s.isHealthy() {
+		if s.isHealthy() && !run.demoted(s) {
 			out = append(out, s)
 		}
 	}

@@ -3,6 +3,7 @@ package statute
 import (
 	"context"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,17 +40,27 @@ type healthRun struct {
 // newHealthChecker builds a prober whose client rides the given transport —
 // the pool hands over its proxy transport, so probes verify backend TLS under
 // exactly the policy proxied requests use. A nil transport means Go's
-// default. A non-empty host is the pool's explicit Host policy, carried on
-// every probe; empty leaves probes on each backend's own host.
+// default. A non-empty host is the probe Host newPoolHandler derived —
+// HealthCheck.Host when set, else the pool's explicit Host policy — carried
+// on every probe; empty leaves probes on each backend's own host.
 func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper, host string) *healthChecker {
+	client := &http.Client{
+		Timeout:   cfg.Timeout,
+		Transport: transport,
+	}
+	// COMPAT: an explicit probe policy judges the endpoint's own status,
+	// so redirects stop; gate on cfg.Host, not the derived host, so
+	// UpstreamHost-derived probes keep following redirects as before.
+	if cfg.Host != "" || len(cfg.Statuses) > 0 {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	return &healthChecker{
 		cfg:      cfg,
 		host:     host,
 		backends: backends,
-		client: &http.Client{
-			Timeout:   cfg.Timeout,
-			Transport: transport,
-		},
+		client:   client,
 	}
 }
 
@@ -152,11 +163,20 @@ func (r *healthRun) probe(ctx context.Context, b *backendState) {
 		return
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+	if h.acceptsStatus(resp.StatusCode) {
 		r.recordSuccess(b)
 		return
 	}
 	r.recordFailure(b)
+}
+
+// acceptsStatus reports whether a probe response status counts as healthy:
+// the configured Statuses when any are set, else the 200-399 default.
+func (h *healthChecker) acceptsStatus(code int) bool {
+	if len(h.cfg.Statuses) > 0 {
+		return slices.Contains(h.cfg.Statuses, code)
+	}
+	return code >= 200 && code < 400
 }
 
 func (r *healthRun) recordSuccess(b *backendState) {

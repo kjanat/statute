@@ -60,6 +60,40 @@ func TestLint_AllRulesFireOnDeliberatelyBadConfig(t *testing.T) {
 	}
 }
 
+// TestLint_HC001SkippedWhenPassiveEnabled — a passive-only pool detects
+// dead backends from real traffic, so HC001's claim does not hold for it;
+// a pool with neither policy still warns.
+func TestLint_HC001SkippedWhenPassiveEnabled(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":80")},
+		Upstreams: Upstreams{
+			"passive": Pool{
+				Backends:           []Backend{{Address: "10.0.0.1:1"}, {Address: "10.0.0.2:1"}},
+				PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+			},
+			"bare": Pool{Backends: []Backend{{Address: "10.0.0.3:1"}, {Address: "10.0.0.4:1"}}},
+		},
+		Routes: Routes{
+			Match("/p/*").ProxyTo("passive"),
+			Match("/b/*").ProxyTo("bare"),
+		},
+	}
+	findings, err := Lint(cfg)
+	if err != nil {
+		t.Fatalf("Lint: %v", err)
+	}
+	var hc001Paths []string
+	for _, f := range findings {
+		if f.Code == "HC001" {
+			hc001Paths = append(hc001Paths, f.Path)
+		}
+	}
+	if len(hc001Paths) != 1 || hc001Paths[0] != `upstreams["bare"]` {
+		t.Errorf("HC001 paths: got %v, want only the bare pool", hc001Paths)
+	}
+}
+
 func TestLint_CleanConfigHasNoErrors(t *testing.T) {
 	t.Parallel()
 	cfg := Config{

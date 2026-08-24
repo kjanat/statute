@@ -181,11 +181,12 @@ type StaticTLS struct {
 
 // Pool is a resolved upstream pool.
 type Pool struct {
-	Name        string
-	Backends    []Backend
-	Strategy    Strategy
-	HealthCheck HealthCheck
-	Transport   Transport
+	Name               string
+	Backends           []Backend
+	Strategy           Strategy
+	HealthCheck        HealthCheck
+	PassiveHealthCheck PassiveHealthCheck
+	Transport          Transport
 	// UpstreamHost is the pool's outgoing Host header policy; HostValue
 	// carries the fixed name when the policy is HostExplicit.
 	UpstreamHost HostPolicy
@@ -231,6 +232,20 @@ type HealthCheck struct {
 	Timeout   time.Duration
 	Healthy   int
 	Unhealthy int
+	// Host is the probe Host override; empty derives the probe host from
+	// the pool's UpstreamHost policy.
+	Host string
+	// Statuses are the accepted probe statuses; empty means 200-399.
+	Statuses []int
+}
+
+// PassiveHealthCheck is a resolved passive health policy: a backend is
+// excluded from selection while MaxFailures failed proxy attempts fall
+// inside the sliding FailureWindow.
+type PassiveHealthCheck struct {
+	Enabled       bool
+	FailureWindow time.Duration
+	MaxFailures   int
 }
 
 // Transport is a resolved transport configuration. The TLS fields form the

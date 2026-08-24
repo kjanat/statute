@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Upstream health policy extensions: `HealthCheck.Host` overrides the
+  `Host` header active probes carry — one precedence rule: the override
+  when set, else the derivation from `UpstreamHost` exactly as before,
+  with proxied requests following `UpstreamHost` either way — and is
+  validated like `HostValue`. `HealthCheck.Statuses` lists the exact
+  probe statuses accepted as healthy (each within 100–599); empty keeps
+  the 200–399 default. Setting either field stops probes from following
+  redirects, so the health endpoint's own status is judged; default
+  probes keep following redirects. Setting either without a probe `Path`
+  is a resolve error rather than a silent policy drop.
+
+- Passive health checks: `Pool.PassiveHealthCheck{FailureWindow,
+  MaxFailures}` demotes a backend out of selection once it accumulates
+  `MaxFailures` failed attempts — a transport error or a 5xx response —
+  inside the sliding window. A request canceled by its own client is not
+  a failure (a client abort is not a backend fault); a deadline that
+  expires waiting on the backend is. Failures are windowed, not
+  consecutive:
+  successes neither clear nor extend the window, and recovery happens
+  only as failures age out, computed lazily with no background
+  goroutine. Counting is per backend attempt, so under `Retry` each
+  attempt counts against the backend that served it even when the
+  request succeeds on another backend. Passive health is independent of
+  active probing — it works with active checks disabled, and an active
+  probe success never clears a passive window — and the lint rule
+  `HC001` no longer fires for a passive-only pool. Degraded mode is
+  unchanged: a pool whose every backend is demoted, including a
+  single-backend pool, keeps serving. Both fields must be set together;
+  window state is generation-owned — reset on restart, with a stopped
+  generation's late recordings inert. The new fields have no Docker
+  label form; they exist only in compiled configuration.
+
 - In-process handler routes: `Match(...).Handle(h)` mounts any
   `http.Handler` from the same binary as a route action — the fourth
   mutually exclusive action beside `ProxyTo`, `Serve`, and `RedirectTo`,

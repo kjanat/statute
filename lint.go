@@ -88,14 +88,17 @@ func ruleReadHeaderTimeout(c *resolved.Config) []Finding {
 func ruleHealthCheck(c *resolved.Config) []Finding {
 	var out []Finding
 	for name, pool := range c.Upstreams {
-		if !pool.HealthCheck.Enabled {
-			out = append(out, Finding{
-				Severity: SeverityWarning,
-				Code:     "HC001",
-				Message:  "Upstream pool has no active health check; dead backends will keep receiving traffic.",
-				Path:     fmt.Sprintf("upstreams[%q]", name),
-			})
+		// Passive health also detects dead backends — from real traffic —
+		// so a passive-only pool does not deserve this warning's claim.
+		if pool.HealthCheck.Enabled || pool.PassiveHealthCheck.Enabled {
+			continue
 		}
+		out = append(out, Finding{
+			Severity: SeverityWarning,
+			Code:     "HC001",
+			Message:  "Upstream pool has no active health check; dead backends will keep receiving traffic.",
+			Path:     fmt.Sprintf("upstreams[%q]", name),
+		})
 	}
 	return out
 }

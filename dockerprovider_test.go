@@ -293,6 +293,45 @@ func TestDockerReconcileReusesUnchangedPools(t *testing.T) {
 	}
 }
 
+// TestPoolFingerprintChangesWithHealthPolicy — the generation-reuse
+// fingerprint covers the new health fields: a pool whose probe Host,
+// accepted statuses, or passive policy changed must not adopt the previous
+// generation's handler and health state; an identical config still matches.
+func TestPoolFingerprintChangesWithHealthPolicy(t *testing.T) {
+	t.Parallel()
+	base := func() *resolved.Pool {
+		return &resolved.Pool{
+			Name:     "svc",
+			Backends: []resolved.Backend{{Address: "10.0.0.1:8080", Weight: 1}},
+			HealthCheck: resolved.HealthCheck{
+				Enabled: true, Path: "/healthz",
+				Interval: 10 * time.Second, Timeout: 2 * time.Second,
+				Healthy: 2, Unhealthy: 3,
+			},
+		}
+	}
+	one, two := base(), base()
+	if poolFingerprint(one) != poolFingerprint(two) {
+		t.Fatal("identical pools fingerprint differently")
+	}
+
+	variants := map[string]func(*resolved.Pool){
+		"probe host": func(p *resolved.Pool) { p.HealthCheck.Host = "probe.internal" },
+		"statuses":   func(p *resolved.Pool) { p.HealthCheck.Statuses = []int{200, 204} },
+		"passive": func(p *resolved.Pool) {
+			p.PassiveHealthCheck = resolved.PassiveHealthCheck{Enabled: true, FailureWindow: 30 * time.Second, MaxFailures: 3}
+		},
+	}
+	baseline := poolFingerprint(base())
+	for name, mutate := range variants {
+		p := base()
+		mutate(p)
+		if poolFingerprint(p) == baseline {
+			t.Errorf("%s change did not change the fingerprint", name)
+		}
+	}
+}
+
 func TestDockerRouteSpecificityOrder(t *testing.T) {
 	p, srv, _ := newFakeProvider(t, &resolved.Docker{}, []fakeDaemonContainer{
 		{
