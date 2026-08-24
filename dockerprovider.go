@@ -50,7 +50,7 @@ type dockerRun struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	kick     chan struct{}
-	stop     sync.Once
+	stopOnce sync.Once
 }
 
 // dockerDebounce coalesces bursts of container events (compose up starts
@@ -107,11 +107,11 @@ func (p *dockerProvider) start() (*dockerRun, error) {
 	return r, nil
 }
 
-func (r *dockerRun) stopRun() {
+func (r *dockerRun) stop() {
 	if r == nil {
 		return
 	}
-	r.stop.Do(func() {
+	r.stopOnce.Do(func() {
 		r.cancel()
 		r.wg.Wait()
 		p := r.provider

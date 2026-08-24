@@ -421,7 +421,7 @@ func TestHTTP01ManagerIssuesEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer run.stopRun()
+	defer run.stop()
 	run.warm()
 
 	cert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
@@ -472,7 +472,7 @@ func assertReloadsFromDisk(t *testing.T, fake *fakeACME, src *resolved.AutoTLS, 
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	defer run.stopRun()
+	defer run.stop()
 	cert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
 	if err != nil {
 		t.Fatalf("GetCertificate from disk: %v", err)
@@ -626,7 +626,7 @@ func TestHTTP01_ConcurrentHandshakesShareOneOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer run.stopRun()
+	defer run.stop()
 
 	const callers = 4
 	certs := make([]*tls.Certificate, callers)
@@ -669,7 +669,7 @@ func TestHTTP01_FailedIssuanceCoolsDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer run.stopRun()
+	defer run.stop()
 
 	_, first := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
 	if first == nil {
@@ -708,7 +708,7 @@ func TestHTTP01_InvalidAuthorizationFailsFast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer run.stopRun()
+	defer run.stop()
 
 	done := make(chan error, 1)
 	go func() {
@@ -766,8 +766,8 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 		_, err := m.issueOnce(context.Background(), "pin.example")
 		done <- err
 	}()
-	<-reached       // the order is now in flight, blocked at the CA
-	first.stopRun() // stop as the Start rollback does, cancelling it mid-order
+	<-reached    // the order is now in flight, blocked at the CA
+	first.stop() // stop as the Start rollback does, cancelling it mid-order
 	err = <-done
 	if err == nil {
 		t.Fatal("issuance succeeded despite stop cancelling its order")
@@ -783,7 +783,7 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	defer second.stopRun()
+	defer second.stop()
 	cert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
 	if err != nil {
 		t.Fatalf("issuance after restart replayed the cancellation: %v", err)
@@ -869,7 +869,7 @@ func TestAccountRegistrationTimesOut(t *testing.T) {
 	begin := time.Now()
 	run, err := m.start()
 	if err == nil {
-		run.stopRun()
+		run.stop()
 		t.Fatal("start succeeded against a directory that never answers")
 	}
 	if !strings.Contains(err.Error(), "acme register") {

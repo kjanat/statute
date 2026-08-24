@@ -119,12 +119,12 @@ type acmeManager struct {
 // warm-up tasks. The manager retains its account, client, and certificate
 // cache across failed Start attempts.
 type acmeRun struct {
-	manager *acmeManager
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	warmWG  sync.WaitGroup
-	stop    sync.Once
+	manager  *acmeManager
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	warmWG   sync.WaitGroup
+	stopOnce sync.Once
 }
 
 // issueState is one host's in-flight or recently failed ACME order. The
@@ -231,11 +231,11 @@ func (m *acmeManager) warmsAfterListeners() bool {
 // shutdown: an unwaited warm can still be talking to the CA — and logging
 // — after the process believes it has stopped. Stopping a manager that
 // never started, or stopping twice, is a no-op.
-func (r *acmeRun) stopRun() {
+func (r *acmeRun) stop() {
 	if r == nil {
 		return
 	}
-	r.stop.Do(func() {
+	r.stopOnce.Do(func() {
 		r.cancel()
 		<-r.done
 		r.warmWG.Wait()

@@ -451,10 +451,10 @@ func (a *startAttempt) rollback() error {
 	}
 	a.finished = true
 	for _, run := range a.acme {
-		run.stopRun()
+		run.stop()
 	}
 	err := a.listeners.rollback()
-	a.docker.stopRun()
+	a.docker.stop()
 	for _, pool := range a.pools {
 		pool.shutdown()
 	}
@@ -481,8 +481,7 @@ type serverRun struct {
 	acme      []*acmeRun
 	docker    *dockerRun
 	listeners boundListeners
-	stop      sync.Once
-	err       error
+	mu        sync.Mutex
 }
 
 // Start opens all configured listeners and begins serving. Calling it
@@ -659,27 +658,28 @@ func (s *server) Shutdown() error {
 }
 
 func (r *serverRun) shutdown(ctx context.Context) error {
-	r.stop.Do(func() {
-		// Stop ACME before listeners so in-flight HTTP-01 work can finish
-		// cancellation while its challenge endpoint is still reachable.
-		for _, run := range r.acme {
-			run.stopRun()
-		}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-		var wg sync.WaitGroup
-		errs := make(chan error, r.listeners.count())
-		r.listeners.shutdown(ctx, &wg, errs)
-		wg.Wait()
-		close(errs)
-		r.err = joinErrors(errs)
+	// Stop ACME before listeners so in-flight HTTP-01 work can finish
+	// cancellation while its challenge endpoint is still reachable.
+	for _, run := range r.acme {
+		run.stop()
+	}
 
-		r.docker.stopRun()
-		// Stop health checkers after listeners drain.
-		for _, pool := range r.pools {
-			pool.shutdown()
-		}
-	})
-	return r.err
+	var wg sync.WaitGroup
+	errs := make(chan error, r.listeners.count())
+	r.listeners.shutdown(ctx, &wg, errs)
+	wg.Wait()
+	close(errs)
+	err := joinErrors(errs)
+
+	r.docker.stop()
+	// Stop health checkers after listeners drain.
+	for _, pool := range r.pools {
+		pool.shutdown()
+	}
+	return err
 }
 
 func findListener(ls []*resolved.Listener, addr string) (*resolved.Listener, bool) {

@@ -62,9 +62,9 @@ func (s *stubSolver) seen() (authzURL, challengeURI string) {
 	return s.authzURL, s.challengeURI
 }
 
-// newStubManager builds a started manager over the stub solver, wired to a
+// startStubManager builds a started manager over the stub solver, wired to a
 // fake CA that never validates anything.
-func newStubManager(t *testing.T, solver *stubSolver) (*acmeManager, *acmeRun, *fakeACME) {
+func startStubManager(t *testing.T, solver *stubSolver) (*acmeManager, *acmeRun, *fakeACME) {
 	t.Helper()
 	solver.enteredC = make(chan struct{})
 	m, err := newACMEManager(&resolved.AutoTLS{
@@ -81,7 +81,7 @@ func newStubManager(t *testing.T, solver *stubSolver) (*acmeManager, *acmeRun, *
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	t.Cleanup(run.stopRun)
+	t.Cleanup(run.stop)
 	return m, run, fake
 }
 
@@ -129,7 +129,7 @@ func TestACMEManager_ServesCertificateInsideRenewalWindow(t *testing.T) {
 func TestACMEManager_FailedOrderDeactivatesPendingAuthz(t *testing.T) {
 	t.Parallel()
 	solver := &stubSolver{typ: "http-01", err: os.ErrPermission}
-	m, _, fake := newStubManager(t, solver)
+	m, _, fake := startStubManager(t, solver)
 
 	if _, err := m.getOrIssue(context.Background(), "pin.example"); err == nil {
 		t.Fatal("issuance must fail when the solver fails")
@@ -164,7 +164,7 @@ func TestACMEManager_FailedOrderDeactivatesPendingAuthz(t *testing.T) {
 func TestACMEManager_StopWaitsForWarm(t *testing.T) {
 	t.Parallel()
 	solver := &stubSolver{typ: "http-01", err: os.ErrPermission, hold: true, linger: 100 * time.Millisecond}
-	_, run, _ := newStubManager(t, solver)
+	_, run, _ := startStubManager(t, solver)
 
 	run.warmAsync()
 	select {
@@ -172,7 +172,7 @@ func TestACMEManager_StopWaitsForWarm(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("warm-up never reached the solver")
 	}
-	run.stopRun()
+	run.stop()
 	if !solver.returned.Load() {
 		t.Error("stop returned while the warm-up was still running")
 	}
@@ -184,17 +184,19 @@ func TestACMEManager_StopWaitsForWarm(t *testing.T) {
 // channel.
 func TestACMEManager_StartTwice(t *testing.T) {
 	t.Parallel()
-	m, first, _ := newStubManager(t, &stubSolver{typ: "http-01"})
-	if _, err := m.start(); err == nil {
+	m, first, _ := startStubManager(t, &stubSolver{typ: "http-01"})
+	unexpected, err := m.start()
+	if err == nil {
+		unexpected.stop()
 		t.Fatal("starting an already started manager must fail")
 	}
 	// Stopping releases the lifecycle, so a restart is allowed again.
-	first.stopRun()
+	first.stop()
 	second, err := m.start()
 	if err != nil {
 		t.Fatalf("restart after stop: %v", err)
 	}
-	second.stopRun()
+	second.stop()
 }
 
 // TestACMERun_StoppedGenerationCannotAffectRestart proves that cancellation
@@ -202,8 +204,8 @@ func TestACMEManager_StartTwice(t *testing.T) {
 // handle cannot cancel or perform work through the later generation.
 func TestACMERun_StoppedGenerationCannotAffectRestart(t *testing.T) {
 	t.Parallel()
-	m, first, fake := newStubManager(t, &stubSolver{typ: "http-01"})
-	first.stopRun()
+	m, first, fake := startStubManager(t, &stubSolver{typ: "http-01"})
+	first.stop()
 	if m.runContext().Err() == nil {
 		t.Fatal("stopped manager admitted unowned ACME work between runs")
 	}
@@ -211,9 +213,9 @@ func TestACMERun_StoppedGenerationCannotAffectRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	defer second.stopRun()
+	defer second.stop()
 
-	first.stopRun()
+	first.stop()
 	first.warm()
 	if second.ctx.Err() != nil {
 		t.Fatal("stale stop cancelled the later ACME run")
@@ -271,7 +273,7 @@ func TestACMEManager_RenewalRefreshesCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer run.stopRun()
+	defer run.stop()
 
 	expiring := testCertificate(t, time.Now().Add(7*24*time.Hour))
 	m.cache["pin.example"] = expiring

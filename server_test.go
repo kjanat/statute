@@ -944,6 +944,68 @@ func TestShutdownErrorChannelHoldsAllProducers(t *testing.T) {
 	}
 }
 
+// TestShutdownRetriesListenerDrainAfterDeadline proves that a fresh Shutdown
+// can finish draining after an earlier call timed out.
+func TestShutdownRetriesListenerDrainAfterDeadline(t *testing.T) {
+	addr := reserveAddr(t)
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Routes: Routes{
+			Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently),
+		},
+		Shutdown: Shutdown{GracePeriod: "50ms"},
+	})
+	r.Listeners[0].Addr = addr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	srv.listeners[0].Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	type requestResult struct {
+		resp *http.Response
+		err  error
+	}
+	requestDone := make(chan requestResult, 1)
+	go func() {
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + addr + "/block")
+		requestDone <- requestResult{resp: resp, err: err}
+	}()
+	<-entered
+	if err := srv.Shutdown(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Shutdown error = %v, want deadline exceeded", err)
+	}
+	close(release)
+	result := <-requestDone
+	if result.err != nil {
+		t.Fatalf("blocking request: %v", result.err)
+	}
+	_ = result.resp.Body.Close()
+	if result.resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("blocking request status = %d, want 204", result.resp.StatusCode)
+	}
+	if err := srv.Shutdown(); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
+	mustBindNow(t, addr)
+}
+
 // reserveUDPAddr is reserveAddr for a UDP port: bind ephemeral, close,
 // return the address for the HTTP/3 listener under test to claim.
 func reserveUDPAddr(t *testing.T) string {

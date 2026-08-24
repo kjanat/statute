@@ -152,7 +152,7 @@ func TestDockerRun_RollbackRetryDoesNotReuseRetiredGeneration(t *testing.T) {
 	}
 	firstTable := srv.dynamic.Load()
 	firstPool := firstTable.pools["web-1"]
-	first.stopRun()
+	first.stop()
 	if srv.dynamic.Load() != nil {
 		t.Fatal("stopped Docker run left its generation published")
 	}
@@ -164,13 +164,13 @@ func TestDockerRun_RollbackRetryDoesNotReuseRetiredGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	defer second.stopRun()
+	defer second.stop()
 	secondTable := srv.dynamic.Load()
 	secondPool := secondTable.pools["web-1"]
 	if secondPool == firstPool {
 		t.Fatal("retry adopted a retired pool by fingerprint")
 	}
-	first.stopRun()
+	first.stop()
 	if srv.dynamic.Load() != secondTable || !secondPool.isLive() {
 		t.Fatal("stale Docker run stopped the later generation")
 	}

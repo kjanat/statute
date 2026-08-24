@@ -762,7 +762,7 @@ func TestDNS01_IssueTimeoutReachesTheOrderContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer run.stopRun()
+	defer run.stop()
 	if _, err := m.getOrIssue(context.Background(), "budget.example"); err == nil {
 		t.Fatal("getOrIssue: want the solver's deliberate error")
 	}
