@@ -48,6 +48,8 @@ Use the default template or one of the specialized templates in
 - `middleware.md`
 - `routing-docker.md`
 - `upstream.md`
+- `tls-acme.md`
+- `observability.md`
 
 The PR body keeps the architecture contract beside the diff, where reviewers and
 future agents can actually find it.
