@@ -618,7 +618,17 @@ func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acm
 
 // --- account + cert persistence ---
 
+// loadOrCreateAccount builds the manager's ACME client on the first
+// successful start and keeps it for the manager's lifetime. A restarted
+// manager reuses it: the account key on disk and the directory URL cannot
+// have changed, and a detached authorization cleanup from an order the
+// stop cancelled may still be reading the field — reassigning it would
+// race that read. The client is published only after Register succeeds,
+// so a start that failed at registration retries the whole sequence.
 func (m *acmeManager) loadOrCreateAccount() error {
+	if m.acmeClient != nil {
+		return nil
+	}
 	keyPath := filepath.Join(m.storage, "account.key")
 	var key *ecdsa.PrivateKey
 	pemBytes, err := os.ReadFile(keyPath) //nolint:gosec // G304: fixed filename under the operator-configured storage dir
@@ -644,19 +654,20 @@ func (m *acmeManager) loadOrCreateAccount() error {
 		// new one — that would desync the ACME account. Surface the error.
 		return fmt.Errorf("read account key: %w", err)
 	}
-	m.accountKey = key
-	m.acmeClient = &acme.Client{
+	client := &acme.Client{
 		Key:          key,
 		DirectoryURL: m.directoryURL,
 	}
 	contact := []string{"mailto:" + m.email}
-	if _, err := m.acmeClient.Register(context.Background(), &acme.Account{Contact: contact}, acme.AcceptTOS); err != nil {
+	if _, err := client.Register(context.Background(), &acme.Account{Contact: contact}, acme.AcceptTOS); err != nil {
 		// Already registered is fine. The acme library returns ErrAccountAlreadyExists
 		// for that case.
 		if !errors.Is(err, acme.ErrAccountAlreadyExists) {
 			return fmt.Errorf("acme register: %w", err)
 		}
 	}
+	m.accountKey = key
+	m.acmeClient = client
 	return nil
 }
 
