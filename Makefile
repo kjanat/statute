@@ -10,7 +10,7 @@ CUSTOM_GCL      ?= ./custom-gcl
 COVER_PROFILE   ?= cover.out
 FUZZ_TIME       ?= 30s
 
-.PHONY: all help test test-race lint cover bench fuzz build-examples apidiff typecheck tidy clean
+.PHONY: all help test test-race lint lint-lifecycle cover bench fuzz build-examples apidiff typecheck tidy clean
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z_-]+:.*?## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -26,6 +26,10 @@ test-race: ## Run tests with the race detector (x86 only; Pi cannot run -race)
 lint: ## Build the custom golangci-lint and run all linters
 	$(GOLANGCI_LINT) custom
 	$(CUSTOM_GCL) run ./...
+
+lint-lifecycle: ## Run the lifecycle analyzer, including checks not yet baseline-clean on master
+	$(GOLANGCI_LINT) custom
+	$(CUSTOM_GCL) run --enable-only=statutelifecycle ./...
 
 cover: ## Write coverage profile and print summary
 	$(GO) test -coverprofile=$(COVER_PROFILE) -covermode=atomic ./...

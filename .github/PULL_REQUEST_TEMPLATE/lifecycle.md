@@ -16,6 +16,7 @@
 
 **Invariants preserved:**
 
+- [ ] No application serving is published while Start can still fail synchronously
 - [ ] A failed start leaves no owned serving socket or background loop alive
 - [ ] Normal shutdown owns every resource committed by Start
 - [ ] Cleanup ordering preserves HTTP-01/ACME requirements where applicable
@@ -36,10 +37,12 @@
 ## Cross-feature tests
 
 - [ ] Failure after at least one earlier resource was acquired releases it
+- [ ] Failed Start never exposes an application route, including on an accepted keep-alive/H2 connection
 - [ ] Retry after fixing the external failure actually serves, not merely returns nil
 - [ ] TCP listener ownership checked where applicable
-- [ ] HTTP/3 UDP `PacketConn` ownership checked where applicable
-- [ ] ACME warm-up/cooldown/transient state checked where applicable
+- [ ] HTTP/3 UDP `PacketConn` ownership and a real HTTP/3 request checked where applicable
+- [ ] Unexpected `Serve` exit is observed and retires caller-owned resources
+- [ ] ACME warm-up/cooldown/transient state checked with real in-flight cancellation where applicable
 - [ ] Docker dynamic generation/pool retirement checked where applicable
 - [ ] Normal `Shutdown` still releases all committed resources
 
@@ -48,4 +51,5 @@
 - [ ] `go test ./...`
 - [ ] `go test -race ./...` / CI race job
 - [ ] `make lint`
+- [ ] `make lint-lifecycle`
 - [ ] `CHANGELOG.md` updated for user-visible lifecycle behavior

@@ -54,6 +54,7 @@
 
 - [ ] `go test ./...` passes
 - [ ] `make lint` clean
+- [ ] If lifecycle changes: `make lint-lifecycle` clean
 - [ ] Relevant cross-feature regression tests added
 - [ ] Documentation/godoc updated for changed public behavior
 - [ ] `CHANGELOG.md` updated when the change is user-visible
