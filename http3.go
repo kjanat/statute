@@ -20,8 +20,7 @@ import (
 type http3Listener struct {
 	srv  *http3.Server
 	addr string
-	// alive is true while the serve loop runs; the parent listener's
-	// Alt-Svc header reads it so a dead endpoint stops being advertised.
+	// alive: true while serving; read by the Alt-Svc header.
 	alive *atomic.Bool
 	// conn is the UDP socket Start bound for Serve. quic-go leaves a
 	// caller-provided PacketConn caller-owned — shutting the server down

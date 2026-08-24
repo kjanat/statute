@@ -97,6 +97,13 @@ func (h *healthChecker) probeAll(ctx context.Context) {
 	wg.Wait()
 }
 
+// isCheckerStopped reports whether ctx, not the shorter per-probe pCtx
+// derived from it, is what ended the request: a probe cancelled by the
+// checker's own stop is lifecycle, not a backend verdict.
+func isCheckerStopped(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
 func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 	target, err := backendURL(b.backend)
 	if err != nil {
@@ -117,10 +124,7 @@ func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
-		// A probe killed by the checker's own context is lifecycle, not
-		// a backend verdict; a timeout under a live checker still counts
-		// (only pCtx is expired then).
-		if ctx.Err() != nil {
+		if isCheckerStopped(ctx) {
 			return
 		}
 		h.recordFailure(b)

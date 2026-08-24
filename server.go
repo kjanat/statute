@@ -407,11 +407,8 @@ func (s *server) unwindStart(rb *startRollback) error {
 		s.dynamic.Store(nil)
 	}
 	if rb.poolsUp {
-		// ph.shutdown, not just hc.stop: it also drops any idle
-		// connection the first probe parked, without poisoning the
-		// transport for a retry.
 		for _, ph := range s.pools {
-			ph.shutdown()
+			ph.shutdown() // also drops any idle conn the first probe parked
 		}
 	}
 	return errors.Join(errs...)
@@ -821,9 +818,8 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 	if p.UpstreamHost == resolved.HostExplicit {
 		probeHost = p.HostValue
 	}
-	// Construction only builds the checker; server.Start (or the docker
-	// provider, for label-derived pools) owns hc.start, so a server that
-	// never starts leaves no probe goroutine running.
+	// hc.start is owned by the caller (server.Start, or the docker
+	// provider for label-derived pools), not construction.
 	ph.hc = newHealthChecker(p.HealthCheck, all, transport, probeHost)
 	return ph, nil
 }

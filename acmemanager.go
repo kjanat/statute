@@ -345,6 +345,13 @@ func (m *acmeManager) usable(host string) *tls.Certificate {
 	return cert
 }
 
+// isLifecycleCancellation reports whether err is the order dying of the
+// manager's own cancellation (a stop mid-order, given by parentCancelled)
+// rather than a CA verdict that happened to land at the same moment.
+func isLifecycleCancellation(err error, parentCancelled bool) bool {
+	return errors.Is(err, context.Canceled) && parentCancelled
+}
+
 // issueOnce runs at most one ACME order per host at a time. The owning
 // caller runs the order under the manager's context so an abandoned
 // handshake cannot cancel a validation mid-flight — yanking the published
@@ -375,13 +382,9 @@ func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certific
 	//nolint:contextcheck // detached from the caller on purpose: see this function's doc comment
 	st.cert, st.err = m.issue(ictx, host)
 	if st.err != nil {
-		if errors.Is(st.err, context.Canceled) && parent.Err() != nil {
-			// Lifecycle, not a CA verdict: drop before ready closes so a
-			// restart issues immediately instead of replaying this for
-			// the cooldown window.
+		if isLifecycleCancellation(st.err, parent.Err() != nil) {
 			m.forgetIssueState(host, st)
 		} else {
-			// A CA verdict keeps its cooldown.
 			st.failedAt = time.Now()
 		}
 		close(st.ready)
