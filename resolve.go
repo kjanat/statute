@@ -1539,6 +1539,9 @@ func resolveHealth(h HealthEndpoint) (resolved.Health, error) {
 	if !strings.HasPrefix(path, "/") {
 		return resolved.Health{}, fmt.Errorf("health: path %q must start with /", path)
 	}
+	if strings.HasPrefix(path, "//") || strings.HasPrefix(path, `/\`) {
+		return resolved.Health{}, fmt.Errorf("health: path %q must start with a single /", path)
+	}
 	if path == "/" {
 		return resolved.Health{}, errors.New(`health: path "/" is not allowed`)
 	}

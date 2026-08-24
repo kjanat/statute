@@ -350,6 +350,16 @@ func TestResolveHealthValidation(t *testing.T) {
 			wantErr: `health: path "/" is not allowed`,
 		},
 		{
+			name:    "double leading slash errors",
+			health:  Health("127.0.0.1:9091", "//healthz"),
+			wantErr: `health: path "//healthz" must start with a single /`,
+		},
+		{
+			name:    "backslash after slash errors",
+			health:  Health("127.0.0.1:9091", `/\healthz`),
+			wantErr: `health: path "/\\healthz" must start with a single /`,
+		},
+		{
 			name:    "trailing slash errors",
 			health:  Health("127.0.0.1:9091", "/healthz/"),
 			wantErr: `health: path "/healthz/" must not end with /`,
