@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@v9
-        with: { version: 2.13.1, args: --timeout=5m }
+        with: { version: v2.13.1, args: --timeout=5m }
   discover_fuzz:
     name: discover fuzz targets
     runs-on: ubuntu-latest
