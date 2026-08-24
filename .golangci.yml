@@ -66,6 +66,12 @@ linters:
     # Rebuild custom-gcl whenever the analyzer or its dependencies change.
     # For this repository, make lint is now the canonical command.
     - statutehttp
+  # The lifecycle analyzer intentionally starts as a targeted gate: current
+  # master contains the startup/lifecycle debt it was written to expose.
+  # Lifecycle PRs run make lint-lifecycle; promote it to the default set once
+  # that baseline is clean rather than hiding findings behind exclusions.
+  disable:
+    - statutelifecycle
   settings:
     errcheck:
       check-type-assertions: false
@@ -81,6 +87,9 @@ linters:
       statutehttp:
         type: module
         description: Reject ineffective mutations of net/http request special fields through Header.
+      statutelifecycle:
+        type: module
+        description: Trace Statute startup publication, lifecycle goroutine ownership, and cleanup invariants.
     # A switch whose default branch deliberately handles the remaining enum
     # values (e.g. RateLimitKey defaulting to ClientIP) is exhaustive.
     exhaustive: { default-signifies-exhaustive: true }
@@ -89,6 +98,6 @@ linters:
       # Test relaxation: noctx on every httptest call, error-checking every
       # stub Encode, and http.MethodGet over "GET" in table tests all waste
       # everyone's afternoon. usestdlibvars/noctx still apply to prod code.
-      - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, statutehttp, usestdlibvars] }
+      - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, statutehttp, statutelifecycle, usestdlibvars] }
       - { path: examples/, linters: [errcheck] }
       - { path: dns01\.go, linters: [bodyclose] }

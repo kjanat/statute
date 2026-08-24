@@ -33,6 +33,19 @@ jobs:
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@v9
         with: { version: v2.13.1, args: --timeout=5m }
+  lifecycle_lint:
+    name: lifecycle lint
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --enable-only=statutelifecycle --new-from-merge-base=origin/${{ github.base_ref }} --whole-files --timeout=5m
   discover_fuzz:
     name: discover fuzz targets
     runs-on: ubuntu-latest
