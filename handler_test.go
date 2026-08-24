@@ -113,11 +113,19 @@ func TestResolveHandlerRouteErrors(t *testing.T) {
 			"none of ProxyTo, Serve, RedirectTo, or Handle",
 		},
 		{
-			// Handle(nil) declares the action — the call betrays it — so
-			// it must fail on the nil handler, never resolve into a route
-			// whose runtime base would be the 500 fallback.
+			// Handle(nil) declares the action, so it fails on its nil handler.
 			"nil handler",
 			handlerConfig(nil),
+			"handle: handler is nil",
+		},
+		{
+			"typed-nil HandlerFunc",
+			handlerConfig(http.HandlerFunc(nil)),
+			"handle: handler is nil",
+		},
+		{
+			"typed-nil ServeMux pointer",
+			handlerConfig((*http.ServeMux)(nil)),
 			"handle: handler is nil",
 		},
 	}

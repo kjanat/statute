@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -949,13 +951,31 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 		}
 		rr.Redirect = rd
 	case r.handlerSet:
-		if r.handler == nil {
+		if isNilHandler(r.handler) {
 			return errors.New("handle: handler is nil")
 		}
 		rr.Handler = r.handler
 		rr.HandlerRoute = true
 	}
 	return nil
+}
+
+// isNilHandler reports whether h is nil or an interface wrapping a nil
+// concrete value, such as a nil http.HandlerFunc or a nil *http.ServeMux.
+// Both would pass a plain == nil check yet panic on the first request, so
+// resolve rejects them the same way it rejects a bare nil.
+func isNilHandler(h http.Handler) bool {
+	if h == nil {
+		return true
+	}
+	v := reflect.ValueOf(h)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // countDeclared counts how many of the route actions were declared. A

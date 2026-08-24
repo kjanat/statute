@@ -254,7 +254,7 @@ statute.Match("/healthz").Host("foo.example.com").Handle(http.HandlerFunc(
 ))
 ```
 
-The handler composes with route middleware like any other action and drains through graceful shutdown like proxied requests. It receives the request path unstripped — the wildcard prefix stripping above is `Serve`-specific — though the hoisted header operations and path rewrites apply to it as usual. Under a `Retry` the handler may run once per attempt (idempotent methods only, as `Retry` enforces), and it is invoked concurrently, so it must be safe for concurrent use. Because a handler is opaque code, the JSON export and the DOT graph carry only a `HandlerRoute` marker for it, and Docker labels cannot reference or construct one — handlers exist solely in your compiled configuration.
+The handler composes with route middleware like any other action and drains through graceful shutdown like proxied requests. It receives the request path unstripped — the wildcard prefix stripping above is `Serve`-specific — though the hoisted header operations and path rewrites apply to it as usual. Under a `Retry` the handler may run once per attempt (idempotent methods only, as `Retry` enforces), and it is invoked concurrently, so it must be safe for concurrent use. Because a handler is opaque code, the JSON export carries only a `HandlerRoute` marker for it, the DOT graph renders the route as an edge-less route node, and Docker labels cannot reference or construct one — handlers exist solely in your compiled configuration.
 
 Middleware:
 
