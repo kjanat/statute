@@ -26,24 +26,26 @@ func TestHealthCheck_RecordTransitions(t *testing.T) {
 	b := &backendState{backend: &resolved.Backend{Address: "x:1"}}
 	b.markHealthy(true)
 	hc := newHealthChecker(cfg, []*backendState{b}, nil, "")
+	run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
+	run.active.Store(true)
 
 	// Two failures: still healthy (under threshold).
-	hc.recordFailure(b)
-	hc.recordFailure(b)
+	run.recordFailure(b)
+	run.recordFailure(b)
 	if !b.isHealthy() {
 		t.Errorf("backend demoted before threshold")
 	}
-	hc.recordFailure(b)
+	run.recordFailure(b)
 	if b.isHealthy() {
 		t.Errorf("backend should be unhealthy after 3 failures")
 	}
 
 	// Two successes flip it back.
-	hc.recordSuccess(b)
+	run.recordSuccess(b)
 	if b.isHealthy() {
 		t.Errorf("backend promoted before threshold (1 success)")
 	}
-	hc.recordSuccess(b)
+	run.recordSuccess(b)
 	if !b.isHealthy() {
 		t.Errorf("backend should be healthy after 2 successes")
 	}
@@ -56,8 +58,8 @@ func TestHealthCheck_DisabledIsInert(t *testing.T) {
 	t.Parallel()
 	cfg := resolved.HealthCheck{Enabled: false}
 	hc := newHealthChecker(cfg, nil, nil, "")
-	hc.start() // must not panic
-	hc.stop()  // must not block; cancel is nil
+	run := hc.start() // must not panic
+	run.stop()        // must not block; cancel is nil
 }
 
 // TestHealthCheck_StopCancellationIsNotFailure — a probe aborted by the
@@ -89,9 +91,9 @@ func TestHealthCheck_StopCancellationIsNotFailure(t *testing.T) {
 		Unhealthy: 1,
 	}, []*backendState{b}, nil, "")
 
-	hc.start()
-	<-reached // the probe is in flight, blocked at the backend
-	hc.stop() // cancels it mid-request
+	run := hc.start()
+	<-reached  // the probe is in flight, blocked at the backend
+	run.stop() // cancels it mid-request
 	releaseOnce()
 	if !b.isHealthy() {
 		t.Fatal("stop-cancelled probe was recorded as a backend failure")
@@ -119,12 +121,39 @@ func TestHealthCheck_RestartResetsState(t *testing.T) {
 		Unhealthy: 1,
 	}, []*backendState{b}, nil, "")
 
-	hc.start()
-	hc.stop()
+	first := hc.start()
+	first.stop()
 	b.markHealthy(false) // what a genuine probe failure during the attempt leaves
-	hc.start()
-	defer hc.stop()
+	second := hc.start()
+	defer second.stop()
 	if !b.isHealthy() {
 		t.Fatal("restarted checker inherited the previous attempt's demotion")
+	}
+}
+
+// TestHealthRun_StoppedGenerationCannotAffectRestart proves ownership is on
+// the returned run handle: invoking a stale handle after a restart neither
+// cancels the new loop nor records a verdict into its backend state.
+func TestHealthRun_StoppedGenerationCannotAffectRestart(t *testing.T) {
+	t.Parallel()
+	b := &backendState{backend: &resolved.Backend{Address: "127.0.0.1:1"}}
+	b.markHealthy(true)
+	hc := newHealthChecker(resolved.HealthCheck{
+		Enabled: false, Path: "/healthz", Interval: time.Hour,
+		Timeout: time.Second, Healthy: 1, Unhealthy: 1,
+	}, []*backendState{b}, nil, "")
+
+	first := hc.start()
+	first.stop()
+	second := hc.start()
+	defer second.stop()
+
+	first.stop()
+	first.recordFailure(b)
+	if !second.active.Load() {
+		t.Fatal("stale stop cancelled the later health run")
+	}
+	if !b.isHealthy() {
+		t.Fatal("stale health run mutated backend state after restart")
 	}
 }

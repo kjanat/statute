@@ -110,14 +110,21 @@ type acmeManager struct {
 	acmeClient *acme.Client
 	accountKey *ecdsa.PrivateKey
 
-	// lifecycleMu guards the fields below: start, stop, and every reader
-	// of runCtx run on different goroutines.
 	lifecycleMu sync.Mutex
-	started     bool
-	runCtx      context.Context
-	cancel      context.CancelFunc
-	done        chan struct{}
-	warmWG      sync.WaitGroup
+	current     *acmeRun
+	hasRun      bool
+}
+
+// acmeRun owns one manager generation's cancellation, renewal loop, and
+// warm-up tasks. The manager retains its account, client, and certificate
+// cache across failed Start attempts.
+type acmeRun struct {
+	manager  *acmeManager
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	warmWG   sync.WaitGroup
+	stopOnce sync.Once
 }
 
 // issueState is one host's in-flight or recently failed ACME order. The
@@ -170,20 +177,21 @@ func dns01PropagationBudget(cfg *resolved.AutoTLS) time.Duration {
 // opened its listeners. Starting an already started manager is an error:
 // reassigning the lifecycle fields would orphan the running loop and leave
 // its done channel to be closed twice.
-func (m *acmeManager) start() error {
+func (m *acmeManager) start() (*acmeRun, error) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
-	if m.started {
-		return fmt.Errorf("%s: already started", m.name)
+	if m.current != nil {
+		return nil, fmt.Errorf("%s: already started", m.name)
 	}
 	if err := m.loadOrCreateAccount(); err != nil {
-		return err
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	m.runCtx, m.cancel, m.done, m.started = ctx, cancel, done, true
-	go m.renewalLoop(ctx, done)
-	return nil
+	r := &acmeRun{manager: m, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	m.current = r
+	m.hasRun = true
+	go r.renewalLoop()
+	return r, nil
 }
 
 // warm issues a certificate for every domain that has none yet, so the
@@ -192,22 +200,22 @@ func (m *acmeManager) start() error {
 // through warmAsync after the listeners serve for HTTP-01 — issuing
 // earlier would point the CA at a port nobody answers yet and burn a
 // failed validation. Stopping the manager cancels an in-flight warm-up.
-func (m *acmeManager) warm() {
-	ctx := m.runContext()
-	for _, d := range m.domains {
+func (r *acmeRun) warm() {
+	for _, d := range r.manager.domains {
+		ctx := r.ctx
 		if ctx.Err() != nil {
 			return
 		}
-		if _, err := m.getOrIssue(ctx, d); err != nil && ctx.Err() == nil {
-			log.Printf("statute: %s: initial issuance for %s failed: %v", m.name, d, err)
+		if _, err := r.manager.getOrIssueWithParent(ctx, ctx, d); err != nil && ctx.Err() == nil {
+			log.Printf("statute: %s: initial issuance for %s failed: %v", r.manager.name, d, err)
 		}
 	}
 }
 
 // warmAsync runs warm in a goroutine tracked by the manager, so stop waits
 // for it instead of returning while an order is still in flight.
-func (m *acmeManager) warmAsync() {
-	m.warmWG.Go(m.warm)
+func (r *acmeRun) warmAsync() {
+	r.warmWG.Go(r.warm)
 }
 
 // warmsAfterListeners reports whether eager issuance must wait until the
@@ -223,34 +231,39 @@ func (m *acmeManager) warmsAfterListeners() bool {
 // shutdown: an unwaited warm can still be talking to the CA — and logging
 // — after the process believes it has stopped. Stopping a manager that
 // never started, or stopping twice, is a no-op.
-func (m *acmeManager) stop() {
-	m.lifecycleMu.Lock()
-	cancel, done := m.cancel, m.done
-	// runCtx is deliberately left in place, now cancelled, so issuance
-	// racing the shutdown fails fast instead of falling back to a
-	// background context.
-	m.cancel, m.done, m.started = nil, nil, false
-	m.lifecycleMu.Unlock()
-	if cancel == nil {
+func (r *acmeRun) stop() {
+	if r == nil {
 		return
 	}
-	cancel()
-	<-done
-	m.warmWG.Wait()
+	r.stopOnce.Do(func() {
+		r.cancel()
+		<-r.done
+		r.warmWG.Wait()
+		r.manager.lifecycleMu.Lock()
+		if r.manager.current == r {
+			r.manager.current = nil
+		}
+		r.manager.lifecycleMu.Unlock()
+	})
 }
 
 // runContext returns the context ACME work runs under. It is the
 // manager's own, never a caller's: a client that drops its handshake must
-// not cancel a validation the CA is in the middle of. Before start (and
-// after a manager that never started) there is none, and tests call
-// GetCertificate on an unstarted manager.
+// not cancel a validation the CA is in the middle of. Before a manager has
+// ever started, tests may use a background context. Between runs it returns a
+// cancelled context so a handshake racing shutdown cannot launch unowned work.
 func (m *acmeManager) runContext() context.Context {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
-	if m.runCtx == nil {
+	if m.current == nil {
+		if m.hasRun {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx
+		}
 		return context.Background()
 	}
-	return m.runCtx
+	return m.current.ctx
 }
 
 // wrapHTTPChallenges serves this manager's pending HTTP-01 challenge
@@ -319,10 +332,14 @@ func (m *acmeManager) matchDomain(host string) (string, bool) {
 // Encrypt grants for one name set — and would fail the handshake outright
 // whenever that order failed.
 func (m *acmeManager) getOrIssue(ctx context.Context, host string) (*tls.Certificate, error) {
+	return m.getOrIssueWithParent(ctx, m.runContext(), host)
+}
+
+func (m *acmeManager) getOrIssueWithParent(ctx, parent context.Context, host string) (*tls.Certificate, error) {
 	if cert := m.usable(host); cert != nil {
 		return cert, nil
 	}
-	return m.issueOnce(ctx, host)
+	return m.issueOnceWithParent(ctx, parent, host)
 }
 
 // usable returns a servable certificate for host from the memory cache or,
@@ -360,6 +377,10 @@ func isLifecycleCancellation(err error, parentCancelled bool) bool {
 // entry but honour their own context while waiting. Mirrors
 // autocert.Manager.createCert over its certState table.
 func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certificate, error) {
+	return m.issueOnceWithParent(ctx, m.runContext(), host)
+}
+
+func (m *acmeManager) issueOnceWithParent(ctx, parent context.Context, host string) (*tls.Certificate, error) {
 	st, owner := m.issueState(host)
 	if !owner {
 		select {
@@ -376,7 +397,6 @@ func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certific
 		// order context would be a miserable way to find that out.
 		timeout = acmeIssueTimeout
 	}
-	parent := m.runContext()
 	ictx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	//nolint:contextcheck // detached from the caller on purpose: see this function's doc comment
@@ -480,16 +500,16 @@ func certLeaf(c *tls.Certificate) *x509.Certificate {
 // renewalLoop re-issues expiring certificates until ctx is cancelled. done
 // is a parameter, not the manager field, so a loop started by an earlier
 // start always closes the channel that start's stop is waiting on.
-func (m *acmeManager) renewalLoop(ctx context.Context, done chan struct{}) {
-	defer close(done)
+func (r *acmeRun) renewalLoop() {
+	defer close(r.done)
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-r.ctx.Done():
 			return
 		case <-t.C:
-			m.renewExpiring(ctx)
+			r.renewExpiring()
 		}
 	}
 }
@@ -499,13 +519,13 @@ func (m *acmeManager) renewalLoop(ctx context.Context, done chan struct{}) {
 // handshake can never order for the same host at once, and so the fresh
 // certificate reaches the in-memory cache — reloading it from disk would
 // keep serving the old one whenever persistence failed.
-func (m *acmeManager) renewExpiring(ctx context.Context) {
-	for _, d := range m.domains {
-		if !needsRenewal(m.usable(d)) {
+func (r *acmeRun) renewExpiring() {
+	for _, d := range r.manager.domains {
+		if !needsRenewal(r.manager.usable(d)) {
 			continue
 		}
-		if _, err := m.issueOnce(ctx, d); err != nil && ctx.Err() == nil {
-			log.Printf("statute: %s: renewal for %s failed: %v", m.name, d, err)
+		if _, err := r.manager.issueOnceWithParent(r.ctx, r.ctx, d); err != nil && r.ctx.Err() == nil {
+			log.Printf("statute: %s: renewal for %s failed: %v", r.manager.name, d, err)
 		}
 	}
 }

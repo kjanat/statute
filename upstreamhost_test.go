@@ -53,7 +53,7 @@ func TestProxyUpstreamHostPolicies(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				for _, ph := range srv.pools {
-					ph.shutdown()
+					ph.transport.CloseIdleConnections()
 				}
 			})
 			req := httptest.NewRequest("GET", "http://client.example.com/x", nil)
@@ -91,7 +91,9 @@ func TestProbeHostPolicy(t *testing.T) {
 		b := &backendState{backend: &resolved.Backend{Address: targetHost}}
 		b.markHealthy(true)
 		hc := newHealthChecker(cfg, []*backendState{b}, nil, host)
-		hc.probe(context.Background(), b)
+		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
+		run.active.Store(true)
+		run.probe(context.Background(), b)
 		if !b.isHealthy() {
 			t.Fatal("probe failed against a live backend")
 		}

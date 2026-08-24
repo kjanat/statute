@@ -15,36 +15,33 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-// http3Listener wraps a quic-go http3.Server with a Serve/Shutdown interface
-// matching the rest of the runtime.
-type http3Listener struct {
+// http3Server is reusable configured HTTP/3 control state. The UDP socket is
+// owned by boundHTTP3 for exactly one Start attempt or committed run.
+type http3Server struct {
 	srv  *http3.Server
 	addr string
 	// alive: true while serving; read by the Alt-Svc header.
 	alive *atomic.Bool
-	// conn: quic-go never closes a caller-provided PacketConn, so
-	// Shutdown closes it after the drain.
-	conn net.PacketConn
 }
 
-// serveLoop runs the HTTP/3 (QUIC) server on the socket Start bound into
-// h.conn and blocks until it stops. Start binds the socket so a bind
+// serveLoop runs the HTTP/3 (QUIC) server on the socket Start bound and
+// blocks until it stops. Start binds the socket so a bind
 // failure fails Start instead of vanishing here, and so a failed Start
 // can close the socket without closing the server — a closed http3.Server
 // is not reusable, but one whose conn went away serves again on the next
 // call. If the loop dies for any reason other than shutdown, the socket
 // is closed too: a dead server must not keep the caller-owned UDP port
 // bound — and Alt-Svc keeps advertising it — for the life of the process.
-func (h *http3Listener) serveLoop() {
+func (h *http3Server) serveLoop(conn net.PacketConn) {
 	h.alive.Store(true)
-	err := h.srv.Serve(h.conn)
+	err := h.srv.Serve(conn)
 	h.alive.Store(false)
 	if isServeShutdown(err) {
 		return
 	}
 	log.Printf("statute: http3 %s: serve loop exited: %v", h.addr, err)
 	// No caller to return a close failure to here, so log is the witness.
-	if cerr := h.conn.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+	if cerr := conn.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
 		log.Printf("statute: http3 %s: closing socket after dead serve loop: %v", h.addr, cerr)
 	}
 }
@@ -52,17 +49,17 @@ func (h *http3Listener) serveLoop() {
 // Shutdown gracefully stops the HTTP/3 listener, then closes the UDP
 // socket the server does not own. A close failure joins the shutdown
 // error — "this port may still be bound" is not a detail to swallow.
-func (h *http3Listener) Shutdown(ctx context.Context) error {
+func (h *http3Server) shutdown(ctx context.Context, conn net.PacketConn) error {
 	err := h.srv.Shutdown(ctx)
-	if h.conn != nil {
-		if cerr := h.conn.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+	if conn != nil {
+		if cerr := conn.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
 			err = errors.Join(err, cerr)
 		}
 	}
 	return err
 }
 
-func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler, alive *atomic.Bool) (*http3Listener, error) {
+func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler, alive *atomic.Bool) (*http3Server, error) {
 	addr := strings.TrimSuffix(l.HTTP3Addr, "/udp")
 	if addr == "" {
 		return nil, fmt.Errorf("http3 listener address is empty")
@@ -84,7 +81,7 @@ func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler, al
 		Handler:   content,
 		TLSConfig: tlsCfg,
 	}
-	return &http3Listener{srv: srv, addr: addr, alive: alive}, nil
+	return &http3Server{srv: srv, addr: addr, alive: alive}, nil
 }
 
 // altSvcHandler advertises the HTTP/3 endpoint on every HTTPS response so

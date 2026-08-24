@@ -62,9 +62,9 @@ func (s *stubSolver) seen() (authzURL, challengeURI string) {
 	return s.authzURL, s.challengeURI
 }
 
-// newStubManager builds a started manager over the stub solver, wired to a
+// startStubManager builds a started manager over the stub solver, wired to a
 // fake CA that never validates anything.
-func newStubManager(t *testing.T, solver *stubSolver) (*acmeManager, *fakeACME) {
+func startStubManager(t *testing.T, solver *stubSolver) (*acmeManager, *acmeRun, *fakeACME) {
 	t.Helper()
 	solver.enteredC = make(chan struct{})
 	m, err := newACMEManager(&resolved.AutoTLS{
@@ -77,11 +77,12 @@ func newStubManager(t *testing.T, solver *stubSolver) (*acmeManager, *fakeACME) 
 	}
 	fake := newFakeACME(t, nil)
 	m.directoryURL = fake.url("/dir")
-	if err := m.start(); err != nil {
+	run, err := m.start()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	t.Cleanup(m.stop)
-	return m, fake
+	t.Cleanup(run.stop)
+	return m, run, fake
 }
 
 // TestACMEManager_ServesCertificateInsideRenewalWindow pins the split
@@ -128,7 +129,7 @@ func TestACMEManager_ServesCertificateInsideRenewalWindow(t *testing.T) {
 func TestACMEManager_FailedOrderDeactivatesPendingAuthz(t *testing.T) {
 	t.Parallel()
 	solver := &stubSolver{typ: "http-01", err: os.ErrPermission}
-	m, fake := newStubManager(t, solver)
+	m, _, fake := startStubManager(t, solver)
 
 	if _, err := m.getOrIssue(context.Background(), "pin.example"); err == nil {
 		t.Fatal("issuance must fail when the solver fails")
@@ -163,15 +164,15 @@ func TestACMEManager_FailedOrderDeactivatesPendingAuthz(t *testing.T) {
 func TestACMEManager_StopWaitsForWarm(t *testing.T) {
 	t.Parallel()
 	solver := &stubSolver{typ: "http-01", err: os.ErrPermission, hold: true, linger: 100 * time.Millisecond}
-	m, _ := newStubManager(t, solver)
+	_, run, _ := startStubManager(t, solver)
 
-	m.warmAsync()
+	run.warmAsync()
 	select {
 	case <-solver.enteredC:
 	case <-time.After(10 * time.Second):
 		t.Fatal("warm-up never reached the solver")
 	}
-	m.stop()
+	run.stop()
 	if !solver.returned.Load() {
 		t.Error("stop returned while the warm-up was still running")
 	}
@@ -183,16 +184,45 @@ func TestACMEManager_StopWaitsForWarm(t *testing.T) {
 // channel.
 func TestACMEManager_StartTwice(t *testing.T) {
 	t.Parallel()
-	m, _ := newStubManager(t, &stubSolver{typ: "http-01"})
-	if err := m.start(); err == nil {
+	m, first, _ := startStubManager(t, &stubSolver{typ: "http-01"})
+	unexpected, err := m.start()
+	if err == nil {
+		unexpected.stop()
 		t.Fatal("starting an already started manager must fail")
 	}
 	// Stopping releases the lifecycle, so a restart is allowed again.
-	m.stop()
-	if err := m.start(); err != nil {
+	first.stop()
+	second, err := m.start()
+	if err != nil {
 		t.Fatalf("restart after stop: %v", err)
 	}
-	m.stop()
+	second.stop()
+}
+
+// TestACMERun_StoppedGenerationCannotAffectRestart proves that cancellation
+// and warm-up belong to the returned run, not mutable manager fields. A stale
+// handle cannot cancel or perform work through the later generation.
+func TestACMERun_StoppedGenerationCannotAffectRestart(t *testing.T) {
+	t.Parallel()
+	m, first, fake := startStubManager(t, &stubSolver{typ: "http-01"})
+	first.stop()
+	if m.runContext().Err() == nil {
+		t.Fatal("stopped manager admitted unowned ACME work between runs")
+	}
+	second, err := m.start()
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	defer second.stop()
+
+	first.stop()
+	first.warm()
+	if second.ctx.Err() != nil {
+		t.Fatal("stale stop cancelled the later ACME run")
+	}
+	if got := fake.count("/new-order"); got != 0 {
+		t.Fatalf("stale warm-up created %d orders through the later run", got)
+	}
 }
 
 // TestACMEManager_PersistCertWritesAPair pins atomic persistence: the
@@ -239,15 +269,16 @@ func TestACMEManager_PersistCertWritesAPair(t *testing.T) {
 func TestACMEManager_RenewalRefreshesCache(t *testing.T) {
 	t.Parallel()
 	m, _ := newPinnedManager(t)
-	if err := m.start(); err != nil {
+	run, err := m.start()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer m.stop()
+	defer run.stop()
 
 	expiring := testCertificate(t, time.Now().Add(7*24*time.Hour))
 	m.cache["pin.example"] = expiring
 
-	m.renewExpiring(context.Background())
+	run.renewExpiring()
 
 	m.mu.RLock()
 	got := m.cache["pin.example"]

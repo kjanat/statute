@@ -18,6 +18,23 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
+type closeErrorListener struct {
+	err    error
+	closes int
+}
+
+func (*closeErrorListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
+func (l *closeErrorListener) Close() error {
+	l.closes++
+	return l.err
+}
+func (*closeErrorListener) Addr() net.Addr { return testNetAddr("127.0.0.1:4321") }
+
+type testNetAddr string
+
+func (a testNetAddr) Network() string { return "tcp" }
+func (a testNetAddr) String() string  { return string(a) }
+
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
 // matches in declaration order; the first hit wins.
 func TestRouterHostAndPath(t *testing.T) {
@@ -42,7 +59,7 @@ func TestRouterHostAndPath(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 	h := srv.buildRouter()
@@ -93,7 +110,7 @@ func TestRouterNotFound(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 
@@ -269,6 +286,102 @@ func TestStartMetricsFailureReleasesListeners(t *testing.T) {
 	mustServeMetrics(t, metricsAddr)
 }
 
+// TestStartAttemptRollbackJoinsTypedCloseError ensures a failed rollback
+// keeps both the original Start cause and the typed resource identity, and
+// that ownership cleanup is exact-once.
+func TestStartAttemptRollbackJoinsTypedCloseError(t *testing.T) {
+	startErr := errors.New("late bind failed")
+	closeErr := errors.New("close failed")
+	listener := &closeErrorListener{err: closeErr}
+	attempt := startAttempt{listeners: boundListeners{http: []*boundHTTP{{
+		server:   &http.Server{Addr: "127.0.0.1:4321", ReadHeaderTimeout: time.Second},
+		listener: listener,
+	}}}}
+
+	err := errors.Join(startErr, attempt.rollback())
+	if !errors.Is(err, startErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("joined error lost a cause: %v", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "rollback close listener 127.0.0.1:4321") {
+		t.Fatalf("rollback error lost resource kind/address: %v", err)
+	}
+	if err := attempt.rollback(); err != nil {
+		t.Fatalf("second rollback: %v", err)
+	}
+	if listener.closes != 1 {
+		t.Fatalf("listener closed %d times, want exactly once", listener.closes)
+	}
+}
+
+// TestStartDoesNotServeBeforeLateBindCommits blocks the final metrics bind
+// after the content socket exists. A complete HTTP request may connect to the
+// kernel backlog, but no handler can answer until every bind succeeds and the
+// attempt commits.
+func TestStartDoesNotServeBeforeLateBindCommits(t *testing.T) {
+	contentAddr := reserveAddr(t)
+	metricsAddr := reserveAddr(t)
+	r := mustResolve(t, Config{
+		Listeners:     Listeners{HTTP("127.0.0.1:0")},
+		Routes:        Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Observability: Observability{Metrics: Prometheus(metricsAddr, "/metrics")},
+		Shutdown:      Shutdown{GracePeriod: "2s"},
+	})
+	r.Listeners[0].Addr = contentAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	lateBind := errors.New("deliberate metrics bind failure")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var lc net.ListenConfig
+	srv.listenTCP = func(ctx context.Context, network, addr string) (net.Listener, error) {
+		if addr == metricsAddr {
+			close(entered)
+			<-release
+			return nil, lateBind
+		}
+		return lc.Listen(ctx, network, addr)
+	}
+	startDone := make(chan error, 1)
+	go func() { startDone <- srv.Start() }()
+	<-entered
+
+	type requestResult struct {
+		resp *http.Response
+		err  error
+	}
+	requestDone := make(chan requestResult, 1)
+	client := &http.Client{Timeout: 2 * time.Second}
+	go func() {
+		resp, err := client.Get("http://" + contentAddr + "/x")
+		requestDone <- requestResult{resp: resp, err: err}
+	}()
+	select {
+	case got := <-requestDone:
+		if got.resp != nil {
+			_ = got.resp.Body.Close()
+		}
+		t.Fatalf("request completed before late bind resolved: response=%v err=%v", got.resp, got.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-startDone; !errors.Is(err, lateBind) {
+		t.Fatalf("Start error = %v, want late bind failure", err)
+	}
+	got := <-requestDone
+	if got.resp != nil {
+		_ = got.resp.Body.Close()
+		t.Fatalf("failed Start served a response: %s", got.resp.Status)
+	}
+	if got.err == nil {
+		t.Fatal("failed Start request returned neither a response nor an error")
+	}
+	mustBindNow(t, contentAddr)
+}
+
 // TestStartFailureStopsHealthCheckers — the rollback owes more than
 // sockets: startPrerequisites started the static pools' health checkers,
 // so a failed Start must stop them instead of leaving probe goroutines
@@ -307,7 +420,6 @@ func TestStartFailureStopsHealthCheckers(t *testing.T) {
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded despite a conflicting listener address")
 	}
-	assertHealthCheckerStopped(t, srv.pools["api"])
 	// Settle before sampling: stop waits only the probe's client side,
 	// so the backend can count one more hit just after Start returns.
 	time.Sleep(50 * time.Millisecond)
@@ -330,6 +442,33 @@ func TestStartFailureStopsHealthCheckers(t *testing.T) {
 	}()
 	waitForProbes(t, probes, stopped)
 	mustServeProxyOK(t, addr)
+}
+
+// TestRunningPool_StoppedGenerationCannotStopRestart pins the pool-level
+// transfer: restart reuses configured handler/transport state but receives a
+// distinct live health generation that a stale run cannot retire.
+func TestRunningPool_StoppedGenerationCannotStopRestart(t *testing.T) {
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP(":0")},
+		Upstreams: Upstreams{"api": Pool{Backends: []Backend{{Address: "127.0.0.1:1"}}}},
+		Routes:    Routes{Match("/*").ProxyTo("api")},
+	})
+	ph, err := newPoolHandler(r.Upstreams["api"])
+	if err != nil {
+		t.Fatalf("newPoolHandler: %v", err)
+	}
+	first := ph.start()
+	first.shutdown()
+	second := ph.start()
+	defer second.shutdown()
+
+	first.shutdown()
+	if !second.isLive() || !second.health.active.Load() {
+		t.Fatal("stale pool run stopped the later generation")
+	}
+	if first.handler.transport != second.handler.transport {
+		t.Fatal("pool restart replaced reusable transport state")
+	}
 }
 
 // TestStartRetryResetsBackendHealth — health state a rolled-back attempt
@@ -406,18 +545,6 @@ func TestStartRetryResetsBackendHealth(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "primary" {
 		t.Fatalf("request served by %q, want the reset primary", body)
-	}
-}
-
-// assertHealthCheckerStopped fails unless the pool's prober goroutine has
-// already exited. The rollback stops it synchronously, so the release owes
-// no polling grace and a closed done channel is the exact invariant.
-func assertHealthCheckerStopped(t *testing.T, ph *poolHandler) {
-	t.Helper()
-	select {
-	case <-ph.hc.done:
-	default:
-		t.Fatal("health checker goroutine still running after the failed Start")
 	}
 }
 
@@ -725,7 +852,7 @@ func TestAltSvcDropsWhenHTTP3Dies(t *testing.T) {
 	waitForAltSvc(t, tcpAddr, true)
 	// Kill the serve loop out from under the server: its socket going
 	// away is the unexpected-death path.
-	if err := srv.http3Servers[0].conn.Close(); err != nil {
+	if err := srv.run.listeners.http3[0].conn.Close(); err != nil {
 		t.Fatal(err)
 	}
 	waitForAltSvc(t, tcpAddr, false)
@@ -817,6 +944,68 @@ func TestShutdownErrorChannelHoldsAllProducers(t *testing.T) {
 	}
 }
 
+// TestShutdownRetriesListenerDrainAfterDeadline proves that a fresh Shutdown
+// can finish draining after an earlier call timed out.
+func TestShutdownRetriesListenerDrainAfterDeadline(t *testing.T) {
+	addr := reserveAddr(t)
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Routes: Routes{
+			Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently),
+		},
+		Shutdown: Shutdown{GracePeriod: "50ms"},
+	})
+	r.Listeners[0].Addr = addr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	srv.listeners[0].Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	type requestResult struct {
+		resp *http.Response
+		err  error
+	}
+	requestDone := make(chan requestResult, 1)
+	go func() {
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + addr + "/block")
+		requestDone <- requestResult{resp: resp, err: err}
+	}()
+	<-entered
+	if err := srv.Shutdown(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Shutdown error = %v, want deadline exceeded", err)
+	}
+	close(release)
+	result := <-requestDone
+	if result.err != nil {
+		t.Fatalf("blocking request: %v", result.err)
+	}
+	_ = result.resp.Body.Close()
+	if result.resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("blocking request status = %d, want 204", result.resp.StatusCode)
+	}
+	if err := srv.Shutdown(); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
+	mustBindNow(t, addr)
+}
+
 // reserveUDPAddr is reserveAddr for a UDP port: bind ephemeral, close,
 // return the address for the HTTP/3 listener under test to claim.
 func reserveUDPAddr(t *testing.T) string {
@@ -885,7 +1074,7 @@ func TestRedirectListener_AlsoServesACMEChallenge(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 
@@ -1005,7 +1194,7 @@ func TestBuildMetricsServer(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 

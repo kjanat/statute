@@ -30,7 +30,7 @@ func clientIPRouter(t *testing.T) http.Handler {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 	return srv.buildRouter()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"statute.kjanat.dev/resolved"
@@ -16,13 +17,23 @@ type healthChecker struct {
 	host     string
 	backends []*backendState
 	client   *http.Client
+}
+
+// healthRun owns one generation of a health checker's cancellation,
+// completion, and threshold counters. Keeping those fields off the reusable
+// healthChecker prevents a stopped Start attempt from cancelling or updating a
+// later attempt.
+type healthRun struct {
+	checker *healthChecker
 
 	mu        sync.Mutex
 	successes map[*backendState]int
 	failures  map[*backendState]int
 
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel   context.CancelFunc
+	done     chan struct{}
+	stopOnce sync.Once
+	active   atomic.Bool
 }
 
 // newHealthChecker builds a prober whose client rides the given transport —
@@ -39,31 +50,33 @@ func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transp
 			Timeout:   cfg.Timeout,
 			Transport: transport,
 		},
-		successes: make(map[*backendState]int),
-		failures:  make(map[*backendState]int),
 	}
 }
 
-func (h *healthChecker) start() {
+func (h *healthChecker) start() *healthRun {
+	r := &healthRun{
+		checker:   h,
+		successes: make(map[*backendState]int),
+		failures:  make(map[*backendState]int),
+	}
+	r.active.Store(true)
 	if !h.cfg.Enabled || len(h.backends) == 0 {
-		return
+		return r
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	h.cancel = cancel
-	h.done = make(chan struct{})
+	r.cancel = cancel
+	r.done = make(chan struct{})
 	// Reset counters and health bits: a restart follows a failed Start,
 	// whose backends never served, so nothing it observed may survive.
-	h.successes = make(map[*backendState]int)
-	h.failures = make(map[*backendState]int)
 	for _, b := range h.backends {
 		b.markHealthy(true)
 	}
 
 	go func() {
-		defer close(h.done)
+		defer close(r.done)
 		// Run an immediate probe so a backend whose first probe fails does
 		// not absorb traffic during the first interval.
-		h.probeAll(ctx)
+		r.probeAll(ctx)
 		t := time.NewTicker(h.cfg.Interval)
 		defer t.Stop()
 		for {
@@ -71,27 +84,34 @@ func (h *healthChecker) start() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				h.probeAll(ctx)
+				r.probeAll(ctx)
 			}
 		}
 	}()
+	return r
 }
 
-func (h *healthChecker) stop() {
-	if h.cancel == nil {
+func (r *healthRun) stop() {
+	if r == nil {
 		return
 	}
-	h.cancel()
-	<-h.done
+	r.stopOnce.Do(func() {
+		r.active.Store(false)
+		if r.cancel == nil {
+			return
+		}
+		r.cancel()
+		<-r.done
+	})
 }
 
-func (h *healthChecker) probeAll(ctx context.Context) {
+func (r *healthRun) probeAll(ctx context.Context) {
 	var wg sync.WaitGroup
-	for _, b := range h.backends {
+	for _, b := range r.checker.backends {
 		wg.Add(1)
 		go func(b *backendState) {
 			defer wg.Done()
-			h.probe(ctx, b)
+			r.probe(ctx, b)
 		}(b)
 	}
 	wg.Wait()
@@ -104,10 +124,11 @@ func isCheckerStopped(ctx context.Context) bool {
 	return ctx.Err() != nil
 }
 
-func (h *healthChecker) probe(ctx context.Context, b *backendState) {
+func (r *healthRun) probe(ctx context.Context, b *backendState) {
+	h := r.checker
 	target, err := backendURL(b.backend)
 	if err != nil {
-		h.recordFailure(b)
+		r.recordFailure(b)
 		return
 	}
 	target.Path = h.cfg.Path
@@ -116,7 +137,7 @@ func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 	defer cancel()
 	req, err := http.NewRequestWithContext(pCtx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		h.recordFailure(b)
+		r.recordFailure(b)
 		return
 	}
 	if h.host != "" {
@@ -127,33 +148,45 @@ func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 		if isCheckerStopped(ctx) {
 			return
 		}
-		h.recordFailure(b)
+		r.recordFailure(b)
 		return
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		h.recordSuccess(b)
+		r.recordSuccess(b)
 		return
 	}
-	h.recordFailure(b)
+	r.recordFailure(b)
 }
 
-func (h *healthChecker) recordSuccess(b *backendState) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.failures[b] = 0
-	h.successes[b]++
-	if h.successes[b] >= h.cfg.Healthy {
+func (r *healthRun) recordSuccess(b *backendState) {
+	if !r.active.Load() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.active.Load() {
+		return
+	}
+	r.failures[b] = 0
+	r.successes[b]++
+	if r.successes[b] >= r.checker.cfg.Healthy {
 		b.markHealthy(true)
 	}
 }
 
-func (h *healthChecker) recordFailure(b *backendState) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.successes[b] = 0
-	h.failures[b]++
-	if h.failures[b] >= h.cfg.Unhealthy {
+func (r *healthRun) recordFailure(b *backendState) {
+	if !r.active.Load() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.active.Load() {
+		return
+	}
+	r.successes[b] = 0
+	r.failures[b]++
+	if r.failures[b] >= r.checker.cfg.Unhealthy {
 		b.markHealthy(false)
 	}
 }

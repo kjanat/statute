@@ -13,12 +13,14 @@ import (
 )
 
 const (
-	pluginName     = "statutelifecycle"
-	methodStart    = "start"
-	methodStartAPI = "Start"
-	methodStop     = "stop"
-	methodShutdown = "Shutdown"
-	methodClose    = "Close"
+	pluginName          = "statutelifecycle"
+	methodStart         = "start"
+	methodStartAPI      = "Start"
+	methodStop          = "stop"
+	methodStopRun       = "stopRun"
+	methodShutdownLocal = "shutdown"
+	methodShutdown      = "Shutdown"
+	methodClose         = "Close"
 )
 
 // Analyzer checks Statute-specific lifecycle ownership invariants.
@@ -52,17 +54,33 @@ type functionInfo struct {
 	publishes bool
 }
 
+type cleanupMethod struct {
+	fn   *types.Func
+	info *functionInfo
+}
+
+type lifecycleOwner struct {
+	cleanups []cleanupMethod
+}
+
+type lifecycleStart struct {
+	start        *functionInfo
+	ownerResults map[int]bool
+	owners       []lifecycleOwner
+}
+
 func run(pass *analysis.Pass) (any, error) {
 	parents := parentMap(pass.Files)
 	functions := collectFunctions(pass)
 	propagatePublishers(pass, functions)
+	lifecycle := collectLifecycleStarts(functions)
 
 	for _, info := range functions {
 		checkPublishBeforeFailure(pass, info, functions)
-		checkConstructorStartsLifecycle(pass, info)
+		checkLifecycleStartCalls(pass, info, lifecycle, parents)
 		checkIgnoredLifecycleCalls(pass, info, functions, parents)
 	}
-	checkGoroutineOwnership(pass, functions)
+	checkGoroutineOwnership(pass, lifecycle)
 
 	return nil, nil
 }
@@ -272,11 +290,70 @@ func returnMayFail(fn *types.Func, ret *ast.ReturnStmt) bool {
 	return false
 }
 
-//nolint:gocyclo // type-aware lifecycle matching is intentionally conservative and explicit.
-func checkConstructorStartsLifecycle(pass *analysis.Pass, info *functionInfo) {
-	if !strings.HasPrefix(info.fn.Name(), "new") || len(info.fn.Name()) == len("new") {
-		return
+func collectLifecycleStarts(functions map[*types.Func]*functionInfo) map[*types.Func]*lifecycleStart {
+	out := make(map[*types.Func]*lifecycleStart)
+	for _, info := range functions {
+		sig, _ := info.fn.Type().(*types.Signature)
+		if sig == nil || sig.Recv() == nil || !isStartMethodName(info.fn.Name()) {
+			continue
+		}
+		relation := &lifecycleStart{start: info, ownerResults: make(map[int]bool)}
+		for i := range sig.Results().Len() {
+			methods := cleanupMethods(sig.Results().At(i).Type(), functions)
+			if len(methods) == 0 {
+				continue
+			}
+			relation.ownerResults[i] = true
+			relation.owners = append(relation.owners, lifecycleOwner{cleanups: methods})
+		}
+		if len(relation.owners) == 0 {
+			methods := cleanupMethods(sig.Recv().Type(), functions)
+			if len(methods) > 0 {
+				relation.owners = append(relation.owners, lifecycleOwner{cleanups: methods})
+			}
+		}
+		if len(relation.owners) > 0 {
+			out[info.fn] = relation
+		}
 	}
+	return out
+}
+
+func cleanupMethods(owner types.Type, functions map[*types.Func]*functionInfo) []cleanupMethod {
+	sets := []*types.MethodSet{types.NewMethodSet(owner)}
+	if _, pointer := types.Unalias(owner).(*types.Pointer); !pointer {
+		if named := namedType(owner); named != nil {
+			sets = append(sets, types.NewMethodSet(types.NewPointer(named)))
+		}
+	}
+	var out []cleanupMethod
+	for _, set := range sets {
+		for method := range set.Methods() {
+			fn, _ := method.Obj().(*types.Func)
+			if fn == nil || !isCleanupMethodName(fn.Name()) {
+				continue
+			}
+			out = append(out, cleanupMethod{fn: fn, info: functions[fn]})
+		}
+	}
+	return uniqueCleanupMethods(out)
+}
+
+func uniqueCleanupMethods(methods []cleanupMethod) []cleanupMethod {
+	seen := make(map[*types.Func]bool)
+	out := make([]cleanupMethod, 0, len(methods))
+	for _, method := range methods {
+		if seen[method.fn] {
+			continue
+		}
+		seen[method.fn] = true
+		out = append(out, method)
+	}
+	return out
+}
+
+func checkLifecycleStartCalls(pass *analysis.Pass, info *functionInfo, lifecycle map[*types.Func]*lifecycleStart, parents map[ast.Node]ast.Node) {
+	constructor := strings.HasPrefix(info.fn.Name(), "new") && len(info.fn.Name()) > len("new")
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
 		if node == nil {
 			return false
@@ -289,29 +366,68 @@ func checkConstructorStartsLifecycle(pass *analysis.Pass, info *functionInfo) {
 			return true
 		}
 		fn := calledFunction(pass, call)
-		if fn == nil || (fn.Name() != methodStart && fn.Name() != methodStartAPI) {
+		relation := lifecycle[fn]
+		if relation == nil {
 			return true
 		}
-		sig, _ := fn.Type().(*types.Signature)
-		if sig == nil || sig.Recv() == nil || !hasStopMethod(sig.Recv().Type()) {
+		if constructor {
+			pass.Reportf(call.Pos(),
+				"[SLC101] constructor %s starts lifecycle-owned state; construct it here and start it from the owning Start phase so rollback can stop it",
+				info.fn.Name())
 			return true
 		}
-		pass.Reportf(call.Pos(),
-			"[SLC101] constructor %s starts lifecycle-owned state; construct it here and start it from the owning Start phase so rollback can stop it",
-			info.fn.Name())
+		if len(relation.ownerResults) > 0 && discardedLifecycleOwner(call, relation.ownerResults, parents) {
+			pass.Reportf(call.Pos(),
+				"[SLC101] discarded lifecycle owner returned by %s; retain it so cleanup can stop the started generation",
+				fn.Name())
+		}
 		return true
 	})
 }
 
-func hasStopMethod(recv types.Type) bool {
-	set := types.NewMethodSet(recv)
-	for method := range set.Methods() {
-		name := method.Obj().Name()
-		if name == methodStop || name == methodShutdown || name == methodClose {
-			return true
+func discardedLifecycleOwner(call *ast.CallExpr, ownerResults map[int]bool, parents map[ast.Node]ast.Node) bool {
+	parent := enclosingExpressionParent(call, parents)
+	switch p := parent.(type) {
+	case *ast.ExprStmt, *ast.GoStmt, *ast.DeferStmt:
+		return true
+	case *ast.AssignStmt:
+		return assignmentDiscardsOwner(call, p, ownerResults)
+	default:
+		return false
+	}
+}
+
+func enclosingExpressionParent(expr ast.Expr, parents map[ast.Node]ast.Node) ast.Node {
+	parent := parents[expr]
+	for {
+		paren, ok := parent.(*ast.ParenExpr)
+		if !ok {
+			return parent
+		}
+		parent = parents[paren]
+	}
+}
+
+func assignmentDiscardsOwner(call *ast.CallExpr, assign *ast.AssignStmt, ownerResults map[int]bool) bool {
+	if len(assign.Rhs) == 1 && assign.Rhs[0] == call {
+		for result := range ownerResults {
+			if result >= len(assign.Lhs) || isBlankIdent(assign.Lhs[result]) {
+				return true
+			}
+		}
+		return false
+	}
+	for i, rhs := range assign.Rhs {
+		if rhs == call {
+			return ownerResults[0] && (i >= len(assign.Lhs) || isBlankIdent(assign.Lhs[i]))
 		}
 	}
 	return false
+}
+
+func isBlankIdent(expr ast.Expr) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == "_"
 }
 
 func checkIgnoredLifecycleCalls(pass *analysis.Pass, info *functionInfo, functions map[*types.Func]*functionInfo, parents map[ast.Node]ast.Node) {
@@ -345,13 +461,21 @@ func localPublisherReturnsError(fn *types.Func, functions map[*types.Func]*funct
 
 func isLifecycleFunction(name string) bool {
 	lower := strings.ToLower(name)
-	return lower == methodStart || lower == strings.ToLower(methodShutdown) || lower == methodStop ||
+	return isStartMethodName(name) || isCleanupMethodName(name) ||
 		strings.HasPrefix(lower, "unwind") || strings.HasPrefix(lower, "rollback")
 }
 
 func isCleanupFunction(fn *types.Func) bool {
-	switch fn.Name() {
-	case methodClose, methodShutdown:
+	return isCleanupMethodName(fn.Name())
+}
+
+func isStartMethodName(name string) bool {
+	return name == methodStart || name == methodStartAPI
+}
+
+func isCleanupMethodName(name string) bool {
+	switch name {
+	case methodStop, methodStopRun, methodShutdownLocal, methodShutdown, methodClose:
 		return true
 	default:
 		return false
@@ -383,54 +507,53 @@ func callIgnored(call *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
 	return false
 }
 
-//nolint:gocyclo // paired start/stop accounting is easiest to audit in one place.
-func checkGoroutineOwnership(pass *analysis.Pass, functions map[*types.Func]*functionInfo) {
-	type methods struct {
-		start *functionInfo
-		stop  *functionInfo
-	}
-	byRecv := make(map[*types.TypeName]*methods)
-	for _, info := range functions {
-		sig, _ := info.fn.Type().(*types.Signature)
-		if sig == nil || sig.Recv() == nil {
+func checkGoroutineOwnership(pass *analysis.Pass, lifecycle map[*types.Func]*lifecycleStart) {
+	for _, relation := range lifecycle {
+		goCount := countLifecycleLaunches(pass, relation.start.decl.Body)
+		if goCount == 0 {
 			continue
 		}
-		named := namedType(sig.Recv().Type())
-		if named == nil {
-			continue
+		for _, owner := range relation.owners {
+			cleanupName, bestWait, complete := bestCleanupEvidence(pass, owner.cleanups, goCount)
+			if complete || !hasLocalCleanup(owner.cleanups) {
+				continue
+			}
+			pass.Reportf(relation.start.decl.Name.Pos(),
+				"[SLC103] %s launches %d lifecycle goroutine(s) but %s visibly waits for only %d completion signal(s); cleanup may return while owned goroutines still run",
+				relation.start.fn.Name(), goCount, cleanupName, bestWait)
 		}
-		entry := byRecv[named.Obj()]
-		if entry == nil {
-			entry = &methods{}
-			byRecv[named.Obj()] = entry
-		}
-		switch info.fn.Name() {
-		case methodStart, methodStartAPI:
-			entry.start = info
-		case methodStop, methodShutdown:
-			entry.stop = info
-		}
-	}
-
-	for _, pair := range byRecv {
-		if pair.start == nil || pair.stop == nil {
-			continue
-		}
-		goCount := countGoStatements(pair.start.decl.Body)
-		if goCount == 0 || hasWaitGroupWait(pass, pair.stop.decl.Body) {
-			continue
-		}
-		waitCount := countReceives(pair.stop.decl.Body)
-		if waitCount >= goCount {
-			continue
-		}
-		pass.Reportf(pair.start.decl.Name.Pos(),
-			"[SLC103] %s launches %d lifecycle goroutine(s) but %s visibly waits for only %d completion signal(s); stop may return while owned goroutines still run",
-			pair.start.fn.Name(), goCount, pair.stop.fn.Name(), waitCount)
 	}
 }
 
-func countGoStatements(body *ast.BlockStmt) int {
+func bestCleanupEvidence(pass *analysis.Pass, cleanups []cleanupMethod, goCount int) (string, int, bool) {
+	bestName := "cleanup"
+	bestWait := 0
+	for _, cleanup := range cleanups {
+		if cleanup.info == nil || cleanup.info.decl.Body == nil {
+			continue
+		}
+		evidence := cleanupEvidence(pass, cleanup.info.decl.Body)
+		if evidence.waitGroup || evidence.receives >= goCount {
+			return cleanup.fn.Name(), evidence.receives, true
+		}
+		if evidence.receives >= bestWait {
+			bestName = cleanup.fn.Name()
+			bestWait = evidence.receives
+		}
+	}
+	return bestName, bestWait, false
+}
+
+func hasLocalCleanup(cleanups []cleanupMethod) bool {
+	for _, cleanup := range cleanups {
+		if cleanup.info != nil && cleanup.info.decl.Body != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func countLifecycleLaunches(pass *analysis.Pass, body *ast.BlockStmt) int {
 	count := 0
 	ast.Inspect(body, func(node ast.Node) bool {
 		if node == nil {
@@ -442,21 +565,7 @@ func countGoStatements(body *ast.BlockStmt) int {
 		if _, ok := node.(*ast.GoStmt); ok {
 			count++
 		}
-		return true
-	})
-	return count
-}
-
-func countReceives(body *ast.BlockStmt) int {
-	count := 0
-	ast.Inspect(body, func(node ast.Node) bool {
-		if node == nil {
-			return false
-		}
-		if _, ok := node.(*ast.FuncLit); ok {
-			return false
-		}
-		if unary, ok := node.(*ast.UnaryExpr); ok && unary.Op == token.ARROW {
+		if call, ok := node.(*ast.CallExpr); ok && isSyncMethodCall(pass, call, "WaitGroup", "Go") {
 			count++
 		}
 		return true
@@ -464,35 +573,57 @@ func countReceives(body *ast.BlockStmt) int {
 	return count
 }
 
-//nolint:gocyclo // receiver/type checks keep arbitrary Wait methods from silencing lifecycle findings.
-func hasWaitGroupWait(pass *analysis.Pass, body *ast.BlockStmt) bool {
-	found := false
-	ast.Inspect(body, func(node ast.Node) bool {
-		if node == nil || found {
-			return false
-		}
-		if _, ok := node.(*ast.FuncLit); ok {
-			return false
-		}
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
+type waitEvidence struct {
+	receives  int
+	waitGroup bool
+}
+
+func cleanupEvidence(pass *analysis.Pass, body *ast.BlockStmt) waitEvidence {
+	var evidence waitEvidence
+	var inspect func(ast.Node)
+	inspect = func(root ast.Node) {
+		ast.Inspect(root, func(node ast.Node) bool {
+			if node == nil {
+				return false
+			}
+			if _, ok := node.(*ast.FuncLit); ok {
+				return false
+			}
+			if unary, ok := node.(*ast.UnaryExpr); ok && unary.Op == token.ARROW {
+				evidence.receives++
+			}
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if isSyncMethodCall(pass, call, "WaitGroup", "Wait") {
+				evidence.waitGroup = true
+			}
+			if isSyncMethodCall(pass, call, "Once", "Do") {
+				for _, arg := range call.Args {
+					if lit, ok := arg.(*ast.FuncLit); ok {
+						inspect(lit.Body)
+					}
+				}
+			}
 			return true
-		}
-		fn := calledFunction(pass, call)
-		if fn == nil || fn.Name() != "Wait" {
-			return true
-		}
-		sig, _ := fn.Type().(*types.Signature)
-		if sig == nil || sig.Recv() == nil {
-			return true
-		}
-		named := namedType(sig.Recv().Type())
-		if named != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "sync" && named.Obj().Name() == "WaitGroup" {
-			found = true
-		}
-		return true
-	})
-	return found
+		})
+	}
+	inspect(body)
+	return evidence
+}
+
+func isSyncMethodCall(pass *analysis.Pass, call *ast.CallExpr, owner, method string) bool {
+	fn := calledFunction(pass, call)
+	if fn == nil || fn.Name() != method {
+		return false
+	}
+	sig, _ := fn.Type().(*types.Signature)
+	if sig == nil || sig.Recv() == nil {
+		return false
+	}
+	named := namedType(sig.Recv().Type())
+	return named != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "sync" && named.Obj().Name() == owner
 }
 
 func parentMap(files []*ast.File) map[ast.Node]ast.Node {
@@ -527,9 +658,13 @@ func calledFunction(pass *analysis.Pass, call *ast.CallExpr) *types.Func {
 }
 
 func namedType(t types.Type) *types.Named {
-	t = types.Unalias(t)
-	if pointer, ok := t.(*types.Pointer); ok {
-		t = types.Unalias(pointer.Elem())
+	for {
+		t = types.Unalias(t)
+		pointer, ok := t.(*types.Pointer)
+		if !ok {
+			break
+		}
+		t = pointer.Elem()
 	}
 	named, _ := t.(*types.Named)
 	return named

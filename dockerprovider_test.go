@@ -136,6 +136,46 @@ func TestDockerSyncBuildsRoutes(t *testing.T) {
 	}
 }
 
+// TestDockerRun_RollbackRetryDoesNotReuseRetiredGeneration exercises the
+// provider run boundary directly: stopping one attempt waits its workers,
+// retires its pools, and a retry builds fresh state. Reusing the stale handle
+// afterward must not tear down the later generation.
+func TestDockerRun_RollbackRetryDoesNotReuseRetiredGeneration(t *testing.T) {
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{}, []fakeDaemonContainer{{
+		name: "web-1", ip: "127.0.0.1", port: 1,
+		labels: map[string]string{"statute.enable": "true", "statute.host": "app.example.com"},
+	}})
+
+	first, err := p.start()
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	firstTable := srv.dynamic.Load()
+	firstPool := firstTable.pools["web-1"]
+	first.stop()
+	if srv.dynamic.Load() != nil {
+		t.Fatal("stopped Docker run left its generation published")
+	}
+	if firstPool.isLive() {
+		t.Fatal("stopped Docker run left its pool live")
+	}
+
+	second, err := p.start()
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	defer second.stop()
+	secondTable := srv.dynamic.Load()
+	secondPool := secondTable.pools["web-1"]
+	if secondPool == firstPool {
+		t.Fatal("retry adopted a retired pool by fingerprint")
+	}
+	first.stop()
+	if srv.dynamic.Load() != secondTable || !secondPool.isLive() {
+		t.Fatal("stale Docker run stopped the later generation")
+	}
+}
+
 // TestDockerDynamicRoutesThroughRouter — dynamic routes dispatch through
 // buildRouter's fallback once the (empty) static table misses: the request
 // reaches the discovered pool (whose refused backend answers 502) instead

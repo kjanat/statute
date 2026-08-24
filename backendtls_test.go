@@ -49,7 +49,7 @@ func proxyThrough(t *testing.T, cfg Config) *httptest.ResponseRecorder {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 	return runRequest(t, srv.buildRouter(), httptest.NewRequest("GET", "http://x/", nil))
@@ -107,7 +107,7 @@ func TestHealthCheckSharesPoolTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newPoolHandler: %v", err)
 	}
-	t.Cleanup(ph.shutdown)
+	t.Cleanup(ph.transport.CloseIdleConnections)
 	if ph.hc.client.Transport != http.RoundTripper(ph.transport) {
 		t.Error("health checker does not share the pool transport")
 	}

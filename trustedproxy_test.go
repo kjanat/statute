@@ -283,7 +283,7 @@ func TestTrustedProxyListenerWiring(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 	if len(srv.listeners) != 1 || len(srv.http3Servers) != 1 {

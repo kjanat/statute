@@ -389,7 +389,7 @@ func TestHeaderMiddlewareThroughProxy(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 
@@ -444,7 +444,7 @@ func TestForwardedHeaderAddThroughProxy(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 

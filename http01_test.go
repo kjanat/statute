@@ -417,11 +417,12 @@ func TestHTTP01ManagerIssuesEndToEnd(t *testing.T) {
 	fake := newFakeACME(t, m.wrapHTTPChallenges(notFound))
 	m.directoryURL = fake.url("/dir")
 
-	if err := m.start(); err != nil {
+	run, err := m.start()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer m.stop()
-	m.warm()
+	defer run.stop()
+	run.warm()
 
 	cert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
 	if err != nil {
@@ -467,10 +468,11 @@ func assertReloadsFromDisk(t *testing.T, fake *fakeACME, src *resolved.AutoTLS, 
 		t.Fatal(err)
 	}
 	m.directoryURL = fake.url("/dir")
-	if err := m.start(); err != nil {
+	run, err := m.start()
+	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	defer m.stop()
+	defer run.stop()
 	cert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
 	if err != nil {
 		t.Fatalf("GetCertificate from disk: %v", err)
@@ -620,10 +622,11 @@ func newPinnedManager(t *testing.T) (*acmeManager, *fakeACME) {
 func TestHTTP01_ConcurrentHandshakesShareOneOrder(t *testing.T) {
 	t.Parallel()
 	m, fake := newPinnedManager(t)
-	if err := m.start(); err != nil {
+	run, err := m.start()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer m.stop()
+	defer run.stop()
 
 	const callers = 4
 	certs := make([]*tls.Certificate, callers)
@@ -662,10 +665,11 @@ func TestHTTP01_FailedIssuanceCoolsDown(t *testing.T) {
 	fake.mu.Lock()
 	fake.rejectValidation = true
 	fake.mu.Unlock()
-	if err := m.start(); err != nil {
+	run, err := m.start()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer m.stop()
+	defer run.stop()
 
 	_, first := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
 	if first == nil {
@@ -700,28 +704,29 @@ func TestHTTP01_InvalidAuthorizationFailsFast(t *testing.T) {
 	fake.mu.Lock()
 	fake.rejectValidation = true
 	fake.mu.Unlock()
-	if err := m.start(); err != nil {
+	run, err := m.start()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer m.stop()
+	defer run.stop()
 
 	done := make(chan error, 1)
 	go func() {
 		_, err := m.getOrIssue(context.Background(), "pin.example")
 		done <- err
 	}()
-	var err error
+	var issueErr error
 	select {
-	case err = <-done:
+	case issueErr = <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatal("issuance did not return after the authorization went invalid; it polled to the deadline")
 	}
-	if err == nil {
+	if issueErr == nil {
 		t.Fatal("issuance must fail on an invalid authorization")
 	}
 	var authzErr *acme.AuthorizationError
-	if !errors.As(err, &authzErr) {
-		t.Fatalf("error is %T (%v), want *acme.AuthorizationError", err, err)
+	if !errors.As(issueErr, &authzErr) {
+		t.Fatalf("error is %T (%v), want *acme.AuthorizationError", issueErr, issueErr)
 	}
 	if authzErr.Identifier != "pin.example" {
 		t.Errorf("AuthorizationError.Identifier = %q, want %q", authzErr.Identifier, "pin.example")
@@ -752,7 +757,8 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 	fake.authzReached, fake.authzGate = reached, gate
 	fake.mu.Unlock()
 
-	if err := m.start(); err != nil {
+	first, err := m.start()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	done := make(chan error, 1)
@@ -760,9 +766,9 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 		_, err := m.issueOnce(context.Background(), "pin.example")
 		done <- err
 	}()
-	<-reached // the order is now in flight, blocked at the CA
-	m.stop()  // stop as the Start rollback does, cancelling it mid-order
-	err := <-done
+	<-reached    // the order is now in flight, blocked at the CA
+	first.stop() // stop as the Start rollback does, cancelling it mid-order
+	err = <-done
 	if err == nil {
 		t.Fatal("issuance succeeded despite stop cancelling its order")
 	}
@@ -773,10 +779,11 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 
 	// A restarted manager must issue immediately, not replay the
 	// cancellation until the cooldown elapses.
-	if err := m.start(); err != nil {
+	second, err := m.start()
+	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	defer m.stop()
+	defer second.stop()
 	cert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
 	if err != nil {
 		t.Fatalf("issuance after restart replayed the cancellation: %v", err)
@@ -809,10 +816,13 @@ func TestStartFailureStopsACMEManagers(t *testing.T) {
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded despite a conflicting listener address")
 	}
-	// The rollback stopped the manager: stop leaves the run context in
-	// place, cancelled — a live one would mean the renewal loop survived.
-	if mgr.runContext().Err() == nil {
-		t.Fatal("manager run context still live after failed Start")
+	// The rollback stopped and detached exactly that run; no live generation
+	// remains selected for handshake work.
+	mgr.lifecycleMu.Lock()
+	current := mgr.current
+	mgr.lifecycleMu.Unlock()
+	if current != nil {
+		t.Fatal("manager still has a live run after failed Start")
 	}
 
 	if err := busy.Close(); err != nil {
@@ -857,9 +867,9 @@ func TestAccountRegistrationTimesOut(t *testing.T) {
 	m.registerTimeout = 100 * time.Millisecond
 
 	begin := time.Now()
-	err = m.start()
+	run, err := m.start()
 	if err == nil {
-		m.stop()
+		run.stop()
 		t.Fatal("start succeeded against a directory that never answers")
 	}
 	if !strings.Contains(err.Error(), "acme register") {
