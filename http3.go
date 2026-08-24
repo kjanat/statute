@@ -22,9 +22,8 @@ type http3Listener struct {
 	addr string
 	// alive: true while serving; read by the Alt-Svc header.
 	alive *atomic.Bool
-	// conn is the UDP socket Start bound for Serve. quic-go leaves a
-	// caller-provided PacketConn caller-owned — shutting the server down
-	// does not close it — so Shutdown closes it once the drain completes.
+	// conn: quic-go never closes a caller-provided PacketConn, so
+	// Shutdown closes it after the drain.
 	conn net.PacketConn
 }
 
