@@ -141,7 +141,13 @@ func TestHealthCheckStatusesRedirect(t *testing.T) {
 	if !probeOnce("/redirect-to-ok", "", nil) {
 		t.Error("default statuses no longer follow a redirect to a 200")
 	}
+	if got := followed.Load(); got != 1 {
+		t.Errorf("default probe followed the redirect %d time(s), want 1", got)
+	}
 	followed.Store(0)
+	if !probeOnce("/redirect-to-bad", "probe.example.test", nil) {
+		t.Error("probe Host alone rejected a 302 under the default range")
+	}
 	if !probeOnce("/redirect-to-bad", "probe.example.test", []int{302}) {
 		t.Error("probe Host with Statuses [302] rejected a 302")
 	}
