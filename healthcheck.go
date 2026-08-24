@@ -51,12 +51,19 @@ func (h *healthChecker) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	h.done = make(chan struct{})
-	// Fresh counters per start: a stopped checker's cancelled probes were
-	// recorded as failures, and a restarted checker (a Start retried after
-	// a rollback) must not inherit them — three failed Start attempts must
-	// not add up to backends demoted before the first real probe.
+	// Fresh state per start, counters and health bits both: a checker only
+	// ever restarts after a failed Start, when its backends have never
+	// served, so whatever a rolled-back attempt observed — a genuinely
+	// down backend included — is stale by the time a retry commits.
+	// Without the reset, one demotion recorded during a failed attempt
+	// leaves a primary marked unhealthy into the successful start, and
+	// candidates() routes every request to the backups until Healthy
+	// consecutive probes undo it.
 	h.successes = make(map[*backendState]int)
 	h.failures = make(map[*backendState]int)
+	for _, b := range h.backends {
+		b.markHealthy(true)
+	}
 
 	go func() {
 		defer close(h.done)
@@ -116,6 +123,14 @@ func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
+		// A probe killed by the checker's own context is lifecycle, not a
+		// backend verdict: the Start rollback cancels an in-flight probe,
+		// and counting that as a failure would demote a backend nobody has
+		// actually observed. A probe timeout while the checker is alive
+		// keeps counting — only pCtx is expired then, not ctx.
+		if ctx.Err() != nil {
+			return
+		}
 		h.recordFailure(b)
 		return
 	}

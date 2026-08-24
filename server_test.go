@@ -339,6 +339,83 @@ func TestStartFailureStopsHealthCheckers(t *testing.T) {
 	mustServeProxyOK(t, addr)
 }
 
+// TestStartRetryResetsBackendHealth — health state a rolled-back attempt
+// left behind must not leak into the successful retry. A primary demoted
+// during a failed Start (a genuinely down backend, or a mis-scored probe)
+// would otherwise stay unhealthy into the commit, and candidates() would
+// route every request to the backups until Healthy consecutive probes
+// undo it. The retried Start's checker restart resets backends to the
+// initial healthy state, because none of them has ever served.
+func TestStartRetryResetsBackendHealth(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("primary"))
+	}))
+	t.Cleanup(primary.Close)
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("backup"))
+	}))
+	t.Cleanup(backup.Close)
+
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+	addr := busy.Addr().String()
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Upstreams: Upstreams{
+			"api": Pool{
+				Backends: []Backend{
+					{Address: strings.TrimPrefix(primary.URL, "http://")},
+					{Address: strings.TrimPrefix(backup.URL, "http://"), Backup: true},
+				},
+				HealthCheck: HealthCheck{Path: "/", Interval: "20ms", Timeout: "1s"},
+			},
+		},
+		Routes:   Routes{Match("/*").ProxyTo("api")},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	r := mustResolve(t, cfg)
+	r.Listeners[0].Addr = addr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting listener address")
+	}
+	// What a genuine probe failure during the rolled-back attempt leaves.
+	srv.pools["api"].primary[0].markHealthy(false)
+
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	if !srv.pools["api"].primary[0].isHealthy() {
+		t.Fatal("retried Start inherited the failed attempt's demotion")
+	}
+	waitForListen(t, addr)
+	resp, err := http.Get("http://" + addr + "/x")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "primary" {
+		t.Fatalf("request served by %q, want the reset primary", body)
+	}
+}
+
 // assertHealthCheckerStopped fails unless the pool's prober goroutine has
 // already exited. The rollback stops it synchronously, so the release owes
 // no polling grace and a closed done channel is the exact invariant.
