@@ -164,12 +164,14 @@ func isServeFunction(fn *types.Func) bool {
 		(pkg == "github.com/quic-go/quic-go/http3" && name == "Server")
 }
 
+func assumeCallReturns(*ast.CallExpr) bool { return true }
+
 //nolint:gocyclo // CFG state traversal is clearer as one publication/commit state machine.
 func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, functions map[*types.Func]*functionInfo) {
 	if !isStartupFunction(info.fn.Name()) || !functionReturnsError(info.fn) || info.decl.Body == nil {
 		return
 	}
-	graph := cfg.New(info.decl.Body, nil)
+	graph := cfg.New(info.decl.Body, assumeCallReturns)
 	if len(graph.Blocks) == 0 {
 		return
 	}

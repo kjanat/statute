@@ -6,6 +6,12 @@ import (
 )
 
 func bind() (net.Listener, error) { return nil, nil }
+func sideEffect()                 {}
+
+func callStart() error {
+	sideEffect()
+	return nil
+}
 
 func badStart(hs *http.Server) error { // want `\[SLC100\].*publish serving before a later error return`
 	ln, err := bind()
