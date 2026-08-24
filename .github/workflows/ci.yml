@@ -7,42 +7,42 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - run: go vet ./...
       - run: go build ./...
       - { name: race, run: go test -race -coverprofile=cover.out -covermode=atomic ./... }
       - run: go tool cover -func=cover.out
-      - uses: codecov/codecov-action@v7
+      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
       - name: upload coverage artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with: { name: cover.out, path: cover.out, if-no-files-found: error, retention-days: 14 }
   lint:
     name: lint
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
         with:
           tool_versions: |
             golangci-lint 2.13.1
-      - uses: kjanat/dprint-check@v3
-      - uses: actions/setup-go@v7
+      - uses: kjanat/dprint-check@a0cb69ef4b3508623238086e8ba125c9c2f64361 # v3
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with: { version: v2.13.1, args: --timeout=5m }
   lifecycle_lint:
     name: lifecycle lint
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { fetch-depth: 0 }
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.13.1
           args: --enable-only=statutelifecycle --new-from-merge-base=origin/${{ github.base_ref }} --whole-files --timeout=5m
@@ -51,8 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs: { matrix: "${{ steps.targets.outputs.matrix }}" }
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - name: discover fuzz targets
         id: targets
@@ -73,8 +73,8 @@ jobs:
     strategy: { fail-fast: false, matrix: "${{ fromJSON(needs.discover_fuzz.outputs.matrix) }}" }
     env: { FUZZ_PACKAGE: "${{ matrix.package }}", FUZZ_TARGET: "${{ matrix.target }}" }
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - name: run fuzz target
         run: |
@@ -85,16 +85,16 @@ jobs:
     name: build examples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - run: go build ./examples/...
   apidiff:
     name: api surface diff
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       # Diffs the exported surface against the latest release on pkg.go.dev.
       # A deliberate break passes once this step carries
@@ -103,6 +103,6 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: kjanat/actionlint@v1
+      - uses: kjanat/actionlint@7c5b0a3880b3d29c51072b1e5e0730e5988f8b7d # v1
