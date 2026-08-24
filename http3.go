@@ -3,6 +3,7 @@ package statute
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -18,20 +19,18 @@ type http3Listener struct {
 	addr string
 }
 
-// Serve starts the HTTP/3 (QUIC) listener and blocks until it stops.
-func (h *http3Listener) Serve() error {
-	return h.srv.ListenAndServe()
+// Serve runs the HTTP/3 (QUIC) server on the given UDP socket and blocks
+// until it stops. The caller binds the socket so a bind failure surfaces
+// from Start, and so a failed Start can close the socket without closing
+// the server — a closed http3.Server is not reusable, but one whose
+// conn went away serves again on the next Serve call.
+func (h *http3Listener) Serve(conn net.PacketConn) error {
+	return h.srv.Serve(conn)
 }
 
 // Shutdown gracefully stops the HTTP/3 listener.
 func (h *http3Listener) Shutdown(ctx context.Context) error {
 	return h.srv.Shutdown(ctx)
-}
-
-// Close stops the HTTP/3 listener immediately, without draining. The
-// graceful path is Shutdown; Close unwinds a failed Start.
-func (h *http3Listener) Close() error {
-	return h.srv.Close()
 }
 
 func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler) (*http3Listener, error) {

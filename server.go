@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -351,20 +352,18 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 // listener, no manager or reconcile goroutine survives a Start that
 // reported an error.
 type startRollback struct {
-	managers     []*acmeManager
-	dockerUp     bool
-	httpServers  []*http.Server
-	http3Servers []*http3Listener
+	managers []*acmeManager
+	dockerUp bool
+	// listeners holds the bound sockets — TCP listeners, HTTP/3 packet
+	// conns, the metrics listener. The unwind closes these, never the
+	// http.Server or http3.Server objects serving them: a closed server
+	// is permanently unusable (Serve returns ErrServerClosed forever),
+	// which would let a retried Start report success over dead
+	// listeners. Closing only the sockets keeps the server objects
+	// clean, so a failed Start is genuinely retryable.
+	listeners []io.Closer
 }
 
-// unwindStart releases everything rb recorded. The order mirrors
-// Shutdown's — ACME managers stop before any listener closes, so a
-// warm-up still in flight is cancelled while the plain HTTP listener
-// serving its HTTP-01 tokens can still answer the CA's token fetch — but
-// it closes rather than drains: a start that failed has nothing worth
-// draining. Close is safe against a serve goroutine that has not reached
-// Serve yet; Serve then returns ErrServerClosed and closes the
-// net.Listener it was handed.
 // unwindStartUnlessStarted releases rb unless Start committed. Deferred
 // from Start; a completed Start sets started first.
 func (s *server) unwindStartUnlessStarted(rb *startRollback) {
@@ -373,25 +372,35 @@ func (s *server) unwindStartUnlessStarted(rb *startRollback) {
 	}
 }
 
+// unwindStart releases everything rb recorded. The order mirrors
+// Shutdown's — ACME managers stop before any listener closes, so a
+// warm-up still in flight is cancelled while the plain HTTP listener
+// serving its HTTP-01 tokens can still answer the CA's token fetch — but
+// it closes rather than drains: a start that failed has nothing worth
+// draining. Closing a socket whose serve goroutine has not reached Serve
+// yet is safe — the accept then fails immediately and the goroutine
+// exits, leaving the server object reusable.
 func (s *server) unwindStart(rb *startRollback) {
 	for _, m := range rb.managers {
 		m.stop()
 	}
-	for _, hs := range rb.httpServers {
-		_ = hs.Close()
-	}
-	for _, h3 := range rb.http3Servers {
-		_ = h3.Close()
+	for _, ln := range rb.listeners {
+		_ = ln.Close()
 	}
 	if rb.dockerUp {
 		s.shutdownDocker()
+		// The retired generation's pool handlers are shut down; drop the
+		// table so a retried Start's initial sync builds fresh handlers
+		// instead of readopting dead ones by fingerprint.
+		s.dynamic.Store(nil)
 	}
 }
 
 // Start opens all configured listeners and begins serving. Calling it
 // after the server has already started returns an error. Start is
 // transactional: it either commits with everything running or fails with
-// everything it had started released again.
+// everything it had started released again, and a failed Start may be
+// retried once the underlying problem is fixed.
 func (s *server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -411,18 +420,8 @@ func (s *server) Start() error {
 		return err
 	}
 	rb.dockerUp = true
-	for _, hs := range s.listeners {
-		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
-		if err != nil {
-			return fmt.Errorf("listen %s: %w", hs.Addr, err)
-		}
-		l, _ := findListener(s.cfg.Listeners, hs.Addr)
-		go serveListener(hs, l, ln)
-		rb.httpServers = append(rb.httpServers, hs)
-	}
-	for _, h3 := range s.http3Servers {
-		go func() { _ = h3.Serve() }()
-		rb.http3Servers = append(rb.http3Servers, h3)
+	if err := s.bindListeners(&rb); err != nil {
+		return err
 	}
 	s.warmACMEManagers(true)
 	if s.metricsServer != nil {
@@ -431,10 +430,36 @@ func (s *server) Start() error {
 		if err != nil {
 			return fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
 		}
+		rb.listeners = append(rb.listeners, ln)
 		go func() { _ = ms.Serve(ln) }()
-		rb.httpServers = append(rb.httpServers, ms)
 	}
 	s.started = true
+	return nil
+}
+
+// bindListeners opens every content listener's TCP socket and every
+// HTTP/3 listener's UDP socket, records each in rb, and launches its
+// serve goroutine. The UDP socket binds here, not inside the serve
+// goroutine, so a bind failure fails Start instead of vanishing into a
+// discarded goroutine error — and so the unwind has a socket to close.
+func (s *server) bindListeners(rb *startRollback) error {
+	for _, hs := range s.listeners {
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
+		if err != nil {
+			return fmt.Errorf("listen %s: %w", hs.Addr, err)
+		}
+		rb.listeners = append(rb.listeners, ln)
+		l, _ := findListener(s.cfg.Listeners, hs.Addr)
+		go serveListener(hs, l, ln)
+	}
+	for _, h3 := range s.http3Servers {
+		conn, err := (&net.ListenConfig{}).ListenPacket(context.Background(), "udp", h3.addr)
+		if err != nil {
+			return fmt.Errorf("listen %s/udp: %w", h3.addr, err)
+		}
+		rb.listeners = append(rb.listeners, conn)
+		go func() { _ = h3.Serve(conn) }()
+	}
 	return nil
 }
 

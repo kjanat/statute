@@ -255,20 +255,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - A failed `Start` releases everything it had already acquired before
-  returning. Startup previously rolled back only the Docker provider; a
-  bind failure partway through — one listener's port taken, or a
-  conflicting metrics address — left the listeners bound earlier still
-  accepting connections and the started ACME managers' renewal
-  goroutines running, even as startup reported failure. Start now
-  records each acquired resource — started ACME managers, the Docker
-  provider, bound TCP listeners, HTTP/3 servers, the metrics listener —
-  and a failure unwinds them all, mirroring `Shutdown`'s ordering (ACME
-  managers stop before any listener closes, so an in-flight warm-up is
-  cancelled while its HTTP-01 responder can still answer the CA) but
-  closing immediately rather than draining: a start that failed has
-  nothing worth draining. This is also the foundation the upcoming
-  process health endpoint builds on, so a health listener can never
-  outlive a failed start.
+  returning, and may be retried once the underlying problem is fixed.
+  Startup previously rolled back only the Docker provider; a bind
+  failure partway through — one listener's port taken, or a conflicting
+  metrics address — left the listeners bound earlier still accepting
+  connections and the started ACME managers' renewal goroutines
+  running, even as startup reported failure. Start now records each
+  acquired resource — started ACME managers, the Docker provider, and
+  every bound socket: TCP listeners, HTTP/3 UDP conns, the metrics
+  listener — and a failure unwinds them all, mirroring `Shutdown`'s
+  ordering (ACME managers stop before any listener closes, so an
+  in-flight warm-up is cancelled while its HTTP-01 responder can still
+  answer the CA) but closing immediately rather than draining: a start
+  that failed has nothing worth draining. The unwind closes the bound
+  sockets, never the `http.Server` / `http3.Server` objects serving
+  them — a closed server is permanently unusable, which would let a
+  retried Start report success over dead listeners. HTTP/3 UDP sockets
+  now bind inside `Start` rather than inside the serve goroutine, so a
+  UDP bind failure fails startup instead of being silently discarded.
+  This is also the foundation the upcoming process health endpoint
+  builds on, so a health listener can never outlive a failed start.
 - Redirect routes no longer emit a protocol-relative `Location`. A
   client-controlled `{path}` or `{request_uri}` of `//evil.com` — sent
   directly as a `//evil.com` request path, or produced by a `StripPrefix`

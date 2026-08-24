@@ -210,6 +210,26 @@ func TestStartFailureReleasesEarlierListeners(t *testing.T) {
 		t.Fatal("Start succeeded despite a conflicting listener address")
 	}
 	waitForRelease(t, firstAddr, 2*time.Second)
+
+	// A failed Start must be retryable: free the contested port and the
+	// retry must succeed with listeners that actually serve — not
+	// http.Servers poisoned by an unwind Close reporting success over
+	// dead sockets.
+	secondAddr := busy.Addr().String()
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	for _, addr := range []string{firstAddr, secondAddr} {
+		mustServeRedirect(t, addr)
+	}
 }
 
 // TestStartMetricsFailureReleasesListeners — a metrics bind failure after
@@ -248,6 +268,56 @@ func TestStartMetricsFailureReleasesListeners(t *testing.T) {
 		t.Fatal("Start succeeded despite a conflicting metrics address")
 	}
 	waitForRelease(t, contentAddr, 2*time.Second)
+
+	// Retry after freeing the metrics port: content and metrics listeners
+	// must both come up serving.
+	metricsAddr := busy.Addr().String()
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeRedirect(t, contentAddr)
+	mustServeMetrics(t, metricsAddr)
+}
+
+// mustServeMetrics asserts the metrics endpoint answers 200 on addr.
+func mustServeMetrics(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr, 2*time.Second)
+	resp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("GET metrics: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("metrics status: %d, want 200", resp.StatusCode)
+	}
+}
+
+// mustServeRedirect asserts the redirect-route config used by the Start
+// rollback tests actually answers on addr — proof the listener behind it
+// is alive, not a bound-then-instantly-closed socket.
+func mustServeRedirect(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr, 2*time.Second)
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Get("http://" + addr + "/x")
+	if err != nil {
+		t.Fatalf("GET %s: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("%s: status %d, want 301", addr, resp.StatusCode)
+	}
 }
 
 // waitForRelease asserts addr becomes bindable again within deadline —
