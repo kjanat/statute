@@ -7,3 +7,6 @@ plugins:
   - module: statute.kjanat.dev
     import: statute.kjanat.dev/analyzers/statutehttp
     path: .
+  - module: statute.kjanat.dev
+    import: statute.kjanat.dev/analyzers/statutelifecycle
+    path: .

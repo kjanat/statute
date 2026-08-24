@@ -66,6 +66,44 @@ The reviewer verifies the contract against the current head and deliberately loo
 for wrong-scope state, fail-open behavior, retry/re-entry errors, lifecycle leaks,
 and resolved/runtime/tooling drift.
 
+## Static lifecycle analyzer
+
+`analyzers/statutelifecycle` complements the architecture review with repository-
+specific `go/analysis` checks. It is built into the same custom golangci-lint binary
+as `statutehttp` and can be run with:
+
+```sh
+make lint-lifecycle
+```
+
+Its first rules deliberately encode failures that are easy for a locally-correct
+patch to miss:
+
+- `SLC100` — a startup/bind function can publish serving and later return an error.
+  This protects the two-phase rule: acquire every fallible startup resource before
+  launching `Serve`.
+- `SLC101` — a constructor calls `start`/`Start` on an object that also has a
+  `stop`/`Shutdown`/`Close` lifecycle. Construction must not silently acquire
+  background lifetime that failed `Start` cannot own.
+- `SLC102` — a `net/http` or quic-go HTTP/3 `Serve*` error is discarded. A dead
+  serving goroutine must not leave a bound endpoint advertised as healthy.
+- `SLC103` — a paired `start`/`stop` lifecycle visibly launches more goroutines than
+  its stop path joins. This is intentionally conservative evidence for ownership
+  review, not proof that a particular goroutine leaked.
+- `SLC104` — lifecycle cleanup discards an error from `Close` or `Shutdown`.
+
+The analyzer is initially disabled from the ordinary `make lint` set because current
+`master` contains the lifecycle debt it was created to expose. Lifecycle PRs run the
+targeted gate; once that baseline is clean, enable it by default instead of adding
+baseline exclusions. Tests are excluded from repository lint diagnostics so
+regression harnesses may intentionally construct broken lifecycle shapes; the
+analyzer's own `analysistest` suite verifies those shapes are diagnosed.
+
+Static analysis is not the architecture. It cannot prove external resource ownership,
+ACME protocol state, or whether a server really answered a request. A clean analyzer
+run therefore supplements the lifecycle ownership table and cross-feature tests; it
+never replaces them.
+
 ## Why the roles are separated
 
 A model that chose an architecture is very good at later explaining why that choice

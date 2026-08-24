@@ -33,6 +33,12 @@ Review the architecture before local code quality. Explicitly inspect:
 - resolved/runtime/export/graph/lint drift,
 - cross-feature tests that would catch the plausible wrong implementation.
 
+When the diff touches lifecycle/startup/shutdown code, run `make lint-lifecycle`
+when the checkout is available. Inspect every `SLC100`–`SLC104` diagnostic against
+the architecture contract rather than dismissing it as a style warning. The
+analyzer is deliberately a second opinion, not a substitute for tracing runtime
+ownership by hand.
+
 For a new head after a previous review, compare from the previously reviewed SHA and
 focus on the delta without reopening fixed findings unless they regressed.
 
