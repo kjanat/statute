@@ -427,6 +427,7 @@ type Observability struct {
 	AccessLog AccessLog
 	Metrics   Metrics
 	Tracing   Tracing
+	Health    Health
 }
 
 // Tracing is the resolved distributed-tracing configuration.
@@ -456,6 +457,14 @@ type AccessLog struct {
 type Metrics struct {
 	Enabled bool
 	Kind    string // "prometheus"
+	Addr    string
+	Path    string
+}
+
+// Health is the resolved process health endpoint configuration. Liveness
+// serves at Path; readiness serves at Path+"/ready".
+type Health struct {
+	Enabled bool
 	Addr    string
 	Path    string
 }

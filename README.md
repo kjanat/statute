@@ -70,6 +70,7 @@ What's implemented:
 - Prometheus-format metrics
 - OpenTelemetry tracing via OTLP/gRPC
 - pprof endpoints on the metrics server
+- Dedicated process health endpoint with liveness and readiness paths
 - Graceful shutdown with listener draining
 - Cloudflare-aware mode: `BehindCloudflare()` flips ALPN to suppress TLS-ALPN-01 and trusts `CF-Connecting-IP`
 - Docker label discovery: containers register routes and pools via `statute.*` labels, with a `traefik.*` label compat mode for drop-in migration
@@ -321,6 +322,7 @@ Observability: statute.Observability{
     AccessLog: statute.JSONLog(statute.Stdout).Sample(0.1),
     Metrics:   statute.Prometheus(":9090", "/metrics"),
     Tracing:   statute.OTLP("otel-collector:4317").ServiceName("edge").Insecure().Sample(0.05),
+    Health:    statute.Health(":8081", "/healthz"),
 }
 ```
 
@@ -329,6 +331,8 @@ Observability: statute.Observability{
 **Metrics** — Prometheus exposition format on a separate listener. Counters for total requests, requests by status, and request duration. `pprof` is mounted under `/debug/pprof/*` on the same listener.
 
 **Tracing** — OTLP/gRPC export to an OpenTelemetry collector. Spans use HTTP semantic conventions. W3C trace context is automatically propagated to upstream backends (the reverse proxy injects `traceparent` and `tracestate` headers). `Sample(rate)` is `TraceIDRatioBased` with parent-based sampling, so trace continuity is preserved across hops.
+
+**Health** — a dedicated process health listener for supervisor probes. Liveness at the configured path (default `/healthz`) answers `200 ok`; readiness at the path plus `/ready` answers `200 ok` once startup commits (listeners bound, cert managers started, initial Docker sync done) and `503 not ready` before that and from the moment shutdown begins. Nothing else is mounted, neither metrics nor pprof. Details in [docs/observability.md](docs/observability.md).
 
 ### TLS
 

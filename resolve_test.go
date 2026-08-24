@@ -296,3 +296,72 @@ func TestResolveParseErrors(t *testing.T) {
 		})
 	}
 }
+
+// badHealthEndpoint is a foreign HealthEndpoint implementation Resolve
+// must reject rather than silently dropping the requested endpoint.
+type badHealthEndpoint struct{}
+
+func (badHealthEndpoint) statuteHealth() {}
+
+func TestResolveHealthValidation(t *testing.T) {
+	t.Parallel()
+	base := func() Config {
+		return Config{
+			Listeners: Listeners{HTTP(":8080")},
+			Upstreams: Upstreams{"api": Pool{Backends: []Backend{{Address: "127.0.0.1:9001"}}}},
+			Routes:    Routes{Match("/*").ProxyTo("api")},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		health  HealthEndpoint
+		want    resolved.Health
+		wantErr string
+	}{
+		{
+			name:    "empty addr errors",
+			health:  Health("", "/healthz"),
+			wantErr: "health: addr required",
+		},
+		{
+			name:   "empty path defaults",
+			health: Health("127.0.0.1:9091", ""),
+			want:   resolved.Health{Enabled: true, Addr: "127.0.0.1:9091", Path: "/healthz"},
+		},
+		{
+			name:   "explicit path round-trips",
+			health: Health("127.0.0.1:9091", "/livez"),
+			want:   resolved.Health{Enabled: true, Addr: "127.0.0.1:9091", Path: "/livez"},
+		},
+		{
+			name:   "absent stays disabled",
+			health: nil,
+			want:   resolved.Health{},
+		},
+		{
+			name:    "unknown marker type errors",
+			health:  badHealthEndpoint{},
+			wantErr: "unknown health type",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base()
+			cfg.Observability = Observability{Health: tc.health}
+			r, err := Resolve(cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if r.Observability.Health != tc.want {
+				t.Errorf("resolved health = %+v, want %+v", r.Observability.Health, tc.want)
+			}
+		})
+	}
+}

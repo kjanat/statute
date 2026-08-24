@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `statute.Health(addr, path)` configures a dedicated process health
+  endpoint on its own listener: liveness at the configured path (default
+  `/healthz`) answers `200 "ok"` while the process serves; readiness at
+  the path plus `/ready` answers `200 "ok"` once startup commits
+  (listeners bound, certificate managers started, initial Docker sync
+  complete) and `503 "not ready"` before that and from the moment
+  shutdown begins. Readiness does not wait for asynchronous HTTP-01
+  certificate warm-up. The health mux serves nothing else: no metrics,
+  no pprof, and any other path returns 404. The health socket binds and
+  rolls back with the other listeners, so a failed `Start` leaves
+  nothing serving and a retried `Start` serves health again.
+
 - `Transport.FlushInterval` exposes the reverse proxy's response flush
   interval as pool policy, e.g. `"100ms"`: every route proxying to the
   pool shares the one interval, and active health probes are unaffected

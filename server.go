@@ -31,7 +31,12 @@ type server struct {
 
 	listeners     []*http.Server // content + redirect listeners
 	metricsServer *http.Server
+	healthServer  *http.Server
 	http3Servers  []*http3Server
+
+	// ready flips true at Start's commit and false when Shutdown begins;
+	// the health readiness handler reads it, nothing else writes it.
+	ready atomic.Bool
 
 	pools map[string]*poolHandler
 
@@ -97,12 +102,21 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		return nil, err
 	}
 
-	if cfg.Observability.Metrics.Enabled {
-		s.metricsServer = s.buildMetricsServer(cfg.Observability.Metrics)
-	}
+	s.buildAuxServers(cfg.Observability)
 
 	ok = true
 	return s, nil
+}
+
+// buildAuxServers constructs the metrics and health http.Server objects
+// when configured; neither binds a socket until Start's bind phase.
+func (s *server) buildAuxServers(o resolved.Observability) {
+	if o.Metrics.Enabled {
+		s.metricsServer = s.buildMetricsServer(o.Metrics)
+	}
+	if o.Health.Enabled {
+		s.healthServer = s.buildHealthServer(o.Health)
+	}
 }
 
 // initACMEManagers builds an in-tree acmeManager for every AutoTLS source
@@ -331,6 +345,31 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 	}
 }
 
+// buildHealthServer mounts liveness at h.Path and readiness at
+// h.Path+"/ready" on a private mux; every other path 404s, and neither
+// metrics nor pprof is mounted here.
+func (s *server) buildHealthServer(h resolved.Health) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc(h.Path, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc(h.Path+"/ready", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if !s.ready.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("not ready"))
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
+	return &http.Server{
+		Addr:              h.Addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+}
+
 type boundHTTP struct {
 	server   *http.Server
 	policy   *resolved.Listener
@@ -378,12 +417,29 @@ func (b *boundMetrics) rollback() error {
 	return nil
 }
 
+type boundHealth struct {
+	server   *http.Server
+	listener net.Listener
+}
+
+func (b *boundHealth) serve() {
+	logServeExit("health", b.server.Addr, b.server.Serve(b.listener))
+}
+
+func (b *boundHealth) rollback() error {
+	if err := b.listener.Close(); err != nil {
+		return fmt.Errorf("rollback close health %s: %w", b.server.Addr, err)
+	}
+	return nil
+}
+
 // boundListeners is the typed socket ownership of one Start attempt. It
 // cannot confuse configured server controls with the sockets rollback owns.
 type boundListeners struct {
 	http    []*boundHTTP
 	http3   []*boundHTTP3
 	metrics *boundMetrics
+	health  *boundHealth
 }
 
 func (b *boundListeners) rollback() error {
@@ -397,6 +453,9 @@ func (b *boundListeners) rollback() error {
 	if b.metrics != nil {
 		errs = append(errs, b.metrics.rollback())
 	}
+	if b.health != nil {
+		errs = append(errs, b.health.rollback())
+	}
 	return errors.Join(errs...)
 }
 
@@ -409,6 +468,9 @@ func (b *boundListeners) serve() {
 	}
 	if b.metrics != nil {
 		go b.metrics.serve()
+	}
+	if b.health != nil {
+		go b.health.serve()
 	}
 }
 
@@ -425,11 +487,17 @@ func (b *boundListeners) shutdown(ctx context.Context, wg *sync.WaitGroup, errs 
 	if b.metrics != nil {
 		goShutdown(ctx, wg, errs, b.metrics.server.Shutdown)
 	}
+	if b.health != nil {
+		goShutdown(ctx, wg, errs, b.health.server.Shutdown)
+	}
 }
 
 func (b *boundListeners) count() int {
 	n := len(b.http) + len(b.http3)
 	if b.metrics != nil {
+		n++
+	}
+	if b.health != nil {
 		n++
 	}
 	return n
@@ -515,6 +583,9 @@ func (s *server) Start() (err error) {
 	// synchronous failure path remains once traffic can reach a handler.
 	s.run = attempt.commit()
 	s.started = true
+	// Every readiness fact holds at commit; flip before serve so no probe
+	// can observe a serving health listener that still reports not ready.
+	s.ready.Store(true)
 	s.run.listeners.serve()
 	warmACMERuns(s.run.acme, true)
 	return nil
@@ -548,7 +619,7 @@ func (s *server) startPrerequisites(attempt *startAttempt) error {
 
 // bindSockets binds every socket the configuration calls for — each
 // content listener's TCP socket, each HTTP/3 listener's UDP socket, the
-// metrics listener — recording them in rb, and returns the serve loops
+// metrics and health listeners — recording them in rb, and returns the serve loops
 // for Start to launch at commit. No loop runs here: binding everything
 // before serving anything is what keeps a failed Start invisible. The
 // HTTP/3 socket binds here rather than inside its serve goroutine so a
@@ -580,6 +651,13 @@ func (s *server) bindSockets(attempt *startAttempt) error {
 			return fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
 		}
 		attempt.listeners.metrics = &boundMetrics{server: ms, listener: ln}
+	}
+	if hs := s.healthServer; hs != nil {
+		ln, err := s.bindTCP(context.Background(), hs.Addr)
+		if err != nil {
+			return fmt.Errorf("health listen %s: %w", hs.Addr, err)
+		}
+		attempt.listeners.health = &boundHealth{server: hs, listener: ln}
 	}
 	return nil
 }
@@ -639,11 +717,16 @@ func goShutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error, fn f
 // Shutdown gracefully drains and stops the server within the configured
 // shutdown grace period.
 func (s *server) Shutdown() error {
+	// Readiness flips off the moment shutdown begins, before any drain, so
+	// probes read not-ready for the whole grace period.
+	s.ready.Store(false)
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Shutdown.GracePeriod)
 	defer cancel()
 
 	s.mu.Lock()
 	run := s.run
+	// Repeated under the lock so a Start that was mid-commit cannot leave it true.
+	s.ready.Store(false)
 	s.mu.Unlock()
 	var err error
 	if run != nil {

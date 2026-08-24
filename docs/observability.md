@@ -97,6 +97,25 @@ The metrics listener also serves Go's standard pprof endpoints:
 
 Use `go tool pprof http://localhost:9090/debug/pprof/profile` for live profiling. Because pprof and metrics share a listener, the same "do not expose publicly" warning applies.
 
+## Health endpoint
+
+```go
+Observability: statute.Observability{
+    Health: statute.Health(":8081", "/healthz"),
+}
+```
+
+A dedicated process health listener for supervisors (Kubernetes probes, systemd watchdogs, load balancers). It serves exactly two paths and nothing else, with no metrics and no pprof:
+
+- **Liveness** at the configured path (default `/healthz` when the path is empty): `200 "ok"` whenever the process is serving.
+- **Readiness** at the configured path plus `/ready` (e.g. `/healthz/ready`): `200 "ok"` once startup has committed, `503 "not ready"` otherwise.
+
+Any other path returns 404.
+
+Readiness means the process is ready to serve traffic: every listener socket is bound, certificate managers have started, and the initial Docker sync (when configured) has completed. It does **not** wait for asynchronous HTTP-01 certificate warm-up: that runs in the background after startup, and a slow or unreachable CA must not keep an otherwise-serving process out of rotation. Readiness flips to `503` the moment `Shutdown` begins, so probes drain traffic away for the whole grace period; once the health listener itself closes, a refused connection reads the same way.
+
+Like the metrics listener, the health listener is intended to be **private**: bind it to a loopback address or a private interface. It deliberately serves plain-text `ok` / `not ready` bodies with no version or subsystem detail, but a health port is still an internal surface: do not expose it publicly.
+
 ## Tracing
 
 ```go

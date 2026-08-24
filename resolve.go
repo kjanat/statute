@@ -1464,26 +1464,16 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 			return resolved.Observability{}, fmt.Errorf("unknown access log type %T", o.AccessLog)
 		}
 	}
-	if o.Metrics != nil {
-		switch m := o.Metrics.(type) {
-		case prometheusMetrics:
-			if m.addr == "" {
-				return resolved.Observability{}, errors.New("metrics: addr required")
-			}
-			path := m.path
-			if path == "" {
-				path = "/metrics"
-			}
-			out.Metrics = resolved.Metrics{
-				Enabled: true,
-				Kind:    "prometheus",
-				Addr:    m.addr,
-				Path:    path,
-			}
-		default:
-			return resolved.Observability{}, fmt.Errorf("unknown metrics type %T", o.Metrics)
-		}
+	metrics, err := resolveMetrics(o.Metrics)
+	if err != nil {
+		return resolved.Observability{}, err
 	}
+	out.Metrics = metrics
+	health, err := resolveHealth(o.Health)
+	if err != nil {
+		return resolved.Observability{}, err
+	}
+	out.Health = health
 	if o.Tracing != nil {
 		switch t := o.Tracing.(type) {
 		case *otlpTracing:
@@ -1503,6 +1493,53 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 		}
 	}
 	return out, nil
+}
+
+// resolveMetrics normalizes the metrics marker; nil resolves disabled.
+func resolveMetrics(m Metrics) (resolved.Metrics, error) {
+	if m == nil {
+		return resolved.Metrics{}, nil
+	}
+	pm, ok := m.(prometheusMetrics)
+	if !ok {
+		return resolved.Metrics{}, fmt.Errorf("unknown metrics type %T", m)
+	}
+	if pm.addr == "" {
+		return resolved.Metrics{}, errors.New("metrics: addr required")
+	}
+	path := pm.path
+	if path == "" {
+		path = "/metrics"
+	}
+	return resolved.Metrics{
+		Enabled: true,
+		Kind:    "prometheus",
+		Addr:    pm.addr,
+		Path:    path,
+	}, nil
+}
+
+// resolveHealth normalizes the health marker; nil resolves disabled.
+func resolveHealth(h HealthEndpoint) (resolved.Health, error) {
+	if h == nil {
+		return resolved.Health{}, nil
+	}
+	he, ok := h.(healthEndpoint)
+	if !ok {
+		return resolved.Health{}, fmt.Errorf("unknown health type %T", h)
+	}
+	if he.addr == "" {
+		return resolved.Health{}, errors.New("health: addr required")
+	}
+	path := he.path
+	if path == "" {
+		path = "/healthz"
+	}
+	return resolved.Health{
+		Enabled: true,
+		Addr:    he.addr,
+		Path:    path,
+	}, nil
 }
 
 func resolveShutdown(s Shutdown) (resolved.Shutdown, error) {

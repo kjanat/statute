@@ -5,11 +5,13 @@ import (
 	"os"
 )
 
-// Observability bundles the logging, metrics, and tracing configuration.
+// Observability bundles the logging, metrics, tracing, and health
+// endpoint configuration.
 type Observability struct {
 	AccessLog AccessLog
 	Metrics   Metrics
 	Tracing   Tracing
+	Health    HealthEndpoint
 }
 
 // AccessLog is a marker for an access log destination.
@@ -25,6 +27,11 @@ type Metrics interface {
 // Tracing is a marker for a distributed-tracing exporter configuration.
 type Tracing interface {
 	statuteTracing()
+}
+
+// HealthEndpoint is a marker for a process health endpoint configuration.
+type HealthEndpoint interface {
+	statuteHealth()
 }
 
 // LogWriter identifies a destination for structured logs.
@@ -85,6 +92,21 @@ func (prometheusMetrics) statuteMetrics() {}
 // path, formatted in the Prometheus exposition format.
 func Prometheus(addr, path string) Metrics {
 	return prometheusMetrics{addr: addr, path: path}
+}
+
+type healthEndpoint struct {
+	addr string
+	path string
+}
+
+func (healthEndpoint) statuteHealth() {}
+
+// Health exposes a process health endpoint on the given address: liveness
+// at path (default "/healthz") answering 200 while the process serves, and
+// readiness at path+"/ready" answering 200 once Start has committed and 503
+// once shutdown begins. Nothing else is mounted — no metrics, no pprof.
+func Health(addr, path string) HealthEndpoint {
+	return healthEndpoint{addr: addr, path: path}
 }
 
 type otlpTracing struct {
