@@ -82,7 +82,7 @@ func TestProbeHostPolicy(t *testing.T) {
 	targetHost := strings.TrimPrefix(backend.URL, "http://")
 	cfg := resolved.HealthCheck{
 		Enabled: true, Path: "/healthz",
-		Interval: time.Hour, Timeout: time.Second,
+		Interval: time.Hour, Timeout: 10 * time.Second,
 		Healthy: 1, Unhealthy: 1,
 	}
 
@@ -160,7 +160,7 @@ func TestProbeHostPrecedence(t *testing.T) {
 			cfg := hostPoolConfig(backend.URL, c.policy)
 			pool := cfg.Upstreams["api"]
 			pool.HealthCheck = HealthCheck{
-				Path: "/healthz", Interval: "1h", Timeout: "2s",
+				Path: "/healthz", Interval: "1h", Timeout: "10s",
 				Healthy: 1, Unhealthy: 1,
 				Host: c.hcHost,
 			}

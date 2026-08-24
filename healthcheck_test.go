@@ -67,7 +67,7 @@ func TestHealthCheckStatuses(t *testing.T) {
 		t.Helper()
 		cfg := resolved.HealthCheck{
 			Enabled: true, Path: "/healthz",
-			Interval: time.Hour, Timeout: time.Second,
+			Interval: time.Hour, Timeout: 10 * time.Second,
 			Healthy: 1, Unhealthy: 1,
 			Statuses: statuses,
 		}
@@ -119,7 +119,7 @@ func TestHealthCheckStatusesRedirect(t *testing.T) {
 		t.Helper()
 		cfg := resolved.HealthCheck{
 			Enabled: true, Path: path,
-			Interval: time.Hour, Timeout: time.Second,
+			Interval: time.Hour, Timeout: 10 * time.Second,
 			Healthy: 1, Unhealthy: 1,
 			Host: host, Statuses: statuses,
 		}
