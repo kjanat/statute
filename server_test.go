@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -185,6 +187,108 @@ func TestServerStartShutdown(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), `"path":"/test"`) {
 		t.Errorf("upstream body unexpected: %s", body)
+	}
+}
+
+// TestFlushIntervalStreamsThroughWrapperChain — a configured FlushInterval
+// must deliver buffered bytes early through the listener's response-writer
+// wrappers (access log, metrics) for a response the proxy does not detect
+// as streaming: known Content-Length, two body writes, the second held back
+// until the first has reached the client.
+func TestFlushIntervalStreamsThroughWrapperChain(t *testing.T) {
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseOnce)
+	const first, second = "first-half;", "second-half"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", strconv.Itoa(len(first)+len(second)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, first)
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(w, second)
+	}))
+	t.Cleanup(backend.Close)
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Upstreams: Upstreams{
+			"stream": Pool{
+				Backends:  []Backend{{Address: strings.TrimPrefix(backend.URL, "http://")}},
+				Transport: Transport{FlushInterval: "10ms"},
+			},
+		},
+		Routes: Routes{Match("/*").ProxyTo("stream")},
+		Observability: Observability{
+			AccessLog: JSONLog(LogWriter{w: io.Discard, name: "discard"}),
+		},
+		Defaults: Defaults{ReadHeaderTimeout: "1s"},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	r := mustResolve(t, cfg)
+	addr := reserveAddr(t)
+	r.Listeners[0].Addr = addr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	// LIFO: unblock the backend handler before Shutdown drains, or a
+	// failed assertion leaves Shutdown waiting on the held response.
+	defer releaseOnce()
+	waitForListen(t, addr)
+
+	// Headers only leave the front server on a flush; a bounded
+	// header timeout turns a broken flush path into a clean failure
+	// instead of a test-binary deadline panic.
+	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 5 * time.Second}}
+	t.Cleanup(client.CloseIdleConnections)
+	resp, err := client.Get("http://" + addr + "/stream")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	readExactWithin(t, resp.Body, first, 5*time.Second)
+	releaseOnce()
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read second half: %v", err)
+	}
+	if string(rest) != second {
+		t.Errorf("second half: got %q, want %q", rest, second)
+	}
+}
+
+// readExactWithin reads len(want) bytes from r within the deadline and
+// asserts they equal want; it fails the test if the bytes arrive late,
+// mismatch, or the read errors.
+func readExactWithin(t *testing.T, r io.Reader, want string, deadline time.Duration) {
+	t.Helper()
+	buf := make([]byte, len(want))
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(r, buf)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("read %d bytes: %v", len(want), err)
+		}
+		if string(buf) != want {
+			t.Errorf("read: got %q, want %q", buf, want)
+		}
+	case <-time.After(deadline):
+		t.Fatalf("%d bytes never arrived within %v", len(want), deadline)
 	}
 }
 
