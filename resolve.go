@@ -961,9 +961,9 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 }
 
 // isNilHandler reports whether h is nil or an interface wrapping a nil
-// concrete value, such as a nil http.HandlerFunc or a nil *http.ServeMux.
-// Both would pass a plain == nil check yet panic on the first request, so
-// resolve rejects them the same way it rejects a bare nil.
+// concrete value, such as a nil http.HandlerFunc or nil *http.ServeMux.
+// Such values are treated as invalid handlers rather than being allowed
+// to reach runtime dispatch.
 func isNilHandler(h http.Handler) bool {
 	if h == nil {
 		return true
