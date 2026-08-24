@@ -48,12 +48,9 @@ func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transp
 		Timeout:   cfg.Timeout,
 		Transport: transport,
 	}
-	// An explicit probe policy describes one request to the health
-	// endpoint, judged on its own status: Statuses accepts a 3xx exactly
-	// and rejects whatever a redirect would have landed on, and a probe
-	// Host must not follow a redirect elsewhere. Default probes keep
-	// following redirects (cfg.Host, not the derived host, so an
-	// UpstreamHost-derived probe keeps today's behavior).
+	// COMPAT: an explicit probe policy judges the endpoint's own status,
+	// so redirects stop; gate on cfg.Host, not the derived host, so
+	// UpstreamHost-derived probes keep following redirects as before.
 	if cfg.Host != "" || len(cfg.Statuses) > 0 {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
