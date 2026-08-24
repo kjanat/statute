@@ -58,7 +58,7 @@ func TestResolveRedirectErrors(t *testing.T) {
 				Upstreams: Upstreams{"api": Pool{Backends: []Backend{{Address: "127.0.0.1:9001"}}}},
 				Routes:    Routes{Match("/*").ProxyTo("api").RedirectTo("/new", 301)},
 			},
-			"more than one of ProxyTo, Serve, and RedirectTo",
+			"more than one of ProxyTo, Serve, RedirectTo, and Handle",
 		},
 		{
 			"redirect plus serve",
@@ -66,7 +66,7 @@ func TestResolveRedirectErrors(t *testing.T) {
 				Listeners: Listeners{HTTP(":0")},
 				Routes:    Routes{Match("/*").Serve("./public").RedirectTo("/new", 301)},
 			},
-			"more than one of ProxyTo, Serve, and RedirectTo",
+			"more than one of ProxyTo, Serve, RedirectTo, and Handle",
 		},
 		{
 			"no action at all",
@@ -74,7 +74,7 @@ func TestResolveRedirectErrors(t *testing.T) {
 				Listeners: Listeners{HTTP(":0")},
 				Routes:    Routes{Match("/*")},
 			},
-			"none of ProxyTo, Serve, or RedirectTo",
+			"none of ProxyTo, Serve, RedirectTo, or Handle",
 		},
 	}
 	for _, c := range cases {

@@ -757,6 +757,11 @@ func (s *server) buildRouter() http.Handler {
 			base = stripPrefix(r.Pattern, base)
 		case r.Redirect != nil:
 			base = redirectRouteHandler(r.Redirect)
+		case r.Handler != nil:
+			// A handler route serves the resolved in-process handler
+			// directly, request path unstripped — the prefix stripping
+			// above is Serve-specific.
+			base = r.Handler
 		}
 		h := wrapMiddleware(r.Middleware, base)
 		static = append(static, compiledRoute{

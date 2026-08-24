@@ -1,6 +1,8 @@
 package statute_test
 
 import (
+	"net/http"
+
 	"statute.kjanat.dev"
 )
 
@@ -57,6 +59,19 @@ func ExampleMatch_proxyTo() {
 				statute.Timeout("30s"),
 				statute.RateLimit("100/min").Per(statute.ClientIP),
 			),
+	}
+}
+
+// ExampleMatch_handle shows an in-process handler route: matching requests
+// are answered by an http.Handler in the same binary instead of being
+// proxied, served from disk, or redirected.
+func ExampleMatch_handle() {
+	_ = statute.Routes{
+		statute.Match("/healthz").Host("foo.example.com").Handle(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			},
+		)),
 	}
 }
 

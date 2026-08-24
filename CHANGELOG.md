@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- In-process handler routes: `Match(...).Handle(h)` mounts any
+  `http.Handler` from the same binary as a route action — the fourth
+  mutually exclusive action beside `ProxyTo`, `Serve`, and `RedirectTo`,
+  for health endpoints, debug pages, and small APIs living beside the
+  proxy. The handler composes with route middleware, participates in
+  declaration-order matching like every static route, and drains through
+  graceful shutdown like proxied requests. It receives the request path
+  unstripped — the wildcard prefix stripping is `Serve`-specific — while
+  the hoisted header operations and path rewrites apply as usual: matching
+  observes the original path, the handler the rewritten one. Under a
+  `Retry` the handler may be re-entered once per attempt (idempotent
+  methods only, as `Retry` enforces), and it is invoked concurrently, so
+  it must be safe for concurrent use. Resolve rejects `Handle(nil)` — the
+  call declares the action, so a nil handler is its own error rather than
+  an action-less route. The resolved schema carries the handler as an
+  opaque `Handler` reference excluded from serialization plus a
+  `HandlerRoute` boolean that stands in for it in the JSON export; the DOT
+  graph renders a handler route as an edge-less route node, and Docker
+  labels cannot reference or construct handlers — they exist solely in
+  compiled configuration.
+
 - Docker label middleware mapping: `Docker().Middleware(name, mw...)`
   registers a named, code-owned middleware chain that container labels may
   reference, and `Docker().DefaultMiddleware(mw...)` declares a chain

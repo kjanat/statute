@@ -924,25 +924,18 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 }
 
 // resolveRouteTarget validates that the route declares exactly one action —
-// ProxyTo, Serve, or RedirectTo — and resolves it: a proxy route
+// ProxyTo, Serve, RedirectTo, or Handle — and resolves it: a proxy route
 // dereferences the named upstream into rr.Upstream, a redirect route
-// validates its target and status into rr.Redirect.
+// validates its target and status into rr.Redirect, a handler route carries
+// its handler into rr.Handler and marks rr.HandlerRoute.
 func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.Route) error {
-	// A RedirectTo call with an empty target still declares the redirect
-	// action — the status betrays it — so it fails on its own emptiness
-	// rather than as an action-less route.
 	redirected := r.redirectTo != "" || r.redirectStatus != 0
-	declared := 0
-	for _, set := range []bool{r.upstream != "", r.staticDir != "", redirected} {
-		if set {
-			declared++
-		}
-	}
+	declared := countDeclared(r.upstream != "", r.staticDir != "", redirected, r.handlerSet)
 	switch {
 	case declared > 1:
-		return errors.New("route declares more than one of ProxyTo, Serve, and RedirectTo; pick one")
+		return errors.New("route declares more than one of ProxyTo, Serve, RedirectTo, and Handle; pick one")
 	case declared == 0:
-		return errors.New("route has none of ProxyTo, Serve, or RedirectTo")
+		return errors.New("route has none of ProxyTo, Serve, RedirectTo, or Handle")
 	case r.upstream != "":
 		pool, ok := pools[r.upstream]
 		if !ok {
@@ -955,8 +948,30 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 			return err
 		}
 		rr.Redirect = rd
+	case r.handlerSet:
+		if r.handler == nil {
+			return errors.New("handle: handler is nil")
+		}
+		rr.Handler = r.handler
+		rr.HandlerRoute = true
 	}
 	return nil
+}
+
+// countDeclared counts how many of the route actions were declared. A
+// RedirectTo call with an empty target still declares the redirect action —
+// the status betrays it — so it fails on its own emptiness rather than as an
+// action-less route. Handle carries the same reasoning: the call itself
+// declares the action, so Handle(nil) fails on its own nil handler rather
+// than as an action-less route.
+func countDeclared(actions ...bool) int {
+	declared := 0
+	for _, set := range actions {
+		if set {
+			declared++
+		}
+	}
+	return declared
 }
 
 // resolveMiddlewares resolves a route's middleware list in order,
