@@ -402,16 +402,14 @@ func (s *server) unwindStart(rb *startRollback) error {
 	}
 	if rb.dockerUp {
 		s.shutdownDocker()
-		// The retired generation's pool handlers are shut down; drop the
-		// table so a retried Start's initial sync builds fresh handlers
+		// Drop the table so a retry's initial sync builds fresh handlers
 		// instead of readopting dead ones by fingerprint.
 		s.dynamic.Store(nil)
 	}
 	if rb.poolsUp {
-		// Full pool shutdown, not just hc.stop: the immediate first probe
-		// can already have parked a keep-alive connection in the transport.
-		// Closing idle connections does not poison the transport — it stays
-		// reusable — so a retried Start still gets a working pool.
+		// ph.shutdown, not just hc.stop: it also drops any idle
+		// connection the first probe parked, without poisoning the
+		// transport for a retry.
 		for _, ph := range s.pools {
 			ph.shutdown()
 		}
@@ -447,9 +445,8 @@ func (s *server) Start() (err error) {
 	if err != nil {
 		return err
 	}
-	// Commit: every fallible step is behind us. Application traffic
-	// becomes reachable only now, so there is no synchronous failure
-	// path left once a request can be accepted.
+	// Commit: no synchronous failure path remains once traffic can reach
+	// a request handler.
 	for _, fn := range serve {
 		go fn()
 	}
@@ -491,9 +488,8 @@ func (s *server) startPrerequisites(rb *startRollback) error {
 func (s *server) bindSockets(rb *startRollback) ([]func(), error) {
 	var serve []func()
 	for _, hs := range s.listeners {
-		// serveListener reads the scheme off the resolved listener; without
-		// one it would fall through to plain Serve and hand an HTTPS
-		// listener's address out in cleartext. Fail the bind instead.
+		// Without a matching resolved listener, serveListener would fall
+		// through to plain Serve and expose an HTTPS address in cleartext.
 		l, ok := findListener(s.cfg.Listeners, hs.Addr)
 		if !ok {
 			return nil, fmt.Errorf("listen %s: no resolved listener for this address", hs.Addr)
@@ -581,9 +577,8 @@ func (s *server) Shutdown() error {
 	}
 
 	var wg sync.WaitGroup
-	// Producers: every listener, every HTTP/3 listener, the metrics server,
-	// and the tracing flush. The channel is drained only after the last of
-	// them has sent, so an undersized buffer deadlocks rather than blocks.
+	// +2 for metrics and the tracing flush, alongside every listener and
+	// HTTP/3 listener; undersized deadlocks instead of blocking.
 	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+2)
 
 	for _, hs := range s.listeners {
@@ -826,11 +821,9 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 	if p.UpstreamHost == resolved.HostExplicit {
 		probeHost = p.HostValue
 	}
-	// Construction only builds the checker; it launches no goroutine.
-	// server.Start owns hc.start for static pools and the docker provider
-	// owns it for label-derived ones, so a server that never starts — or a
-	// newServer that fails after initPools — leaves no probe goroutine
-	// running that nothing will ever stop.
+	// Construction only builds the checker; server.Start (or the docker
+	// provider, for label-derived pools) owns hc.start, so a server that
+	// never starts leaves no probe goroutine running.
 	ph.hc = newHealthChecker(p.HealthCheck, all, transport, probeHost)
 	return ph, nil
 }

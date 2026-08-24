@@ -38,10 +38,8 @@ const (
 	// acmeDeactivateTimeout caps the detached cleanup of the pending
 	// authorizations a failed order leaves behind.
 	acmeDeactivateTimeout = 30 * time.Second
-	// acmeRegisterTimeout caps account registration: one directory fetch
-	// plus one POST. It runs inside Start, under the server mutex, so an
-	// unresponsive directory must surface as a failed Start rather than
-	// hang the whole lifecycle on a dead CA.
+	// acmeRegisterTimeout caps account registration, which runs under
+	// Start's mutex: a dead CA must fail Start, not hang it.
 	acmeRegisterTimeout = time.Minute
 )
 
@@ -100,9 +98,7 @@ type acmeManager struct {
 	// tests point it at a local fake.
 	directoryURL string
 
-	// registerTimeout caps account registration; acmeRegisterTimeout from
-	// newACMEManager, overridable so a test can prove the bound without
-	// waiting a minute on a dead directory.
+	// registerTimeout caps account registration; overridable in tests.
 	registerTimeout time.Duration
 
 	mu    sync.RWMutex
@@ -380,19 +376,12 @@ func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certific
 	st.cert, st.err = m.issue(ictx, host)
 	if st.err != nil {
 		if errors.Is(st.err, context.Canceled) && parent.Err() != nil {
-			// The manager was stopped and the order died of that
-			// cancellation: lifecycle, not a CA verdict. Drop the state
-			// before ready closes, so no later caller can find the
-			// settled cancellation through the table — a restarted
-			// manager issues immediately instead of replaying it for the
-			// cooldown window. Both conditions matter: a genuine CA
-			// failure that lands just as stop cancels the context is not
-			// itself a cancellation and keeps its cooldown.
+			// Lifecycle, not a CA verdict: drop before ready closes so a
+			// restart issues immediately instead of replaying this for
+			// the cooldown window.
 			m.forgetIssueState(host, st)
 		} else {
-			// A CA verdict (or a timeout under a live manager) is kept
-			// for acmeIssueRetryAfter; issueState drops it once the
-			// cooldown elapses.
+			// A CA verdict keeps its cooldown.
 			st.failedAt = time.Now()
 		}
 		close(st.ready)

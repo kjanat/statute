@@ -53,13 +53,11 @@ type fakeACME struct {
 	deactivated []string       // authz URLs the client gave up
 	csrCN       string         // Subject.CommonName of the finalized CSR
 	csrNames    []string       // dNSName SANs of the finalized CSR
-	// rejectValidation makes the CA fail validation without attempting a
-	// token fetch, the way a real CA records a name it could not reach. It
-	// is not a fixture error, so unlike a failed fetch it stays off t.
+	// rejectValidation fails validation without a token fetch; not a
+	// fixture error, so it stays off t unlike a failed fetch.
 	rejectValidation bool
-	// authzGate, when set, blocks authorization polls until it is closed —
-	// after closing authzReached exactly once, so the test knows a client
-	// has genuinely reached the CA with an order in flight.
+	// authzGate blocks authorization polls until closed; authzReached
+	// closes once, signaling an order is genuinely in flight.
 	authzReached chan struct{}
 	authzGate    chan struct{}
 }
@@ -746,11 +744,8 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 	m, fake := newPinnedManager(t)
 	reached := make(chan struct{})
 	gate := make(chan struct{})
-	// Release the gate on every exit path, not just the happy one: a
-	// t.Fatal before the explicit release would otherwise leave the CA's
-	// authorization handler blocked, and the fake server's Close — a
-	// cleanup newFakeACME registered earlier, so it runs after this one —
-	// would wait on it forever instead of the test failing.
+	// Released on every exit path (t.Cleanup runs after newFakeACME's
+	// server-Close cleanup, so this unblocks it first).
 	release := sync.OnceFunc(func() { close(gate) })
 	t.Cleanup(release)
 	fake.mu.Lock()

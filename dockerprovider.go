@@ -35,9 +35,8 @@ type dockerProvider struct {
 	srv    *server
 
 	cancel context.CancelFunc
-	// wg tracks the watch and reconcile goroutines, so stop returns only
-	// once both have exited — a Start retried after a rollback must not
-	// briefly overlap the old generation's watcher with its own.
+	// wg tracks the watch and reconcile goroutines, so a retry cannot
+	// overlap the old generation's watcher with its own.
 	wg sync.WaitGroup
 	// kick coalesces reconcile triggers; buffered so event handlers never block.
 	kick chan struct{}
@@ -351,10 +350,8 @@ func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, prev
 				p.warn([]string{fmt.Sprintf("service %q: %v, skipping", name, err)})
 				return nil
 			}
-			// Construction does not start the health checker; a
-			// label-derived pool goes live the moment its generation is
-			// stored, so its probing starts here. Generation retirement
-			// stops it via ph.shutdown.
+			// A label-derived pool starts probing here, not at
+			// construction; ph.shutdown stops it on retirement.
 			ph.hc.start()
 		}
 		next.pools[name] = ph
