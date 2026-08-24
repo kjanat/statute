@@ -191,3 +191,129 @@ func earlyServeSecondUnownedPublisherStart(a *bracketAttempt, hs *http.Server, l
 	}
 	return nil
 }
+
+type crossOwnerWaiter struct {
+	done chan struct{}
+}
+
+type crossOwnerAttempt struct {
+	hs    *http.Server
+	ln    net.Listener
+	extra *crossOwnerWaiter
+}
+
+func (a *crossOwnerAttempt) rollback() error {
+	err := a.hs.Close()
+	<-a.extra.done
+	return err
+}
+
+func (a *crossOwnerAttempt) serveEarly() {
+	go func() {
+		if err := a.hs.Serve(a.ln); err != nil {
+			_ = err
+		}
+	}()
+}
+
+func earlyServeCrossOwnerWaitStart(a *crossOwnerAttempt) error { // want `\[SLC100\].*publish serving before a later error return`
+	defer a.rollback()
+	a.serveEarly()
+	if _, err := bind(); err != nil {
+		return err
+	}
+	return nil
+}
+
+type unwaitedBound struct {
+	hs   *http.Server
+	done chan struct{}
+}
+
+func (b *unwaitedBound) rollback() error {
+	return b.hs.Close()
+}
+
+type waiterHelper struct {
+	done chan struct{}
+}
+
+func (w *waiterHelper) wait() {
+	<-w.done
+}
+
+type uncorrelatedAttempt struct {
+	bound  *unwaitedBound
+	helper *waiterHelper
+	ln     net.Listener
+}
+
+func (a *uncorrelatedAttempt) rollback() error {
+	err := a.bound.rollback()
+	a.helper.wait()
+	return err
+}
+
+func (a *uncorrelatedAttempt) serveEarly() {
+	go func() {
+		defer close(a.bound.done)
+		if err := a.bound.hs.Serve(a.ln); err != nil {
+			_ = err
+		}
+	}()
+}
+
+func earlyServeUncorrelatedWaitStart(a *uncorrelatedAttempt) error { // want `\[SLC100\].*publish serving before a later error return`
+	defer a.rollback()
+	a.serveEarly()
+	if _, err := bind(); err != nil {
+		return err
+	}
+	return nil
+}
+
+type extraServer struct {
+	hs *http.Server
+	ln net.Listener
+}
+
+func (o *extraServer) serve() {
+	go func() {
+		if err := o.hs.Serve(o.ln); err != nil {
+			_ = err
+		}
+	}()
+}
+
+type twoServerAttempt struct {
+	health   *bracketBound
+	extra    *extraServer
+	healthLn net.Listener
+}
+
+func (a *twoServerAttempt) rollback() error {
+	return a.health.rollback()
+}
+
+func (a *twoServerAttempt) serveHealth() {
+	go func() {
+		defer close(a.health.done)
+		if err := a.health.hs.Serve(a.healthLn); err != nil {
+			_ = err
+		}
+	}()
+}
+
+func (a *twoServerAttempt) serveExtra() {
+	a.extra.serve()
+}
+
+func earlyServeUnstoppedSecondOwnerStart(a *twoServerAttempt) error { // want `\[SLC100\].*publish serving before a later error return`
+	defer a.rollback()
+	a.serveHealth()
+	a.serveExtra()
+	if _, err := bind(); err != nil {
+		return err
+	}
+	return nil
+}
