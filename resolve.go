@@ -314,9 +314,8 @@ func resolveUpstreamHost(u UpstreamHost, rp *resolved.Pool) error {
 
 func resolveHealthCheck(h HealthCheck) (resolved.HealthCheck, error) {
 	if h.Path == "" {
-		// The new probe fields describe active probing, so silently
-		// dropping them alongside a missing Path would be a policy drop.
-		// Interval/Timeout keep their historical silent-ignore behavior.
+		// Dropping Host/Statuses alongside a missing Path would be a
+		// silent policy drop.
 		if h.Host != "" {
 			return resolved.HealthCheck{}, errors.New("host: set but path is empty")
 		}

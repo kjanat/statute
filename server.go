@@ -842,9 +842,8 @@ type poolHandler struct {
 	transport *http.Transport
 	picker    picker
 	hc        *healthChecker
-	// passive is the live passive-health generation, published by start()
-	// and consulted by candidates() and ServeHTTP; nil until a start with
-	// passive health enabled. now is the clock its windows age against.
+	// passive is the live passive-health generation; nil until a start
+	// with passive health enabled. now is the windows' aging clock.
 	passive atomic.Pointer[passiveRun]
 	now     func() time.Time
 }
@@ -914,10 +913,9 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 		bs := &backendState{backend: b}
 		// Backends start healthy; the prober demotes them as it observes failures.
 		bs.markHealthy(true)
-		// Each failed attempt — transport error or 5xx — counts against the
-		// backend that served it, into the passive generation the attempt
-		// started under; the record is a no-op when no generation is pinned
-		// on the request or the pinned one has stopped.
+		// Each failed attempt counts against the backend that served it,
+		// via the generation pinned on the request; stopped or absent
+		// generations make the record a no-op.
 		bs.rp = newBackendProxy(target, transport, p, func(r *http.Request) {
 			passiveRunFromContext(r.Context()).record(bs)
 		})
@@ -929,12 +927,11 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 	}
 
 	all := append(append([]*backendState{}, ph.primary...), ph.backup...)
-	// The prober rides the same transport as proxy traffic, so both sides
-	// see one TLS verification policy that cannot drift apart. The probe
-	// Host has one precedence rule: HealthCheck.Host when set, else an
-	// explicit pool Host policy carries over, else probes stay on each
-	// backend's own host — a probe has no client Host to preserve. Proxied
-	// requests follow UpstreamHost regardless.
+	// INVARIANT: probes ride the proxy transport so TLS verification
+	// cannot drift between probe and proxy traffic, and the probe Host
+	// has one precedence rule: HealthCheck.Host, else an explicit pool
+	// Host, else the backend's own host. UpstreamHost governs proxied
+	// requests regardless.
 	probeHost := p.HealthCheck.Host
 	if probeHost == "" && p.UpstreamHost == resolved.HostExplicit {
 		probeHost = p.HostValue
@@ -1016,12 +1013,10 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			// A client abort surfaces here too — the inbound context is
-			// canceled and RoundTrip fails — but it is not a backend
-			// fault: counting it would hand unauthenticated clients a
-			// pool-wide demotion lever. A deadline is backend slowness
-			// under a timeout and still records, as does every genuine
-			// transport, dial, or TLS error.
+			// SAFETY: a client abort lands here too, and recording it
+			// would hand unauthenticated clients a pool-wide demotion
+			// lever; deadlines and genuine transport failures still
+			// count.
 			if !errors.Is(r.Context().Err(), context.Canceled) {
 				recordFailure(r)
 			}
@@ -1069,10 +1064,8 @@ func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	bs.inFlight.Add(1)
 	defer bs.inFlight.Add(-1)
-	// Pin the passive generation current at attempt start so the outcome
-	// hooks record into it — under Retry every re-entry is its own attempt
-	// against the backend that served it, and an attempt straddling a
-	// generation swap records into its own, stopped, generation.
+	// Pin the generation current at attempt start: each Retry re-entry
+	// records into its own generation, even across a swap.
 	if run := ph.passive.Load(); run != nil {
 		r = r.WithContext(withPassiveRun(r.Context(), run))
 	}

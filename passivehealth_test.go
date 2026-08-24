@@ -142,9 +142,8 @@ func TestPassiveCountsBackendAttemptsUnderRetry(t *testing.T) {
 	if run.demoted(goodState) {
 		t.Error("succeeding backend demoted")
 	}
-	// Round-robin alternates A,B per attempt: requests 1 and 2 each burn
-	// one attempt on the bad backend before recovering; request 3 finds it
-	// demoted and never touches it.
+	// Requests 1 and 2 each burn one round-robin attempt on the bad
+	// backend; request 3 finds it demoted.
 	if got := badHits.Load(); got != 2 {
 		t.Errorf("bad backend attempts: got %d, want 2", got)
 	}
