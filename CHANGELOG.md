@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Transport.FlushInterval` exposes the reverse proxy's response flush
+  interval as pool policy, e.g. `"100ms"`: every route proxying to the
+  pool shares the one interval, and active health probes are unaffected
+  (they ride the pool transport, not the proxy). The default `0` keeps
+  Go's `ReverseProxy` default — no periodic flushing — and detected
+  streaming responses (unknown Content-Length, `text/event-stream`) keep
+  flushing immediately regardless. Non-negative durations only, parsed
+  like the other transport durations; there is no Traefik `-1`
+  immediate-flush sentinel, and no Docker label form.
+
 - Upstream health policy extensions: `HealthCheck.Host` overrides the
   `Host` header active probes carry — one precedence rule: the override
   when set, else the derivation from `UpstreamHost` exactly as before,

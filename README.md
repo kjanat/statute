@@ -200,6 +200,8 @@ The picker filters to healthy primary backends; when no primary is healthy, it f
 
 `Transport` tunes the HTTP transport reused across all backends in the pool. The default `MaxIdleConnsPerHost` (32) is a much better default for a proxy than Go's stdlib value (2); leave it alone unless you know why you're changing it.
 
+`Transport.FlushInterval` (e.g. `"100ms"`) makes the reverse proxy flush buffered response bytes to the client at that interval. It is pool policy: every route proxying to the pool shares the one interval. The default `0` keeps Go's `httputil.ReverseProxy` default — no periodic flushing — and responses the proxy detects as streaming (unknown Content-Length, `text/event-stream`) are flushed immediately regardless of this setting, so SSE works out of the box either way. Only non-negative durations are accepted; there is no equivalent of Traefik's `-1` immediate-flush sentinel, so a response the proxy does not detect as streaming (for example long polling with a known Content-Length) needs a small positive interval instead.
+
 A backend with an `https://` address gets its certificate verified against the system roots by default. `Transport` carries the pool's verification policy when that is not enough:
 
 ```go

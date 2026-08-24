@@ -256,9 +256,13 @@ type Transport struct {
 	IdleConnTimeout     time.Duration
 	DialTimeout         time.Duration
 	TLSHandshakeTimeout time.Duration
-	ServerName          string
-	RootCAFiles         []string
-	InsecureSkipVerify  bool
+	// FlushInterval is the reverse-proxy response flush interval; zero
+	// means no periodic flushing (detected streaming responses still
+	// flush immediately).
+	FlushInterval      time.Duration
+	ServerName         string
+	RootCAFiles        []string
+	InsecureSkipVerify bool
 }
 
 // Route is a resolved route. Exactly one of the four actions is set:
