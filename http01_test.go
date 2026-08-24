@@ -57,6 +57,11 @@ type fakeACME struct {
 	// token fetch, the way a real CA records a name it could not reach. It
 	// is not a fixture error, so unlike a failed fetch it stays off t.
 	rejectValidation bool
+	// authzGate, when set, blocks authorization polls until it is closed —
+	// after closing authzReached exactly once, so the test knows a client
+	// has genuinely reached the CA with an order in flight.
+	authzReached chan struct{}
+	authzGate    chan struct{}
 }
 
 const fakeACMEToken = "tok-fake-acme" //nolint:gosec // G101: fixture challenge token, not a credential
@@ -150,6 +155,7 @@ func (f *fakeACME) handle(w http.ResponseWriter, r *http.Request) {
 			"finalize":       f.url("/finalize/1"),
 		})
 	case "/authz/1":
+		f.gateAuthz()
 		f.handleAuthz(w, r)
 	case "/chal/http", "/chal/alpn", "/chal/dns":
 		f.handleChallenge(w, r)
@@ -191,6 +197,23 @@ func (f *fakeACME) handleAuthz(w http.ResponseWriter, r *http.Request) {
 			{"type": "dns-01", "url": f.url("/chal/dns"), "token": fakeACMEToken, "status": "pending"},
 		},
 	})
+}
+
+// gateAuthz lets a test hold an order in flight at the CA: it closes
+// authzReached (once) so the test knows the client has arrived, then
+// blocks until authzGate closes. Without a gate configured it is a no-op,
+// and once the gate has closed it never blocks again.
+func (f *fakeACME) gateAuthz() {
+	f.mu.Lock()
+	reached, gate := f.authzReached, f.authzGate
+	f.authzReached = nil
+	f.mu.Unlock()
+	if reached != nil {
+		close(reached)
+	}
+	if gate != nil {
+		<-gate
+	}
 }
 
 // finalizedCSR returns the Subject CommonName and the dNSName SANs of the
@@ -714,34 +737,37 @@ func TestHTTP01_InvalidAuthorizationFailsFast(t *testing.T) {
 // is lifecycle, not a CA verdict. It must not settle into the failure
 // cache that issueState hands out for acmeIssueRetryAfter, or a Start
 // retried after a rollback replays the cancellation on every handshake
-// for a minute while reporting success.
+// for a minute while reporting success. The order is genuinely in flight
+// when stop cancels it: the fake CA gates its authorization endpoint, the
+// test waits for the client to arrive there, and only then stops the
+// manager — the exact interleaving the rollback produces.
 func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 	t.Parallel()
-	src := &resolved.AutoTLS{
-		Domains:   []string{"pin.example"},
-		Email:     "ops@pin.example",
-		Storage:   t.TempDir(),
-		Challenge: resolved.ChallengeHTTP01,
-	}
-	m, err := newHTTP01Manager(src)
-	if err != nil {
-		t.Fatalf("newHTTP01Manager: %v", err)
-	}
-	notFound := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	fake := newFakeACME(t, m.wrapHTTPChallenges(notFound))
-	m.directoryURL = fake.url("/dir")
+	m, fake := newPinnedManager(t)
+	reached := make(chan struct{})
+	gate := make(chan struct{})
+	fake.mu.Lock()
+	fake.authzReached, fake.authzGate = reached, gate
+	fake.mu.Unlock()
 
 	if err := m.start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	// Stop as the Start rollback does, then drive one order to settlement
-	// under the cancelled run context.
-	m.stop()
-	if _, err := m.issueOnce(context.Background(), "pin.example"); err == nil {
-		t.Fatal("issuance succeeded under a cancelled run context")
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.issueOnce(context.Background(), "pin.example")
+		done <- err
+	}()
+	<-reached // the order is now in flight, blocked at the CA
+	m.stop()  // stop as the Start rollback does, cancelling it mid-order
+	err := <-done
+	if err == nil {
+		t.Fatal("issuance succeeded despite stop cancelling its order")
 	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("in-flight order settled with %v, want a cancellation", err)
+	}
+	close(gate) // release the CA's blocked authorization handler
 
 	// A restarted manager must issue immediately, not replay the
 	// cancellation until the cooldown elapses.
@@ -756,4 +782,49 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 	if cert == nil {
 		t.Fatal("nil certificate after restart")
 	}
+}
+
+// TestStartFailureStopsACMEManagers — the Start rollback must stop the
+// ACME managers it started: no renewal loop outlives a failed Start, and
+// a retried Start restarts them cleanly and issues end-to-end.
+func TestStartFailureStopsACMEManagers(t *testing.T) {
+	httpAddr := reserveAddr(t)
+	src, srv := newHTTP01LifecycleServer(t, httpAddr)
+	mgr := srv.acmeManagers[src]
+	if mgr == nil {
+		t.Fatal("no acme manager built for the HTTP-01 source")
+	}
+	fake := newFakeACME(t, nil)
+	fake.challengeURL = "http://" + httpAddr
+	mgr.directoryURL = fake.url("/dir")
+
+	// Hold the plain HTTP listener's port, so Start fails at the bind
+	// phase — after the managers have started.
+	busy, err := net.Listen("tcp", httpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting listener address")
+	}
+	// The rollback stopped the manager: stop leaves the run context in
+	// place, cancelled — a live one would mean the renewal loop survived.
+	if mgr.runContext().Err() == nil {
+		t.Fatal("manager run context still live after failed Start")
+	}
+
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	// The restarted manager's warm-up issues through the now-serving
+	// listener: the CA fetches the token over real TCP.
+	waitForCachedCert(t, mgr, "pin.example", 10*time.Second)
 }

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"statute.kjanat.dev/internal/docker"
@@ -34,7 +35,10 @@ type dockerProvider struct {
 	srv    *server
 
 	cancel context.CancelFunc
-	done   chan struct{}
+	// wg tracks the watch and reconcile goroutines, so stop returns only
+	// once both have exited — a Start retried after a rollback must not
+	// briefly overlap the old generation's watcher with its own.
+	wg sync.WaitGroup
 	// kick coalesces reconcile triggers; buffered so event handlers never block.
 	kick chan struct{}
 	// warned dedupes label warnings across reconciles so a misconfigured
@@ -68,7 +72,6 @@ func newDockerProvider(cfg *resolved.Docker, srv *server) (*dockerProvider, erro
 func (p *dockerProvider) start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
-	p.done = make(chan struct{})
 
 	if err := p.client.Ping(ctx); err != nil {
 		cancel()
@@ -79,8 +82,8 @@ func (p *dockerProvider) start() error {
 		return err
 	}
 
-	go p.watchEvents(ctx)
-	go p.run(ctx)
+	p.wg.Go(func() { p.watchEvents(ctx) })
+	p.wg.Go(func() { p.run(ctx) })
 	return nil
 }
 
@@ -89,7 +92,7 @@ func (p *dockerProvider) stop() {
 		return
 	}
 	p.cancel()
-	<-p.done
+	p.wg.Wait()
 }
 
 // watchEvents follows the container event stream, kicking the sync loop on
@@ -131,8 +134,6 @@ func (p *dockerProvider) trigger() {
 // run is the reconcile loop: debounced event kicks plus the optional
 // periodic full resync.
 func (p *dockerProvider) run(ctx context.Context) {
-	defer close(p.done)
-
 	var tick <-chan time.Time
 	if p.cfg.Refresh > 0 {
 		t := time.NewTicker(p.cfg.Refresh)
@@ -350,6 +351,11 @@ func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, prev
 				p.warn([]string{fmt.Sprintf("service %q: %v, skipping", name, err)})
 				return nil
 			}
+			// Construction does not start the health checker; a
+			// label-derived pool goes live the moment its generation is
+			// stored, so its probing starts here. Generation retirement
+			// stops it via ph.shutdown.
+			ph.hc.start()
 		}
 		next.pools[name] = ph
 		next.fingerprints[name] = fp

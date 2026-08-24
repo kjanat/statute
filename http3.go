@@ -2,7 +2,9 @@ package statute
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -23,21 +25,32 @@ type http3Listener struct {
 	conn net.PacketConn
 }
 
-// Serve runs the HTTP/3 (QUIC) server on the given UDP socket and blocks
-// until it stops. The caller binds the socket so a bind failure surfaces
-// from Start, and so a failed Start can close the socket without closing
-// the server — a closed http3.Server is not reusable, but one whose
-// conn went away serves again on the next Serve call.
-func (h *http3Listener) Serve(conn net.PacketConn) error {
-	return h.srv.Serve(conn)
+// serveLoop runs the HTTP/3 (QUIC) server on the socket Start bound into
+// h.conn and blocks until it stops. Start binds the socket so a bind
+// failure fails Start instead of vanishing here, and so a failed Start
+// can close the socket without closing the server — a closed http3.Server
+// is not reusable, but one whose conn went away serves again on the next
+// call. If the loop dies for any reason other than shutdown, the socket
+// is closed too: a dead server must not keep the caller-owned UDP port
+// bound — and Alt-Svc keeps advertising it — for the life of the process.
+func (h *http3Listener) serveLoop() {
+	err := h.srv.Serve(h.conn)
+	if isServeShutdown(err) {
+		return
+	}
+	log.Printf("statute: http3 %s: serve loop exited: %v", h.addr, err)
+	_ = h.conn.Close()
 }
 
 // Shutdown gracefully stops the HTTP/3 listener, then closes the UDP
-// socket the server does not own.
+// socket the server does not own. A close failure joins the shutdown
+// error — "this port may still be bound" is not a detail to swallow.
 func (h *http3Listener) Shutdown(ctx context.Context) error {
 	err := h.srv.Shutdown(ctx)
 	if h.conn != nil {
-		_ = h.conn.Close()
+		if cerr := h.conn.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+			err = errors.Join(err, cerr)
+		}
 	}
 	return err
 }

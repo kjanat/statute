@@ -2,6 +2,7 @@ package statute
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go/http3"
 )
 
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
@@ -159,7 +162,7 @@ func TestServerStartShutdown(t *testing.T) {
 
 	// Wait briefly for goroutines to bind before issuing a request.
 	addr := srv.listeners[0].Addr
-	waitForListen(t, addr, 2*time.Second)
+	waitForListen(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/test")
 	if err != nil {
@@ -209,7 +212,7 @@ func TestStartFailureReleasesEarlierListeners(t *testing.T) {
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded despite a conflicting listener address")
 	}
-	waitForRelease(t, firstAddr, 2*time.Second)
+	mustBindNow(t, firstAddr)
 
 	// A failed Start must be retryable: free the contested port and the
 	// retry must succeed with listeners that actually serve — not
@@ -267,7 +270,7 @@ func TestStartMetricsFailureReleasesListeners(t *testing.T) {
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded despite a conflicting metrics address")
 	}
-	waitForRelease(t, contentAddr, 2*time.Second)
+	mustBindNow(t, contentAddr)
 
 	// Retry after freeing the metrics port: content and metrics listeners
 	// must both come up serving.
@@ -290,7 +293,7 @@ func TestStartMetricsFailureReleasesListeners(t *testing.T) {
 // mustServeMetrics asserts the metrics endpoint answers 200 on addr.
 func mustServeMetrics(t *testing.T, addr string) {
 	t.Helper()
-	waitForListen(t, addr, 2*time.Second)
+	waitForListen(t, addr)
 	resp, err := http.Get("http://" + addr + "/metrics")
 	if err != nil {
 		t.Fatalf("GET metrics: %v", err)
@@ -306,7 +309,7 @@ func mustServeMetrics(t *testing.T, addr string) {
 // is alive, not a bound-then-instantly-closed socket.
 func mustServeRedirect(t *testing.T, addr string) {
 	t.Helper()
-	waitForListen(t, addr, 2*time.Second)
+	waitForListen(t, addr)
 	client := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -320,27 +323,35 @@ func mustServeRedirect(t *testing.T, addr string) {
 	}
 }
 
-// waitForRelease asserts addr becomes bindable again within deadline —
-// that whatever held it has been closed. The serve goroutine may close
-// its listener a moment after Start returns, so this polls.
-func waitForRelease(t *testing.T, addr string, deadline time.Duration) {
+// mustBindNow asserts addr is bindable the moment it is called: the
+// rollback (and Shutdown's socket close) run synchronously before their
+// caller returns, so the release owes no polling grace.
+func mustBindNow(t *testing.T, addr string) {
 	t.Helper()
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		if ln, err := net.Listen("tcp", addr); err == nil {
-			_ = ln.Close()
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("%s still bound: %v", addr, err)
 	}
-	t.Fatalf("%s still bound after failed Start", addr)
+	_ = ln.Close()
 }
 
-// TestStartShutdownReleasesHTTP3Socket — Start binds the HTTP/3 UDP
-// socket and quic-go never closes a caller-provided conn, so a normal
-// Shutdown must close it itself or the port leaks for the process's
-// lifetime.
-func TestStartShutdownReleasesHTTP3Socket(t *testing.T) {
+// mustBindNowUDP is mustBindNow for a UDP address.
+func mustBindNowUDP(t *testing.T, addr string) {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		t.Fatalf("UDP %s still bound: %v", addr, err)
+	}
+	_ = conn.Close()
+}
+
+// newHTTP3TestServer builds a server with one HTTPS listener on tcpAddr
+// serving a self-signed cert for h3.example, with HTTP/3 on udpAddr. The
+// resolved config is patched before newServer so the cert router, the
+// Alt-Svc header, and serveListener's scheme dispatch all agree on the
+// real addresses.
+func newHTTP3TestServer(t *testing.T, tcpAddr, udpAddr string) *server {
+	t.Helper()
 	certFile, keyFile := writeSelfSignedCert(t, "h3.example")
 	cfg := Config{
 		Listeners: Listeners{
@@ -349,27 +360,133 @@ func TestStartShutdownReleasesHTTP3Socket(t *testing.T) {
 		Routes:   Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
 		Shutdown: Shutdown{GracePeriod: "2s"},
 	}
-	srv, err := newServer(mustResolve(t, cfg))
+	r := mustResolve(t, cfg)
+	r.Listeners[0].Addr = tcpAddr
+	r.Listeners[0].HTTP3Addr = udpAddr
+	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	srv.listeners[0].Addr = reserveAddr(t)
+	return srv
+}
+
+// TestStartShutdownReleasesHTTP3Socket — Start binds the HTTP/3 UDP
+// socket and quic-go never closes a caller-provided conn, so a normal
+// Shutdown must close it itself or the port leaks for the process's
+// lifetime. Holding the port is asserted with a real HTTP/3 request, not
+// just a failed rebind — a dead serve loop pins the socket too.
+func TestStartShutdownReleasesHTTP3Socket(t *testing.T) {
 	udpAddr := reserveUDPAddr(t)
-	srv.http3Servers[0].addr = udpAddr
+	srv := newHTTP3TestServer(t, reserveAddr(t), udpAddr)
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	// The socket is held while serving...
+	// The socket is held while serving — by a QUIC server that answers.
 	if conn, err := net.ListenPacket("udp", udpAddr); err == nil {
 		_ = conn.Close()
 		t.Fatal("HTTP/3 UDP socket not bound while serving")
 	}
+	mustServeHTTP3(t, udpAddr)
 	if err := srv.Shutdown(); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	// ...and released once Shutdown completes.
-	waitForReleaseUDP(t, udpAddr, 2*time.Second)
+	// ...and released once Shutdown returns: the conn close happens
+	// inside Shutdown, after the drain.
+	mustBindNowUDP(t, udpAddr)
+}
+
+// TestStartHTTP3BindFailureReleasesListeners — an HTTP/3 UDP bind
+// conflict must fail Start, release the TCP socket bound before it
+// without ever having exposed a route on it, and leave the server
+// retryable with both transports actually serving afterwards.
+func TestStartHTTP3BindFailureReleasesListeners(t *testing.T) {
+	busy, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+	udpAddr := busy.LocalAddr().String()
+	tcpAddr := reserveAddr(t)
+	srv := newHTTP3TestServer(t, tcpAddr, udpAddr)
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting HTTP/3 UDP address")
+	}
+	// Start binds every socket before serving anything, so the failed
+	// attempt accepted no connection: nothing answers on the TCP address,
+	// and the socket is already free again.
+	if conn, err := net.DialTimeout("tcp", tcpAddr, time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("TCP address still accepting after failed Start")
+	}
+	mustBindNow(t, tcpAddr)
+
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeTLSRedirect(t, tcpAddr)
+	mustServeHTTP3(t, udpAddr)
+}
+
+// mustServeHTTP3 asserts the HTTP/3 endpoint answers a real request on
+// udpAddr — proof the QUIC serve loop is alive, not merely that some
+// process holds the socket.
+func mustServeHTTP3(t *testing.T, udpAddr string) {
+	t.Helper()
+	tr := &http3.Transport{
+		TLSClientConfig: &tls.Config{
+			ServerName:         "h3.example",
+			InsecureSkipVerify: true, //nolint:gosec // G402: hermetic test against the self-signed fixture cert
+		},
+	}
+	defer func() { _ = tr.Close() }()
+	client := &http.Client{
+		Transport:     tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       5 * time.Second,
+	}
+	resp, err := client.Get("https://" + udpAddr + "/x")
+	if err != nil {
+		t.Fatalf("HTTP/3 GET %s: %v", udpAddr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("HTTP/3 %s: status %d, want 301", udpAddr, resp.StatusCode)
+	}
+}
+
+// mustServeTLSRedirect is mustServeRedirect over TLS, for the HTTPS
+// listener the HTTP/3 tests configure.
+func mustServeTLSRedirect(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ServerName:         "h3.example",
+				InsecureSkipVerify: true, //nolint:gosec // G402: hermetic test against the self-signed fixture cert
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       5 * time.Second,
+	}
+	resp, err := client.Get("https://" + addr + "/x")
+	if err != nil {
+		t.Fatalf("GET %s: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("%s: status %d, want 301", addr, resp.StatusCode)
+	}
 }
 
 // reserveUDPAddr is reserveAddr for a UDP port: bind ephemeral, close,
@@ -385,21 +502,6 @@ func reserveUDPAddr(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return addr
-}
-
-// waitForReleaseUDP asserts the UDP addr becomes bindable again within
-// deadline — that whatever held it has been closed.
-func waitForReleaseUDP(t *testing.T, addr string, deadline time.Duration) {
-	t.Helper()
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		if conn, err := net.ListenPacket("udp", addr); err == nil {
-			_ = conn.Close()
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("UDP %s still bound after Shutdown", addr)
 }
 
 // TestNewServer_HTTPSWithoutTLSMaterial — building a server with an HTTPS
@@ -625,9 +727,12 @@ func TestServerShutdownWithoutStart(t *testing.T) {
 	}
 }
 
-// waitForListen polls addr until a TCP Dial succeeds or the deadline fires.
-func waitForListen(t *testing.T, addr string, deadline time.Duration) {
+// waitForListen polls addr until a TCP Dial succeeds, for up to two
+// seconds: the serve goroutines launch just before Start returns, so a
+// first request can beat the accept loop.
+func waitForListen(t *testing.T, addr string) {
 	t.Helper()
+	const deadline = 2 * time.Second
 	stop := time.Now().Add(deadline)
 	for time.Now().Before(stop) {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)

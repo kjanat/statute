@@ -368,17 +368,23 @@ func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certific
 	//nolint:contextcheck // detached from the caller on purpose: see this function's doc comment
 	st.cert, st.err = m.issue(ictx, host)
 	if st.err != nil {
-		// The failure is kept for acmeIssueRetryAfter; issueState drops
-		// it once the cooldown elapses.
-		st.failedAt = time.Now()
-		close(st.ready)
-		if parent.Err() != nil {
-			// The manager was stopped mid-order: lifecycle, not a CA
-			// verdict. Drop the state so a restarted manager issues
-			// immediately — a Start retried after a rollback must not
-			// replay this cancellation for the cooldown window.
+		if errors.Is(st.err, context.Canceled) && parent.Err() != nil {
+			// The manager was stopped and the order died of that
+			// cancellation: lifecycle, not a CA verdict. Drop the state
+			// before ready closes, so no later caller can find the
+			// settled cancellation through the table — a restarted
+			// manager issues immediately instead of replaying it for the
+			// cooldown window. Both conditions matter: a genuine CA
+			// failure that lands just as stop cancels the context is not
+			// itself a cancellation and keeps its cooldown.
 			m.forgetIssueState(host, st)
+		} else {
+			// A CA verdict (or a timeout under a live manager) is kept
+			// for acmeIssueRetryAfter; issueState drops it once the
+			// cooldown elapses.
+			st.failedAt = time.Now()
 		}
+		close(st.ready)
 		return nil, st.err
 	}
 	m.mu.Lock()
