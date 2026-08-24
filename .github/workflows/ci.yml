@@ -44,7 +44,7 @@ jobs:
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.13.1
           args: --enable-only=statutelifecycle --new-from-merge-base=origin/${{ github.base_ref }} --whole-files --timeout=5m
   discover_fuzz:
     name: discover fuzz targets
