@@ -38,6 +38,11 @@ const (
 	// acmeDeactivateTimeout caps the detached cleanup of the pending
 	// authorizations a failed order leaves behind.
 	acmeDeactivateTimeout = 30 * time.Second
+	// acmeRegisterTimeout caps account registration: one directory fetch
+	// plus one POST. It runs inside Start, under the server mutex, so an
+	// unresponsive directory must surface as a failed Start rather than
+	// hang the whole lifecycle on a dead CA.
+	acmeRegisterTimeout = time.Minute
 )
 
 // acmeSolver satisfies one kind of ACME challenge for the manager. The
@@ -659,7 +664,9 @@ func (m *acmeManager) loadOrCreateAccount() error {
 		DirectoryURL: m.directoryURL,
 	}
 	contact := []string{"mailto:" + m.email}
-	if _, err := client.Register(context.Background(), &acme.Account{Contact: contact}, acme.AcceptTOS); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), acmeRegisterTimeout)
+	defer cancel()
+	if _, err := client.Register(ctx, &acme.Account{Contact: contact}, acme.AcceptTOS); err != nil {
 		// Already registered is fine. The acme library returns ErrAccountAlreadyExists
 		// for that case.
 		if !errors.Is(err, acme.ErrAccountAlreadyExists) {

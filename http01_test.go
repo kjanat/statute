@@ -746,6 +746,13 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 	m, fake := newPinnedManager(t)
 	reached := make(chan struct{})
 	gate := make(chan struct{})
+	// Release the gate on every exit path, not just the happy one: a
+	// t.Fatal before the explicit release would otherwise leave the CA's
+	// authorization handler blocked, and the fake server's Close — a
+	// cleanup newFakeACME registered earlier, so it runs after this one —
+	// would wait on it forever instead of the test failing.
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
 	fake.mu.Lock()
 	fake.authzReached, fake.authzGate = reached, gate
 	fake.mu.Unlock()
@@ -767,7 +774,7 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("in-flight order settled with %v, want a cancellation", err)
 	}
-	close(gate) // release the CA's blocked authorization handler
+	release() // release the CA's blocked authorization handler
 
 	// A restarted manager must issue immediately, not replay the
 	// cancellation until the cooldown elapses.
