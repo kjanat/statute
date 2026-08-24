@@ -100,7 +100,7 @@ func redirectRouter(t *testing.T, cfg Config) http.Handler {
 	}
 	t.Cleanup(func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	})
 	return srv.buildRouter()

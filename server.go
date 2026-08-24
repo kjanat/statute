@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -32,7 +31,7 @@ type server struct {
 
 	listeners     []*http.Server // content + redirect listeners
 	metricsServer *http.Server
-	http3Servers  []*http3Listener
+	http3Servers  []*http3Server
 
 	pools map[string]*poolHandler
 
@@ -51,6 +50,10 @@ type server struct {
 
 	mu      sync.Mutex
 	started bool
+	run     *serverRun
+
+	listenTCP    func(context.Context, string, string) (net.Listener, error)
+	listenPacket func(context.Context, string, string) (net.PacketConn, error)
 }
 
 func newServer(cfg *resolved.Config) (*server, error) {
@@ -143,32 +146,6 @@ func (s *server) initDocker(cfg *resolved.Docker) error {
 	}
 	s.docker = dp
 	return nil
-}
-
-// startDocker runs the provider's initial sync before listeners open so
-// the first request already sees label-derived routes.
-func (s *server) startDocker() error {
-	if s.docker == nil {
-		return nil
-	}
-	if err := s.docker.start(); err != nil {
-		return fmt.Errorf("docker: %w", err)
-	}
-	return nil
-}
-
-// shutdownDocker stops the provider before its pools so no reconcile swaps
-// in a fresh generation mid-teardown, then retires the current generation.
-func (s *server) shutdownDocker() {
-	if s.docker == nil {
-		return
-	}
-	s.docker.stop()
-	if t := s.dynamic.Load(); t != nil {
-		for _, ph := range t.pools {
-			ph.shutdown()
-		}
-	}
 }
 
 // initPools builds a poolHandler for every resolved upstream.
@@ -296,15 +273,15 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 // selects the HTTP-01 managers, warmed through warmAsync once the plain
 // HTTP listeners are serving and can answer the CA's token fetch; the
 // manager tracks that goroutine so Shutdown waits for it.
-func (s *server) warmACMEManagers(afterListeners bool) {
-	for _, m := range s.acmeManagers {
-		if m.warmsAfterListeners() != afterListeners {
+func warmACMERuns(runs []*acmeRun, afterListeners bool) {
+	for _, run := range runs {
+		if run.manager.warmsAfterListeners() != afterListeners {
 			continue
 		}
 		if afterListeners {
-			m.warmAsync()
+			run.warmAsync()
 		} else {
-			m.warm()
+			run.warm()
 		}
 	}
 }
@@ -354,64 +331,158 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 	}
 }
 
-// boundSocket is one socket a Start attempt has bound, tagged so a close
-// failure during rollback can name what may have leaked, and where.
-type boundSocket struct {
-	kind   string // "listener", "http3", "metrics"
-	addr   string
-	closer io.Closer
+type boundHTTP struct {
+	server   *http.Server
+	policy   *resolved.Listener
+	listener net.Listener
 }
 
-// startRollback records the resources one Start attempt has acquired, so
-// a failed Start releases every one of them before returning. Nothing it
-// records has served traffic: Start binds every socket before launching
-// any serve loop, so a failed attempt has accepted no connection — there
-// is nothing to drain, and no keep-alive or hijacked connection to
-// outlive the rollback. The unwind closes bare sockets, never the
-// http.Server or http3.Server objects built to serve them: a closed
-// server is permanently unusable (Serve returns ErrServerClosed forever),
-// and those objects must stay clean for a retried Start to bind and
-// serve again.
-//
-// It tracks only what Start itself acquires. Resources newServer creates
-// — the tracing provider, the pool transports — are server-lifetime,
-// released by Shutdown. The unwind does additionally drop idle
-// connections the first health probe may have parked in a pool
-// transport; that does not retire the transport, which stays reusable
-// for a retried Start.
-type startRollback struct {
-	poolsUp  bool
-	managers []*acmeManager
-	dockerUp bool
-	sockets  []boundSocket
+func (b *boundHTTP) serve() {
+	logServeExit("listener", b.server.Addr, serveListener(b.server, b.policy, b.listener))
 }
 
-// unwindStart releases everything rb recorded, returning any close
-// failure — a rollback that may have leaked a socket must say so. It
-// only ever runs before the serve loops launch, so no request, no
-// handshake, and no HTTP-01 validation is in flight anywhere.
-func (s *server) unwindStart(rb *startRollback) error {
-	for _, m := range rb.managers {
-		m.stop()
+func (b *boundHTTP) rollback() error {
+	if err := b.listener.Close(); err != nil {
+		return fmt.Errorf("rollback close listener %s: %w", b.server.Addr, err)
 	}
+	return nil
+}
+
+type boundHTTP3 struct {
+	server *http3Server
+	conn   net.PacketConn
+}
+
+func (b *boundHTTP3) serve() { b.server.serveLoop(b.conn) }
+
+func (b *boundHTTP3) rollback() error {
+	if err := b.conn.Close(); err != nil {
+		return fmt.Errorf("rollback close http3 %s: %w", b.server.addr, err)
+	}
+	return nil
+}
+
+type boundMetrics struct {
+	server   *http.Server
+	listener net.Listener
+}
+
+func (b *boundMetrics) serve() {
+	logServeExit("metrics", b.server.Addr, b.server.Serve(b.listener))
+}
+
+func (b *boundMetrics) rollback() error {
+	if err := b.listener.Close(); err != nil {
+		return fmt.Errorf("rollback close metrics %s: %w", b.server.Addr, err)
+	}
+	return nil
+}
+
+// boundListeners is the typed socket ownership of one Start attempt. It
+// cannot confuse configured server controls with the sockets rollback owns.
+type boundListeners struct {
+	http    []*boundHTTP
+	http3   []*boundHTTP3
+	metrics *boundMetrics
+}
+
+func (b *boundListeners) rollback() error {
 	var errs []error
-	for _, b := range rb.sockets {
-		if err := b.closer.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("rollback close %s %s: %w", b.kind, b.addr, err))
-		}
+	for _, listener := range b.http {
+		errs = append(errs, listener.rollback())
 	}
-	if rb.dockerUp {
-		s.shutdownDocker()
-		// Drop the table so a retry's initial sync builds fresh handlers
-		// instead of readopting dead ones by fingerprint.
-		s.dynamic.Store(nil)
+	for _, listener := range b.http3 {
+		errs = append(errs, listener.rollback())
 	}
-	if rb.poolsUp {
-		for _, ph := range s.pools {
-			ph.shutdown() // also drops any idle conn the first probe parked
-		}
+	if b.metrics != nil {
+		errs = append(errs, b.metrics.rollback())
 	}
 	return errors.Join(errs...)
+}
+
+func (b *boundListeners) serve() {
+	for _, listener := range b.http {
+		go listener.serve()
+	}
+	for _, listener := range b.http3 {
+		go listener.serve()
+	}
+	if b.metrics != nil {
+		go b.metrics.serve()
+	}
+}
+
+func (b *boundListeners) shutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error) {
+	for _, listener := range b.http {
+		goShutdown(ctx, wg, errs, listener.server.Shutdown)
+	}
+	for _, listener := range b.http3 {
+		h3 := listener
+		goShutdown(ctx, wg, errs, func(ctx context.Context) error {
+			return h3.server.shutdown(ctx, h3.conn)
+		})
+	}
+	if b.metrics != nil {
+		goShutdown(ctx, wg, errs, b.metrics.server.Shutdown)
+	}
+}
+
+func (b *boundListeners) count() int {
+	n := len(b.http) + len(b.http3)
+	if b.metrics != nil {
+		n++
+	}
+	return n
+}
+
+// startAttempt is the sole owner of every resource acquired by one Start
+// call until commit transfers those typed handles into serverRun.
+type startAttempt struct {
+	pools     []*runningPool
+	acme      []*acmeRun
+	docker    *dockerRun
+	listeners boundListeners
+	finished  bool
+}
+
+func (a *startAttempt) rollback() error {
+	if a.finished {
+		return nil
+	}
+	a.finished = true
+	for _, run := range a.acme {
+		run.stopRun()
+	}
+	err := a.listeners.rollback()
+	a.docker.stopRun()
+	for _, pool := range a.pools {
+		pool.shutdown()
+	}
+	return err
+}
+
+func (a *startAttempt) commit() *serverRun {
+	if a.finished {
+		panic("statute: start attempt already finished")
+	}
+	a.finished = true
+	return &serverRun{
+		pools:     a.pools,
+		acme:      a.acme,
+		docker:    a.docker,
+		listeners: a.listeners,
+	}
+}
+
+// serverRun owns exactly the resources transferred by the successful Start.
+// Shutdown never rediscovers ownership from configured server fields.
+type serverRun struct {
+	pools     []*runningPool
+	acme      []*acmeRun
+	docker    *dockerRun
+	listeners boundListeners
+	stop      sync.Once
+	err       error
 }
 
 // Start opens all configured listeners and begins serving. Calling it
@@ -429,26 +500,24 @@ func (s *server) Start() (err error) {
 	if s.started {
 		return errors.New("already started")
 	}
-	var rb startRollback
+	var attempt startAttempt
 	defer func() {
 		if !s.started {
-			err = errors.Join(err, s.unwindStart(&rb))
+			err = errors.Join(err, attempt.rollback())
 		}
 	}()
-	if err := s.startPrerequisites(&rb); err != nil {
+	if err := s.startPrerequisites(&attempt); err != nil {
 		return err
 	}
-	serve, err := s.bindSockets(&rb)
-	if err != nil {
+	if err := s.bindSockets(&attempt); err != nil {
 		return err
 	}
-	// Commit: no synchronous failure path remains once traffic can reach
-	// a request handler.
-	for _, fn := range serve {
-		go fn()
-	}
-	s.warmACMEManagers(true)
+	// Commit transfers ownership before publishing serve loops. No
+	// synchronous failure path remains once traffic can reach a handler.
+	s.run = attempt.commit()
 	s.started = true
+	s.run.listeners.serve()
+	warmACMERuns(s.run.acme, true)
 	return nil
 }
 
@@ -456,22 +525,25 @@ func (s *server) Start() (err error) {
 // not a socket: the pool health checkers, the ACME managers with their
 // DNS-01 warm-up (which needs no local listener), and the Docker
 // provider's initial sync. Each is recorded in rb as it comes up.
-func (s *server) startPrerequisites(rb *startRollback) error {
+func (s *server) startPrerequisites(attempt *startAttempt) error {
 	for _, ph := range s.pools {
-		ph.hc.start()
+		attempt.pools = append(attempt.pools, ph.start())
 	}
-	rb.poolsUp = true
 	for src, m := range s.acmeManagers {
-		if err := m.start(); err != nil {
+		run, err := m.start()
+		if err != nil {
 			return fmt.Errorf("%s manager (%s): %w", m.name, strings.Join(src.Domains, ", "), err)
 		}
-		rb.managers = append(rb.managers, m)
+		attempt.acme = append(attempt.acme, run)
 	}
-	s.warmACMEManagers(false)
-	if err := s.startDocker(); err != nil {
-		return err
+	warmACMERuns(attempt.acme, false)
+	if s.docker != nil {
+		run, err := s.docker.start()
+		if err != nil {
+			return fmt.Errorf("docker: %w", err)
+		}
+		attempt.docker = run
 	}
-	rb.dockerUp = s.docker != nil
 	return nil
 }
 
@@ -482,42 +554,49 @@ func (s *server) startPrerequisites(rb *startRollback) error {
 // before serving anything is what keeps a failed Start invisible. The
 // HTTP/3 socket binds here rather than inside its serve goroutine so a
 // bind failure fails Start instead of vanishing into a discarded error.
-func (s *server) bindSockets(rb *startRollback) ([]func(), error) {
-	var serve []func()
+func (s *server) bindSockets(attempt *startAttempt) error {
 	for _, hs := range s.listeners {
 		// Without a matching resolved listener, serveListener would fall
 		// through to plain Serve and expose an HTTPS address in cleartext.
 		l, ok := findListener(s.cfg.Listeners, hs.Addr)
 		if !ok {
-			return nil, fmt.Errorf("listen %s: no resolved listener for this address", hs.Addr)
+			return fmt.Errorf("listen %s: no resolved listener for this address", hs.Addr)
 		}
-		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
+		ln, err := s.bindTCP(context.Background(), hs.Addr)
 		if err != nil {
-			return nil, fmt.Errorf("listen %s: %w", hs.Addr, err)
+			return fmt.Errorf("listen %s: %w", hs.Addr, err)
 		}
-		rb.sockets = append(rb.sockets, boundSocket{kind: "listener", addr: hs.Addr, closer: ln})
-		serve = append(serve, func() { logServeExit("listener", hs.Addr, serveListener(hs, l, ln)) })
+		attempt.listeners.http = append(attempt.listeners.http, &boundHTTP{server: hs, policy: l, listener: ln})
 	}
 	for _, h3 := range s.http3Servers {
-		conn, err := (&net.ListenConfig{}).ListenPacket(context.Background(), "udp", h3.addr)
+		conn, err := s.bindPacket(context.Background(), h3.addr)
 		if err != nil {
-			return nil, fmt.Errorf("listen %s/udp: %w", h3.addr, err)
+			return fmt.Errorf("listen %s/udp: %w", h3.addr, err)
 		}
-		rb.sockets = append(rb.sockets, boundSocket{kind: "http3", addr: h3.addr, closer: conn})
-		// The listener retains its socket past commit: Shutdown must close
-		// it, because quic-go never closes a caller-provided conn.
-		h3.conn = conn
-		serve = append(serve, h3.serveLoop)
+		attempt.listeners.http3 = append(attempt.listeners.http3, &boundHTTP3{server: h3, conn: conn})
 	}
 	if ms := s.metricsServer; ms != nil {
-		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", ms.Addr)
+		ln, err := s.bindTCP(context.Background(), ms.Addr)
 		if err != nil {
-			return nil, fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
+			return fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
 		}
-		rb.sockets = append(rb.sockets, boundSocket{kind: "metrics", addr: ms.Addr, closer: ln})
-		serve = append(serve, func() { logServeExit("metrics", ms.Addr, ms.Serve(ln)) })
+		attempt.listeners.metrics = &boundMetrics{server: ms, listener: ln}
 	}
-	return serve, nil
+	return nil
+}
+
+func (s *server) bindTCP(ctx context.Context, addr string) (net.Listener, error) {
+	if s.listenTCP != nil {
+		return s.listenTCP(ctx, "tcp", addr)
+	}
+	return (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+}
+
+func (s *server) bindPacket(ctx context.Context, addr string) (net.PacketConn, error) {
+	if s.listenPacket != nil {
+		return s.listenPacket(ctx, "udp", addr)
+	}
+	return (&net.ListenConfig{}).ListenPacket(ctx, "udp", addr)
 }
 
 // serveListener runs hs on ln, picking ServeTLS vs Serve based on the
@@ -564,48 +643,43 @@ func (s *server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Shutdown.GracePeriod)
 	defer cancel()
 
-	// Stop the ACME managers before the listeners: a warm-up still in
-	// flight must be cancelled while the plain HTTP listener that serves
-	// its HTTP-01 tokens is still accepting, or the CA's token fetch hits a
-	// closed port and the account pays for a failed validation on the way
-	// out. stop also waits for that goroutine, so nothing outlives Shutdown.
-	for _, m := range s.acmeManagers {
-		m.stop()
-	}
-
-	var wg sync.WaitGroup
-	// +2 for metrics and the tracing flush, alongside every listener and
-	// HTTP/3 listener; undersized deadlocks instead of blocking.
-	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+2)
-
-	for _, hs := range s.listeners {
-		goShutdown(ctx, &wg, errs, hs.Shutdown)
-	}
-	if s.metricsServer != nil {
-		goShutdown(ctx, &wg, errs, s.metricsServer.Shutdown)
-	}
-	for _, h3 := range s.http3Servers {
-		goShutdown(ctx, &wg, errs, h3.Shutdown)
-	}
-	wg.Wait()
-
-	s.shutdownDocker()
-
-	// Stop health checkers after listeners drain so probes do not race
-	// shutdown of the metrics server.
-	for _, ph := range s.pools {
-		ph.shutdown()
+	s.mu.Lock()
+	run := s.run
+	s.mu.Unlock()
+	var err error
+	if run != nil {
+		err = run.shutdown(ctx)
 	}
 
 	// Flush pending spans last so traces produced during shutdown still ship.
 	if s.tracingShutdown != nil {
-		if err := s.tracingShutdown(ctx); err != nil {
-			errs <- err
-		}
+		err = errors.Join(err, s.tracingShutdown(ctx))
 	}
+	return err
+}
 
-	close(errs)
-	return joinErrors(errs)
+func (r *serverRun) shutdown(ctx context.Context) error {
+	r.stop.Do(func() {
+		// Stop ACME before listeners so in-flight HTTP-01 work can finish
+		// cancellation while its challenge endpoint is still reachable.
+		for _, run := range r.acme {
+			run.stopRun()
+		}
+
+		var wg sync.WaitGroup
+		errs := make(chan error, r.listeners.count())
+		r.listeners.shutdown(ctx, &wg, errs)
+		wg.Wait()
+		close(errs)
+		r.err = joinErrors(errs)
+
+		r.docker.stopRun()
+		// Stop health checkers after listeners drain.
+		for _, pool := range r.pools {
+			pool.shutdown()
+		}
+	})
+	return r.err
 }
 
 func findListener(ls []*resolved.Listener, addr string) (*resolved.Listener, bool) {
@@ -757,9 +831,8 @@ func redirectHandler(scheme string) http.Handler {
 	})
 }
 
-// poolHandler proxies requests to an upstream pool. It owns a per-backend
-// reverse proxy, a strategy-driven picker, and an active health checker that
-// runs in the background while the pool is live.
+// poolHandler is the reusable configured runtime for an upstream pool. A
+// runningPool owns each live health-check generation separately.
 type poolHandler struct {
 	pool      *resolved.Pool
 	primary   []*backendState
@@ -767,6 +840,36 @@ type poolHandler struct {
 	transport *http.Transport
 	picker    picker
 	hc        *healthChecker
+}
+
+// runningPool owns one live generation of a pool's background work while the
+// configured handler and transport remain reusable across failed Start attempts.
+type runningPool struct {
+	handler *poolHandler
+	health  *healthRun
+	live    atomic.Bool
+	stop    sync.Once
+}
+
+func (ph *poolHandler) start() *runningPool {
+	r := &runningPool{handler: ph, health: ph.hc.start()}
+	r.live.Store(true)
+	return r
+}
+
+func (r *runningPool) shutdown() {
+	if r == nil {
+		return
+	}
+	r.stop.Do(func() {
+		r.live.Store(false)
+		r.health.stop()
+		r.handler.transport.CloseIdleConnections()
+	})
+}
+
+func (r *runningPool) isLive() bool {
+	return r != nil && r.live.Load()
 }
 
 func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
@@ -927,14 +1030,6 @@ func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bs.inFlight.Add(1)
 	defer bs.inFlight.Add(-1)
 	bs.rp.ServeHTTP(w, r)
-}
-
-// shutdown stops the health checker and idle connections.
-func (ph *poolHandler) shutdown() {
-	if ph.hc != nil {
-		ph.hc.stop()
-	}
-	ph.transport.CloseIdleConnections()
 }
 
 // wrapMiddleware wraps the base handler with each middleware in declaration

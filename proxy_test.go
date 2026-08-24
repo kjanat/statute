@@ -44,7 +44,7 @@ func TestEndToEndProxy(t *testing.T) {
 	}
 	defer func() {
 		for _, ph := range srv.pools {
-			ph.shutdown()
+			ph.transport.CloseIdleConnections()
 		}
 	}()
 

@@ -20,7 +20,7 @@ import (
 // the generation they started with.
 type dynamicTable struct {
 	routes []compiledRoute
-	pools  map[string]*poolHandler
+	pools  map[string]*runningPool
 	// fingerprints allow the next generation to reuse a pool handler —
 	// keeping its health state and connection pool — when its resolved
 	// config is unchanged.
@@ -34,16 +34,23 @@ type dockerProvider struct {
 	client *docker.Client
 	srv    *server
 
-	cancel context.CancelFunc
-	// wg tracks the watch and reconcile goroutines, so a retry cannot
-	// overlap the old generation's watcher with its own.
-	wg sync.WaitGroup
-	// kick coalesces reconcile triggers; buffered so event handlers never block.
-	kick chan struct{}
+	lifecycleMu sync.Mutex
+	current     *dockerRun
 	// warned dedupes label warnings across reconciles so a misconfigured
 	// container logs once, not once per event. Touched only by the sync
 	// goroutine (and start, which precedes it).
 	warned map[string]bool
+}
+
+// dockerRun owns one provider generation's watcher, reconcile loop, and
+// dynamic table. The provider keeps only reusable client and policy state.
+type dockerRun struct {
+	provider *dockerProvider
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	kick     chan struct{}
+	stop     sync.Once
 }
 
 // dockerDebounce coalesces bursts of container events (compose up starts
@@ -59,7 +66,6 @@ func newDockerProvider(cfg *resolved.Docker, srv *server) (*dockerProvider, erro
 		cfg:    cfg,
 		client: client,
 		srv:    srv,
-		kick:   make(chan struct{}, 1),
 		warned: make(map[string]bool),
 	}, nil
 }
@@ -68,42 +74,74 @@ func newDockerProvider(cfg *resolved.Docker, srv *server) (*dockerProvider, erro
 // sync so listeners open with routes in place, and launches the watch
 // loops. An unreachable daemon at startup is fatal — that is a
 // misconfiguration, and statute fails fast on those.
-func (p *dockerProvider) start() error {
+func (p *dockerProvider) start() (*dockerRun, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	p.cancel = cancel
+	r := &dockerRun{provider: p, ctx: ctx, cancel: cancel, kick: make(chan struct{}, 1)}
+	p.lifecycleMu.Lock()
+	if p.current != nil {
+		p.lifecycleMu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("already started")
+	}
+	p.current = r
+	p.lifecycleMu.Unlock()
+	fail := func(err error) (*dockerRun, error) {
+		cancel()
+		p.lifecycleMu.Lock()
+		if p.current == r {
+			p.current = nil
+		}
+		p.lifecycleMu.Unlock()
+		return nil, err
+	}
 
 	if err := p.client.Ping(ctx); err != nil {
-		cancel()
-		return err
+		return fail(err)
 	}
 	if err := p.sync(ctx); err != nil {
-		cancel()
-		return err
+		return fail(err)
 	}
 
-	p.wg.Go(func() { p.watchEvents(ctx) })
-	p.wg.Go(func() { p.run(ctx) })
-	return nil
+	r.wg.Go(r.watchEvents)
+	r.wg.Go(r.reconcileLoop)
+	return r, nil
 }
 
-func (p *dockerProvider) stop() {
-	if p.cancel == nil {
+func (r *dockerRun) stopRun() {
+	if r == nil {
 		return
 	}
-	p.cancel()
-	p.wg.Wait()
+	r.stop.Do(func() {
+		r.cancel()
+		r.wg.Wait()
+		p := r.provider
+		p.lifecycleMu.Lock()
+		if p.current != r {
+			p.lifecycleMu.Unlock()
+			return
+		}
+		p.current = nil
+		table := p.srv.dynamic.Swap(nil)
+		p.lifecycleMu.Unlock()
+		if table != nil {
+			for _, pool := range table.pools {
+				pool.shutdown()
+			}
+		}
+	})
 }
 
 // watchEvents follows the container event stream, kicking the sync loop on
 // topology changes and resyncing after every reconnect to cover events
 // missed while disconnected.
-func (p *dockerProvider) watchEvents(ctx context.Context) {
+func (r *dockerRun) watchEvents() {
+	p, ctx := r.provider, r.ctx
 	backoff := time.Second
 	for ctx.Err() == nil {
 		err := p.client.StreamEvents(ctx, func(ev docker.Event) {
 			backoff = time.Second
 			if ev.ChangesTopology() {
-				p.trigger()
+				r.trigger()
 			}
 		})
 		if ctx.Err() != nil {
@@ -118,21 +156,22 @@ func (p *dockerProvider) watchEvents(ctx context.Context) {
 		if backoff < 30*time.Second {
 			backoff *= 2
 		}
-		p.trigger()
+		r.trigger()
 	}
 }
 
 // trigger requests a reconcile without blocking.
-func (p *dockerProvider) trigger() {
+func (r *dockerRun) trigger() {
 	select {
-	case p.kick <- struct{}{}:
+	case r.kick <- struct{}{}:
 	default:
 	}
 }
 
 // run is the reconcile loop: debounced event kicks plus the optional
 // periodic full resync.
-func (p *dockerProvider) run(ctx context.Context) {
+func (r *dockerRun) reconcileLoop() {
+	p, ctx := r.provider, r.ctx
 	var tick <-chan time.Time
 	if p.cfg.Refresh > 0 {
 		t := time.NewTicker(p.cfg.Refresh)
@@ -143,8 +182,8 @@ func (p *dockerProvider) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-p.kick:
-			p.debounce(ctx)
+		case <-r.kick:
+			r.debounce()
 			p.syncLogged(ctx)
 		case <-tick:
 			p.syncLogged(ctx)
@@ -154,14 +193,14 @@ func (p *dockerProvider) run(ctx context.Context) {
 
 // debounce absorbs further kicks for a short window so event bursts
 // reconcile once.
-func (p *dockerProvider) debounce(ctx context.Context) {
+func (r *dockerRun) debounce() {
 	timer := time.NewTimer(dockerDebounce)
 	defer timer.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-r.ctx.Done():
 			return
-		case <-p.kick:
+		case <-r.kick:
 		case <-timer.C:
 			return
 		}
@@ -190,8 +229,8 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	// their own lifetime and stop on generation retirement or shutdown.
 	next, retired := p.buildTable(services, prev) //nolint:contextcheck
 	p.srv.dynamic.Store(next)
-	for _, ph := range retired {
-		ph.shutdown()
+	for _, pool := range retired {
+		pool.shutdown()
 	}
 	return nil
 }
@@ -260,9 +299,9 @@ func mergeService(base *docker.Service, add docker.Service) {
 // reusing pool handlers whose resolved config is unchanged. It returns the
 // handlers from prev that were replaced or dropped and must be shut down
 // after the swap.
-func (p *dockerProvider) buildTable(services []docker.Service, prev *dynamicTable) (*dynamicTable, []*poolHandler) {
+func (p *dockerProvider) buildTable(services []docker.Service, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
-		pools:        make(map[string]*poolHandler, len(services)),
+		pools:        make(map[string]*runningPool, len(services)),
 		fingerprints: make(map[string]string, len(services)),
 	}
 	for i := range services {
@@ -270,11 +309,11 @@ func (p *dockerProvider) buildTable(services []docker.Service, prev *dynamicTabl
 	}
 	sortDynamicRoutes(next.routes)
 
-	var retired []*poolHandler
+	var retired []*runningPool
 	if prev != nil {
-		for name, ph := range prev.pools {
-			if next.pools[name] != ph {
-				retired = append(retired, ph)
+		for name, pool := range prev.pools {
+			if next.pools[name] != pool {
+				retired = append(retired, pool)
 			}
 		}
 	}
@@ -316,8 +355,8 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		return
 	}
 
-	ph := p.servicePoolHandler(svc.Name, rp, prev, next)
-	if ph == nil {
+	running := p.servicePoolHandler(svc.Name, rp, prev, next)
+	if running == nil {
 		return
 	}
 	for _, rc := range kept {
@@ -328,7 +367,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 				Upstream:   rp,
 				Middleware: rc.mws,
 			},
-			handler: wrapMiddleware(rc.mws, ph),
+			handler: wrapMiddleware(rc.mws, running.handler),
 		})
 	}
 }
@@ -337,27 +376,24 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 // reusing prev's handler — keeping its health state and connections —
 // when the resolved pool config is unchanged. Nil means the handler could
 // not be built; the warning has been logged.
-func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, prev, next *dynamicTable) *poolHandler {
+func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, prev, next *dynamicTable) *runningPool {
 	fp := poolFingerprint(rp)
-	ph := next.pools[name]
-	if ph == nil {
-		if prev != nil && prev.fingerprints[name] == fp {
-			ph = prev.pools[name]
+	pool := next.pools[name]
+	if pool == nil {
+		if prev != nil && prev.fingerprints[name] == fp && prev.pools[name].isLive() {
+			pool = prev.pools[name]
 		} else {
-			var err error
-			ph, err = newPoolHandler(rp)
+			ph, err := newPoolHandler(rp)
 			if err != nil {
 				p.warn([]string{fmt.Sprintf("service %q: %v, skipping", name, err)})
 				return nil
 			}
-			// A label-derived pool starts probing here, not at
-			// construction; ph.shutdown stops it on retirement.
-			ph.hc.start()
+			pool = ph.start()
 		}
-		next.pools[name] = ph
+		next.pools[name] = pool
 		next.fingerprints[name] = fp
 	}
-	return ph
+	return pool
 }
 
 // servicePool builds the surface Pool for a derived service so the standard
