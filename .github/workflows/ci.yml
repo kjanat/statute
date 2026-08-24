@@ -8,12 +8,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: kjanat/dprint-check@v3
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - run: go vet ./...
       - run: go build ./...
-      - run: go test -race -coverprofile=cover.out -covermode=atomic ./...
-      - run: go tool cover -func=cover.out | tail -1
+      - { name: race, run: go test -race -coverprofile=cover.out -covermode=atomic ./... }
+      - run: go tool cover -func=cover.out
       - uses: codecov/codecov-action@v7
         with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
       - name: upload coverage artifact
