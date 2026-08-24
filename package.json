@@ -1,21 +1,16 @@
 {
   "name": "statute",
   "version": "1.0.0",
-  "description": "Tooling for the statute repo: typechecks scripts/api-page.mjs",
-  "scripts": {
-    "typecheck": "tsc --noEmit --allowJs --checkJs --strict --target es2022 --module nodenext --moduleResolution nodenext --types node scripts/api-page.mjs"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/kjanat/statute.git"
-  },
+  "private": true,
+  "description": "Tooling for the statute repo",
+  "homepage": "https://github.com/kjanat/statute#readme",
+  "bugs": "https://github.com/kjanat/statute/issues",
+  "repository": "https://github.com/kjanat/statute",
   "license": "MIT",
   "type": "module",
-  "bugs": {
-    "url": "https://github.com/kjanat/statute/issues"
+  "scripts": {
+    "typecheck": "tsc --noEmit"
   },
-  "homepage": "https://github.com/kjanat/statute#readme",
-  "private": true,
   "devDependencies": {
     "@types/node": "26.2.0",
     "typescript": "7.0.2"
