@@ -38,6 +38,9 @@ const (
 	// acmeDeactivateTimeout caps the detached cleanup of the pending
 	// authorizations a failed order leaves behind.
 	acmeDeactivateTimeout = 30 * time.Second
+	// acmeRegisterTimeout caps account registration, which runs under
+	// Start's mutex: a dead CA must fail Start, not hang it.
+	acmeRegisterTimeout = time.Minute
 )
 
 // acmeSolver satisfies one kind of ACME challenge for the manager. The
@@ -95,6 +98,9 @@ type acmeManager struct {
 	// tests point it at a local fake.
 	directoryURL string
 
+	// registerTimeout caps account registration; overridable in tests.
+	registerTimeout time.Duration
+
 	mu    sync.RWMutex
 	cache map[string]*tls.Certificate
 
@@ -133,15 +139,16 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 		return nil, fmt.Errorf("storage: %w", err)
 	}
 	return &acmeManager{
-		name:         name,
-		domains:      cfg.Domains,
-		email:        cfg.Email,
-		storage:      dir,
-		solver:       solver,
-		issueTimeout: acmeIssueTimeout + dns01PropagationBudget(cfg),
-		directoryURL: acme.LetsEncryptURL,
-		cache:        make(map[string]*tls.Certificate),
-		issuing:      make(map[string]*issueState),
+		name:            name,
+		domains:         cfg.Domains,
+		email:           cfg.Email,
+		storage:         dir,
+		solver:          solver,
+		issueTimeout:    acmeIssueTimeout + dns01PropagationBudget(cfg),
+		directoryURL:    acme.LetsEncryptURL,
+		registerTimeout: acmeRegisterTimeout,
+		cache:           make(map[string]*tls.Certificate),
+		issuing:         make(map[string]*issueState),
 	}, nil
 }
 
@@ -338,6 +345,13 @@ func (m *acmeManager) usable(host string) *tls.Certificate {
 	return cert
 }
 
+// isLifecycleCancellation reports whether err is the order dying of the
+// manager's own cancellation (a stop mid-order, given by parentCancelled)
+// rather than a CA verdict that happened to land at the same moment.
+func isLifecycleCancellation(err error, parentCancelled bool) bool {
+	return errors.Is(err, context.Canceled) && parentCancelled
+}
+
 // issueOnce runs at most one ACME order per host at a time. The owning
 // caller runs the order under the manager's context so an abandoned
 // handshake cannot cancel a validation mid-flight — yanking the published
@@ -362,14 +376,17 @@ func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certific
 		// order context would be a miserable way to find that out.
 		timeout = acmeIssueTimeout
 	}
-	ictx, cancel := context.WithTimeout(m.runContext(), timeout)
+	parent := m.runContext()
+	ictx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	//nolint:contextcheck // detached from the caller on purpose: see this function's doc comment
 	st.cert, st.err = m.issue(ictx, host)
 	if st.err != nil {
-		// Keep the failure for acmeIssueRetryAfter; issueState drops it
-		// once the cooldown elapses.
-		st.failedAt = time.Now()
+		if isLifecycleCancellation(st.err, parent.Err() != nil) {
+			m.forgetIssueState(host, st)
+		} else {
+			st.failedAt = time.Now()
+		}
 		close(st.ready)
 		return nil, st.err
 	}
@@ -604,7 +621,17 @@ func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acm
 
 // --- account + cert persistence ---
 
+// loadOrCreateAccount builds the manager's ACME client on the first
+// successful start and keeps it for the manager's lifetime. A restarted
+// manager reuses it: the account key on disk and the directory URL cannot
+// have changed, and a detached authorization cleanup from an order the
+// stop cancelled may still be reading the field — reassigning it would
+// race that read. The client is published only after Register succeeds,
+// so a start that failed at registration retries the whole sequence.
 func (m *acmeManager) loadOrCreateAccount() error {
+	if m.acmeClient != nil {
+		return nil
+	}
 	keyPath := filepath.Join(m.storage, "account.key")
 	var key *ecdsa.PrivateKey
 	pemBytes, err := os.ReadFile(keyPath) //nolint:gosec // G304: fixed filename under the operator-configured storage dir
@@ -630,19 +657,28 @@ func (m *acmeManager) loadOrCreateAccount() error {
 		// new one — that would desync the ACME account. Surface the error.
 		return fmt.Errorf("read account key: %w", err)
 	}
-	m.accountKey = key
-	m.acmeClient = &acme.Client{
+	client := &acme.Client{
 		Key:          key,
 		DirectoryURL: m.directoryURL,
 	}
 	contact := []string{"mailto:" + m.email}
-	if _, err := m.acmeClient.Register(context.Background(), &acme.Account{Contact: contact}, acme.AcceptTOS); err != nil {
+	timeout := m.registerTimeout
+	if timeout <= 0 {
+		// Hand-built test managers skip newACMEManager; zero must not
+		// mean an unbounded registration.
+		timeout = acmeRegisterTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if _, err := client.Register(ctx, &acme.Account{Contact: contact}, acme.AcceptTOS); err != nil {
 		// Already registered is fine. The acme library returns ErrAccountAlreadyExists
 		// for that case.
 		if !errors.Is(err, acme.ErrAccountAlreadyExists) {
 			return fmt.Errorf("acme register: %w", err)
 		}
 	}
+	m.accountKey = key
+	m.acmeClient = client
 	return nil
 }
 

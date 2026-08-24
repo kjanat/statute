@@ -254,6 +254,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `Start` is transactional, two-phase, and retryable. Phase one starts
+  the non-listener prerequisites — pool health checkers, ACME managers
+  with their DNS-01 warm-up, the Docker provider's initial sync — and
+  binds every socket the configuration calls for (TCP listeners, HTTP/3
+  UDP conns, the metrics listener) without serving anything; a failure
+  anywhere rolls all of it back and returns the error, joined with any
+  rollback close failure. Only once every fallible step has succeeded
+  does phase two launch the serve loops, start the HTTP-01 warm-up, and
+  commit — so no request can be accepted, routed, or proxied by a
+  `Start` that then fails, and there is no synchronous failure path left
+  once application traffic is reachable. Previously listeners began
+  serving as they bound: a later bind failure left earlier listeners
+  answering requests — connections that a socket-only rollback cannot
+  un-accept — and startup previously rolled back only the Docker
+  provider at all. The rollback closes bare sockets, never the
+  `http.Server` / `http3.Server` objects built to serve them — a closed
+  server is permanently unusable, which would let a retried Start report
+  success over dead listeners. Health checkers now start in `Start`
+  rather than at construction: a server that never starts launches no
+  probe goroutine, so there is nothing to stop, and a restarted checker
+  begins with fresh failure counters, so repeated failed Starts cannot
+  demote backends before the first real probe. The Docker provider's
+  stop now waits for its event watcher as well as its reconcile loop, so
+  a retry cannot overlap generations. HTTP/3 UDP sockets bind inside `Start` so
+  a bind failure fails startup instead of being silently discarded;
+  because quic-go never closes a caller-provided conn, `Shutdown` closes
+  that socket after the HTTP/3 drain — it previously stayed bound for
+  the life of the process — and an HTTP/3 serve loop that dies
+  unexpectedly now logs the error and closes its socket instead of
+  leaving a dead server holding an advertised port. The Alt-Svc header
+  is advertised only while that serve loop actually runs, so a dead
+  HTTP/3 endpoint is no longer offered to clients for the full ma
+  window after its loop exits. TCP and metrics
+  serve-loop exits are logged too. An ACME order cancelled by the
+  manager stopping — a rollback mid-warm-up — no longer settles into the
+  issuance failure cache: an error that is itself the manager's
+  cancellation is dropped before it becomes observable, while genuine CA
+  failures keep their one-minute cooldown even when they land during a
+  stop. This is also the foundation the upcoming process health endpoint
+  builds on, so a health listener can never outlive a failed start.
 - Redirect routes no longer emit a protocol-relative `Location`. A
   client-controlled `{path}` or `{request_uri}` of `//evil.com` — sent
   directly as a `//evil.com` request path, or produced by a `StripPrefix`

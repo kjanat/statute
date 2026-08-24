@@ -12,8 +12,8 @@ jobs:
         with: { go-version-file: go.mod, cache: true }
       - run: go vet ./...
       - run: go build ./...
-      - run: go test -race -coverprofile=cover.out -covermode=atomic ./...
-      - run: go tool cover -func=cover.out | tail -1
+      - { name: race, run: go test -race -coverprofile=cover.out -covermode=atomic ./... }
+      - run: go tool cover -func=cover.out
       - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
       - name: upload coverage artifact
@@ -24,22 +24,27 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+        with:
+          tool_versions: |
+            golangci-lint 2.13.1
+      - uses: kjanat/dprint-check@a0cb69ef4b3508623238086e8ba125c9c2f64361 # v3
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with: { version: latest, args: --timeout=5m }
+        with: { version: v2.13.1, args: --timeout=5m }
   lifecycle_lint:
     name: lifecycle lint
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { fetch-depth: 0 }
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: latest
+          version: v2.13.1
           args: --enable-only=statutelifecycle --new-from-merge-base=origin/${{ github.base_ref }} --whole-files --timeout=5m
   discover_fuzz:
     name: discover fuzz targets

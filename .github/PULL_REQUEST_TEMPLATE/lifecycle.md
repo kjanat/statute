@@ -26,9 +26,9 @@
 
 ## Resource ownership table
 
-| Resource | Constructed | Acquired/started | Failed-start cleanup | Normal shutdown | Retry state reset |
-| --- | --- | --- | --- | --- | --- |
-| <!-- TCP listener / UDP conn / ACME manager / Docker / health server / etc. --> | | | | | |
+| Resource                                                                        | Constructed | Acquired/started | Failed-start cleanup | Normal shutdown | Retry state reset |
+| ------------------------------------------------------------------------------- | ----------- | ---------------- | -------------------- | --------------- | ----------------- |
+| <!-- TCP listener / UDP conn / ACME manager / Docker / health server / etc. --> |             |                  |                      |                 |                   |
 
 ## Concurrency / goroutines
 

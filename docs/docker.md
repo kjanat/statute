@@ -27,15 +27,15 @@ statute.Main(statute.Config{
 
 ## Provider options
 
-| Option               | Meaning                                                                                                                               |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `Endpoint(string)`   | Docker Engine API endpoint. Default `unix:///var/run/docker.sock`; `tcp://host:port` also works — but see the warning below.          |
-| `Network(string)`    | Docker network whose IP is used to reach containers. Overridable per container with `statute.network` / `traefik.docker.network`.     |
-| `ExposedByDefault()` | Register every running container without requiring an enable label (Traefik's `exposedByDefault=true`). statute's default is opt-in.  |
-| `TraefikLabels()`    | Additionally honor `traefik.*` labels (see below).                                                                                    |
-| `Refresh(string)`    | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
-| `Middleware(name, mw...)` | Register a named, code-owned middleware chain that container labels may reference (see below). Re-registering a name replaces it. |
-| `DefaultMiddleware(mw...)` | Middleware applied to every Docker-discovered route, outermost — before label-referenced chains and label hints.                 |
+| Option                     | Meaning                                                                                                                               |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `Endpoint(string)`         | Docker Engine API endpoint. Default `unix:///var/run/docker.sock`; `tcp://host:port` also works — but see the warning below.          |
+| `Network(string)`          | Docker network whose IP is used to reach containers. Overridable per container with `statute.network` / `traefik.docker.network`.     |
+| `ExposedByDefault()`       | Register every running container without requiring an enable label (Traefik's `exposedByDefault=true`). statute's default is opt-in.  |
+| `TraefikLabels()`          | Additionally honor `traefik.*` labels (see below).                                                                                    |
+| `Refresh(string)`          | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
+| `Middleware(name, mw...)`  | Register a named, code-owned middleware chain that container labels may reference (see below). Re-registering a name replaces it.     |
+| `DefaultMiddleware(mw...)` | Middleware applied to every Docker-discovered route, outermost — before label-referenced chains and label hints.                      |
 
 > **Warning — TCP endpoints are unauthenticated.** The client speaks plain
 > HTTP with no TLS or client certificates, and whoever can answer on that
@@ -139,7 +139,7 @@ Skipped **with a logged warning** rather than silently mis-routed:
 
 ### Label-referenced middleware
 
-Traefik middleware *definitions* don't exist here — labels never define
+Traefik middleware _definitions_ don't exist here — labels never define
 middleware. Instead, code registers named chains and labels select them:
 
 ```go

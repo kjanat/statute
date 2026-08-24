@@ -2,6 +2,8 @@ package statute
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -9,8 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go/http3"
 )
 
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
@@ -131,21 +136,13 @@ func TestServerStartShutdown(t *testing.T) {
 		},
 		Shutdown: Shutdown{GracePeriod: "2s"},
 	}
+	// Patch the resolved Addr before newServer so every derived copy agrees.
 	r := mustResolve(t, cfg)
+	addr := reserveAddr(t)
+	r.Listeners[0].Addr = addr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
-	}
-	// Discover a free port, close, and patch the resolved listener's Addr
-	// so Start() binds to a known port we can dial. The race between close
-	// and bind is fine in practice for hermetic tests.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv.listeners[0].Addr = ln.Addr().String()
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
 	}
 
 	if err := srv.Start(); err != nil {
@@ -158,8 +155,7 @@ func TestServerStartShutdown(t *testing.T) {
 	}()
 
 	// Wait briefly for goroutines to bind before issuing a request.
-	addr := srv.listeners[0].Addr
-	waitForListen(t, addr, 2*time.Second)
+	waitForListen(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/test")
 	if err != nil {
@@ -173,6 +169,667 @@ func TestServerStartShutdown(t *testing.T) {
 	if !strings.Contains(string(body), `"path":"/test"`) {
 		t.Errorf("upstream body unexpected: %s", body)
 	}
+}
+
+// TestStartFailureReleasesEarlierListeners — when a later listener fails
+// to bind, every listener Start already opened must close again: a
+// failed Start leaves no socket serving.
+func TestStartFailureReleasesEarlierListeners(t *testing.T) {
+	// Hold a port so the second listener's bind must fail.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0"), HTTP("127.0.0.1:0")},
+		Routes:    Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Shutdown:  Shutdown{GracePeriod: "2s"},
+	}
+	r := mustResolve(t, cfg)
+	firstAddr := reserveAddr(t)
+	r.Listeners[0].Addr = firstAddr
+	r.Listeners[1].Addr = busy.Addr().String()
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting listener address")
+	}
+	mustBindNow(t, firstAddr)
+
+	// The retry must actually serve: a poisoned unwind still returns nil
+	// while every listener sits closed.
+	secondAddr := busy.Addr().String()
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	for _, addr := range []string{firstAddr, secondAddr} {
+		mustServeRedirect(t, addr)
+	}
+}
+
+// TestStartMetricsFailureReleasesListeners — a metrics bind failure after
+// the content listeners opened must close them again, through the same
+// rollback that guards listener-vs-listener conflicts.
+func TestStartMetricsFailureReleasesListeners(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Routes:    Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Observability: Observability{
+			Metrics: Prometheus(busy.Addr().String(), "/metrics"),
+		},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	r := mustResolve(t, cfg)
+	contentAddr := reserveAddr(t)
+	r.Listeners[0].Addr = contentAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting metrics address")
+	}
+	mustBindNow(t, contentAddr)
+
+	// Retry after freeing the metrics port: content and metrics listeners
+	// must both come up serving.
+	metricsAddr := busy.Addr().String()
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeRedirect(t, contentAddr)
+	mustServeMetrics(t, metricsAddr)
+}
+
+// TestStartFailureStopsHealthCheckers — the rollback owes more than
+// sockets: startPrerequisites started the static pools' health checkers,
+// so a failed Start must stop them instead of leaving probe goroutines
+// hammering backends for a server that serves nothing. A retry must start
+// them again.
+func TestStartFailureStopsHealthCheckers(t *testing.T) {
+	backend, probes := newProbeCountingBackend(t, "/healthz")
+
+	// Hold the listener's port so Start fails in the bind phase — after
+	// startPrerequisites has already brought the checkers up.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+	addr := busy.Addr().String()
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Upstreams: Upstreams{
+			"api": Pool{
+				Backends:    []Backend{{Address: strings.TrimPrefix(backend.URL, "http://")}},
+				HealthCheck: HealthCheck{Path: "/healthz", Interval: "20ms", Timeout: "1s"},
+			},
+		},
+		Routes:   Routes{Match("/*").ProxyTo("api")},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	r := mustResolve(t, cfg)
+	r.Listeners[0].Addr = addr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting listener address")
+	}
+	assertHealthCheckerStopped(t, srv.pools["api"])
+	// Settle before sampling: stop waits only the probe's client side,
+	// so the backend can count one more hit just after Start returns.
+	time.Sleep(50 * time.Millisecond)
+	stopped := probes.Load()
+	time.Sleep(150 * time.Millisecond) // several probe intervals
+	if got := probes.Load(); got != stopped {
+		t.Fatalf("probes continued after the failed Start: %d, want %d", got, stopped)
+	}
+
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	waitForProbes(t, probes, stopped)
+	mustServeProxyOK(t, addr)
+}
+
+// TestStartRetryResetsBackendHealth — health state a rolled-back attempt
+// left behind must not leak into the successful retry. A primary demoted
+// during a failed Start (a genuinely down backend, or a mis-scored probe)
+// would otherwise stay unhealthy into the commit, and candidates() would
+// route every request to the backups until Healthy consecutive probes
+// undo it. The retried Start's checker restart resets backends to the
+// initial healthy state, because none of them has ever served.
+func TestStartRetryResetsBackendHealth(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("primary"))
+	}))
+	t.Cleanup(primary.Close)
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("backup"))
+	}))
+	t.Cleanup(backup.Close)
+
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+	addr := busy.Addr().String()
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Upstreams: Upstreams{
+			"api": Pool{
+				Backends: []Backend{
+					{Address: strings.TrimPrefix(primary.URL, "http://")},
+					{Address: strings.TrimPrefix(backup.URL, "http://"), Backup: true},
+				},
+				HealthCheck: HealthCheck{Path: "/", Interval: "20ms", Timeout: "1s"},
+			},
+		},
+		Routes:   Routes{Match("/*").ProxyTo("api")},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	r := mustResolve(t, cfg)
+	r.Listeners[0].Addr = addr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting listener address")
+	}
+	// What a genuine probe failure during the rolled-back attempt leaves.
+	srv.pools["api"].primary[0].markHealthy(false)
+
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	if !srv.pools["api"].primary[0].isHealthy() {
+		t.Fatal("retried Start inherited the failed attempt's demotion")
+	}
+	waitForListen(t, addr)
+	resp, err := http.Get("http://" + addr + "/x")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "primary" {
+		t.Fatalf("request served by %q, want the reset primary", body)
+	}
+}
+
+// assertHealthCheckerStopped fails unless the pool's prober goroutine has
+// already exited. The rollback stops it synchronously, so the release owes
+// no polling grace and a closed done channel is the exact invariant.
+func assertHealthCheckerStopped(t *testing.T, ph *poolHandler) {
+	t.Helper()
+	select {
+	case <-ph.hc.done:
+	default:
+		t.Fatal("health checker goroutine still running after the failed Start")
+	}
+}
+
+// newProbeCountingBackend returns a backend answering everything 200 that
+// counts the health-check probes it sees on path.
+func newProbeCountingBackend(t *testing.T, path string) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var probes atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == path {
+			probes.Add(1)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &probes
+}
+
+// waitForProbes polls until the backend has seen a probe past baseline —
+// proof a restarted health checker is running again. The deadline is
+// generous: a ticker interval on a loaded machine is not a schedule.
+func waitForProbes(t *testing.T, probes *atomic.Int64, baseline int64) {
+	t.Helper()
+	const deadline = 3 * time.Second
+	stop := time.Now().Add(deadline)
+	for time.Now().Before(stop) {
+		if probes.Load() > baseline {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("health checker did not resume probing within %s", deadline)
+}
+
+// mustServeProxyOK asserts the proxied route answers 200 on addr.
+func mustServeProxyOK(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	resp, err := http.Get("http://" + addr + "/x")
+	if err != nil {
+		t.Fatalf("GET %s: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("%s: status %d, want 200", addr, resp.StatusCode)
+	}
+}
+
+// mustServeMetrics asserts the metrics endpoint answers 200 on addr.
+func mustServeMetrics(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	resp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("GET metrics: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("metrics status: %d, want 200", resp.StatusCode)
+	}
+}
+
+// mustServeRedirect asserts the redirect-route config used by the Start
+// rollback tests actually answers on addr — proof the listener behind it
+// is alive, not a bound-then-instantly-closed socket.
+func mustServeRedirect(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Get("http://" + addr + "/x")
+	if err != nil {
+		t.Fatalf("GET %s: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("%s: status %d, want 301", addr, resp.StatusCode)
+	}
+}
+
+// mustBindNow asserts addr is bindable the moment it is called: the
+// rollback (and Shutdown's socket close) run synchronously before their
+// caller returns, so the release owes no polling grace.
+func mustBindNow(t *testing.T, addr string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("%s still bound: %v", addr, err)
+	}
+	_ = ln.Close()
+}
+
+// mustBindNowUDP is mustBindNow for a UDP address.
+func mustBindNowUDP(t *testing.T, addr string) {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		t.Fatalf("UDP %s still bound: %v", addr, err)
+	}
+	_ = conn.Close()
+}
+
+// newHTTP3TestServer builds a server with one HTTPS listener on tcpAddr
+// serving a self-signed cert for h3.example, with HTTP/3 on udpAddr and,
+// when metricsAddr is non-empty, a metrics listener on it. The resolved
+// config is patched before newServer so the cert router, the Alt-Svc
+// header, and serveListener's scheme dispatch all agree on the real
+// addresses; the metrics address goes in unpatched because nothing is
+// keyed by it.
+func newHTTP3TestServer(t *testing.T, tcpAddr, udpAddr, metricsAddr string) *server {
+	t.Helper()
+	certFile, keyFile := writeSelfSignedCert(t, "h3.example")
+	cfg := Config{
+		Listeners: Listeners{
+			HTTPS("127.0.0.1:0", StaticTLS(certFile, keyFile), HTTP3("127.0.0.1:0")),
+		},
+		Routes:   Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	if metricsAddr != "" {
+		cfg.Observability = Observability{Metrics: Prometheus(metricsAddr, "/metrics")}
+	}
+	r := mustResolve(t, cfg)
+	r.Listeners[0].Addr = tcpAddr
+	r.Listeners[0].HTTP3Addr = udpAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	return srv
+}
+
+// TestStartShutdownReleasesHTTP3Socket — Start binds the HTTP/3 UDP
+// socket and quic-go never closes a caller-provided conn, so a normal
+// Shutdown must close it itself or the port leaks for the process's
+// lifetime. Holding the port is asserted with a real HTTP/3 request, not
+// just a failed rebind — a dead serve loop pins the socket too.
+func TestStartShutdownReleasesHTTP3Socket(t *testing.T) {
+	udpAddr := reserveUDPAddr(t)
+	srv := newHTTP3TestServer(t, reserveAddr(t), udpAddr, "")
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The socket is held while serving — by a QUIC server that answers.
+	if conn, err := net.ListenPacket("udp", udpAddr); err == nil {
+		_ = conn.Close()
+		t.Fatal("HTTP/3 UDP socket not bound while serving")
+	}
+	mustServeHTTP3(t, udpAddr)
+	if err := srv.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	// ...and released once Shutdown returns: the conn close happens
+	// inside Shutdown, after the drain.
+	mustBindNowUDP(t, udpAddr)
+}
+
+// TestStartHTTP3BindFailureReleasesListeners — an HTTP/3 UDP bind
+// conflict must fail Start, release the TCP socket bound before it
+// without ever having exposed a route on it, and leave the server
+// retryable with both transports actually serving afterwards.
+func TestStartHTTP3BindFailureReleasesListeners(t *testing.T) {
+	busy, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+	udpAddr := busy.LocalAddr().String()
+	tcpAddr := reserveAddr(t)
+	srv := newHTTP3TestServer(t, tcpAddr, udpAddr, "")
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting HTTP/3 UDP address")
+	}
+	// Two-phase Start accepted no connection: the address must refuse and
+	// already be free.
+	if conn, err := net.DialTimeout("tcp", tcpAddr, time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("TCP address still accepting after failed Start")
+	}
+	mustBindNow(t, tcpAddr)
+
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeTLSRedirect(t, tcpAddr)
+	mustServeHTTP3(t, udpAddr)
+}
+
+// TestStartMetricsFailureReleasesHTTP3Socket — the metrics socket binds
+// last, so a metrics conflict is the one rollback path that has to give
+// back a UDP socket it already bound successfully. Both transports of the
+// HTTP/3 listener must be free again the moment Start returns, and the
+// retry must bring all three up serving.
+func TestStartMetricsFailureReleasesHTTP3Socket(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+	metricsAddr := busy.Addr().String()
+
+	tcpAddr := reserveAddr(t)
+	udpAddr := reserveUDPAddr(t)
+	srv := newHTTP3TestServer(t, tcpAddr, udpAddr, metricsAddr)
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting metrics address")
+	}
+	mustBindNow(t, tcpAddr)
+	mustBindNowUDP(t, udpAddr)
+
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeTLSRedirect(t, tcpAddr)
+	mustServeHTTP3(t, udpAddr)
+	mustServeMetrics(t, metricsAddr)
+}
+
+// mustServeHTTP3 asserts the HTTP/3 endpoint answers a real request on
+// udpAddr — proof the QUIC serve loop is alive, not merely that some
+// process holds the socket.
+func mustServeHTTP3(t *testing.T, udpAddr string) {
+	t.Helper()
+	tr := &http3.Transport{
+		TLSClientConfig: &tls.Config{
+			ServerName:         "h3.example",
+			InsecureSkipVerify: true, //nolint:gosec // G402: hermetic test against the self-signed fixture cert
+		},
+	}
+	defer func() { _ = tr.Close() }()
+	client := &http.Client{
+		Transport:     tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       5 * time.Second,
+	}
+	resp, err := client.Get("https://" + udpAddr + "/x")
+	if err != nil {
+		t.Fatalf("HTTP/3 GET %s: %v", udpAddr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("HTTP/3 %s: status %d, want 301", udpAddr, resp.StatusCode)
+	}
+}
+
+// mustServeTLSRedirect is mustServeRedirect over TLS, for the HTTPS
+// listener the HTTP/3 tests configure.
+func mustServeTLSRedirect(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ServerName:         "h3.example",
+				InsecureSkipVerify: true, //nolint:gosec // G402: hermetic test against the self-signed fixture cert
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       5 * time.Second,
+	}
+	resp, err := client.Get("https://" + addr + "/x")
+	if err != nil {
+		t.Fatalf("GET %s: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("%s: status %d, want 301", addr, resp.StatusCode)
+	}
+}
+
+// TestAltSvcDropsWhenHTTP3Dies — with ma=86400, an Alt-Svc header for a
+// dead endpoint sends every compatible client through a failed QUIC
+// attempt first. The header must track the serve loop's liveness.
+func TestAltSvcDropsWhenHTTP3Dies(t *testing.T) {
+	tcpAddr := reserveAddr(t)
+	srv := newHTTP3TestServer(t, tcpAddr, reserveUDPAddr(t), "")
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	waitForAltSvc(t, tcpAddr, true)
+	// Kill the serve loop out from under the server: its socket going
+	// away is the unexpected-death path.
+	if err := srv.http3Servers[0].conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForAltSvc(t, tcpAddr, false)
+}
+
+// waitForAltSvc polls the HTTPS listener until the Alt-Svc header's
+// presence matches want.
+func waitForAltSvc(t *testing.T, addr string, want bool) {
+	t.Helper()
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ServerName:         "h3.example",
+				InsecureSkipVerify: true, //nolint:gosec // G402: hermetic test against the self-signed fixture cert
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       5 * time.Second,
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("https://" + addr + "/x")
+		if err == nil {
+			has := resp.Header.Get("Alt-Svc") != ""
+			_ = resp.Body.Close()
+			if has == want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Alt-Svc presence on %s never became %v", addr, want)
+}
+
+// TestShutdownErrorChannelHoldsAllProducers — every shutdown path erroring
+// at once must not deadlock the error channel: the listeners, metrics, and
+// the tracing flush all send before anything drains. Regression for the
+// capacity being one producer short.
+func TestShutdownErrorChannelHoldsAllProducers(t *testing.T) {
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Routes:    Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Observability: Observability{
+			Metrics: Prometheus("127.0.0.1:0", "/metrics"),
+		},
+		Shutdown: Shutdown{GracePeriod: "100ms"},
+	}
+	r := mustResolve(t, cfg)
+	contentAddr := reserveAddr(t)
+	metricsAddr := reserveAddr(t)
+	r.Listeners[0].Addr = contentAddr
+	r.Observability.Metrics.Addr = metricsAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	srv.tracingShutdown = func(context.Context) error { return errors.New("tracing flush failed") }
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForListen(t, contentAddr)
+	waitForListen(t, metricsAddr)
+	// Park one half-written request on each server so its drain runs out
+	// the grace period and returns an error.
+	for _, addr := range []string{contentAddr, metricsAddr} {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Shutdown() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Shutdown reported success with every producer failing")
+		}
+		if !strings.Contains(err.Error(), "tracing flush failed") {
+			t.Fatalf("joined error %v lost the tracing failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown deadlocked on its error channel")
+	}
+}
+
+// reserveUDPAddr is reserveAddr for a UDP port: bind ephemeral, close,
+// return the address for the HTTP/3 listener under test to claim.
+func reserveUDPAddr(t *testing.T) string {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := conn.LocalAddr().String()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
 }
 
 // TestNewServer_HTTPSWithoutTLSMaterial — building a server with an HTTPS
@@ -398,9 +1055,12 @@ func TestServerShutdownWithoutStart(t *testing.T) {
 	}
 }
 
-// waitForListen polls addr until a TCP Dial succeeds or the deadline fires.
-func waitForListen(t *testing.T, addr string, deadline time.Duration) {
+// waitForListen polls addr until a TCP Dial succeeds, for up to two
+// seconds: the serve goroutines launch just before Start returns, so a
+// first request can beat the accept loop.
+func waitForListen(t *testing.T, addr string) {
 	t.Helper()
+	const deadline = 2 * time.Second
 	stop := time.Now().Add(deadline)
 	for time.Now().Before(stop) {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)

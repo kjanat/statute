@@ -51,6 +51,13 @@ func (h *healthChecker) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	h.done = make(chan struct{})
+	// Reset counters and health bits: a restart follows a failed Start,
+	// whose backends never served, so nothing it observed may survive.
+	h.successes = make(map[*backendState]int)
+	h.failures = make(map[*backendState]int)
+	for _, b := range h.backends {
+		b.markHealthy(true)
+	}
 
 	go func() {
 		defer close(h.done)
@@ -90,6 +97,13 @@ func (h *healthChecker) probeAll(ctx context.Context) {
 	wg.Wait()
 }
 
+// isCheckerStopped reports whether ctx, not the shorter per-probe pCtx
+// derived from it, is what ended the request: a probe cancelled by the
+// checker's own stop is lifecycle, not a backend verdict.
+func isCheckerStopped(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
 func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 	target, err := backendURL(b.backend)
 	if err != nil {
@@ -110,6 +124,9 @@ func (h *healthChecker) probe(ctx context.Context, b *backendState) {
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
+		if isCheckerStopped(ctx) {
+			return
+		}
 		h.recordFailure(b)
 		return
 	}

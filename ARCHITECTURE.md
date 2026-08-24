@@ -27,14 +27,14 @@ complete when only the surface or runtime understands it.
 
 ## Ownership model
 
-| Layer | Owns | Must not absorb |
-| --- | --- | --- |
-| Route | host/path/client matchers, one route action, route middleware | backend transport or state shared by other routes |
-| Upstream pool | backends, balancing strategy, backend health, transport, upstream Host/TLS policy | router-specific middleware or matchers |
-| Listener | ingress protocol, downstream TLS policy/material selection, trusted-proxy policy, listener wrapping/observability | route-specific policy |
-| Docker router | router rule expansion and router-scoped middleware references | service-wide backend state |
-| Docker service | discovered backend/service attributes used to construct a pool | unioned router policy |
-| Resolved model | normalized immutable configuration contract | runtime-only mutable state |
+| Layer          | Owns                                                                                                              | Must not absorb                                   |
+| -------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Route          | host/path/client matchers, one route action, route middleware                                                     | backend transport or state shared by other routes |
+| Upstream pool  | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                 | router-specific middleware or matchers            |
+| Listener       | ingress protocol, downstream TLS policy/material selection, trusted-proxy policy, listener wrapping/observability | route-specific policy                             |
+| Docker router  | router rule expansion and router-scoped middleware references                                                     | service-wide backend state                        |
+| Docker service | discovered backend/service attributes used to construct a pool                                                    | unioned router policy                             |
+| Resolved model | normalized immutable configuration contract                                                                       | runtime-only mutable state                        |
 
 A single pool may be shared by many static or Docker-derived routes. That sharing is
 intentional. Therefore any behavior that can legitimately differ between two routes
