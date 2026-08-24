@@ -835,3 +835,42 @@ func TestStartFailureStopsACMEManagers(t *testing.T) {
 	// listener: the CA fetches the token over real TCP.
 	waitForCachedCert(t, mgr, "pin.example", 10*time.Second)
 }
+
+// TestAccountRegistrationTimesOut — registration runs inside server Start,
+// so a directory that never answers must fail the start, bounded by
+// registerTimeout, instead of hanging the lifecycle.
+func TestAccountRegistrationTimesOut(t *testing.T) {
+	t.Parallel()
+	// A listener that accepts nothing: the client's connection parks in
+	// the backlog and its directory fetch never gets a byte back.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	m, err := newHTTP01Manager(&resolved.AutoTLS{
+		Domains:   []string{"pin.example"},
+		Email:     "ops@pin.example",
+		Storage:   t.TempDir(),
+		Challenge: resolved.ChallengeHTTP01,
+	})
+	if err != nil {
+		t.Fatalf("newHTTP01Manager: %v", err)
+	}
+	m.directoryURL = "http://" + ln.Addr().String() + "/dir"
+	m.registerTimeout = 100 * time.Millisecond
+
+	begin := time.Now()
+	err = m.start()
+	if err == nil {
+		m.stop()
+		t.Fatal("start succeeded against a directory that never answers")
+	}
+	if !strings.Contains(err.Error(), "acme register") {
+		t.Fatalf("error %v did not come through the register path", err)
+	}
+	if elapsed := time.Since(begin); elapsed > 5*time.Second {
+		t.Fatalf("start took %s despite the 100ms registration deadline", elapsed)
+	}
+}

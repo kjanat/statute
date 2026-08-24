@@ -187,12 +187,18 @@ func (s *server) initPools(upstreams map[string]*resolved.Pool) error {
 // for every resolved listener, sharing the given handler.
 func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler) error {
 	for _, l := range listeners {
+		// One liveness bit per HTTP/3 pair, created before either side:
+		// the Alt-Svc wrapper reads it, the serve loop writes it.
+		var h3Alive *atomic.Bool
+		if l.HTTP3Addr != "" {
+			h3Alive = new(atomic.Bool)
+		}
 		// One wrapped handler per listener, shared by the TCP server and
 		// the QUIC server, so HTTP/3 requests pass through exactly the
 		// middleware HTTP/1.1 and HTTP/2 do — trusted-proxy policy and
 		// observability included. Two transports with separately-assembled
 		// chains would drift apart.
-		handler := s.buildListenerHandler(l, mux)
+		handler := s.buildListenerHandler(l, mux, h3Alive)
 		hs, err := s.buildHTTPServer(l, handler)
 		if err != nil {
 			return fmt.Errorf("listener %s: %w", l.Addr, err)
@@ -202,7 +208,7 @@ func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler)
 		if l.HTTP3Addr == "" {
 			continue
 		}
-		h3, err := s.buildHTTP3Server(l, handler)
+		h3, err := s.buildHTTP3Server(l, handler, h3Alive)
 		if err != nil {
 			return fmt.Errorf("listener %s http3: %w", l.Addr, err)
 		}
@@ -236,7 +242,7 @@ func (s *server) buildHTTPServer(l *resolved.Listener, handler http.Handler) (*h
 // buildListenerHandler assembles the middleware chain for a listener. The
 // wrapping order is deliberate: each block comments why it must sit where it
 // does relative to the others.
-func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler) http.Handler {
+func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler, h3Alive *atomic.Bool) http.Handler {
 	var handler http.Handler
 	if l.Redirect != "" {
 		handler = redirectHandler(l.Redirect)
@@ -254,7 +260,7 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	// so compatible clients upgrade. Browsers need this header on the HTTPS
 	// response that introduces the origin.
 	if l.Scheme == schemeHTTPS && l.HTTP3Addr != "" {
-		handler = altSvcHandler(l.HTTP3Addr, handler)
+		handler = altSvcHandler(l.HTTP3Addr, h3Alive, handler)
 	}
 
 	if s.cfg.Observability.AccessLog.Enabled {

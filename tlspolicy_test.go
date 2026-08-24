@@ -5,6 +5,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"statute.kjanat.dev/resolved"
@@ -322,7 +323,7 @@ func TestHTTP3ServerCarriesTLSPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	h3, err := srv.buildHTTP3Server(r.Listeners[0], nil)
+	h3, err := srv.buildHTTP3Server(r.Listeners[0], nil, new(atomic.Bool))
 	if err != nil {
 		t.Fatalf("buildHTTP3Server: %v", err)
 	}

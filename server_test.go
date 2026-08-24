@@ -3,6 +3,7 @@ package statute
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -135,9 +136,7 @@ func TestServerStartShutdown(t *testing.T) {
 		},
 		Shutdown: Shutdown{GracePeriod: "2s"},
 	}
-	// Patch the resolved listener's Addr to a known free port before
-	// newServer, so the http.Server, the cert router keys, and the
-	// resolved listener bindSockets looks up all agree on one address.
+	// Patch the resolved Addr before newServer so every derived copy agrees.
 	r := mustResolve(t, cfg)
 	addr := reserveAddr(t)
 	r.Listeners[0].Addr = addr
@@ -202,10 +201,8 @@ func TestStartFailureReleasesEarlierListeners(t *testing.T) {
 	}
 	mustBindNow(t, firstAddr)
 
-	// A failed Start must be retryable: free the contested port and the
-	// retry must succeed with listeners that actually serve — not
-	// http.Servers poisoned by an unwind Close reporting success over
-	// dead sockets.
+	// The retry must actually serve: a poisoned unwind still returns nil
+	// while every listener sits closed.
 	secondAddr := busy.Addr().String()
 	if err := busy.Close(); err != nil {
 		t.Fatal(err)
@@ -311,12 +308,8 @@ func TestStartFailureStopsHealthCheckers(t *testing.T) {
 		t.Fatal("Start succeeded despite a conflicting listener address")
 	}
 	assertHealthCheckerStopped(t, srv.pools["api"])
-	// The bind fails microseconds after the prober goroutine launches, so
-	// its immediate first probe may or may not have landed. What must hold
-	// is that the count stops moving once Start has returned. Settle
-	// briefly before sampling the baseline: stop() waits only for the
-	// probe's client side, so a request already in the backend can still
-	// increment the counter a moment after Start returns.
+	// Settle before sampling: stop waits only the probe's client side,
+	// so the backend can count one more hit just after Start returns.
 	time.Sleep(50 * time.Millisecond)
 	stopped := probes.Load()
 	time.Sleep(150 * time.Millisecond) // several probe intervals
@@ -600,9 +593,8 @@ func TestStartHTTP3BindFailureReleasesListeners(t *testing.T) {
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded despite a conflicting HTTP/3 UDP address")
 	}
-	// Start binds every socket before serving anything, so the failed
-	// attempt accepted no connection: nothing answers on the TCP address,
-	// and the socket is already free again.
+	// Two-phase Start accepted no connection: the address must refuse and
+	// already be free.
 	if conn, err := net.DialTimeout("tcp", tcpAddr, time.Second); err == nil {
 		_ = conn.Close()
 		t.Fatal("TCP address still accepting after failed Start")
@@ -712,6 +704,116 @@ func mustServeTLSRedirect(t *testing.T, addr string) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusMovedPermanently {
 		t.Errorf("%s: status %d, want 301", addr, resp.StatusCode)
+	}
+}
+
+// TestAltSvcDropsWhenHTTP3Dies — with ma=86400, an Alt-Svc header for a
+// dead endpoint sends every compatible client through a failed QUIC
+// attempt first. The header must track the serve loop's liveness.
+func TestAltSvcDropsWhenHTTP3Dies(t *testing.T) {
+	tcpAddr := reserveAddr(t)
+	srv := newHTTP3TestServer(t, tcpAddr, reserveUDPAddr(t), "")
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	waitForAltSvc(t, tcpAddr, true)
+	// Kill the serve loop out from under the server: its socket going
+	// away is the unexpected-death path.
+	if err := srv.http3Servers[0].conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForAltSvc(t, tcpAddr, false)
+}
+
+// waitForAltSvc polls the HTTPS listener until the Alt-Svc header's
+// presence matches want.
+func waitForAltSvc(t *testing.T, addr string, want bool) {
+	t.Helper()
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ServerName:         "h3.example",
+				InsecureSkipVerify: true, //nolint:gosec // G402: hermetic test against the self-signed fixture cert
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       5 * time.Second,
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("https://" + addr + "/x")
+		if err == nil {
+			has := resp.Header.Get("Alt-Svc") != ""
+			_ = resp.Body.Close()
+			if has == want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Alt-Svc presence on %s never became %v", addr, want)
+}
+
+// TestShutdownErrorChannelHoldsAllProducers — every shutdown path erroring
+// at once must not deadlock the error channel: the listeners, metrics, and
+// the tracing flush all send before anything drains. Regression for the
+// capacity being one producer short.
+func TestShutdownErrorChannelHoldsAllProducers(t *testing.T) {
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Routes:    Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Observability: Observability{
+			Metrics: Prometheus("127.0.0.1:0", "/metrics"),
+		},
+		Shutdown: Shutdown{GracePeriod: "100ms"},
+	}
+	r := mustResolve(t, cfg)
+	contentAddr := reserveAddr(t)
+	metricsAddr := reserveAddr(t)
+	r.Listeners[0].Addr = contentAddr
+	r.Observability.Metrics.Addr = metricsAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	srv.tracingShutdown = func(context.Context) error { return errors.New("tracing flush failed") }
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForListen(t, contentAddr)
+	waitForListen(t, metricsAddr)
+	// Park one half-written request on each server so its drain runs out
+	// the grace period and returns an error.
+	for _, addr := range []string{contentAddr, metricsAddr} {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Shutdown() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Shutdown reported success with every producer failing")
+		}
+		if !strings.Contains(err.Error(), "tracing flush failed") {
+			t.Fatalf("joined error %v lost the tracing failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown deadlocked on its error channel")
 	}
 }
 

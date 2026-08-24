@@ -100,6 +100,11 @@ type acmeManager struct {
 	// tests point it at a local fake.
 	directoryURL string
 
+	// registerTimeout caps account registration; acmeRegisterTimeout from
+	// newACMEManager, overridable so a test can prove the bound without
+	// waiting a minute on a dead directory.
+	registerTimeout time.Duration
+
 	mu    sync.RWMutex
 	cache map[string]*tls.Certificate
 
@@ -138,15 +143,16 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 		return nil, fmt.Errorf("storage: %w", err)
 	}
 	return &acmeManager{
-		name:         name,
-		domains:      cfg.Domains,
-		email:        cfg.Email,
-		storage:      dir,
-		solver:       solver,
-		issueTimeout: acmeIssueTimeout + dns01PropagationBudget(cfg),
-		directoryURL: acme.LetsEncryptURL,
-		cache:        make(map[string]*tls.Certificate),
-		issuing:      make(map[string]*issueState),
+		name:            name,
+		domains:         cfg.Domains,
+		email:           cfg.Email,
+		storage:         dir,
+		solver:          solver,
+		issueTimeout:    acmeIssueTimeout + dns01PropagationBudget(cfg),
+		directoryURL:    acme.LetsEncryptURL,
+		registerTimeout: acmeRegisterTimeout,
+		cache:           make(map[string]*tls.Certificate),
+		issuing:         make(map[string]*issueState),
 	}, nil
 }
 
@@ -664,7 +670,13 @@ func (m *acmeManager) loadOrCreateAccount() error {
 		DirectoryURL: m.directoryURL,
 	}
 	contact := []string{"mailto:" + m.email}
-	ctx, cancel := context.WithTimeout(context.Background(), acmeRegisterTimeout)
+	timeout := m.registerTimeout
+	if timeout <= 0 {
+		// Hand-built test managers skip newACMEManager; zero must not
+		// mean an unbounded registration.
+		timeout = acmeRegisterTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if _, err := client.Register(ctx, &acme.Account{Contact: contact}, acme.AcceptTOS); err != nil {
 		// Already registered is fine. The acme library returns ErrAccountAlreadyExists

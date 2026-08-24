@@ -283,7 +283,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   that socket after the HTTP/3 drain — it previously stayed bound for
   the life of the process — and an HTTP/3 serve loop that dies
   unexpectedly now logs the error and closes its socket instead of
-  leaving a dead server holding an advertised port. TCP and metrics
+  leaving a dead server holding an advertised port. The Alt-Svc header
+  is advertised only while that serve loop actually runs, so a dead
+  HTTP/3 endpoint is no longer offered to clients for the full ma
+  window after its loop exits. TCP and metrics
   serve-loop exits are logged too. An ACME order cancelled by the
   manager stopping — a rollback mid-warm-up — no longer settles into the
   issuance failure cache: an error that is itself the manager's

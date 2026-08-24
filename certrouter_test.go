@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -530,7 +531,7 @@ func TestHTTP01TokensServedOnPlainListener(t *testing.T) {
 	solver.tokens[path] = "tok-9.keyauth"
 	solver.mu.Unlock()
 
-	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter())
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://foo.example.com"+path, nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "tok-9.keyauth" {
@@ -611,7 +612,7 @@ func TestHTTP01SolverServesTokens(t *testing.T) {
 func TestBuildHTTP3ServerRequiresRouter(t *testing.T) {
 	t.Parallel()
 	s := &server{}
-	_, err := s.buildHTTP3Server(&resolved.Listener{Addr: ":443", HTTP3Addr: ":443/udp"}, nil)
+	_, err := s.buildHTTP3Server(&resolved.Listener{Addr: ":443", HTTP3Addr: ":443/udp"}, nil, new(atomic.Bool))
 	if err == nil || !strings.Contains(err.Error(), "requires AutoTLS or StaticTLS") {
 		t.Errorf("error: %v", err)
 	}
