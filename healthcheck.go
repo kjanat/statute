@@ -51,6 +51,12 @@ func (h *healthChecker) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	h.done = make(chan struct{})
+	// Fresh counters per start: a stopped checker's cancelled probes were
+	// recorded as failures, and a restarted checker (a Start retried after
+	// a rollback) must not inherit them — three failed Start attempts must
+	// not add up to backends demoted before the first real probe.
+	h.successes = make(map[*backendState]int)
+	h.failures = make(map[*backendState]int)
 
 	go func() {
 		defer close(h.done)

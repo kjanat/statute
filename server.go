@@ -369,7 +369,10 @@ type boundSocket struct {
 //
 // It tracks only what Start itself acquires. Resources newServer creates
 // — the tracing provider, the pool transports — are server-lifetime,
-// released by Shutdown.
+// released by Shutdown. The unwind does additionally drop idle
+// connections the first health probe may have parked in a pool
+// transport; that does not retire the transport, which stays reusable
+// for a retried Start.
 type startRollback struct {
 	poolsUp  bool
 	managers []*acmeManager
@@ -399,8 +402,12 @@ func (s *server) unwindStart(rb *startRollback) error {
 		s.dynamic.Store(nil)
 	}
 	if rb.poolsUp {
+		// Full pool shutdown, not just hc.stop: the immediate first probe
+		// can already have parked a keep-alive connection in the transport.
+		// Closing idle connections does not poison the transport — it stays
+		// reusable — so a retried Start still gets a working pool.
 		for _, ph := range s.pools {
-			ph.hc.stop()
+			ph.shutdown()
 		}
 	}
 	return errors.Join(errs...)
@@ -478,12 +485,18 @@ func (s *server) startPrerequisites(rb *startRollback) error {
 func (s *server) bindSockets(rb *startRollback) ([]func(), error) {
 	var serve []func()
 	for _, hs := range s.listeners {
+		// serveListener reads the scheme off the resolved listener; without
+		// one it would fall through to plain Serve and hand an HTTPS
+		// listener's address out in cleartext. Fail the bind instead.
+		l, ok := findListener(s.cfg.Listeners, hs.Addr)
+		if !ok {
+			return nil, fmt.Errorf("listen %s: no resolved listener for this address", hs.Addr)
+		}
 		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
 		if err != nil {
 			return nil, fmt.Errorf("listen %s: %w", hs.Addr, err)
 		}
 		rb.sockets = append(rb.sockets, boundSocket{kind: "listener", addr: hs.Addr, closer: ln})
-		l, _ := findListener(s.cfg.Listeners, hs.Addr)
 		serve = append(serve, func() { logServeExit("listener", hs.Addr, serveListener(hs, l, ln)) })
 	}
 	for _, h3 := range s.http3Servers {
@@ -562,7 +575,10 @@ func (s *server) Shutdown() error {
 	}
 
 	var wg sync.WaitGroup
-	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+1)
+	// Producers: every listener, every HTTP/3 listener, the metrics server,
+	// and the tracing flush. The channel is drained only after the last of
+	// them has sent, so an undersized buffer deadlocks rather than blocks.
+	errs := make(chan error, len(s.listeners)+len(s.http3Servers)+2)
 
 	for _, hs := range s.listeners {
 		goShutdown(ctx, &wg, errs, hs.Shutdown)

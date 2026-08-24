@@ -39,7 +39,12 @@ func (h *http3Listener) serveLoop() {
 		return
 	}
 	log.Printf("statute: http3 %s: serve loop exited: %v", h.addr, err)
-	_ = h.conn.Close()
+	// Shutdown surfaces its close failure in the returned error; this
+	// exceptional path has no caller, so the log is the only witness
+	// that the port may still be bound.
+	if cerr := h.conn.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+		log.Printf("statute: http3 %s: closing socket after dead serve loop: %v", h.addr, cerr)
+	}
 }
 
 // Shutdown gracefully stops the HTTP/3 listener, then closes the UDP

@@ -272,10 +272,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `http.Server` / `http3.Server` objects built to serve them — a closed
   server is permanently unusable, which would let a retried Start report
   success over dead listeners. Health checkers now start in `Start`
-  rather than at construction, so a server that never starts launches no
-  probe goroutine nothing will stop, and the Docker provider's stop now
-  waits for its event watcher as well as its reconcile loop, so a retry
-  cannot overlap generations. HTTP/3 UDP sockets bind inside `Start` so
+  rather than at construction: a server that never starts launches no
+  probe goroutine, so there is nothing to stop, and a restarted checker
+  begins with fresh failure counters, so repeated failed Starts cannot
+  demote backends before the first real probe. The Docker provider's
+  stop now waits for its event watcher as well as its reconcile loop, so
+  a retry cannot overlap generations. HTTP/3 UDP sockets bind inside `Start` so
   a bind failure fails startup instead of being silently discarded;
   because quic-go never closes a caller-provided conn, `Shutdown` closes
   that socket after the HTTP/3 drain — it previously stayed bound for
