@@ -74,15 +74,15 @@ Read `ARCHITECTURE.md` for the complete current model.
 For every change, explicitly decide which rows apply and test the dangerous
 intersection when it does:
 
-| Change area | Interactions to inspect |
-| --- | --- |
-| Route / matcher | middleware, Docker router identity, shared pools, original-vs-rewritten path |
-| Middleware | declaration order, hoisted headers/path rewrites, Retry re-entry, cache keys, auth/IP failure modes |
-| Docker | router-vs-service scope, generation replacement, shared pools, unknown references, static-route precedence |
-| Upstream / health | Retry attempts, backend identity, Host policy, TLS transport parity, active/passive health, degraded mode |
-| TLS / ACME | SNI routing, selected-source failure, HTTP-01 listener availability, warm-up, rollback/shutdown |
-| Lifecycle | partial startup, retry-after-failure contract, TCP/UDP ownership, goroutines, Docker generations, ACME state |
-| Observability | final status, streaming interfaces, original/rewritten request view, filters vs sampling |
+| Change area       | Interactions to inspect                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| Route / matcher   | middleware, Docker router identity, shared pools, original-vs-rewritten path                                 |
+| Middleware        | declaration order, hoisted headers/path rewrites, Retry re-entry, cache keys, auth/IP failure modes          |
+| Docker            | router-vs-service scope, generation replacement, shared pools, unknown references, static-route precedence   |
+| Upstream / health | Retry attempts, backend identity, Host policy, TLS transport parity, active/passive health, degraded mode    |
+| TLS / ACME        | SNI routing, selected-source failure, HTTP-01 listener availability, warm-up, rollback/shutdown              |
+| Lifecycle         | partial startup, retry-after-failure contract, TCP/UDP ownership, goroutines, Docker generations, ACME state |
+| Observability     | final status, streaming interfaces, original/rewritten request view, filters vs sampling                     |
 
 This table is a floor, not an exhaustive list.
 
