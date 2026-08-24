@@ -458,6 +458,9 @@ func (s *server) bindListeners(rb *startRollback) error {
 			return fmt.Errorf("listen %s/udp: %w", h3.addr, err)
 		}
 		rb.listeners = append(rb.listeners, conn)
+		// The listener retains its socket past commit: Shutdown must close
+		// it, because quic-go never closes a caller-provided conn.
+		h3.conn = conn
 		go func() { _ = h3.Serve(conn) }()
 	}
 	return nil

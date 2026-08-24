@@ -362,15 +362,23 @@ func (m *acmeManager) issueOnce(ctx context.Context, host string) (*tls.Certific
 		// order context would be a miserable way to find that out.
 		timeout = acmeIssueTimeout
 	}
-	ictx, cancel := context.WithTimeout(m.runContext(), timeout)
+	parent := m.runContext()
+	ictx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	//nolint:contextcheck // detached from the caller on purpose: see this function's doc comment
 	st.cert, st.err = m.issue(ictx, host)
 	if st.err != nil {
-		// Keep the failure for acmeIssueRetryAfter; issueState drops it
-		// once the cooldown elapses.
+		// The failure is kept for acmeIssueRetryAfter; issueState drops
+		// it once the cooldown elapses.
 		st.failedAt = time.Now()
 		close(st.ready)
+		if parent.Err() != nil {
+			// The manager was stopped mid-order: lifecycle, not a CA
+			// verdict. Drop the state so a restarted manager issues
+			// immediately — a Start retried after a rollback must not
+			// replay this cancellation for the cooldown window.
+			m.forgetIssueState(host, st)
+		}
 		return nil, st.err
 	}
 	m.mu.Lock()

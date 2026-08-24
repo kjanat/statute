@@ -17,6 +17,10 @@ import (
 type http3Listener struct {
 	srv  *http3.Server
 	addr string
+	// conn is the UDP socket Start bound for Serve. quic-go leaves a
+	// caller-provided PacketConn caller-owned — shutting the server down
+	// does not close it — so Shutdown closes it once the drain completes.
+	conn net.PacketConn
 }
 
 // Serve runs the HTTP/3 (QUIC) server on the given UDP socket and blocks
@@ -28,9 +32,14 @@ func (h *http3Listener) Serve(conn net.PacketConn) error {
 	return h.srv.Serve(conn)
 }
 
-// Shutdown gracefully stops the HTTP/3 listener.
+// Shutdown gracefully stops the HTTP/3 listener, then closes the UDP
+// socket the server does not own.
 func (h *http3Listener) Shutdown(ctx context.Context) error {
-	return h.srv.Shutdown(ctx)
+	err := h.srv.Shutdown(ctx)
+	if h.conn != nil {
+		_ = h.conn.Close()
+	}
+	return err
 }
 
 func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler) (*http3Listener, error) {

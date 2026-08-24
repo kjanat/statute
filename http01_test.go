@@ -709,3 +709,51 @@ func TestHTTP01_InvalidAuthorizationFailsFast(t *testing.T) {
 		t.Errorf("AuthorizationError.URI = %q, want the authorization URL %q", authzErr.URI, fake.url("/authz/1"))
 	}
 }
+
+// TestStopCancelledIssuanceDoesNotCooldown — an order cancelled by stop()
+// is lifecycle, not a CA verdict. It must not settle into the failure
+// cache that issueState hands out for acmeIssueRetryAfter, or a Start
+// retried after a rollback replays the cancellation on every handshake
+// for a minute while reporting success.
+func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
+	t.Parallel()
+	src := &resolved.AutoTLS{
+		Domains:   []string{"pin.example"},
+		Email:     "ops@pin.example",
+		Storage:   t.TempDir(),
+		Challenge: resolved.ChallengeHTTP01,
+	}
+	m, err := newHTTP01Manager(src)
+	if err != nil {
+		t.Fatalf("newHTTP01Manager: %v", err)
+	}
+	notFound := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	fake := newFakeACME(t, m.wrapHTTPChallenges(notFound))
+	m.directoryURL = fake.url("/dir")
+
+	if err := m.start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Stop as the Start rollback does, then drive one order to settlement
+	// under the cancelled run context.
+	m.stop()
+	if _, err := m.issueOnce(context.Background(), "pin.example"); err == nil {
+		t.Fatal("issuance succeeded under a cancelled run context")
+	}
+
+	// A restarted manager must issue immediately, not replay the
+	// cancellation until the cooldown elapses.
+	if err := m.start(); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	defer m.stop()
+	cert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "pin.example"})
+	if err != nil {
+		t.Fatalf("issuance after restart replayed the cancellation: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("nil certificate after restart")
+	}
+}

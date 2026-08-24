@@ -272,9 +272,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   them — a closed server is permanently unusable, which would let a
   retried Start report success over dead listeners. HTTP/3 UDP sockets
   now bind inside `Start` rather than inside the serve goroutine, so a
-  UDP bind failure fails startup instead of being silently discarded.
-  This is also the foundation the upcoming process health endpoint
-  builds on, so a health listener can never outlive a failed start.
+  UDP bind failure fails startup instead of being silently discarded —
+  and because quic-go never closes a caller-provided conn, `Shutdown`
+  now closes that socket after the HTTP/3 drain, where it previously
+  stayed bound for the life of the process. An ACME order cancelled by
+  the manager stopping — a rollback mid-warm-up — no longer settles
+  into the issuance failure cache: lifecycle cancellations are dropped
+  immediately rather than being replayed on every handshake for the
+  one-minute cooldown after a successful retry, while genuine CA
+  failures keep their cooldown. This is also the foundation the
+  upcoming process health endpoint builds on, so a health listener can
+  never outlive a failed start.
 - Redirect routes no longer emit a protocol-relative `Location`. A
   client-controlled `{path}` or `{request_uri}` of `//evil.com` — sent
   directly as a `//evil.com` request path, or produced by a `StripPrefix`

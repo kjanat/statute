@@ -336,6 +336,72 @@ func waitForRelease(t *testing.T, addr string, deadline time.Duration) {
 	t.Fatalf("%s still bound after failed Start", addr)
 }
 
+// TestStartShutdownReleasesHTTP3Socket — Start binds the HTTP/3 UDP
+// socket and quic-go never closes a caller-provided conn, so a normal
+// Shutdown must close it itself or the port leaks for the process's
+// lifetime.
+func TestStartShutdownReleasesHTTP3Socket(t *testing.T) {
+	certFile, keyFile := writeSelfSignedCert(t, "h3.example")
+	cfg := Config{
+		Listeners: Listeners{
+			HTTPS("127.0.0.1:0", StaticTLS(certFile, keyFile), HTTP3("127.0.0.1:0")),
+		},
+		Routes:   Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	srv, err := newServer(mustResolve(t, cfg))
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	srv.listeners[0].Addr = reserveAddr(t)
+	udpAddr := reserveUDPAddr(t)
+	srv.http3Servers[0].addr = udpAddr
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The socket is held while serving...
+	if conn, err := net.ListenPacket("udp", udpAddr); err == nil {
+		_ = conn.Close()
+		t.Fatal("HTTP/3 UDP socket not bound while serving")
+	}
+	if err := srv.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	// ...and released once Shutdown completes.
+	waitForReleaseUDP(t, udpAddr, 2*time.Second)
+}
+
+// reserveUDPAddr is reserveAddr for a UDP port: bind ephemeral, close,
+// return the address for the HTTP/3 listener under test to claim.
+func reserveUDPAddr(t *testing.T) string {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := conn.LocalAddr().String()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+// waitForReleaseUDP asserts the UDP addr becomes bindable again within
+// deadline — that whatever held it has been closed.
+func waitForReleaseUDP(t *testing.T, addr string, deadline time.Duration) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if conn, err := net.ListenPacket("udp", addr); err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("UDP %s still bound after Shutdown", addr)
+}
+
 // TestNewServer_HTTPSWithoutTLSMaterial — building a server with an HTTPS
 // listener that has no TLS material is an error from newServer.
 func TestNewServer_HTTPSWithoutTLSMaterial(t *testing.T) {
