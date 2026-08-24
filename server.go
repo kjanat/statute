@@ -913,9 +913,8 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 		bs := &backendState{backend: b}
 		// Backends start healthy; the prober demotes them as it observes failures.
 		bs.markHealthy(true)
-		// Each failed attempt counts against the backend that served it,
-		// via the generation pinned on the request; stopped or absent
-		// generations make the record a no-op.
+		// record is nil-safe: an absent or stopped pinned generation
+		// makes it a no-op.
 		bs.rp = newBackendProxy(target, transport, p, func(r *http.Request) {
 			passiveRunFromContext(r.Context()).record(bs)
 		})
