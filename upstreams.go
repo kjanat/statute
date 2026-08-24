@@ -9,7 +9,10 @@ type Pool struct {
 	Backends    []Backend
 	Strategy    Strategy
 	HealthCheck HealthCheck
-	Transport   Transport
+	// PassiveHealthCheck demotes backends based on real proxy traffic; it
+	// works with or without an active HealthCheck.
+	PassiveHealthCheck PassiveHealthCheck
+	Transport          Transport
 	// UpstreamHost selects the Host header backends receive. The zero value
 	// is ClientHost, today's behavior: the client's own Host is forwarded.
 	UpstreamHost UpstreamHost
@@ -34,6 +37,8 @@ type Backend struct {
 // The policy applies to proxied requests and to active health-check probes
 // alike, so a backend that routes on Host sees consistent traffic. A probe
 // has no client, so under ClientHost it carries the backend's own host.
+// HealthCheck.Host, when set, overrides the probe half only; proxied
+// requests keep following this policy.
 type UpstreamHost struct {
 	mode  hostMode
 	value string
@@ -111,6 +116,32 @@ type HealthCheck struct {
 	Timeout   string // probe timeout; e.g. "2s"
 	Healthy   int    // consecutive successes to mark healthy; defaults to 2
 	Unhealthy int    // consecutive failures to mark unhealthy; defaults to 3
+
+	// Host overrides the Host header probes carry. Empty derives the probe
+	// host from the pool's UpstreamHost policy as before: an explicit
+	// HostValue rides every probe, and the other policies leave probes on
+	// each backend's own host. UpstreamHost governs proxied requests either
+	// way. The value is validated like HostValue's.
+	Host string
+	// Statuses are the probe response statuses accepted as healthy; empty
+	// keeps the default 200-399 range. Each entry must be within 100-599.
+	Statuses []int
+}
+
+// PassiveHealthCheck configures passive backend demotion from proxy
+// outcomes: a backend that accumulates MaxFailures failed attempts — a
+// transport error or a 5xx response — inside the sliding FailureWindow is
+// excluded from selection. A request its own client canceled is not a
+// failure; a deadline that expired waiting on the backend is. Failures
+// count per backend attempt, so under
+// Retry each attempt counts against the backend that served it. A success
+// does not clear the window; a backend is re-admitted only as failures age
+// out. A pool whose every backend is demoted keeps serving in degraded
+// mode. Both fields must be set together; the zero value disables passive
+// health checks.
+type PassiveHealthCheck struct {
+	FailureWindow string // sliding window; e.g. "30s"
+	MaxFailures   int    // failures within the window that demote
 }
 
 // Transport tunes the HTTP transport used to reach backends. The TLS fields

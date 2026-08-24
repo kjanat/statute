@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExport_ProducesValidJSON(t *testing.T) {
@@ -48,6 +49,55 @@ func TestExport_BadConfigReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown upstream") {
 		t.Errorf("error: %v", err)
+	}
+}
+
+// TestExport_CarriesHealthPolicy — the probe Host override, accepted probe
+// statuses, and passive policy are part of the exported schema.
+func TestExport_CarriesHealthPolicy(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":8080")},
+		Upstreams: Upstreams{
+			"api": Pool{
+				Backends: []Backend{{Address: "127.0.0.1:1"}},
+				HealthCheck: HealthCheck{
+					Path: "/healthz", Host: "probe.internal", Statuses: []int{200, 204},
+				},
+				PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+			},
+		},
+		Routes: Routes{Match("/*").ProxyTo("api")},
+	}
+	var buf bytes.Buffer
+	if err := Export(cfg, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	var out struct {
+		Upstreams map[string]struct {
+			HealthCheck struct {
+				Host     string
+				Statuses []int
+			}
+			PassiveHealthCheck struct {
+				Enabled       bool
+				FailureWindow int64
+				MaxFailures   int
+			}
+		}
+	}
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	p := out.Upstreams["api"]
+	if p.HealthCheck.Host != "probe.internal" {
+		t.Errorf("exported probe Host: %q", p.HealthCheck.Host)
+	}
+	if !slices.Equal(p.HealthCheck.Statuses, []int{200, 204}) {
+		t.Errorf("exported Statuses: %v", p.HealthCheck.Statuses)
+	}
+	if !p.PassiveHealthCheck.Enabled || p.PassiveHealthCheck.FailureWindow != int64(30*time.Second) || p.PassiveHealthCheck.MaxFailures != 3 {
+		t.Errorf("exported PassiveHealthCheck: %+v", p.PassiveHealthCheck)
 	}
 }
 

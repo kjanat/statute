@@ -1,6 +1,7 @@
 package statute
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,6 +49,44 @@ func TestHealthCheck_RecordTransitions(t *testing.T) {
 	run.recordSuccess(b)
 	if !b.isHealthy() {
 		t.Errorf("backend should be healthy after 2 successes")
+	}
+}
+
+// TestHealthCheckStatuses — configured Statuses replace the 200-399
+// default exactly: a 304 that the default accepts demotes under [200,204],
+// and an empty list keeps today's range.
+func TestHealthCheckStatuses(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(srv.Close)
+
+	probeOnce := func(statuses []int) bool {
+		t.Helper()
+		cfg := resolved.HealthCheck{
+			Enabled: true, Path: "/healthz",
+			Interval: time.Hour, Timeout: time.Second,
+			Healthy: 1, Unhealthy: 1,
+			Statuses: statuses,
+		}
+		b := &backendState{backend: &resolved.Backend{Address: strings.TrimPrefix(srv.URL, "http://")}}
+		b.markHealthy(true)
+		hc := newHealthChecker(cfg, []*backendState{b}, nil, "")
+		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
+		run.active.Store(true)
+		run.probe(context.Background(), b)
+		return b.isHealthy()
+	}
+
+	if !probeOnce(nil) {
+		t.Error("default statuses rejected a 304")
+	}
+	if probeOnce([]int{200, 204}) {
+		t.Error("Statuses [200,204] accepted a 304")
+	}
+	if !probeOnce([]int{200, 304}) {
+		t.Error("Statuses [200,304] rejected a 304")
 	}
 }
 

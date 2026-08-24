@@ -109,6 +109,14 @@ a pool named after the compose service. The full schema:
 | `statute.ratelimit`                                   | Per-route rate limit, e.g. `100/min`.                                                                                                                                                                                                       |
 | `statute.compress`                                    | `gzip`, `br`, a comma list, or `true` for both.                                                                                                                                                                                             |
 
+The health-check labels stop at path/interval/timeout — deliberately. The
+probe `Host` override (`HealthCheck.Host`), accepted probe statuses
+(`HealthCheck.Statuses`), and passive health (`PassiveHealthCheck`) have no
+label form, in either the native or the Traefik schema: they exist only in
+compiled configuration. A Docker-discovered pool therefore always runs with
+the default 200–399 probe acceptance, the derived probe host, and no
+passive demotion.
+
 ## Traefik compatibility (`TraefikLabels()`)
 
 The goal is that a fleet labeled for Traefik's docker provider migrates

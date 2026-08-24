@@ -273,6 +273,11 @@ func resolvePool(name string, p Pool) (*resolved.Pool, error) {
 		return nil, fmt.Errorf("health_check: %w", err)
 	}
 	rp.HealthCheck = hc
+	phc, err := resolvePassiveHealthCheck(p.PassiveHealthCheck)
+	if err != nil {
+		return nil, fmt.Errorf("passive_health_check: %w", err)
+	}
+	rp.PassiveHealthCheck = phc
 	tr, err := resolveTransport(p.Transport)
 	if err != nil {
 		return nil, fmt.Errorf("transport: %w", err)
@@ -309,7 +314,19 @@ func resolveUpstreamHost(u UpstreamHost, rp *resolved.Pool) error {
 
 func resolveHealthCheck(h HealthCheck) (resolved.HealthCheck, error) {
 	if h.Path == "" {
+		// The new probe fields describe active probing, so silently
+		// dropping them alongside a missing Path would be a policy drop.
+		// Interval/Timeout keep their historical silent-ignore behavior.
+		if h.Host != "" {
+			return resolved.HealthCheck{}, errors.New("host: set but path is empty")
+		}
+		if len(h.Statuses) > 0 {
+			return resolved.HealthCheck{}, errors.New("statuses: set but path is empty")
+		}
 		return resolved.HealthCheck{Enabled: false}, nil
+	}
+	if err := validateProbePolicy(h); err != nil {
+		return resolved.HealthCheck{}, err
 	}
 	interval, err := parse.DurationOr(h.Interval, 10*time.Second)
 	if err != nil {
@@ -334,6 +351,57 @@ func resolveHealthCheck(h HealthCheck) (resolved.HealthCheck, error) {
 		Timeout:   timeout,
 		Healthy:   healthy,
 		Unhealthy: unhealthy,
+		Host:      h.Host,
+		Statuses:  append([]int(nil), h.Statuses...),
+	}, nil
+}
+
+// validateProbePolicy checks the probe-only HealthCheck fields: the Host
+// override is a header value bound for the wire, so it gets exactly the
+// validation an explicit HostValue gets, and every accepted status must be
+// a real HTTP status.
+func validateProbePolicy(h HealthCheck) error {
+	if h.Host != "" {
+		if strings.TrimSpace(h.Host) == "" {
+			return errors.New("host: value is blank")
+		}
+		if _, err := parse.HeaderValue(h.Host); err != nil {
+			return fmt.Errorf("host: %w", err)
+		}
+	}
+	for i, code := range h.Statuses {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("statuses[%d]: %d is outside 100-599", i, code)
+		}
+	}
+	return nil
+}
+
+// resolvePassiveHealthCheck validates the pool's passive demotion policy.
+// Passive health is pool policy over real proxy traffic, independent of
+// active probing, so it is legal without a HealthCheck.Path. The zero value
+// disables it; a half-set policy is an error rather than a guess.
+func resolvePassiveHealthCheck(p PassiveHealthCheck) (resolved.PassiveHealthCheck, error) {
+	if p.FailureWindow == "" && p.MaxFailures == 0 {
+		return resolved.PassiveHealthCheck{}, nil
+	}
+	if p.FailureWindow == "" || p.MaxFailures == 0 {
+		return resolved.PassiveHealthCheck{}, errors.New("FailureWindow and MaxFailures must be set together")
+	}
+	if p.MaxFailures < 0 {
+		return resolved.PassiveHealthCheck{}, errors.New("MaxFailures is negative")
+	}
+	window, err := parse.Duration(p.FailureWindow)
+	if err != nil {
+		return resolved.PassiveHealthCheck{}, fmt.Errorf("failure_window: %w", err)
+	}
+	if window == 0 {
+		return resolved.PassiveHealthCheck{}, errors.New("failure_window: duration is zero")
+	}
+	return resolved.PassiveHealthCheck{
+		Enabled:       true,
+		FailureWindow: window,
+		MaxFailures:   p.MaxFailures,
 	}, nil
 }
 
