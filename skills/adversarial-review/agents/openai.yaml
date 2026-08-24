@@ -1,0 +1,6 @@
+interface:
+  display_name: "Adversarial review"
+  short_description: "Review Statute across architecture boundaries"
+  default_prompt: "Use $adversarial-review to review this Statute pull request from architecture boundaries outward."
+policy:
+  allow_implicit_invocation: false

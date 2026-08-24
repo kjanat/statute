@@ -1,0 +1,6 @@
+interface:
+  display_name: "Architecture contract"
+  short_description: "Freeze Statute invariants before implementation"
+  default_prompt: "Use $architecture-contract to analyze this Statute change before any code is written."
+policy:
+  allow_implicit_invocation: false
