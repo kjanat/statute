@@ -28,6 +28,12 @@ func (h *http3Listener) Shutdown(ctx context.Context) error {
 	return h.srv.Shutdown(ctx)
 }
 
+// Close stops the HTTP/3 listener immediately, without draining. The
+// graceful path is Shutdown; Close unwinds a failed Start.
+func (h *http3Listener) Close() error {
+	return h.srv.Close()
+}
+
 func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler) (*http3Listener, error) {
 	addr := strings.TrimSuffix(l.HTTP3Addr, "/udp")
 	if addr == "" {

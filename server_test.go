@@ -175,6 +175,97 @@ func TestServerStartShutdown(t *testing.T) {
 	}
 }
 
+// TestStartFailureReleasesEarlierListeners — when a later listener fails
+// to bind, every listener Start already opened must close again: a
+// failed Start leaves no socket serving.
+func TestStartFailureReleasesEarlierListeners(t *testing.T) {
+	// Hold a port so the second listener's bind must fail.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0"), HTTP("127.0.0.1:0")},
+		Routes:    Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Shutdown:  Shutdown{GracePeriod: "2s"},
+	}
+	srv, err := newServer(mustResolve(t, cfg))
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	first, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAddr := first.Addr().String()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srv.listeners[0].Addr = firstAddr
+	srv.listeners[1].Addr = busy.Addr().String()
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting listener address")
+	}
+	waitForRelease(t, firstAddr, 2*time.Second)
+}
+
+// TestStartMetricsFailureReleasesListeners — a metrics bind failure after
+// the content listeners opened must close them again, through the same
+// rollback that guards listener-vs-listener conflicts.
+func TestStartMetricsFailureReleasesListeners(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+
+	cfg := Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Routes:    Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Observability: Observability{
+			Metrics: Prometheus(busy.Addr().String(), "/metrics"),
+		},
+		Shutdown: Shutdown{GracePeriod: "2s"},
+	}
+	srv, err := newServer(mustResolve(t, cfg))
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	content, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentAddr := content.Addr().String()
+	if err := content.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srv.listeners[0].Addr = contentAddr
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting metrics address")
+	}
+	waitForRelease(t, contentAddr, 2*time.Second)
+}
+
+// waitForRelease asserts addr becomes bindable again within deadline —
+// that whatever held it has been closed. The serve goroutine may close
+// its listener a moment after Start returns, so this polls.
+func waitForRelease(t *testing.T, addr string, deadline time.Duration) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if ln, err := net.Listen("tcp", addr); err == nil {
+			_ = ln.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s still bound after failed Start", addr)
+}
+
 // TestNewServer_HTTPSWithoutTLSMaterial — building a server with an HTTPS
 // listener that has no TLS material is an error from newServer.
 func TestNewServer_HTTPSWithoutTLSMaterial(t *testing.T) {

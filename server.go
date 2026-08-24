@@ -155,14 +155,6 @@ func (s *server) startDocker() error {
 	return nil
 }
 
-// rollbackDockerUnlessStarted undoes startDocker when a later startup step
-// failed. Deferred from Start; a completed Start sets started first.
-func (s *server) rollbackDockerUnlessStarted() {
-	if !s.started {
-		s.shutdownDocker()
-	}
-}
-
 // shutdownDocker stops the provider before its pools so no reconcile swaps
 // in a fresh generation mid-teardown, then retires the current generation.
 func (s *server) shutdownDocker() {
@@ -354,26 +346,71 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 	}
 }
 
+// startRollback records the resources Start has acquired, so a failed
+// Start releases every one of them before returning: no serving
+// listener, no manager or reconcile goroutine survives a Start that
+// reported an error.
+type startRollback struct {
+	managers     []*acmeManager
+	dockerUp     bool
+	httpServers  []*http.Server
+	http3Servers []*http3Listener
+}
+
+// unwindStart releases everything rb recorded. The order mirrors
+// Shutdown's — ACME managers stop before any listener closes, so a
+// warm-up still in flight is cancelled while the plain HTTP listener
+// serving its HTTP-01 tokens can still answer the CA's token fetch — but
+// it closes rather than drains: a start that failed has nothing worth
+// draining. Close is safe against a serve goroutine that has not reached
+// Serve yet; Serve then returns ErrServerClosed and closes the
+// net.Listener it was handed.
+// unwindStartUnlessStarted releases rb unless Start committed. Deferred
+// from Start; a completed Start sets started first.
+func (s *server) unwindStartUnlessStarted(rb *startRollback) {
+	if !s.started {
+		s.unwindStart(rb)
+	}
+}
+
+func (s *server) unwindStart(rb *startRollback) {
+	for _, m := range rb.managers {
+		m.stop()
+	}
+	for _, hs := range rb.httpServers {
+		_ = hs.Close()
+	}
+	for _, h3 := range rb.http3Servers {
+		_ = h3.Close()
+	}
+	if rb.dockerUp {
+		s.shutdownDocker()
+	}
+}
+
 // Start opens all configured listeners and begins serving. Calling it
-// after the server has already started returns an error.
+// after the server has already started returns an error. Start is
+// transactional: it either commits with everything running or fails with
+// everything it had started released again.
 func (s *server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.started {
 		return errors.New("already started")
 	}
+	var rb startRollback
+	defer s.unwindStartUnlessStarted(&rb)
 	for src, m := range s.acmeManagers {
 		if err := m.start(); err != nil {
 			return fmt.Errorf("%s manager (%s): %w", m.name, strings.Join(src.Domains, ", "), err)
 		}
+		rb.managers = append(rb.managers, m)
 	}
 	s.warmACMEManagers(false)
 	if err := s.startDocker(); err != nil {
 		return err
 	}
-	// If a later startup step fails, stop the provider again so a
-	// failed Start does not leak its reconcile loop and pools.
-	defer s.rollbackDockerUnlessStarted()
+	rb.dockerUp = true
 	for _, hs := range s.listeners {
 		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", hs.Addr)
 		if err != nil {
@@ -381,9 +418,11 @@ func (s *server) Start() error {
 		}
 		l, _ := findListener(s.cfg.Listeners, hs.Addr)
 		go serveListener(hs, l, ln)
+		rb.httpServers = append(rb.httpServers, hs)
 	}
 	for _, h3 := range s.http3Servers {
 		go func() { _ = h3.Serve() }()
+		rb.http3Servers = append(rb.http3Servers, h3)
 	}
 	s.warmACMEManagers(true)
 	if s.metricsServer != nil {
@@ -393,6 +432,7 @@ func (s *server) Start() error {
 			return fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
 		}
 		go func() { _ = ms.Serve(ln) }()
+		rb.httpServers = append(rb.httpServers, ms)
 	}
 	s.started = true
 	return nil
