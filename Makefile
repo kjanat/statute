@@ -9,8 +9,9 @@ GOLANGCI_LINT   ?= golangci-lint
 CUSTOM_GCL      ?= ./custom-gcl
 COVER_PROFILE   ?= cover.out
 FUZZ_TIME       ?= 30s
+LIFECYCLE_BASE  ?= master
 
-.PHONY: all help test test-race lint lint-lifecycle cover bench fuzz build-examples apidiff typecheck tidy clean
+.PHONY: all help test test-race lint lint-lifecycle audit-lifecycle cover bench fuzz build-examples apidiff typecheck tidy clean
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z_-]+:.*?## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -27,7 +28,11 @@ lint: ## Build the custom golangci-lint and run all linters
 	$(GOLANGCI_LINT) custom
 	$(CUSTOM_GCL) run ./...
 
-lint-lifecycle: ## Run the lifecycle analyzer, including checks not yet baseline-clean on master
+lint-lifecycle: ## Reject lifecycle findings introduced since LIFECYCLE_BASE
+	$(GOLANGCI_LINT) custom
+	$(CUSTOM_GCL) run --enable-only=statutelifecycle --new-from-merge-base=$(LIFECYCLE_BASE) --whole-files ./...
+
+audit-lifecycle: ## Report all lifecycle findings, including existing baseline debt
 	$(GOLANGCI_LINT) custom
 	$(CUSTOM_GCL) run --enable-only=statutelifecycle ./...
 
