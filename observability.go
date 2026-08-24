@@ -102,9 +102,13 @@ type healthEndpoint struct {
 func (healthEndpoint) statuteHealth() {}
 
 // Health exposes a process health endpoint on the given address: liveness
-// at path (default "/healthz") answering 200 while the process serves, and
-// readiness at path+"/ready" answering 200 once Start has committed and 503
-// once shutdown begins. Nothing else is mounted — no metrics, no pprof.
+// at path (default "/healthz") answering 200 for the whole time the process
+// runs — from the moment Start begins, through the entire shutdown drain —
+// and readiness at path+"/ready" answering 200 once Start has committed and
+// 503 during startup and shutdown. Matching is exact: only those two paths
+// answer, everything else 404s, and nothing else is mounted — no metrics,
+// no pprof. The path must start with "/", must not be "/", and must not
+// end with "/"; Resolve rejects other shapes.
 func Health(addr, path string) HealthEndpoint {
 	return healthEndpoint{addr: addr, path: path}
 }

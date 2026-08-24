@@ -107,12 +107,14 @@ Observability: statute.Observability{
 
 A dedicated process health listener for supervisors (Kubernetes probes, systemd watchdogs, load balancers). It serves exactly two paths and nothing else, with no metrics and no pprof:
 
-- **Liveness** at the configured path (default `/healthz` when the path is empty): `200 "ok"` whenever the process is serving.
+- **Liveness** at the configured path (default `/healthz` when the path is empty): `200 "ok"` for the whole time the process runs.
 - **Readiness** at the configured path plus `/ready` (e.g. `/healthz/ready`): `200 "ok"` once startup has committed, `503 "not ready"` otherwise.
 
-Any other path returns 404.
+Path matching is exact: only those two paths answer, and any other path — including the configured path with a trailing slash or anything below it — returns 404. The configured path must start with `/`, must not be `/` itself, and must not end with `/`; `Resolve` rejects other shapes.
 
-Readiness means the process is ready to serve traffic: every listener socket is bound, certificate managers have started, and the initial Docker sync (when configured) has completed. It does **not** wait for asynchronous HTTP-01 certificate warm-up: that runs in the background after startup, and a slow or unreachable CA must not keep an otherwise-serving process out of rotation. Readiness flips to `503` the moment `Shutdown` begins, so probes drain traffic away for the whole grace period; once the health listener itself closes, a refused connection reads the same way.
+The health listener **brackets** the application's availability. `Start` binds it and begins answering first, before certificate managers start, before the initial Docker sync, and before any other socket binds — so during the entire startup phase probes read liveness `200` and readiness `503 "not ready"`. Readiness flips to `200` only when startup commits: every listener socket bound, certificate managers started, and the initial Docker sync (when configured) complete. It does **not** wait for asynchronous HTTP-01 certificate warm-up: that runs in the background after startup, and a slow or unreachable CA must not keep an otherwise-serving process out of rotation. A failed `Start` fully tears the health listener down again — socket released, serve goroutine stopped — and a retried `Start` serves health afresh.
+
+On `Shutdown`, readiness flips to `503` as the very first action, and the health listener closes **last** — only after the content and metrics listeners have finished draining. Probes therefore keep receiving answers (liveness `200`, readiness `503`) for the whole grace period rather than refused connections; the health port refuses only once the process is done.
 
 Like the metrics listener, the health listener is intended to be **private**: bind it to a loopback address or a private interface. It deliberately serves plain-text `ok` / `not ready` bodies with no version or subsystem detail, but a health port is still an internal surface: do not expose it publicly.
 

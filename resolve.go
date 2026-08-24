@@ -1535,6 +1535,16 @@ func resolveHealth(h HealthEndpoint) (resolved.Health, error) {
 	if path == "" {
 		path = "/healthz"
 	}
+	// The health handler matches exact paths, so a shape that could shadow or split the readiness path is rejected here.
+	if !strings.HasPrefix(path, "/") {
+		return resolved.Health{}, fmt.Errorf("health: path %q must start with /", path)
+	}
+	if path == "/" {
+		return resolved.Health{}, errors.New(`health: path "/" is not allowed`)
+	}
+	if strings.HasSuffix(path, "/") {
+		return resolved.Health{}, fmt.Errorf("health: path %q must not end with /", path)
+	}
 	return resolved.Health{
 		Enabled: true,
 		Addr:    he.addr,

@@ -332,7 +332,7 @@ Observability: statute.Observability{
 
 **Tracing** — OTLP/gRPC export to an OpenTelemetry collector. Spans use HTTP semantic conventions. W3C trace context is automatically propagated to upstream backends (the reverse proxy injects `traceparent` and `tracestate` headers). `Sample(rate)` is `TraceIDRatioBased` with parent-based sampling, so trace continuity is preserved across hops.
 
-**Health** — a dedicated process health listener for supervisor probes. Liveness at the configured path (default `/healthz`) answers `200 ok`; readiness at the path plus `/ready` answers `200 ok` once startup commits (listeners bound, cert managers started, initial Docker sync done) and `503 not ready` before that and from the moment shutdown begins. Nothing else is mounted, neither metrics nor pprof. Details in [docs/observability.md](docs/observability.md).
+**Health** — a dedicated process health listener for supervisor probes that brackets the application's availability: it answers first in `Start` and closes last in `Shutdown`. Liveness at the configured path (default `/healthz`) answers `200 ok` for the whole time the process runs; readiness at the path plus `/ready` answers `503 not ready` throughout startup (cert managers, initial Docker sync), `200 ok` once startup commits, and `503 not ready` again for the entire shutdown grace period while content drains. Matching is exact — only those two paths answer, everything else 404s, and the path must start with `/`, not be `/`, and not end with `/`. Nothing else is mounted, neither metrics nor pprof. Details in [docs/observability.md](docs/observability.md).
 
 ### TLS
 

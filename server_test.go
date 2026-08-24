@@ -1395,6 +1395,32 @@ func mustServeHealth(t *testing.T, addr string) {
 	}
 }
 
+// wantHealthGet asserts one GET over the socket at addr answers with the given status and body; a connection error fails, so refusal never passes as not-ready.
+// healthProbeClient bounds every probe so a wedged listener fails the
+// assertion instead of riding out the go-test deadline.
+var healthProbeClient = &http.Client{Timeout: 5 * time.Second}
+
+func wantHealthGet(t *testing.T, addr, path string, code int, body string) {
+	t.Helper()
+	resp, err := healthProbeClient.Get("http://" + addr + path)
+	if err != nil {
+		t.Fatalf("GET %s%s: %v", addr, path, err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != code || string(got) != body {
+		t.Errorf("%s: status %d body %q, want %d %q", path, resp.StatusCode, got, code, body)
+	}
+}
+
+// mustServeHealthStarting asserts the not-yet-ready bracket over a real socket: liveness 200 "ok", readiness 503 "not ready".
+func mustServeHealthStarting(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	wantHealthGet(t, addr, "/healthz", http.StatusOK, "ok")
+	wantHealthGet(t, addr, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
+}
+
 // wantHealthResponse asserts one GET against the health mux; an empty
 // body means only the status code is checked.
 func wantHealthResponse(t *testing.T, h http.Handler, path string, code int, body string) {
@@ -1405,9 +1431,10 @@ func wantHealthResponse(t *testing.T, h http.Handler, path string, code int, bod
 	}
 }
 
-// TestBuildHealthServer — the health mux serves liveness at the configured
-// path, readiness at path+"/ready" gated on the ready flag, and nothing
-// else: no metrics, no pprof, no other paths.
+// TestBuildHealthServer — the health handler answers exactly the liveness
+// path and path+"/ready" gated on the ready flag, and nothing else: no
+// metrics, no pprof, no subtree — a trailing-slash request 404s and can
+// never reach the liveness or readiness handler.
 func TestBuildHealthServer(t *testing.T) {
 	t.Parallel()
 	r := mustResolve(t, redirectHealthConfig("127.0.0.1:0"))
@@ -1415,7 +1442,7 @@ func TestBuildHealthServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	h := srv.healthServer.Handler
+	h := srv.buildHealthServer(r.Observability.Health).Handler
 
 	wantHealthResponse(t, h, "/healthz", http.StatusOK, "ok")
 	wantHealthResponse(t, h, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
@@ -1424,13 +1451,13 @@ func TestBuildHealthServer(t *testing.T) {
 	srv.ready.Store(false)
 	wantHealthResponse(t, h, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
 
-	for _, path := range []string{"/metrics", "/debug/pprof/", "/", "/healthz/other"} {
+	for _, path := range []string{"/metrics", "/debug/pprof/", "/", "/healthz/", "/healthz/other", "/healthz/ready/"} {
 		wantHealthResponse(t, h, path, http.StatusNotFound, "")
 	}
 }
 
-// TestNewServerWithoutHealthConfig — no Health in the config means no
-// health server is built and nothing extra can bind.
+// TestNewServerWithoutHealthConfig — no Health in the config means an
+// attempt binds and serves no health listener, and count() stays zero.
 func TestNewServerWithoutHealthConfig(t *testing.T) {
 	t.Parallel()
 	r := mustResolve(t, Config{
@@ -1441,8 +1468,12 @@ func TestNewServerWithoutHealthConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	if srv.healthServer != nil {
-		t.Fatal("health server built without health configuration")
+	var attempt startAttempt
+	if err := attempt.serveHealthEarly(srv); err != nil {
+		t.Fatalf("serveHealthEarly: %v", err)
+	}
+	if attempt.listeners.health != nil {
+		t.Fatal("health listener bound without health configuration")
 	}
 	if n := (&boundListeners{}).count(); n != 0 {
 		t.Fatalf("empty boundListeners count = %d, want 0", n)
@@ -1470,11 +1501,11 @@ func TestHealthServesLiveAndReadyAfterStart(t *testing.T) {
 	mustServeHealth(t, healthAddr)
 }
 
-// TestStartHealthBindFailureReleasesListeners — a health bind failure
-// after the content listener opened must close it again, and the retried
-// Start must actually serve both content and health: liveness and
-// readiness prove the server object was not poisoned and the ready flag
-// flipped at the retry's commit.
+// TestStartHealthBindFailureReleasesListeners — a busy health address
+// fails Start closed before anything else starts, leaves the content
+// address free, and the retried Start must actually serve both content
+// and health: the retry constructs a fresh health server and flips the
+// ready flag at its commit.
 func TestStartHealthBindFailureReleasesListeners(t *testing.T) {
 	busy, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1514,47 +1545,93 @@ func TestStartHealthBindFailureReleasesListeners(t *testing.T) {
 	mustServeHealth(t, healthAddr)
 }
 
-// TestHealthRollbackClosesOnlySocket — the Start rollback owns the bound
-// health socket and nothing else: the address is immediately rebindable,
-// and the configured http.Server stays reusable, so a later bind of the
-// same server object still serves.
-func TestHealthRollbackClosesOnlySocket(t *testing.T) {
+// TestHealthRollbackStopsServerAndReleasesPort — attempt rollback owns the
+// full teardown of the early-serving health server: while the attempt is
+// live the socket answers, rollback closes the server AND awaits the serve
+// goroutine, the port is immediately rebindable, and a fresh attempt
+// serves again because each attempt constructs its own http.Server.
+func TestHealthRollbackStopsServerAndReleasesPort(t *testing.T) {
 	r := mustResolve(t, redirectHealthConfig("127.0.0.1:0"))
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var attempt startAttempt
+	if err := attempt.serveHealthEarly(srv); err != nil {
+		t.Fatalf("serveHealthEarly: %v", err)
 	}
-	addr := ln.Addr().String()
-	attempt := startAttempt{listeners: boundListeners{health: &boundHealth{server: srv.healthServer, listener: ln}}}
+	b := attempt.listeners.health
+	addr := b.listener.Addr().String()
+	mustServeHealthStarting(t, addr)
 	if err := attempt.rollback(); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
+	select {
+	case <-b.done:
+	default:
+		t.Fatal("health serve goroutine still running after rollback")
+	}
 	mustBindNow(t, addr)
 
-	// A rollback that had closed the http.Server instead of the socket
-	// would make this Serve return ErrServerClosed without accepting.
-	ln2, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	// The retried attempt gets a fresh, unpoisoned server; rollback again to leave nothing alive.
+	var second startAttempt
+	if err := second.serveHealthEarly(srv); err != nil {
+		t.Fatalf("second serveHealthEarly: %v", err)
 	}
-	go (&boundHealth{server: srv.healthServer, listener: ln2}).serve()
-	srv.ready.Store(true)
-	mustServeHealth(t, ln2.Addr().String())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := srv.healthServer.Shutdown(ctx); err != nil {
-		t.Errorf("health server shutdown: %v", err)
+	addr2 := second.listeners.health.listener.Addr().String()
+	mustServeHealthStarting(t, addr2)
+	if err := second.rollback(); err != nil {
+		t.Fatalf("second rollback: %v", err)
 	}
+	mustBindNow(t, addr2)
 }
 
-// TestShutdownFlipsReadyBeforeDrain — readiness reads not-ready while an
-// in-flight content request is still draining, and the health socket is
-// released once Shutdown returns.
+// TestFailedStartServesHealthThenReleases — health answers live=200 and
+// ready=503 over the socket in the middle of a failing attempt, the failed
+// Start fully releases it (port rebindable, serve goroutine gone via the
+// awaited rollback), and a retried Start serves content and health again.
+func TestFailedStartServesHealthThenReleases(t *testing.T) {
+	healthAddr := reserveAddr(t)
+	contentAddr := reserveAddr(t)
+	r := mustResolve(t, redirectHealthConfig(healthAddr))
+	r.Listeners[0].Addr = contentAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	fail := true
+	srv.listenTCP = func(ctx context.Context, network, addr string) (net.Listener, error) {
+		if fail && addr == contentAddr {
+			// The attempt is mid-flight: health must already answer over its socket.
+			mustServeHealthStarting(t, healthAddr)
+			return nil, errors.New("injected content bind failure")
+		}
+		return (&net.ListenConfig{}).Listen(ctx, network, addr)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite the injected content bind failure")
+	}
+	if srv.ready.Load() {
+		t.Fatal("failed Start flipped the ready flag")
+	}
+	mustBindNow(t, healthAddr)
+
+	fail = false
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeRedirect(t, contentAddr)
+	mustServeHealth(t, healthAddr)
+}
+
 // waitReadyFalse polls the ready flag until it drops, failing if the drain
 // completes first or the flag never flips.
 func waitReadyFalse(t *testing.T, srv *server, contentDone <-chan error) {
@@ -1573,6 +1650,7 @@ func waitReadyFalse(t *testing.T, srv *server, contentDone <-chan error) {
 	}
 }
 
+// TestShutdownFlipsReadyBeforeDrain — while an in-flight content request drains, health answers live=200/ready=503 over the socket; the health listener closes only after the drain, then the port is rebindable.
 func TestShutdownFlipsReadyBeforeDrain(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -1619,29 +1697,15 @@ func TestShutdownFlipsReadyBeforeDrain(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- srv.Shutdown() }()
 
-	// The flag itself must drop while the drain is still in progress; the
-	// backend is held, so contentDone firing first means the drain finished
-	// without ever flipping readiness.
 	waitReadyFalse(t, srv, contentDone)
 
-	// The backend is still held, so the content request cannot have
-	// finished; readiness must read not-ready (503, or refused once the
-	// health drain closes the socket) while the drain is in progress.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		resp, err := http.Get("http://" + healthAddr + "/healthz/ready")
-		if err != nil {
-			break // refused: the health listener already closed — not ready
-		}
-		code := resp.StatusCode
-		_ = resp.Body.Close()
-		if code == http.StatusServiceUnavailable {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("readiness still %d while shutdown drains, want 503 or refused", code)
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The backend still holds the content drain open, so health must ANSWER over the socket — a refused connection is a failure, since health closes only after the drain.
+	wantHealthGet(t, healthAddr, "/healthz", http.StatusOK, "ok")
+	wantHealthGet(t, healthAddr, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned (err=%v) while the content drain was still held", err)
+	default:
 	}
 
 	releaseOnce()
@@ -1667,8 +1731,9 @@ func TestHealthProbesAbsentFromRequestMetrics(t *testing.T) {
 		t.Fatalf("newServer: %v", err)
 	}
 
+	healthHandler := srv.buildHealthServer(r.Observability.Health).Handler
 	for _, path := range []string{"/healthz", "/healthz/ready"} {
-		runRequest(t, srv.healthServer.Handler, httptest.NewRequest("GET", path, nil))
+		runRequest(t, healthHandler, httptest.NewRequest("GET", path, nil))
 	}
 	rec := runRequest(t, srv.metricsServer.Handler, httptest.NewRequest("GET", "/metrics", nil))
 	if !strings.Contains(rec.Body.String(), "statute_requests_total 0") {
@@ -1677,8 +1742,8 @@ func TestHealthProbesAbsentFromRequestMetrics(t *testing.T) {
 }
 
 // TestDockerSyncFailureNeverReady — a failing Docker initial sync fails
-// Start before any socket binds: the ready flag never flips and the health
-// address serves nothing.
+// Start: the ready flag never flips, and the early health listener is
+// fully released by the rollback so the address rebinds immediately.
 func TestDockerSyncFailureNeverReady(t *testing.T) {
 	healthAddr := reserveAddr(t)
 	cfg := redirectHealthConfig(healthAddr)
@@ -1700,9 +1765,9 @@ func TestDockerSyncFailureNeverReady(t *testing.T) {
 }
 
 // TestReadinessWaitsForDockerInitialSync: the initial Docker sync is a
-// synchronous Start prerequisite: while it is still held in flight, the
-// ready flag is false and the health address serves nothing; readiness
-// answers 200 only once Start has returned.
+// synchronous Start prerequisite: while it is still held in flight, health
+// already ANSWERS over the socket — liveness 200, readiness 503 — and
+// readiness answers 200 only once Start has returned.
 func TestReadinessWaitsForDockerInitialSync(t *testing.T) {
 	syncReached := make(chan struct{})
 	syncGate := make(chan struct{})
@@ -1739,11 +1804,8 @@ func TestReadinessWaitsForDockerInitialSync(t *testing.T) {
 	if srv.ready.Load() {
 		t.Error("ready flipped while the initial Docker sync was still in flight")
 	}
-	// The health socket binds only after prerequisites; nothing serves yet.
-	if conn, err := net.DialTimeout("tcp", healthAddr, 100*time.Millisecond); err == nil {
-		_ = conn.Close()
-		t.Error("health address accepted before the initial Docker sync completed")
-	}
+	// Health brackets startup: a refused connection here is a failure, not an acceptable not-ready signal.
+	mustServeHealthStarting(t, healthAddr)
 
 	releaseSync()
 	if err := <-startDone; err != nil {

@@ -340,6 +340,21 @@ func TestResolveHealthValidation(t *testing.T) {
 			want:   resolved.Health{},
 		},
 		{
+			name:    "path without leading slash errors",
+			health:  Health("127.0.0.1:9091", "healthz"),
+			wantErr: `health: path "healthz" must start with /`,
+		},
+		{
+			name:    "root path errors",
+			health:  Health("127.0.0.1:9091", "/"),
+			wantErr: `health: path "/" is not allowed`,
+		},
+		{
+			name:    "trailing slash errors",
+			health:  Health("127.0.0.1:9091", "/healthz/"),
+			wantErr: `health: path "/healthz/" must not end with /`,
+		},
+		{
 			name:    "unknown marker type errors",
 			health:  badHealthEndpoint{},
 			wantErr: "unknown health type",

@@ -31,7 +31,6 @@ type server struct {
 
 	listeners     []*http.Server // content + redirect listeners
 	metricsServer *http.Server
-	healthServer  *http.Server
 	http3Servers  []*http3Server
 
 	// ready flips true at Start's commit and false when Shutdown begins;
@@ -102,21 +101,12 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		return nil, err
 	}
 
-	s.buildAuxServers(cfg.Observability)
+	if cfg.Observability.Metrics.Enabled {
+		s.metricsServer = s.buildMetricsServer(cfg.Observability.Metrics)
+	}
 
 	ok = true
 	return s, nil
-}
-
-// buildAuxServers constructs the metrics and health http.Server objects
-// when configured; neither binds a socket until Start's bind phase.
-func (s *server) buildAuxServers(o resolved.Observability) {
-	if o.Metrics.Enabled {
-		s.metricsServer = s.buildMetricsServer(o.Metrics)
-	}
-	if o.Health.Enabled {
-		s.healthServer = s.buildHealthServer(o.Health)
-	}
 }
 
 // initACMEManagers builds an in-tree acmeManager for every AutoTLS source
@@ -345,27 +335,29 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 	}
 }
 
-// buildHealthServer mounts liveness at h.Path and readiness at
-// h.Path+"/ready" on a private mux; every other path 404s, and neither
-// metrics nor pprof is mounted here.
+// buildHealthServer builds one attempt's fresh health http.Server: an exact-path handler (no ServeMux subtrees) answering liveness at h.Path, readiness at h.Path+"/ready", 404 otherwise, with neither metrics nor pprof mounted.
 func (s *server) buildHealthServer(h resolved.Health) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc(h.Path, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.HandleFunc(h.Path+"/ready", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		if !s.ready.Load() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("not ready"))
-			return
+	readyPath := h.Path + "/ready"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case h.Path:
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+		case readyPath:
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			if !s.ready.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte("not ready"))
+				return
+			}
+			_, _ = w.Write([]byte("ok"))
+		default:
+			http.NotFound(w, r)
 		}
-		_, _ = w.Write([]byte("ok"))
 	})
 	return &http.Server{
 		Addr:              h.Addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 }
@@ -417,20 +409,33 @@ func (b *boundMetrics) rollback() error {
 	return nil
 }
 
+// boundHealth owns one attempt's already-serving health server; done closes when its serve goroutine exits so teardown can await it.
 type boundHealth struct {
 	server   *http.Server
 	listener net.Listener
+	done     chan struct{}
 }
 
 func (b *boundHealth) serve() {
+	defer close(b.done)
 	logServeExit("health", b.server.Addr, b.server.Serve(b.listener))
 }
 
+// rollback fully retires the early-serving health server: close it, await the serve goroutine, and join any close error.
 func (b *boundHealth) rollback() error {
-	if err := b.listener.Close(); err != nil {
+	err := b.server.Close()
+	<-b.done
+	if err != nil {
 		return fmt.Errorf("rollback close health %s: %w", b.server.Addr, err)
 	}
 	return nil
+}
+
+// shutdown drains the health server and awaits its serve goroutine; serverRun.shutdown calls it last so probes get answers for the whole grace period.
+func (b *boundHealth) shutdown(ctx context.Context) error {
+	err := b.server.Shutdown(ctx)
+	<-b.done
+	return err
 }
 
 // boundListeners is the typed socket ownership of one Start attempt. It
@@ -459,6 +464,7 @@ func (b *boundListeners) rollback() error {
 	return errors.Join(errs...)
 }
 
+// serve launches the content and metrics serve loops; health is absent because serveHealthEarly already launched it before the prerequisite phase.
 func (b *boundListeners) serve() {
 	for _, listener := range b.http {
 		go listener.serve()
@@ -468,9 +474,6 @@ func (b *boundListeners) serve() {
 	}
 	if b.metrics != nil {
 		go b.metrics.serve()
-	}
-	if b.health != nil {
-		go b.health.serve()
 	}
 }
 
@@ -487,17 +490,12 @@ func (b *boundListeners) shutdown(ctx context.Context, wg *sync.WaitGroup, errs 
 	if b.metrics != nil {
 		goShutdown(ctx, wg, errs, b.metrics.server.Shutdown)
 	}
-	if b.health != nil {
-		goShutdown(ctx, wg, errs, b.health.server.Shutdown)
-	}
 }
 
+// count sizes the shutdown errs channel: one slot per drain goroutine, so health — drained separately, last — is excluded.
 func (b *boundListeners) count() int {
 	n := len(b.http) + len(b.http3)
 	if b.metrics != nil {
-		n++
-	}
-	if b.health != nil {
 		n++
 	}
 	return n
@@ -527,6 +525,24 @@ func (a *startAttempt) rollback() error {
 		pool.shutdown()
 	}
 	return err
+}
+
+// serveHealthEarly binds and serves the health endpoint before the fallible prerequisite phase, ready still false, so supervisors observe live=200/ready=503 throughout startup.
+// INVARIANT: it runs only after Start defers attempt.rollback, which closes the server and awaits the serve goroutine, so a failed Start leaves nothing alive and a retry builds a fresh server.
+func (a *startAttempt) serveHealthEarly(s *server) error {
+	h := s.cfg.Observability.Health
+	if !h.Enabled {
+		return nil
+	}
+	hs := s.buildHealthServer(h)
+	ln, err := s.bindTCP(context.Background(), hs.Addr)
+	if err != nil {
+		return fmt.Errorf("health listen %s: %w", hs.Addr, err)
+	}
+	b := &boundHealth{server: hs, listener: ln, done: make(chan struct{})}
+	a.listeners.health = b
+	go b.serve()
+	return nil
 }
 
 func (a *startAttempt) commit() *serverRun {
@@ -573,6 +589,10 @@ func (s *server) Start() (err error) {
 			err = errors.Join(err, attempt.rollback())
 		}
 	}()
+	// Health serves first, rollback-owned, so probes are answered while the fallible prerequisite phase runs.
+	if err := attempt.serveHealthEarly(s); err != nil {
+		return err
+	}
 	if err := s.startPrerequisites(&attempt); err != nil {
 		return err
 	}
@@ -617,13 +637,14 @@ func (s *server) startPrerequisites(attempt *startAttempt) error {
 	return nil
 }
 
-// bindSockets binds every socket the configuration calls for — each
-// content listener's TCP socket, each HTTP/3 listener's UDP socket, the
-// metrics and health listeners — recording them in rb, and returns the serve loops
-// for Start to launch at commit. No loop runs here: binding everything
-// before serving anything is what keeps a failed Start invisible. The
-// HTTP/3 socket binds here rather than inside its serve goroutine so a
-// bind failure fails Start instead of vanishing into a discarded error.
+// bindSockets binds every remaining socket the configuration calls for —
+// each content listener's TCP socket, each HTTP/3 listener's UDP socket,
+// the metrics listener — recording them in the attempt; the health socket
+// already bound and serves via serveHealthEarly. No serve loop runs here:
+// binding everything before serving content is what keeps a failed Start
+// invisible. The HTTP/3 socket binds here rather than inside its serve
+// goroutine so a bind failure fails Start instead of vanishing into a
+// discarded error.
 func (s *server) bindSockets(attempt *startAttempt) error {
 	for _, hs := range s.listeners {
 		// Without a matching resolved listener, serveListener would fall
@@ -651,13 +672,6 @@ func (s *server) bindSockets(attempt *startAttempt) error {
 			return fmt.Errorf("metrics listen %s: %w", ms.Addr, err)
 		}
 		attempt.listeners.metrics = &boundMetrics{server: ms, listener: ln}
-	}
-	if hs := s.healthServer; hs != nil {
-		ln, err := s.bindTCP(context.Background(), hs.Addr)
-		if err != nil {
-			return fmt.Errorf("health listen %s: %w", hs.Addr, err)
-		}
-		attempt.listeners.health = &boundHealth{server: hs, listener: ln}
 	}
 	return nil
 }
@@ -761,6 +775,10 @@ func (r *serverRun) shutdown(ctx context.Context) error {
 	// Stop health checkers after listeners drain.
 	for _, pool := range r.pools {
 		pool.shutdown()
+	}
+	// Health closes last so probes read live=200/ready=503, never refused, for the whole drain.
+	if h := r.listeners.health; h != nil {
+		err = errors.Join(err, h.shutdown(ctx))
 	}
 	return err
 }
