@@ -1,5 +1,7 @@
 package statute
 
+import "net/http"
+
 // Route is a surface route declaration. Construct via Match.
 type Route struct {
 	pattern        string
@@ -10,6 +12,8 @@ type Route struct {
 	staticDir      string
 	redirectTo     string
 	redirectStatus int
+	handler        http.Handler
+	handlerSet     bool
 	middleware     []Middleware
 }
 
@@ -74,6 +78,26 @@ func (r *Route) Serve(dir string) *Route {
 func (r *Route) RedirectTo(target string, status int) *Route {
 	r.redirectTo = target
 	r.redirectStatus = status
+	return r
+}
+
+// Handle serves matching requests with an in-process http.Handler instead of
+// proxying, serving files, or redirecting. It is the fourth mutually
+// exclusive route action beside ProxyTo, Serve, and RedirectTo:
+//
+//	statute.Match("/healthz").Host("foo.example.com").Handle(http.HandlerFunc(
+//		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+//
+// The handler composes with route middleware like any other action, and it
+// receives the request path unstripped — the prefix stripping a wildcard
+// Serve route performs is Serve-specific. Under a Retry middleware the
+// handler may be re-entered once per attempt; that is intended, and Retry
+// already confines itself to idempotent methods. Requests in the handler
+// drain through normal graceful shutdown like proxied ones. The handler is
+// invoked concurrently and must be safe for concurrent use.
+func (r *Route) Handle(h http.Handler) *Route {
+	r.handler = h
+	r.handlerSet = true
 	return r
 }
 

@@ -64,6 +64,7 @@ What's implemented:
 - Active health checks with configurable thresholds
 - Per-route middleware: timeout, rate limit (token bucket), retry (idempotent-method only, gRPC-aware), cache, gzip + brotli compression, ETag, header rewriting, and path rewriting (strip prefix, add prefix, replace path, regex rewrite)
 - Static file serving
+- In-process handler routes: mount any `http.Handler` from your own binary as a route action
 - WebSocket pass-through (default httputil.ReverseProxy behaviour)
 - Structured JSON access logging with sampling
 - Prometheus-format metrics
@@ -221,7 +222,7 @@ Routes: statute.Routes{
 
 Routes are matched in declaration order; the first match wins. Patterns support exact match (`/api`) and a trailing wildcard (`/api/*`). `Host` scopes a route to a specific Host header value. Catch-all `/*` should be last.
 
-Each route declares exactly one action: a proxy (`ProxyTo("pool")`), a static-file serve (`Serve("./dir")`), or a redirect (`RedirectTo(target, status)`).
+Each route declares exactly one action: a proxy (`ProxyTo("pool")`), a static-file serve (`Serve("./dir")`), a redirect (`RedirectTo(target, status)`), or an in-process handler (`Handle(h)`).
 
 `ClientIPs("10.0.0.0/8", ...)` makes client CIDRs part of route _selection_: a request from outside the ranges falls through to the next route, where `AllowIPs` middleware would answer 403 and stop. That enables conditional policies — a trusted-network route first, an authenticated fallback beneath it:
 
@@ -244,6 +245,16 @@ statute.Match("/*").Host("old.example.com").RedirectTo(
 ```
 
 The status must be 301, 302, 303, 307, or 308. The target may be fixed, or preserve parts of the request through placeholders substituted at request time: `{request_uri}` (path and query as sent), `{path}`, `{query}` (raw, without the `?`), and `{host}` (port stripped). The target is validated when the config resolves — unknown placeholders, non-redirect statuses, and header-breaking bytes are startup errors — and substituted values come straight from net/http's request parsing, so placeholder-shaped text arriving in a request stays literal in the `Location` header. A `Location` that would come out protocol-relative (a leading `//` or `/\`, whether from a `//evil.com` request path or a `StripPrefix` that exposes one) is collapsed to a single leading slash, so a client cannot steer a relative redirect off-site. This is the route-level counterpart of the listener-level `RedirectTo("https")`, which redirects a whole listener to another scheme.
+
+A handler route answers with an `http.Handler` from the same binary — a health endpoint, a debug page, a small API living beside the proxy:
+
+```go
+statute.Match("/healthz").Host("foo.example.com").Handle(http.HandlerFunc(
+    func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+))
+```
+
+The handler composes with route middleware like any other action and drains through graceful shutdown like proxied requests. It receives the request path unstripped — the wildcard prefix stripping above is `Serve`-specific — though the hoisted header operations and path rewrites apply to it as usual. Under a `Retry` the handler may run once per attempt (idempotent methods only, as `Retry` enforces), and it is invoked concurrently, so it must be safe for concurrent use. Because a handler is opaque code, the JSON export carries only a `HandlerRoute` marker for it, the DOT graph renders the route as an edge-less route node, and Docker labels cannot reference or construct one — handlers exist solely in your compiled configuration.
 
 Middleware:
 

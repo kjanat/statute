@@ -12,6 +12,7 @@ package resolved
 
 import (
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -245,14 +246,23 @@ type Transport struct {
 	InsecureSkipVerify  bool
 }
 
-// Route is a resolved route.
+// Route is a resolved route. Exactly one of the four actions is set:
+// Upstream (proxy), StaticDir (static files), Redirect, or Handler
+// (in-process handler, flagged by HandlerRoute).
 type Route struct {
-	Pattern    string
-	Host       string
-	Upstream   *Pool  // nil unless this route proxies
-	StaticDir  string // empty unless this route serves static files
-	Middleware []Middleware
-	Redirect   *Redirect // nil unless this route redirects
+	Pattern   string
+	Host      string
+	Upstream  *Pool  // nil unless this route proxies
+	StaticDir string // empty unless this route serves static files
+	// Handler is the in-process handler a handler route serves. It is an
+	// opaque immutable reference carried through from the surface config,
+	// not mutable runtime state, and it cannot serialize — the
+	// HandlerRoute marker stands in for it in the JSON export.
+	Handler http.Handler `json:"-"`
+	// HandlerRoute is true when this route serves an in-process handler.
+	HandlerRoute bool
+	Middleware   []Middleware
+	Redirect     *Redirect // nil unless this route redirects
 	// ClientIPCIDRs are canonical CIDR ranges the client must fall inside
 	// for the route to match; empty means any client. A non-matching client
 	// falls through to the next route.

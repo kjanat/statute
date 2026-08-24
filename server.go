@@ -757,6 +757,8 @@ func (s *server) buildRouter() http.Handler {
 			base = stripPrefix(r.Pattern, base)
 		case r.Redirect != nil:
 			base = redirectRouteHandler(r.Redirect)
+		case r.Handler != nil:
+			base = r.Handler
 		}
 		h := wrapMiddleware(r.Middleware, base)
 		static = append(static, compiledRoute{
