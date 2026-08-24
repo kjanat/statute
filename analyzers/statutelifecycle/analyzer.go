@@ -12,8 +12,16 @@ import (
 	"golang.org/x/tools/go/cfg"
 )
 
-const pluginName = "statutelifecycle"
+const (
+	pluginName     = "statutelifecycle"
+	methodStart    = "start"
+	methodStartAPI = "Start"
+	methodStop     = "stop"
+	methodShutdown = "Shutdown"
+	methodClose    = "Close"
+)
 
+// Analyzer checks Statute-specific lifecycle ownership invariants.
 var Analyzer = &analysis.Analyzer{
 	Name: pluginName,
 	Doc:  "trace Statute lifecycle publication, goroutine ownership, and cleanup invariants",
@@ -210,7 +218,7 @@ func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, function
 
 func isStartupFunction(name string) bool {
 	lower := strings.ToLower(name)
-	return strings.HasSuffix(lower, "start") || strings.HasPrefix(lower, "bind")
+	return strings.HasSuffix(lower, methodStart) || strings.HasPrefix(lower, "bind")
 }
 
 func nodePublishes(pass *analysis.Pass, node ast.Node, functions map[*types.Func]*functionInfo) bool {
@@ -279,7 +287,7 @@ func checkConstructorStartsLifecycle(pass *analysis.Pass, info *functionInfo) {
 			return true
 		}
 		fn := calledFunction(pass, call)
-		if fn == nil || (fn.Name() != "start" && fn.Name() != "Start") {
+		if fn == nil || (fn.Name() != methodStart && fn.Name() != methodStartAPI) {
 			return true
 		}
 		sig, _ := fn.Type().(*types.Signature)
@@ -295,9 +303,9 @@ func checkConstructorStartsLifecycle(pass *analysis.Pass, info *functionInfo) {
 
 func hasStopMethod(recv types.Type) bool {
 	set := types.NewMethodSet(recv)
-	for i := 0; i < set.Len(); i++ {
-		name := set.At(i).Obj().Name()
-		if name == "stop" || name == "Shutdown" || name == "Close" {
+	for method := range set.Methods() {
+		name := method.Obj().Name()
+		if name == methodStop || name == methodShutdown || name == methodClose {
 			return true
 		}
 	}
@@ -335,13 +343,13 @@ func localPublisherReturnsError(fn *types.Func, functions map[*types.Func]*funct
 
 func isLifecycleFunction(name string) bool {
 	lower := strings.ToLower(name)
-	return lower == "start" || lower == "shutdown" || lower == "stop" ||
+	return lower == methodStart || lower == strings.ToLower(methodShutdown) || lower == methodStop ||
 		strings.HasPrefix(lower, "unwind") || strings.HasPrefix(lower, "rollback")
 }
 
 func isCleanupFunction(fn *types.Func) bool {
 	switch fn.Name() {
-	case "Close", "Shutdown":
+	case methodClose, methodShutdown:
 		return true
 	default:
 		return false
@@ -395,9 +403,9 @@ func checkGoroutineOwnership(pass *analysis.Pass, functions map[*types.Func]*fun
 			byRecv[named.Obj()] = entry
 		}
 		switch info.fn.Name() {
-		case "start", "Start":
+		case methodStart, methodStartAPI:
 			entry.start = info
-		case "stop", "Shutdown":
+		case methodStop, methodShutdown:
 			entry.stop = info
 		}
 	}
@@ -532,9 +540,8 @@ func functionReturnsError(fn *types.Func) bool {
 
 func signatureReturnsError(sig *types.Signature) bool {
 	errType := types.Universe.Lookup("error").Type()
-	results := sig.Results()
-	for i := 0; i < results.Len(); i++ {
-		if types.Identical(results.At(i).Type(), errType) {
+	for result := range sig.Results().Variables() {
+		if types.Identical(result.Type(), errType) {
 			return true
 		}
 	}
