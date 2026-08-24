@@ -44,14 +44,26 @@ type healthRun struct {
 // HealthCheck.Host when set, else the pool's explicit Host policy — carried
 // on every probe; empty leaves probes on each backend's own host.
 func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper, host string) *healthChecker {
+	client := &http.Client{
+		Timeout:   cfg.Timeout,
+		Transport: transport,
+	}
+	// An explicit probe policy describes one request to the health
+	// endpoint, judged on its own status: Statuses accepts a 3xx exactly
+	// and rejects whatever a redirect would have landed on, and a probe
+	// Host must not follow a redirect elsewhere. Default probes keep
+	// following redirects (cfg.Host, not the derived host, so an
+	// UpstreamHost-derived probe keeps today's behavior).
+	if cfg.Host != "" || len(cfg.Statuses) > 0 {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	return &healthChecker{
 		cfg:      cfg,
 		host:     host,
 		backends: backends,
-		client: &http.Client{
-			Timeout:   cfg.Timeout,
-			Transport: transport,
-		},
+		client:   client,
 	}
 }
 

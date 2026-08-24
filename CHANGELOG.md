@@ -14,8 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   with proxied requests following `UpstreamHost` either way — and is
   validated like `HostValue`. `HealthCheck.Statuses` lists the exact
   probe statuses accepted as healthy (each within 100–599); empty keeps
-  the 200–399 default. Setting either without a probe `Path` is a
-  resolve error rather than a silent policy drop.
+  the 200–399 default. Setting either field stops probes from following
+  redirects, so the health endpoint's own status is judged; default
+  probes keep following redirects. Setting either without a probe `Path`
+  is a resolve error rather than a silent policy drop.
 
 - Passive health checks: `Pool.PassiveHealthCheck{FailureWindow,
   MaxFailures}` demotes a backend out of selection once it accumulates

@@ -125,6 +125,9 @@ type HealthCheck struct {
 	Host string
 	// Statuses are the probe response statuses accepted as healthy; empty
 	// keeps the default 200-399 range. Each entry must be within 100-599.
+	// Setting Host or Statuses stops probes from following redirects, so
+	// the health endpoint's own status is what is judged; default probes
+	// follow redirects and judge the final response.
 	Statuses []int
 }
 

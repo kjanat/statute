@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,6 +88,65 @@ func TestHealthCheckStatuses(t *testing.T) {
 	}
 	if !probeOnce([]int{200, 304}) {
 		t.Error("Statuses [200,304] rejected a 304")
+	}
+}
+
+// TestHealthCheckStatusesRedirect — an explicit probe policy judges the
+// health endpoint's own response: Statuses accept or reject the 3xx
+// itself instead of whatever the redirect lands on, and a probe Host
+// never follows a redirect elsewhere. Default probes keep following
+// redirects (200-399 on the final response), today's behavior.
+func TestHealthCheckStatusesRedirect(t *testing.T) {
+	t.Parallel()
+	var followed atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok":
+			followed.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case "/bad":
+			followed.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/redirect-to-ok":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		default:
+			http.Redirect(w, r, "/bad", http.StatusFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	probeOnce := func(path, host string, statuses []int) bool {
+		t.Helper()
+		cfg := resolved.HealthCheck{
+			Enabled: true, Path: path,
+			Interval: time.Hour, Timeout: time.Second,
+			Healthy: 1, Unhealthy: 1,
+			Host: host, Statuses: statuses,
+		}
+		b := &backendState{backend: &resolved.Backend{Address: strings.TrimPrefix(srv.URL, "http://")}}
+		b.markHealthy(true)
+		hc := newHealthChecker(cfg, []*backendState{b}, nil, host)
+		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
+		run.active.Store(true)
+		run.probe(context.Background(), b)
+		return b.isHealthy()
+	}
+
+	if probeOnce("/redirect-to-ok", "", []int{200}) {
+		t.Error("Statuses [200] accepted a 302 by following it to a 200")
+	}
+	if !probeOnce("/redirect-to-bad", "", []int{302}) {
+		t.Error("Statuses [302] rejected a 302 by following it to a 500")
+	}
+	if !probeOnce("/redirect-to-ok", "", nil) {
+		t.Error("default statuses no longer follow a redirect to a 200")
+	}
+	followed.Store(0)
+	if !probeOnce("/redirect-to-bad", "probe.example.test", []int{302}) {
+		t.Error("probe Host with Statuses [302] rejected a 302")
+	}
+	if got := followed.Load(); got != 0 {
+		t.Errorf("probe with explicit Host followed a redirect %d time(s)", got)
 	}
 }
 
