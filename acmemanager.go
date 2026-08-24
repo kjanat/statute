@@ -110,9 +110,6 @@ type acmeManager struct {
 	acmeClient *acme.Client
 	accountKey *ecdsa.PrivateKey
 
-	// lifecycleMu protects current, the run selected by handshake-triggered
-	// issuance. Cancellation and completion belong to acmeRun itself so a
-	// stale handle cannot stop a later generation.
 	lifecycleMu sync.Mutex
 	current     *acmeRun
 	hasRun      bool
