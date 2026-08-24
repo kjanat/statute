@@ -1,4 +1,4 @@
-<!-- Thanks for contributing! A one-line summary of the change goes in the PR title. -->
+<!-- Thanks for contributing. Keep this body useful to someone reviewing the architecture, not just the diff. Specialized templates live in .github/PULL_REQUEST_TEMPLATE/. -->
 
 ## What
 
@@ -6,34 +6,54 @@
 
 ## Why
 
-<!-- What problem does it solve? Link to the issue if applicable. -->
+<!-- What problem does it solve? Link the issue if applicable. -->
+
+## Architecture contract
+
+**Owner:** <!-- route / pool / listener / Docker router / Docker service / resolved/tooling / other -->
+
+**Invariants preserved:**
+
+- <!-- Existing behavior that must remain true. -->
+
+**Touched boundaries:**
+
+- <!-- Retry, Docker sharing, TLS/ACME, lifecycle, observability, export, etc. -->
+
+**Failure semantics:** <!-- What fails open/closed, and at what scope? -->
+
+**Lifecycle/state ownership:** <!-- Who creates, shares, retires, rolls back, and shuts down state/resources? N/A if none. -->
+
+**Decisions required:** None
+
+## Cross-feature tests
+
+<!-- Name the interaction tests, not only the new feature's happy path. -->
+
+- [ ] Shared-scope behavior checked where applicable
+- [ ] Retry/re-entry behavior checked where applicable
+- [ ] Fail-open/fail-closed behavior checked where applicable
+- [ ] Resolved/runtime/export/tooling stay aligned where applicable
+- [ ] Lifecycle rollback + normal shutdown checked where applicable
 
 ## Risk
 
-<!-- Mark all that apply. -->
-
 - [ ] Additive only — no existing API signatures change
-- [ ] Touches `applyMiddleware` switch or `resolveMiddleware` type-switch (see below)
-- [ ] Adds a new `MWxxx` iota constant (must be **appended**, never inserted)
+- [ ] Changes route/matcher/action semantics
+- [ ] Touches middleware ordering, hoisting, or `applyMiddleware`
+- [ ] Adds a new `MWxxx` iota constant (append only, never insert)
+- [ ] Touches Docker route/service mapping or dynamic generations
+- [ ] Touches upstream pool, health, Host, or transport behavior
+- [ ] Touches downstream TLS/ACME policy or certificate selection
 - [ ] Touches the JSON export of `resolved.Config` (public contract)
-- [ ] Changes process lifecycle (Start/Shutdown, signal handling)
+- [ ] Changes process lifecycle (`Start`/rollback/`Shutdown`)
+- [ ] Touches access-log/metrics response-writer behavior
 - [ ] Adds a new external dependency
 
 ## Test plan
 
 - [ ] `go test ./...` passes
 - [ ] `make lint` clean
-- [ ] If new middleware: includes `${name}_test.go` covering happy path + at least one edge case
-- [ ] If new CLI flag: mutual exclusion against existing flags verified
-- [ ] If touching the access log: old log shape preserved (additive fields only)
-
-## New middleware checklist (delete if not applicable)
-
-- [ ] Surface type with `*xxxMW` pointer receiver implementing `statuteMiddleware()`
-- [ ] `MWxxx` iota constant **appended** to `resolved.MiddlewareType`
-- [ ] Fields added to `resolved.Middleware` (no reordering existing fields)
-- [ ] `case *xxxMW:` arm in `resolveMiddleware`
-- [ ] `case resolved.MWxxx:` arm in `applyMiddleware`
-- [ ] `xxxHandler(m resolved.Middleware, next http.Handler) http.Handler` implementation
-- [ ] `${name}_test.go` with table-driven cases
-- [ ] godoc on every exported symbol
+- [ ] Relevant cross-feature regression tests added
+- [ ] Documentation/godoc updated for changed public behavior
+- [ ] `CHANGELOG.md` updated when the change is user-visible
