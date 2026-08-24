@@ -421,6 +421,10 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 	if err != nil {
 		return resolved.Transport{}, fmt.Errorf("tls_handshake_timeout: %w", err)
 	}
+	flush, err := parse.DurationOr(t.FlushInterval, 0)
+	if err != nil {
+		return resolved.Transport{}, fmt.Errorf("flush_interval: %w", err)
+	}
 	for i, f := range t.RootCAFiles {
 		if strings.TrimSpace(f) == "" {
 			return resolved.Transport{}, fmt.Errorf("root_ca_files[%d]: path is empty", i)
@@ -431,6 +435,7 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 		IdleConnTimeout:     idle,
 		DialTimeout:         dial,
 		TLSHandshakeTimeout: tlsHs,
+		FlushInterval:       flush,
 		ServerName:          t.ServerName,
 		RootCAFiles:         append([]string(nil), t.RootCAFiles...),
 		InsecureSkipVerify:  t.InsecureSkipVerify,

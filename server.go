@@ -977,6 +977,7 @@ func backendTLSConfig(t resolved.Transport) (*tls.Config, error) {
 // ModifyResponse — the two paths are mutually exclusive per attempt.
 func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Pool, recordFailure func(*http.Request)) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
+		FlushInterval: p.Transport.FlushInterval,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			// SetURL blanked Out.Host, which makes the transport derive the

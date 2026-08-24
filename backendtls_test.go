@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -110,6 +111,74 @@ func TestHealthCheckSharesPoolTransport(t *testing.T) {
 	t.Cleanup(ph.transport.CloseIdleConnections)
 	if ph.hc.client.Transport != http.RoundTripper(ph.transport) {
 		t.Error("health checker does not share the pool transport")
+	}
+}
+
+// TestResolveTransportFlushInterval — a set flush interval resolves to its
+// duration, unset stays at Go's zero default.
+func TestResolveTransportFlushInterval(t *testing.T) {
+	t.Parallel()
+	tr, err := resolveTransport(Transport{FlushInterval: "100ms"})
+	if err != nil {
+		t.Fatalf("resolveTransport: %v", err)
+	}
+	if tr.FlushInterval != 100*time.Millisecond {
+		t.Errorf("FlushInterval: got %v, want 100ms", tr.FlushInterval)
+	}
+	tr, err = resolveTransport(Transport{})
+	if err != nil {
+		t.Fatalf("resolveTransport: %v", err)
+	}
+	if tr.FlushInterval != 0 {
+		t.Errorf("default FlushInterval: got %v, want 0", tr.FlushInterval)
+	}
+}
+
+// TestBackendProxyCarriesFlushInterval — the pool's flush interval lands on
+// every backend proxy (routes sharing the pool observe one value by
+// construction), a default pool stays at zero, and probes keep riding the
+// pool transport when the interval is set.
+func TestBackendProxyCarriesFlushInterval(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP(":0")},
+		Upstreams: Upstreams{
+			"api": Pool{
+				Backends:    []Backend{{Address: "127.0.0.1:9001"}, {Address: "127.0.0.1:9002", Backup: true}},
+				HealthCheck: HealthCheck{Path: "/healthz", Interval: "1h"},
+				Transport:   Transport{FlushInterval: "100ms"},
+			},
+			"plain": Pool{
+				Backends: []Backend{{Address: "127.0.0.1:9003"}},
+			},
+		},
+		Routes: Routes{
+			Match("/a/*").ProxyTo("api"),
+			Match("/b/*").ProxyTo("api"),
+			Match("/*").ProxyTo("plain"),
+		},
+	})
+	ph, err := newPoolHandler(r.Upstreams["api"])
+	if err != nil {
+		t.Fatalf("newPoolHandler: %v", err)
+	}
+	t.Cleanup(ph.transport.CloseIdleConnections)
+	for i, bs := range append(append([]*backendState{}, ph.primary...), ph.backup...) {
+		if bs.rp.FlushInterval != 100*time.Millisecond {
+			t.Errorf("backend %d FlushInterval: got %v, want 100ms", i, bs.rp.FlushInterval)
+		}
+	}
+	if ph.hc.client.Transport != http.RoundTripper(ph.transport) {
+		t.Error("health checker does not share the pool transport")
+	}
+
+	def, err := newPoolHandler(r.Upstreams["plain"])
+	if err != nil {
+		t.Fatalf("newPoolHandler: %v", err)
+	}
+	t.Cleanup(def.transport.CloseIdleConnections)
+	if def.primary[0].rp.FlushInterval != 0 {
+		t.Errorf("default pool FlushInterval: got %v, want 0", def.primary[0].rp.FlushInterval)
 	}
 }
 

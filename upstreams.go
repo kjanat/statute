@@ -156,6 +156,13 @@ type Transport struct {
 	DialTimeout         string // e.g. "5s"
 	TLSHandshakeTimeout string // e.g. "5s"
 
+	// FlushInterval is how often the reverse proxy flushes buffered
+	// response bytes to the client, e.g. "100ms". Empty or "0" keeps Go's
+	// default: no periodic flushing. Responses detected as streaming
+	// (unknown length, text/event-stream) are flushed immediately either
+	// way. Non-negative durations only.
+	FlushInterval string
+
 	// ServerName overrides the hostname verified against the backend's
 	// certificate (and sent as SNI). Set it when backends are dialed by IP
 	// but present a certificate for a DNS name.
