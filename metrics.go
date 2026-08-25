@@ -83,9 +83,11 @@ type statusRecorder struct {
 // through without latching — the final status is still to come, and it is
 // the one the access log and metrics must see. Latching on the preview
 // would also swallow the final WriteHeader, leaving net/http to commit an
-// implicit 200 whatever the handler actually answered.
+// implicit 200 whatever the handler actually answered. The one exception is
+// 101 Switching Protocols: net/http excludes it from the informational path
+// because no further response may follow it, so it latches as final here too.
 func (s *statusRecorder) WriteHeader(code int) {
-	if code < 200 {
+	if code < 200 && code != http.StatusSwitchingProtocols {
 		s.ResponseWriter.WriteHeader(code)
 		return
 	}
@@ -120,8 +122,12 @@ func (s *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
 }
 
 // Flush propagates Flush calls so streaming responses still flush through us.
+// A flush is a commit: net/http writes an implicit 200 when no header has
+// been sent yet, so the recorder latches it before forwarding — a later
+// WriteHeader can no longer change the client-visible status.
 func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		s.wroteHeader = true
 		f.Flush()
 	}
 }

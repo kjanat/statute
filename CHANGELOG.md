@@ -355,6 +355,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The access-log/metrics status recorder now reports the status actually
+  committed to the client in two edge cases where it previously drifted.
+  A `Flush` before any `WriteHeader` commits an implicit 200, so a later
+  `WriteHeader(500)` no longer records 500 for a response the client saw
+  as 200. And 101 Switching Protocols — the one 1xx net/http records as
+  final because no further response may follow it — now latches as the
+  final status instead of falling through to the default 200. Both cases
+  matter doubly with the new status filters, which key on exactly this
+  recorded status.
+
 - `Start` is transactional, two-phase, and retryable. Phase one starts
   the non-listener prerequisites — pool health checkers, ACME managers
   with their DNS-01 warm-up, the Docker provider's initial sync — and
