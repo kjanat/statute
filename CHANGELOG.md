@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `JSONLog(...).Statuses("400-499", "500-599")` restricts the access log
+  to requests whose final status falls in the given inclusive ranges
+  (a single status like `"404"` also works), independently of sampling.
+  The filter is a hard gate ahead of every other logging rule, including
+  "errors are always logged": `Statuses("200-299")` really does suppress
+  500s, while errors within the selected ranges are never sampled out
+  and in-range statuses below 400 keep the configured `Sample` rate.
+  Filtering applies to the final status — the recorder already ignores
+  1xx interim responses, so a 103 → 404 exchange filters as 404.
+  `Resolve` rejects malformed or out-of-range (`[100, 599]`) inputs and
+  normalizes the rest into canonical form — sorted ascending with
+  overlapping and adjacent ranges merged — which the exported schema
+  carries as `Statuses` on the resolved access log.
+
 - `statute.Health(addr, path)` configures a dedicated process health
   endpoint on its own listener that brackets application availability:
   `Start` binds and serves it first — before certificate managers, the
@@ -340,6 +354,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   peer is the client.
 
 ### Fixed
+
+- The access-log/metrics status recorder now reports the status actually
+  committed to the client in two edge cases where it previously drifted.
+  A `Flush` before any `WriteHeader` commits an implicit 200, so a later
+  `WriteHeader(500)` no longer records 500 for a response the client saw
+  as 200. And 101 Switching Protocols — the one 1xx net/http records as
+  final because no further response may follow it — now latches as the
+  final status instead of falling through to the default 200. Both cases
+  matter doubly with the new status filters, which key on exactly this
+  recorded status.
+
+- The status recorder now exposes `Unwrap`, so `http.ResponseController`
+  can reach the underlying writer's `Hijacker`. `metricsMiddleware`
+  wraps every listener with this recorder and the reverse proxy's
+  protocol-upgrade path hijacks through the controller, which can only
+  reach the connection through `Hijacker` or `Unwrap` — so no WebSocket
+  upgrade could pass through an observability-wrapped listener at all.
+  The hijacked handshake is written directly to the taken-over
+  connection, bypassing the recorder, so a proxied upgrade records the
+  implicit 200 rather than 101.
 
 - `Start` is transactional, two-phase, and retryable. Phase one starts
   the non-listener prerequisites — pool health checkers, ACME managers

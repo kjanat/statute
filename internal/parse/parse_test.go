@@ -226,3 +226,42 @@ func TestHeaderValue(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusRange(t *testing.T) {
+	cases := []struct {
+		in     string
+		lo, hi int
+		err    bool
+	}{
+		{"400-499", 400, 499, false},
+		{"500-599", 500, 599, false},
+		{"404", 404, 404, false},
+		{"100-599", 100, 599, false},
+		{" 200 - 299 ", 200, 299, false},
+		{"", 0, 0, true},
+		{"-499", 0, 0, true},
+		{"400-", 0, 0, true},
+		{"499-400", 0, 0, true},
+		{"99", 0, 0, true},
+		{"600", 0, 0, true},
+		{"100-600", 0, 0, true},
+		{"4xx", 0, 0, true},
+		{"200-299-399", 0, 0, true},
+	}
+	for _, c := range cases {
+		lo, hi, err := StatusRange(c.in)
+		if c.err {
+			if err == nil {
+				t.Errorf("StatusRange(%q) = %d-%d, want error", c.in, lo, hi)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("StatusRange(%q): %v", c.in, err)
+			continue
+		}
+		if lo != c.lo || hi != c.hi {
+			t.Errorf("StatusRange(%q) = %d-%d, want %d-%d", c.in, lo, hi, c.lo, c.hi)
+		}
+	}
+}

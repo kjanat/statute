@@ -55,6 +55,27 @@ Recommended rates by traffic volume:
 
 Sampling uses `math/rand/v2.Float64()`. The decision is independent per request, so the actual recorded fraction varies but converges to the rate over time.
 
+### Status filtering
+
+```go
+AccessLog: statute.JSONLog(statute.Stdout).Statuses("400-499", "500-599")
+```
+
+`Statuses(...)` restricts the log to requests whose final status falls in one of the given inclusive ranges — `"400-499"`, or a single status like `"404"`. Sampling controls volume but cannot express error-only logging or exclude expected successful traffic deterministically; the status filter can.
+
+The filter is a hard gate ahead of every other logging rule, including "errors are always logged":
+
+```text
+status range filter
+↓ if allowed:
+    >=400 → always log
+    <400  → sampling applies
+```
+
+So `Statuses("200-299")` really does suppress 500s — errors **within the selected ranges** are never sampled out, and everything outside the ranges is never logged at all. Filtering applies to the final status as committed to the client: the recorder ignores 1xx interim responses, so a 103 → 404 exchange filters as 404. Two commit edge cases are honoured — a `Flush` before any `WriteHeader` commits an implicit 200 (a later `WriteHeader(500)` cannot change what the client saw, so the filter sees 200), and 101 Switching Protocols is final, not interim, so a handler-written 101 filters as 101. A proxied upgrade is different: the reverse proxy hijacks the connection and writes the 101 handshake directly to it, bypassing the response writer entirely, so a hijacked exchange records the implicit 200 — `Statuses("101")` does not match proxied WebSocket upgrades.
+
+`Resolve` rejects malformed or out-of-range (`[100, 599]`) inputs and normalizes the rest — sorted ascending, overlapping and adjacent ranges merged — and the canonical ranges appear in the exported schema.
+
 ## Metrics
 
 ```go

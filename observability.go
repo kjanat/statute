@@ -56,6 +56,7 @@ func (l LogWriter) Name() string { return l.name }
 type jsonLog struct {
 	dest       LogWriter
 	sampleRate float64
+	statuses   []string
 }
 
 func (jsonLog) statuteAccessLog() {}
@@ -78,6 +79,20 @@ func (j *jsonLog) Sample(rate float64) *jsonLog {
 	default:
 		j.sampleRate = rate
 	}
+	return j
+}
+
+// Statuses restricts the access log to requests whose final status falls in
+// one of the given inclusive ranges, e.g. "400-499", "500-599", or a single
+// status "404". The filter is a hard gate ahead of every other logging rule,
+// including "errors are always logged": Statuses("200-299") really does
+// suppress 500s. Within the selected ranges, errors (>= 400) are never
+// sampled out and statuses below 400 pass through Sample as usual.
+// Filtering applies to the final status; 1xx interim responses are ignored.
+// Repeated calls accumulate ranges. Resolve rejects malformed ranges and
+// normalizes the rest: sorted, overlapping and adjacent ranges merged.
+func (j *jsonLog) Statuses(ranges ...string) *jsonLog {
+	j.statuses = append(j.statuses, ranges...)
 	return j
 }
 

@@ -1453,12 +1453,17 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 	if o.AccessLog != nil {
 		switch al := o.AccessLog.(type) {
 		case *jsonLog:
+			statuses, err := resolveStatusRanges(al.statuses)
+			if err != nil {
+				return resolved.Observability{}, err
+			}
 			out.AccessLog = resolved.AccessLog{
 				Enabled:    true,
 				Format:     accessLogFormatJSON,
 				Writer:     al.dest.Writer(),
 				Name:       al.dest.Name(),
 				SampleRate: al.sampleRate,
+				Statuses:   statuses,
 			}
 		default:
 			return resolved.Observability{}, fmt.Errorf("unknown access log type %T", o.AccessLog)
@@ -1493,6 +1498,39 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 		}
 	}
 	return out, nil
+}
+
+// resolveStatusRanges parses and normalizes access-log status filter ranges
+// into canonical form: sorted ascending, overlapping and adjacent ranges
+// merged. Empty input resolves to nil, meaning no filtering.
+func resolveStatusRanges(ranges []string) ([]resolved.StatusRange, error) {
+	if len(ranges) == 0 {
+		return nil, nil
+	}
+	out := make([]resolved.StatusRange, 0, len(ranges))
+	for _, r := range ranges {
+		lo, hi, err := parse.StatusRange(r)
+		if err != nil {
+			return nil, fmt.Errorf("access_log.statuses: %w", err)
+		}
+		out = append(out, resolved.StatusRange{From: lo, To: hi})
+	}
+	slices.SortFunc(out, func(a, b resolved.StatusRange) int {
+		if a.From != b.From {
+			return a.From - b.From
+		}
+		return a.To - b.To
+	})
+	merged := out[:1]
+	for _, r := range out[1:] {
+		last := &merged[len(merged)-1]
+		if r.From <= last.To+1 {
+			last.To = max(last.To, r.To)
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged, nil
 }
 
 // resolveMetrics normalizes the metrics marker; nil resolves disabled.
