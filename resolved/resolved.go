@@ -451,6 +451,22 @@ type AccessLog struct {
 	// Errors (status >= 500) and client errors (4xx) are logged regardless;
 	// sampling only suppresses successful requests at high volume.
 	SampleRate float64
+
+	// Statuses restricts logging to requests whose final status falls in
+	// one of the ranges. The filter is a hard gate ahead of every other
+	// logging rule, including "errors are always logged": a status outside
+	// every range is never logged, and within the allowed ranges errors
+	// still bypass sampling. Empty means no filtering. Ranges are
+	// normalized: sorted ascending and overlapping or adjacent ranges
+	// merged.
+	Statuses []StatusRange
+}
+
+// StatusRange is one inclusive HTTP status range of an access-log status
+// filter.
+type StatusRange struct {
+	From int
+	To   int
 }
 
 // Metrics is the resolved metrics configuration.

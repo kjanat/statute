@@ -30,7 +30,7 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 		start := time.Now()
 		ww := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(ww, r)
-		if !shouldLog(ww.status, rate) {
+		if !shouldLog(ww.status, rate, cfg.Statuses) {
 			return
 		}
 		entry := map[string]any{
@@ -54,9 +54,14 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 	})
 }
 
-// shouldLog returns true when this request should be written. Errors are
-// always logged; successful requests pass at the configured sample rate.
-func shouldLog(status int, rate float64) bool {
+// shouldLog returns true when this request should be written. The status
+// filter is a hard gate ahead of every other rule: a status outside every
+// range is never logged, even a 5xx. Within the allowed set, errors are
+// always logged and successful requests pass at the configured sample rate.
+func shouldLog(status int, rate float64, statuses []resolved.StatusRange) bool {
+	if len(statuses) > 0 && !statusAllowed(status, statuses) {
+		return false
+	}
 	if status >= 400 {
 		return true
 	}
@@ -64,6 +69,16 @@ func shouldLog(status int, rate float64) bool {
 		return true
 	}
 	return rand.Float64() < rate //nolint:gosec // G404: log sampling is not security-sensitive; math/rand is intentional here
+}
+
+// statusAllowed reports whether status falls in one of the resolved ranges.
+func statusAllowed(status int, statuses []resolved.StatusRange) bool {
+	for _, r := range statuses {
+		if status >= r.From && status <= r.To {
+			return true
+		}
+	}
+	return false
 }
 
 // safeEncoder serializes JSON writes so multiple goroutines do not interleave.

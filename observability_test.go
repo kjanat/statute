@@ -54,19 +54,49 @@ func TestOTLP_SampleClamps(t *testing.T) {
 func TestAccessLog_ShouldLog(t *testing.T) {
 	t.Parallel()
 	// 5xx and 4xx are always logged regardless of sample rate.
-	if !shouldLog(500, 0) {
+	if !shouldLog(500, 0, nil) {
 		t.Errorf("5xx must always log")
 	}
-	if !shouldLog(404, 0) {
+	if !shouldLog(404, 0, nil) {
 		t.Errorf("4xx must always log")
 	}
 	// rate=1 logs every 2xx/3xx
-	if !shouldLog(200, 1) {
+	if !shouldLog(200, 1, nil) {
 		t.Errorf("2xx with rate=1 must log")
 	}
 	// rate=0 drops 2xx/3xx
-	if shouldLog(200, 0) {
+	if shouldLog(200, 0, nil) {
 		t.Errorf("2xx with rate=0 must drop")
+	}
+}
+
+// TestAccessLog_StatusFilter — the status filter is a hard gate ahead of
+// every other rule: outside the ranges nothing logs, not even a 5xx; inside
+// the ranges errors bypass sampling and successes still sample.
+func TestAccessLog_StatusFilter(t *testing.T) {
+	t.Parallel()
+	errors := []resolved.StatusRange{{From: 400, To: 599}}
+	// Outside every range: never logged, even a 5xx at rate=1.
+	if shouldLog(200, 1, errors) {
+		t.Errorf("200 outside filter must drop")
+	}
+	success := []resolved.StatusRange{{From: 200, To: 299}}
+	if shouldLog(500, 1, success) {
+		t.Errorf("500 outside Statuses(\"200-299\") must drop")
+	}
+	// Inside a range: errors bypass sampling, successes sample.
+	if !shouldLog(503, 0, errors) {
+		t.Errorf("5xx inside filter must always log")
+	}
+	if !shouldLog(204, 1, success) {
+		t.Errorf("2xx inside filter with rate=1 must log")
+	}
+	if shouldLog(204, 0, success) {
+		t.Errorf("2xx inside filter with rate=0 must drop")
+	}
+	// Bounds are inclusive.
+	if !shouldLog(400, 0, errors) || !shouldLog(599, 0, errors) {
+		t.Errorf("range bounds must be inclusive")
 	}
 }
 
@@ -111,6 +141,91 @@ func TestAccessLog_ErrorsAlwaysLogged(t *testing.T) {
 	}
 	if lines != 5 {
 		t.Errorf("logged lines: got %d, want 5 (errors must always log)", lines)
+	}
+}
+
+// TestAccessLog_StatusFilterSuppressesErrors — Statuses("200-299") really
+// does suppress 500s end to end: the filter gates ahead of the
+// errors-always-logged rule, while in-range successes still log.
+func TestAccessLog_StatusFilterSuppressesErrors(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	writer := &mu_writer{Mutex: &mu, w: &buf}
+
+	cfg := resolved.AccessLog{
+		Enabled:    true,
+		Writer:     writer,
+		Format:     "json",
+		SampleRate: 1,
+		Statuses:   []resolved.StatusRange{{From: 200, To: 299}},
+	}
+	h := accessLogMiddleware(cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/boom" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for range 3 {
+		runRequest(t, h, httptest.NewRequest("GET", "/boom", nil))
+	}
+	runRequest(t, h, httptest.NewRequest("GET", "/ok", nil))
+
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+
+	dec := json.NewDecoder(bytes.NewReader([]byte(out)))
+	lines := 0
+	for dec.More() {
+		var v map[string]any
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if v["status"].(float64) != 200 {
+			t.Errorf("logged status %v, want only 200 (500s are outside the filter)", v["status"])
+		}
+		lines++
+	}
+	if lines != 1 {
+		t.Errorf("logged lines: got %d, want 1", lines)
+	}
+}
+
+// TestAccessLog_StatusFilterFinalStatus — a 103 interim response followed by
+// a 404 filters as 404: the recorder ignores 1xx, so an error-range filter
+// still logs the exchange.
+func TestAccessLog_StatusFilterFinalStatus(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	writer := &mu_writer{Mutex: &mu, w: &buf}
+
+	cfg := resolved.AccessLog{
+		Enabled:    true,
+		Writer:     writer,
+		Format:     "json",
+		SampleRate: 1,
+		Statuses:   []resolved.StatusRange{{From: 400, To: 499}},
+	}
+	h := accessLogMiddleware(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	runRequest(t, h, httptest.NewRequest("GET", "/", nil))
+
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+
+	var v map[string]any
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		t.Fatalf("expected one logged line, got %q: %v", out, err)
+	}
+	if v["status"].(float64) != 404 {
+		t.Errorf("logged status %v, want 404 (final status, not the 103 interim)", v["status"])
 	}
 }
 

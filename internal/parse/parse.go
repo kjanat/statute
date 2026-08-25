@@ -170,6 +170,41 @@ func Rate(s string) (float64, error) {
 	}
 }
 
+// StatusRange parses an HTTP status range of the form "400-499" or a single
+// status "404" into its inclusive bounds. Statuses must be in [100, 599] and
+// the low bound must not exceed the high bound.
+func StatusRange(s string) (lo, hi int, err error) {
+	loStr, hiStr, isRange := strings.Cut(s, "-")
+	lo, err = parseStatus(s, loStr)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !isRange {
+		return lo, lo, nil
+	}
+	hi, err = parseStatus(s, hiStr)
+	if err != nil {
+		return 0, 0, err
+	}
+	if lo > hi {
+		return 0, 0, fmt.Errorf("status range %q: low bound exceeds high bound", s)
+	}
+	return lo, hi, nil
+}
+
+// parseStatus parses one bound of a status range; whole is the full input
+// for error context.
+func parseStatus(whole, part string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(part))
+	if err != nil {
+		return 0, fmt.Errorf("status range %q: invalid status %q", whole, part)
+	}
+	if n < 100 || n > 599 {
+		return 0, fmt.Errorf("status range %q: status %d outside [100, 599]", whole, n)
+	}
+	return n, nil
+}
+
 // Size parses a byte size like "1MB", "512KiB", or "256" into a count
 // of bytes. Suffixes are case-insensitive. Decimal (KB/MB/GB) and binary
 // (KiB/MiB/GiB) units are both accepted. Decimal units use powers of 1000;

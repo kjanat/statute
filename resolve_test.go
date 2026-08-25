@@ -390,3 +390,97 @@ func TestResolveHealthValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveAccessLogStatuses(t *testing.T) {
+	t.Parallel()
+	base := func() Config {
+		return Config{
+			Listeners: Listeners{HTTP(":8080")},
+			Upstreams: Upstreams{"api": Pool{Backends: []Backend{{Address: "127.0.0.1:9001"}}}},
+			Routes:    Routes{Match("/*").ProxyTo("api")},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		log     *jsonLog
+		want    []resolved.StatusRange
+		wantErr string
+	}{
+		{
+			name: "no filter resolves nil",
+			log:  JSONLog(Stdout),
+			want: nil,
+		},
+		{
+			name: "single status widens to itself",
+			log:  JSONLog(Stdout).Statuses("404"),
+			want: []resolved.StatusRange{{From: 404, To: 404}},
+		},
+		{
+			name: "unsorted input sorts",
+			log:  JSONLog(Stdout).Statuses("500-599", "200-299"),
+			want: []resolved.StatusRange{{From: 200, To: 299}, {From: 500, To: 599}},
+		},
+		{
+			name: "overlapping ranges merge",
+			log:  JSONLog(Stdout).Statuses("400-450", "425-499"),
+			want: []resolved.StatusRange{{From: 400, To: 499}},
+		},
+		{
+			name: "adjacent ranges merge",
+			log:  JSONLog(Stdout).Statuses("400-499", "500-599"),
+			want: []resolved.StatusRange{{From: 400, To: 599}},
+		},
+		{
+			name: "contained range collapses",
+			log:  JSONLog(Stdout).Statuses("200-299", "204"),
+			want: []resolved.StatusRange{{From: 200, To: 299}},
+		},
+		{
+			name: "repeated calls accumulate",
+			log:  JSONLog(Stdout).Statuses("500-599").Statuses("400-449"),
+			want: []resolved.StatusRange{{From: 400, To: 449}, {From: 500, To: 599}},
+		},
+		{
+			name:    "invalid range errors",
+			log:     JSONLog(Stdout).Statuses("4xx"),
+			wantErr: `access_log.statuses: status range "4xx"`,
+		},
+		{
+			name:    "inverted range errors",
+			log:     JSONLog(Stdout).Statuses("499-400"),
+			wantErr: `access_log.statuses: status range "499-400": low bound exceeds high bound`,
+		},
+		{
+			name:    "out-of-range status errors",
+			log:     JSONLog(Stdout).Statuses("600"),
+			wantErr: `access_log.statuses: status range "600": status 600 outside [100, 599]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base()
+			cfg.Observability = Observability{AccessLog: tc.log}
+			r, err := Resolve(cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			got := r.Observability.AccessLog.Statuses
+			if len(got) != len(tc.want) {
+				t.Fatalf("resolved statuses = %+v, want %+v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("resolved statuses = %+v, want %+v", got, tc.want)
+				}
+			}
+		})
+	}
+}
