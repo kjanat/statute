@@ -229,6 +229,41 @@ func (r *mixedCleanRun) stop() {
 	r.wg.Wait()
 }
 
+// Two distinct variables returned at one result position are ambiguous:
+// the caller may hold either object, so a launch through one of them can
+// never be discharged by receiver-rooted evidence that may run on the
+// other. Fails closed as unresolved provenance.
+type multiReturnWorker struct{}
+type multiReturnRun struct{ wg sync.WaitGroup }
+
+func (*multiReturnWorker) start(cond bool) *multiReturnRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
+	a := &multiReturnRun{}
+	b := &multiReturnRun{}
+	a.wg.Go(func() {})
+	if cond {
+		return b
+	}
+	return a
+}
+
+func (r *multiReturnRun) stop() { r.wg.Wait() }
+
+// Several return statements of the same variable are one unambiguous
+// owner root: plural returns are not plural owners.
+type multiReturnSameWorker struct{}
+type multiReturnSameRun struct{ wg sync.WaitGroup }
+
+func (*multiReturnSameWorker) start(cond bool) *multiReturnSameRun {
+	r := &multiReturnSameRun{}
+	r.wg.Go(func() {})
+	if cond {
+		return r
+	}
+	return r
+}
+
+func (r *multiReturnSameRun) stop() { r.wg.Wait() }
+
 // Two returned lifecycle owners are evaluated independently: only the
 // owner whose group is never waited reports.
 type dualOwnerWorker struct{}

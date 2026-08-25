@@ -365,9 +365,12 @@ func collectAddPaths(pass *analysis.Pass, body *ast.BlockStmt, aliases map[*type
 }
 
 // collectOwnerRoots maps start-body variables to the owner they root: the
-// receiver for a receiver-owned relation, and every variable provably
-// returned at an owner result position. A variable feeding two different
-// owners is ambiguous and roots neither.
+// receiver for a receiver-owned relation, and the variable provably
+// returned at an owner result position. Ambiguity fails closed with the
+// sentinel index -1: a variable feeding two different owners, or a result
+// position fed by two distinct variables — a launch through a root that is
+// only conditionally the returned owner must never be discharged by
+// evidence that may run on a different object.
 func collectOwnerRoots(pass *analysis.Pass, relation *lifecycleStart, aliases map[*types.Var]aliasTarget) map[*types.Var]int {
 	roots := make(map[*types.Var]int)
 	assign := func(v *types.Var, index int) {
@@ -384,7 +387,12 @@ func collectOwnerRoots(pass *analysis.Pass, relation *lifecycleStart, aliases ma
 			}
 			continue
 		}
-		for _, v := range returnedVars(pass, relation.start, owner.result, aliases) {
+		vars := returnedVars(pass, relation.start, owner.result, aliases)
+		for _, v := range vars {
+			if len(vars) > 1 {
+				roots[v] = -1
+				continue
+			}
 			assign(v, i)
 		}
 	}
@@ -400,13 +408,15 @@ func receiverVar(pass *analysis.Pass, decl *ast.FuncDecl) *types.Var {
 	return v
 }
 
-// returnedVars collects the variables the start body returns at one result
-// position, through simple aliases; non-variable results contribute nothing.
+// returnedVars collects the distinct variables the start body returns at
+// one result position, through simple aliases; non-variable results
+// contribute nothing.
 func returnedVars(pass *analysis.Pass, start *functionInfo, result int, aliases map[*types.Var]aliasTarget) []*types.Var {
 	sig, _ := start.fn.Type().(*types.Signature)
 	if sig == nil {
 		return nil
 	}
+	seen := make(map[*types.Var]bool)
 	var out []*types.Var
 	ast.Inspect(start.decl.Body, func(node ast.Node) bool {
 		switch n := node.(type) {
@@ -416,7 +426,8 @@ func returnedVars(pass *analysis.Pass, start *functionInfo, result int, aliases 
 			if len(n.Results) != sig.Results().Len() || result >= len(n.Results) {
 				return true
 			}
-			if root, path, ok := resolveGroupPath(pass, n.Results[result], aliases); ok && path == "" {
+			if root, path, ok := resolveGroupPath(pass, n.Results[result], aliases); ok && path == "" && !seen[root] {
+				seen[root] = true
 				out = append(out, root)
 			}
 		}
@@ -508,26 +519,31 @@ func resolveSelectorPath(pass *analysis.Pass, e *ast.SelectorExpr, aliases map[*
 	if !ok {
 		return nil, "", false
 	}
-	return root, base + selectionFieldPath(sel), true
+	path, ok := selectionFieldPath(sel)
+	if !ok {
+		return nil, "", false
+	}
+	return root, base + path, true
 }
 
 // selectionFieldPath renders a field selection's complete index path as
-// ".f" segments, so embedded promotion still yields the full path.
-func selectionFieldPath(sel *types.Selection) string {
+// ".f" segments, so embedded promotion still yields the full path. An
+// index that cannot be mapped to a struct field is unresolvable rather
+// than a collidable placeholder.
+func selectionFieldPath(sel *types.Selection) (string, bool) {
 	var b strings.Builder
 	current := sel.Recv()
 	for _, index := range sel.Index() {
 		st := underlyingStruct(current)
 		if st == nil || index >= st.NumFields() {
-			b.WriteString(".?")
-			return b.String()
+			return "", false
 		}
 		field := st.Field(index)
 		b.WriteString(".")
 		b.WriteString(field.Name())
 		current = field.Type()
 	}
-	return b.String()
+	return b.String(), true
 }
 
 // underlyingStruct dereferences pointers and named types down to a struct.
