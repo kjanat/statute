@@ -101,9 +101,11 @@ patch to miss:
   capacity: a constant positive `Add` whose statement dominates the launch in
   the block structure with no loop between them (a launch the runtime repeats
   spends capacity counted once; a `goto` disables registration for the whole
-  body), one unit per goroutine deferring exactly one `Done`; a counter
-  operation the model cannot account for — function literals included —
-  poisons that group's capacity, and everything else stays raw. Raw
+  body), one unit per launched literal whose first statement is its only
+  `Done`, deferred, with no `goto` in the literal — the only shape proving
+  exactly one `Done` per launch; a counter operation the model cannot
+  account for — function literals included — poisons that group's capacity,
+  and everything else stays raw. Raw
   `go` launches stay deliberately count-based against visible channel receives —
   channel identity is out of scope — so that half is conservative join evidence,
   and anything ambiguous is intentionally a conservative diagnostic, not proof

@@ -373,9 +373,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   repeats inside a loop spends capacity that was counted once, and a
   `goto` anywhere in the body disables registration entirely, because
   block ordering is dominance only for structured control flow — each
-  unit is spent by at most one goroutine deferring exactly one `Done`
-  (a second deferred `Done` on the same group would drive the counter
-  past its registration), and a counter operation the model cannot
+  unit is spent by at most one launched literal whose first statement
+  is its only `Done`, deferred, with no `goto` in the literal: a defer
+  under a conditional may run zero times, one inside a loop or behind
+  a `goto` may register repeatedly, one preceded by other statements
+  may be skipped by an early return, and a second `Done` would drive
+  the counter past its registration. A counter operation the model
+  cannot
   account for (a `Done` in the start body, a non-constant or negative
   `Add`, any counter operation inside a function literal other than
   the launched literal's own deferred `Done`) poisons that group's

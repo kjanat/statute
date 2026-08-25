@@ -15,9 +15,10 @@ package statutelifecycle
 // registration counts only when its statement dominates the launch in the
 // block structure with no loop between them — a launch the runtime repeats
 // spends capacity counted once, and a goto disables registration for the
-// whole body — the launched literal must defer exactly one Done, and any
-// counter operation the model cannot account for, function literals
-// included, poisons that group's capacity entirely. Raw go statements
+// whole body — the launched literal's first statement must be its only
+// Done, deferred, with no goto in the literal, and any counter operation
+// the model cannot account for, function literals included, poisons that
+// group's capacity entirely. Raw go statements
 // are deliberately count-based: each owes one completion signal,
 // discharged by visible channel receives in the cleanup by count —
 // channel identity is out of SLC103's scope (issue #62 non-goals), so
@@ -287,40 +288,55 @@ func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResol
 	attributeGroup(key, ownerRoots, obligations, foreign)
 }
 
-// deferredDoneGroup finds the exactly-one deferred Done a launched literal
-// carries and resolves its group. A second deferred Done — even on the
-// same group, which would drive the counter past its single registration —
-// or an unresolvable receiver is ambiguous and resolves to no group.
+// deferredDoneGroup recognizes the deliberately boring launched shape: the
+// literal's first statement is `defer group.Done()`, no other Done call
+// appears anywhere in the literal, and no goto exists in it. Only that
+// shape proves exactly one Done per launch — a defer under a conditional
+// may run zero times, one inside a loop or reachable through a goto may
+// register more than once, and one preceded by other statements may be
+// skipped by an early return. Anything else resolves to no group and the
+// launch stays raw.
 func deferredDoneGroup(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) (groupKey, bool) {
-	var found groupKey
-	count := 0
+	if len(lit.Body.List) == 0 {
+		return groupKey{}, false
+	}
+	first, ok := lit.Body.List[0].(*ast.DeferStmt)
+	if !ok || !isSyncMethodCall(pass, first.Call, "WaitGroup", "Done") {
+		return groupKey{}, false
+	}
+	sel, ok := first.Call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return groupKey{}, false
+	}
+	root, path, ok := resolver.resolve(sel.X)
+	if !ok || !soleDoneWithoutGoto(pass, lit, first) {
+		return groupKey{}, false
+	}
+	return groupKey{root: root, path: path}, true
+}
+
+// soleDoneWithoutGoto verifies the recognized deferred Done is the only
+// Done call in the launched literal — nested literals included — and that
+// no goto can revisit its registration.
+func soleDoneWithoutGoto(pass *analysis.Pass, lit *ast.FuncLit, first *ast.DeferStmt) bool {
+	ok := true
 	ast.Inspect(lit.Body, func(node ast.Node) bool {
-		switch n := node.(type) {
-		case nil, *ast.FuncLit:
+		if !ok {
 			return false
-		case *ast.DeferStmt:
-			if !isSyncMethodCall(pass, n.Call, "WaitGroup", "Done") {
-				return true
+		}
+		switch n := node.(type) {
+		case *ast.BranchStmt:
+			if n.Tok == token.GOTO {
+				ok = false
 			}
-			sel, ok := n.Call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
+		case *ast.CallExpr:
+			if n != first.Call && isSyncMethodCall(pass, n, "WaitGroup", "Done") {
+				ok = false
 			}
-			if count > 0 {
-				count = 2 // any second deferred Done: fail closed
-				return true
-			}
-			root, path, ok := resolver.resolve(sel.X)
-			if !ok {
-				count = 2 // unresolvable Done: fail closed
-				return true
-			}
-			found = groupKey{root: root, path: path}
-			count = 1
 		}
 		return true
 	})
-	return found, count == 1
+	return ok
 }
 
 // recordGroupLaunch attributes one WaitGroup.Go call by its normalized

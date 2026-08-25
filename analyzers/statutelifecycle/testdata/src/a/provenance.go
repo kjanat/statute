@@ -523,6 +523,85 @@ func (*doubleDeferredDoneWorker) start() *doubleDeferredDoneRun { // want `\[SLC
 
 func (r *doubleDeferredDoneRun) stop() { r.wg.Wait() }
 
+// One syntactic defer inside a loop registers per iteration: the first
+// Done releases Wait while the goroutine still runs, then the second
+// drives the counter negative. Not the conventional shape; stays raw.
+type loopDeferDoneWorker struct{}
+type loopDeferDoneRun struct{ wg sync.WaitGroup }
+
+func (*loopDeferDoneWorker) start() *loopDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &loopDeferDoneRun{}
+	r.wg.Add(1)
+	go func() {
+		for range 2 {
+			defer r.wg.Done()
+		}
+	}()
+	return r
+}
+
+func (r *loopDeferDoneRun) stop() { r.wg.Wait() }
+
+// A defer under a conditional may execute zero times, leaving the
+// registration unclaimed: not proof of one Done per launch.
+type conditionalDeferDoneWorker struct{}
+type conditionalDeferDoneRun struct{ wg sync.WaitGroup }
+
+func (*conditionalDeferDoneWorker) start(cond bool) *conditionalDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &conditionalDeferDoneRun{}
+	r.wg.Add(1)
+	go func() {
+		if cond {
+			defer r.wg.Done()
+		}
+	}()
+	return r
+}
+
+func (r *conditionalDeferDoneRun) stop() { r.wg.Wait() }
+
+// A goto inside the launched literal can revisit the registration, so the
+// literal is not the conventional shape even with the defer first.
+type gotoDeferDoneWorker struct{}
+type gotoDeferDoneRun struct{ wg sync.WaitGroup }
+
+func (*gotoDeferDoneWorker) start() *gotoDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &gotoDeferDoneRun{}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		goto skip
+	skip:
+		_ = r
+	}()
+	return r
+}
+
+func (r *gotoDeferDoneRun) stop() { r.wg.Wait() }
+
+// A deferred Done preceded by other statements can be skipped by an early
+// return before its registration: only the first statement provably
+// executes once per launch.
+type lateDeferDoneWorker struct{}
+type lateDeferDoneRun struct {
+	wg    sync.WaitGroup
+	ready bool
+}
+
+func (*lateDeferDoneWorker) start() *lateDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &lateDeferDoneRun{}
+	r.wg.Add(1)
+	go func() {
+		if !r.ready {
+			return
+		}
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *lateDeferDoneRun) stop() { r.wg.Wait() }
+
 // An Add in an enclosing block dominates a launch nested below it: every
 // structured path to the go statement passes the registration first.
 type dominatingAddWorker struct{}
