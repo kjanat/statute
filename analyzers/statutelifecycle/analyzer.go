@@ -63,6 +63,7 @@ type cleanupMethod struct {
 
 type lifecycleOwner struct {
 	cleanups []cleanupMethod
+	result   int // owning result position in the start signature, -1 for the receiver
 }
 
 type lifecycleStart struct {
@@ -634,12 +635,12 @@ func collectLifecycleStarts(functions map[*types.Func]*functionInfo) map[*types.
 				continue
 			}
 			relation.ownerResults[i] = true
-			relation.owners = append(relation.owners, lifecycleOwner{cleanups: methods})
+			relation.owners = append(relation.owners, lifecycleOwner{cleanups: methods, result: i})
 		}
 		if len(relation.owners) == 0 {
 			methods := cleanupMethods(sig.Recv().Type(), functions)
 			if len(methods) > 0 {
-				relation.owners = append(relation.owners, lifecycleOwner{cleanups: methods})
+				relation.owners = append(relation.owners, lifecycleOwner{cleanups: methods, result: -1})
 			}
 		}
 		if len(relation.owners) > 0 {
@@ -835,112 +836,6 @@ func callIgnored(call *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
 		return len(p.Lhs) > 0
 	}
 	return false
-}
-
-func checkGoroutineOwnership(pass *analysis.Pass, lifecycle map[*types.Func]*lifecycleStart) {
-	for _, relation := range lifecycle {
-		goCount := countLifecycleLaunches(pass, relation.start.decl.Body)
-		if goCount == 0 {
-			continue
-		}
-		for _, owner := range relation.owners {
-			cleanupName, bestWait, complete := bestCleanupEvidence(pass, owner.cleanups, goCount)
-			if complete || !hasLocalCleanup(owner.cleanups) {
-				continue
-			}
-			pass.Reportf(relation.start.decl.Name.Pos(),
-				"[SLC103] %s launches %d lifecycle goroutine(s) but %s visibly waits for only %d completion signal(s); cleanup may return while owned goroutines still run",
-				relation.start.fn.Name(), goCount, cleanupName, bestWait)
-		}
-	}
-}
-
-func bestCleanupEvidence(pass *analysis.Pass, cleanups []cleanupMethod, goCount int) (string, int, bool) {
-	bestName := "cleanup"
-	bestWait := 0
-	for _, cleanup := range cleanups {
-		if cleanup.info == nil || cleanup.info.decl.Body == nil {
-			continue
-		}
-		evidence := cleanupEvidence(pass, cleanup.info.decl.Body)
-		if evidence.waitGroup || evidence.receives >= goCount {
-			return cleanup.fn.Name(), evidence.receives, true
-		}
-		if evidence.receives >= bestWait {
-			bestName = cleanup.fn.Name()
-			bestWait = evidence.receives
-		}
-	}
-	return bestName, bestWait, false
-}
-
-func hasLocalCleanup(cleanups []cleanupMethod) bool {
-	for _, cleanup := range cleanups {
-		if cleanup.info != nil && cleanup.info.decl.Body != nil {
-			return true
-		}
-	}
-	return false
-}
-
-func countLifecycleLaunches(pass *analysis.Pass, body *ast.BlockStmt) int {
-	count := 0
-	ast.Inspect(body, func(node ast.Node) bool {
-		if node == nil {
-			return false
-		}
-		if _, ok := node.(*ast.FuncLit); ok {
-			return false
-		}
-		if _, ok := node.(*ast.GoStmt); ok {
-			count++
-		}
-		if call, ok := node.(*ast.CallExpr); ok && isSyncMethodCall(pass, call, "WaitGroup", "Go") {
-			count++
-		}
-		return true
-	})
-	return count
-}
-
-type waitEvidence struct {
-	receives  int
-	waitGroup bool
-}
-
-func cleanupEvidence(pass *analysis.Pass, body *ast.BlockStmt) waitEvidence {
-	var evidence waitEvidence
-	var inspect func(ast.Node)
-	inspect = func(root ast.Node) {
-		ast.Inspect(root, func(node ast.Node) bool {
-			if node == nil {
-				return false
-			}
-			if _, ok := node.(*ast.FuncLit); ok {
-				return false
-			}
-			if unary, ok := node.(*ast.UnaryExpr); ok && unary.Op == token.ARROW {
-				evidence.receives++
-			}
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			if isSyncMethodCall(pass, call, "WaitGroup", "Wait") {
-				evidence.waitGroup = true
-			}
-			if isSyncMethodCall(pass, call, "Once", "Do") {
-				for _, arg := range call.Args {
-					if lit, ok := arg.(*ast.FuncLit); ok {
-						inspect(lit.Body)
-					}
-				}
-			}
-			return true
-		})
-	}
-	inspect(body)
-	return evidence
 }
 
 func isSyncMethodCall(pass *analysis.Pass, call *ast.CallExpr, owner, method string) bool {

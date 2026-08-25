@@ -87,9 +87,32 @@ patch to miss:
   background lifetime that failed `Start` cannot own.
 - `SLC102` — a `net/http` or quic-go HTTP/3 `Serve*` error is discarded. A dead
   serving goroutine must not leave a bound endpoint advertised as healthy.
-- `SLC103` — a paired `start`/`stop` lifecycle visibly launches more goroutines than
-  its stop path joins. This is intentionally conservative evidence for ownership
-  review, not proof that a particular goroutine leaked.
+- `SLC103` — a paired `start`/`stop` lifecycle launches work its stop path does not
+  visibly join. A `WaitGroup` launch owes a `Wait` on the exact same group,
+  normalized to lifecycle owner root plus the complete field-selection path — so
+  `r.a.wg` and `r.b.wg` are different groups, a wait on another owner's group
+  proves nothing, and a launch through a group no owner root reaches, or whose
+  provenance cannot be resolved, fails closed as undischargeable. Normalization is
+  storage identity, not a lexical path: it refuses reassigned root variables,
+  value-copy aliases (only pointer-typed aliases preserve storage identity),
+  and any path whose prefix the body writes to or lets escape by address —
+  directly or by passing a pointer alias onward as a value. The
+  `Add(1)` + `go` + `defer Done()` shape spends explicit registration
+  capacity: a constant positive `Add` whose statement dominates the launch in
+  the block structure with no loop between them (a launch the runtime repeats
+  spends capacity counted once; a `goto` disables registration for the whole
+  body), one unit per launched literal whose first statement is its only
+  `Done`, deferred, with no `goto` in the literal — the only shape proving
+  exactly one `Done` per launch; a counter operation the model cannot
+  account for — function literals included, a rejected launched literal's
+  own `Done` among them — poisons that group's capacity, as does an
+  accepted-shape launch that finds no capacity left to spend, whose own
+  `Done` is then just as unaccounted, and everything
+  else stays raw. Raw
+  `go` launches stay deliberately count-based against visible channel receives —
+  channel identity is out of scope — so that half is conservative join evidence,
+  and anything ambiguous is intentionally a conservative diagnostic, not proof
+  that a particular goroutine leaked.
 - `SLC104` — lifecycle cleanup discards an error from `Close` or `Shutdown`.
 
 The analyzer is initially disabled from the ordinary `make lint` set because current

@@ -341,6 +341,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   proxy derives its own, so the route's value wins without making the fields
   it leaves alone spoofable.
 
+### Changed
+
+- The `statutelifecycle` SLC103 analyzer now requires exact WaitGroup
+  provenance instead of reducing a start to one launch count and a
+  cleanup to a `Wait`-anywhere boolean. A `WaitGroup` launch owes a
+  `Wait` on the exact same group, normalized to lifecycle owner root
+  plus the complete field-selection path — `r.a.wg` and `r.b.wg` are
+  different groups even when they end in the same declared field type,
+  a wait on another owner's group or another object's identically
+  declared field proves nothing, and a `Wait` can no longer discharge
+  raw `go` work or vice versa. Normalization is storage identity, not
+  a lexical path: it resolves only through variables the body never
+  reassigns — a root assigned twice may denote two different objects,
+  so launches through it are unresolvable — only through pointer-typed
+  aliases (`run := r`, `wg := &r.wg`), because a value copy like
+  `wg := r.wg` names a different `WaitGroup` than the owner's, and a
+  write or address escape anywhere along a field path (`r.child = ...`
+  after launching on `r.child.wg`, or a pointer alias to the field
+  passed onward as a value) invalidates every path below that prefix,
+  since the storage the path names may have been replaced.
+  Launches through a group no lifecycle owner root reaches, or whose
+  provenance cannot be resolved, fail closed as undischargeable and
+  are diagnosed. Matching `Wait` evidence inside typed `sync.Once.Do`
+  callbacks still counts. The conventional `Add(1)` + `go` +
+  `defer Done()` shape spends explicit registration capacity: only a
+  plain `Add` statement with a constant positive count whose block
+  position dominates the launch, with no loop between them, registers
+  capacity — an `Add` inside a conditional branch or a `defer` is not
+  provably executed before the goroutine starts, a launch the runtime
+  repeats inside a loop spends capacity that was counted once, and a
+  `goto` anywhere in the body disables registration entirely, because
+  block ordering is dominance only for structured control flow — each
+  unit is spent by at most one launched literal whose first statement
+  is its only `Done`, deferred, with no `goto` in the literal: a defer
+  under a conditional may run zero times, one inside a loop or behind
+  a `goto` may register repeatedly, one preceded by other statements
+  may be skipped by an early return, and a second `Done` would drive
+  the counter past its registration. A counter operation the model
+  cannot
+  account for (a `Done` in the start body, a non-constant or negative
+  `Add`, any counter operation inside a function literal other than
+  the single recognized `Done` of an accepted launched literal — a
+  rejected literal's `Done` poisons too, because its raw goroutine
+  consumes registration an accepted launch might otherwise claim)
+  poisons that group's capacity entirely, and so does an
+  accepted-shape launch that finds no registration capacity to spend:
+  it stays raw, and its unattributed `Done` must never leave a
+  registration claimable by a later launch. Anything beyond that — a second
+  goroutine on one `Add(1)`, `Add(0)`, an `Add` after the `go` — stays
+  a raw obligation. Raw `go` statements remain
+  deliberately count-based: each owes one completion signal discharged
+  by visible channel receives in the cleanup by count; channel
+  identity is out of SLC103's scope per the issue's non-goals, so that
+  half is conservative join evidence, not per-channel provenance.
+  Statute's own tree audits clean before and after.
+
 ### Security
 
 - `clientIP` no longer trusts `X-Forwarded-For` without explicit trust
