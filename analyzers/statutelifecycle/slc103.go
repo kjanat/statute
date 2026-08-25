@@ -557,7 +557,7 @@ func (c *addCapacity) visitBodyNode(pass *analysis.Pass, node ast.Node, resolver
 		}
 	case *ast.FuncLit:
 		if !launched[n] {
-			c.poisonCounterOps(pass, n.Body, resolver)
+			c.poisonCounterOps(pass, n.Body, resolver, nil)
 		}
 		return false
 	case *ast.ExprStmt:
@@ -578,38 +578,29 @@ func (c *addCapacity) recordAddStmt(pass *analysis.Pass, stmt *ast.ExprStmt, res
 	c.recordAdd(call, resolver)
 }
 
-// scanLaunchedLiteral inspects a go statement's own function literal: its
-// deferred Done calls are the recognized discharge shape and stay exempt,
-// but any other counter operation inside it — a plain Done, an Add, or
-// anything in a nested literal — mutates the counter at a time the
-// registration model cannot order and poisons the group.
+// scanLaunchedLiteral inspects a go statement's own function literal with
+// the same verdict the launch classifier will reach. Only a literal the
+// strict recognizer accepts keeps its single first-statement deferred Done
+// exempt — that Done is the unit the launch will spend. A rejected
+// literal's counter operations, its deferred Dones included, poison the
+// group: the launch will be raw, so its Done consumes registration some
+// accepted launch might otherwise claim.
 func (c *addCapacity) scanLaunchedLiteral(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) {
-	exempt := make(map[*ast.CallExpr]bool)
-	ast.Inspect(lit.Body, func(node ast.Node) bool {
-		switch n := node.(type) {
-		case *ast.FuncLit:
-			c.poisonCounterOps(pass, n.Body, resolver)
-			return false
-		case *ast.DeferStmt:
-			if isSyncMethodCall(pass, n.Call, "WaitGroup", "Done") {
-				exempt[n.Call] = true
-			}
-		case *ast.CallExpr:
-			if !exempt[n] && (isSyncMethodCall(pass, n, "WaitGroup", "Done") || isSyncMethodCall(pass, n, "WaitGroup", "Add")) {
-				c.poisonCall(n, resolver)
-			}
-		}
-		return true
-	})
+	if _, ok := deferredDoneGroup(pass, lit, resolver); !ok {
+		c.poisonCounterOps(pass, lit.Body, resolver, nil)
+		return
+	}
+	first, _ := lit.Body.List[0].(*ast.DeferStmt)
+	c.poisonCounterOps(pass, lit.Body, resolver, first.Call)
 }
 
 // poisonCounterOps poisons the group of every WaitGroup Add or Done found
-// under node, nested literals included: counter operations inside an
-// ordinary function literal run at times the registration model cannot
-// account for.
-func (c *addCapacity) poisonCounterOps(pass *analysis.Pass, node ast.Node, resolver *pathResolver) {
+// under node, nested literals included, except the one exempt call (nil
+// for none): counter operations the recognized shape does not account for
+// run at times the registration model cannot order.
+func (c *addCapacity) poisonCounterOps(pass *analysis.Pass, node ast.Node, resolver *pathResolver, exempt *ast.CallExpr) {
 	ast.Inspect(node, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok {
+		if call, ok := n.(*ast.CallExpr); ok && call != exempt {
 			if isSyncMethodCall(pass, call, "WaitGroup", "Done") || isSyncMethodCall(pass, call, "WaitGroup", "Add") {
 				c.poisonCall(call, resolver)
 			}

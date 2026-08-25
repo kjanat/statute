@@ -104,8 +104,9 @@ patch to miss:
   body), one unit per launched literal whose first statement is its only
   `Done`, deferred, with no `goto` in the literal — the only shape proving
   exactly one `Done` per launch; a counter operation the model cannot
-  account for — function literals included — poisons that group's capacity,
-  and everything else stays raw. Raw
+  account for — function literals included, a rejected launched literal's
+  own `Done` among them — poisons that group's capacity, and everything
+  else stays raw. Raw
   `go` launches stay deliberately count-based against visible channel receives —
   channel identity is out of scope — so that half is conservative join evidence,
   and anything ambiguous is intentionally a conservative diagnostic, not proof

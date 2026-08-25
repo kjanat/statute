@@ -602,6 +602,58 @@ func (*lateDeferDoneWorker) start() *lateDeferDoneRun { // want `\[SLC103\].*lau
 
 func (r *lateDeferDoneRun) stop() { r.wg.Wait() }
 
+// A rejected literal's Done poisons the group's capacity: the raw first
+// goroutine can perform the Done that releases Wait while the accepted
+// second goroutine — to which the analyzer would otherwise attribute the
+// sole Add(1) — is still running. Both launches stay raw.
+type contaminatedCapacityWorker struct{}
+type contaminatedCapacityRun struct {
+	wg      sync.WaitGroup
+	rawDone chan struct{}
+	block   chan struct{}
+}
+
+func (*contaminatedCapacityWorker) start(cond bool) *contaminatedCapacityRun { // want `\[SLC103\].*launches 2 lifecycle goroutine.*waits for only 1`
+	r := &contaminatedCapacityRun{rawDone: make(chan struct{}), block: make(chan struct{})}
+	r.wg.Add(1)
+	go func() {
+		if cond {
+			defer r.wg.Done()
+		}
+		close(r.rawDone)
+	}()
+	go func() {
+		defer r.wg.Done()
+		<-r.block
+	}()
+	return r
+}
+
+func (r *contaminatedCapacityRun) stop() {
+	<-r.rawDone
+	r.wg.Wait()
+}
+
+// Two accepted launches each spending their own registration stay clean:
+// poisoning applies to unaccounted operations, not to the shape itself.
+type pairedAddDoneWorker struct{}
+type pairedAddDoneRun struct{ wg sync.WaitGroup }
+
+func (*pairedAddDoneWorker) start() *pairedAddDoneRun {
+	r := &pairedAddDoneRun{}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+	}()
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *pairedAddDoneRun) stop() { r.wg.Wait() }
+
 // An Add in an enclosing block dominates a launch nested below it: every
 // structured path to the go statement passes the registration first.
 type dominatingAddWorker struct{}

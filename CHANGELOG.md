@@ -382,8 +382,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   cannot
   account for (a `Done` in the start body, a non-constant or negative
   `Add`, any counter operation inside a function literal other than
-  the launched literal's own deferred `Done`) poisons that group's
-  capacity entirely. Anything beyond that — a second
+  the single recognized `Done` of an accepted launched literal — a
+  rejected literal's `Done` poisons too, because its raw goroutine
+  consumes registration an accepted launch might otherwise claim)
+  poisons that group's capacity entirely. Anything beyond that — a second
   goroutine on one `Add(1)`, `Add(0)`, an `Add` after the `go` — stays
   a raw obligation. Raw `go` statements remain
   deliberately count-based: each owes one completion signal discharged
