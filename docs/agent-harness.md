@@ -105,7 +105,9 @@ patch to miss:
   `Done`, deferred, with no `goto` in the literal — the only shape proving
   exactly one `Done` per launch; a counter operation the model cannot
   account for — function literals included, a rejected launched literal's
-  own `Done` among them — poisons that group's capacity, and everything
+  own `Done` among them — poisons that group's capacity, as does an
+  accepted-shape launch that finds no capacity left to spend, whose own
+  `Done` is then just as unaccounted, and everything
   else stays raw. Raw
   `go` launches stay deliberately count-based against visible channel receives —
   channel identity is out of scope — so that half is conservative join evidence,

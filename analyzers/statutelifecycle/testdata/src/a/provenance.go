@@ -654,6 +654,38 @@ func (*pairedAddDoneWorker) start() *pairedAddDoneRun {
 
 func (r *pairedAddDoneRun) stop() { r.wg.Wait() }
 
+// A perfectly shaped launch that no registration dominates is still raw,
+// and its Done poisons the group: at runtime that Done consumes the later
+// Add(1), releasing Wait while the second goroutine is still blocked.
+type orphanedShapeWorker struct{}
+type orphanedShapeRun struct {
+	wg      sync.WaitGroup
+	rawDone chan struct{}
+	release chan struct{}
+	block   chan struct{}
+}
+
+func (*orphanedShapeWorker) start() *orphanedShapeRun { // want `\[SLC103\].*launches 2 lifecycle goroutine.*waits for only 1`
+	r := &orphanedShapeRun{rawDone: make(chan struct{}), release: make(chan struct{}), block: make(chan struct{})}
+	go func() {
+		defer r.wg.Done()
+		<-r.release
+		close(r.rawDone)
+	}()
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		<-r.block
+	}()
+	close(r.release)
+	return r
+}
+
+func (r *orphanedShapeRun) stop() {
+	<-r.rawDone
+	r.wg.Wait()
+}
+
 // An Add in an enclosing block dominates a launch nested below it: every
 // structured path to the go statement passes the registration first.
 type dominatingAddWorker struct{}

@@ -385,7 +385,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the single recognized `Done` of an accepted launched literal — a
   rejected literal's `Done` poisons too, because its raw goroutine
   consumes registration an accepted launch might otherwise claim)
-  poisons that group's capacity entirely. Anything beyond that — a second
+  poisons that group's capacity entirely, and so does an
+  accepted-shape launch that finds no registration capacity to spend:
+  it stays raw, and its unattributed `Done` must never leave a
+  registration claimable by a later launch. Anything beyond that — a second
   goroutine on one `Add(1)`, `Add(0)`, an `Add` after the `go` — stays
   a raw obligation. Raw `go` statements remain
   deliberately count-based: each owes one completion signal discharged

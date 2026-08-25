@@ -273,7 +273,13 @@ func resolveReceiverGroup(call *ast.CallExpr, resolver *pathResolver) (groupKey,
 // classifyGoLaunch resolves one go statement: a launched literal carrying a
 // deferred Done on a group with unspent Add(1)-style registration capacity
 // earlier in the start body is that group's obligation; everything else,
-// ambiguity included, owes a raw completion signal.
+// ambiguity included, owes a raw completion signal. An accepted-shape launch
+// that cannot spend registration capacity is such a raw obligation, and from
+// that point on its Done is an unaccounted counter mutation, so it also
+// poisons the group's remaining capacity: at runtime that Done can consume a
+// later Add the model would otherwise attribute to a later launch. Poisoning
+// here is sound because this walk visits go statements in source order, so an
+// earlier launch's poison is already set when later launches try to spend.
 func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResolver, capacity *addCapacity, ownerRoots map[*types.Var]int, obligations *startObligations, foreign map[string]bool) {
 	lit, ok := stmt.Call.Fun.(*ast.FuncLit)
 	if !ok {
@@ -281,7 +287,12 @@ func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResol
 		return
 	}
 	key, ok := deferredDoneGroup(pass, lit, resolver)
-	if !ok || !capacity.take(key, stmt.Pos()) {
+	if !ok {
+		obligations.rawGo++
+		return
+	}
+	if !capacity.take(key, stmt.Pos()) {
+		capacity.poisoned[key] = true
 		obligations.rawGo++
 		return
 	}
@@ -578,13 +589,15 @@ func (c *addCapacity) recordAddStmt(pass *analysis.Pass, stmt *ast.ExprStmt, res
 	c.recordAdd(call, resolver)
 }
 
-// scanLaunchedLiteral inspects a go statement's own function literal with
-// the same verdict the launch classifier will reach. Only a literal the
-// strict recognizer accepts keeps its single first-statement deferred Done
-// exempt — that Done is the unit the launch will spend. A rejected
+// scanLaunchedLiteral inspects a go statement's own function literal and
+// shares the shape verdict the launch classifier will reach. Only a literal
+// the strict recognizer accepts keeps its single first-statement deferred
+// Done exempt — that Done is the unit the launch will spend. A rejected
 // literal's counter operations, its deferred Dones included, poison the
 // group: the launch will be raw, so its Done consumes registration some
-// accepted launch might otherwise claim.
+// accepted launch might otherwise claim. Shape is only half the verdict: the
+// classifier additionally poisons the group when an accepted literal's launch
+// cannot spend registration capacity.
 func (c *addCapacity) scanLaunchedLiteral(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) {
 	if _, ok := deferredDoneGroup(pass, lit, resolver); !ok {
 		c.poisonCounterOps(pass, lit.Body, resolver, nil)
