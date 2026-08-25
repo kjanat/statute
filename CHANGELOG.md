@@ -341,6 +341,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   proxy derives its own, so the route's value wins without making the fields
   it leaves alone spoofable.
 
+### Changed
+
+- The `statutelifecycle` SLC103 analyzer now requires exact WaitGroup
+  provenance instead of reducing a start to one launch count and a
+  cleanup to a `Wait`-anywhere boolean. Every launch is an obligation
+  with provenance: a raw `go` owes one completion signal (a channel
+  receive), and a `WaitGroup` launch owes a `Wait` on the exact same
+  group, normalized to lifecycle owner root plus the complete
+  field-selection path — `r.a.wg` and `r.b.wg` are different groups
+  even when they end in the same declared field type, a wait on
+  another owner's group or another object's identically declared field
+  proves nothing, and a `Wait` can no longer discharge raw `go` work
+  or vice versa. Launches through a group no lifecycle owner root
+  reaches, or whose provenance cannot be resolved, fail closed as
+  undischargeable and are diagnosed. Simple single-assignment aliases
+  (`run := r`, `wg := &r.wg`) resolve on both the launch and the wait
+  side, matching `Wait` evidence inside typed `sync.Once.Do` callbacks
+  still counts, and the conventional `Add(1)` + `go` + `defer Done()`
+  shape is one obligation on that group when Add and Done name the
+  same normalized group; reassigned or ambiguous aliases never count
+  as proof. Statute's own tree audits clean before and after.
+
 ### Security
 
 - `clientIP` no longer trusts `X-Forwarded-For` without explicit trust

@@ -266,7 +266,7 @@ type waitGroupRun struct {
 	wg     sync.WaitGroup
 }
 
-func (w *waitGroupWorker) start() *waitGroupRun { // want `\[SLC103\].*launches 2 lifecycle goroutine.*waits for only 0`
+func (w *waitGroupWorker) start() *waitGroupRun { // want `\[SLC103\].*on WaitGroup waitGroupRun\.wg but stop never waits on that group`
 	r := &waitGroupRun{worker: w}
 	r.wg.Go(func() { <-w.stopCh })
 	r.wg.Go(func() { <-w.stopCh })
@@ -299,7 +299,7 @@ func (r *joinedWaitGroupRun) stop() {
 type strongReceiverWorker struct{ wg sync.WaitGroup }
 type weakReturnedRun struct{}
 
-func (w *strongReceiverWorker) start() *weakReturnedRun { // want `\[SLC103\].*launches 2 lifecycle goroutine.*stop.*waits for only 0`
+func (w *strongReceiverWorker) start() *weakReturnedRun { // want `\[SLC103\].*on WaitGroup strongReceiverWorker\.wg outside its lifecycle owner`
 	w.wg.Go(func() {})
 	w.wg.Go(func() {})
 	return &weakReturnedRun{}
