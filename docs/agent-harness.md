@@ -92,11 +92,15 @@ patch to miss:
   normalized to lifecycle owner root plus the complete field-selection path — so
   `r.a.wg` and `r.b.wg` are different groups, a wait on another owner's group
   proves nothing, and a launch through a group no owner root reaches, or whose
-  provenance cannot be resolved, fails closed as undischargeable. Normalization
-  refuses reassigned root variables and value-copy aliases (only pointer-typed
-  aliases preserve storage identity), and the `Add(1)` + `go` + `defer Done()`
-  shape spends explicit registration capacity: constant positive `Add`s before
-  the launch, one unit per deferred-`Done` goroutine, everything else raw. Raw
+  provenance cannot be resolved, fails closed as undischargeable. Normalization is
+  storage identity, not a lexical path: it refuses reassigned root variables,
+  value-copy aliases (only pointer-typed aliases preserve storage identity),
+  and any path whose prefix the body writes to or lets escape by address. The
+  `Add(1)` + `go` + `defer Done()` shape spends explicit registration
+  capacity: a constant positive `Add` whose statement dominates the launch in
+  the block structure, one unit per deferred-`Done` goroutine; a counter
+  operation the model cannot account for poisons that group's capacity, and
+  everything else stays raw. Raw
   `go` launches stay deliberately count-based against visible channel receives —
   channel identity is out of scope — so that half is conservative join evidence,
   and anything ambiguous is intentionally a conservative diagnostic, not proof

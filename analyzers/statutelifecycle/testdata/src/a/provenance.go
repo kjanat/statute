@@ -155,6 +155,72 @@ func (*reassignedRootWorker) start() *reassignedRootRun { // want `\[SLC103\].*W
 
 func (r *reassignedRootRun) stop() { r.wg.Wait() }
 
+// Replacing an intermediate pointer field replaces the storage the path
+// names: the launch ran on the first child's group, stop waits the second
+// child's, even though both normalize to the same lexical path. A write to
+// any prefix of a group path fails closed as unresolved.
+type replacedChildGroup struct{ wg sync.WaitGroup }
+type replacedChildWorker struct{}
+type replacedChildRun struct{ child *replacedChildGroup }
+
+func (*replacedChildWorker) start() *replacedChildRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
+	r := &replacedChildRun{child: &replacedChildGroup{}}
+	r.child.wg.Go(func() {})
+	r.child = &replacedChildGroup{}
+	return r
+}
+
+func (r *replacedChildRun) stop() { r.child.wg.Wait() }
+
+// Replacing the intermediate field through a pointer alias is the same
+// storage replacement: the write through *p resolves to the same prefix.
+type derefWriteWorker struct{}
+type derefWriteRun struct{ child *replacedChildGroup }
+
+func (*derefWriteWorker) start() *derefWriteRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
+	r := &derefWriteRun{child: &replacedChildGroup{}}
+	p := &r.child
+	r.child.wg.Go(func() {})
+	*p = &replacedChildGroup{}
+	return r
+}
+
+func (r *derefWriteRun) stop() { r.child.wg.Wait() }
+
+// Letting a field's address escape hands replacement of that storage to
+// code the model cannot see; every path below the escaped prefix is
+// unresolvable.
+func swapChild(**replacedChildGroup) {}
+
+type escapedChildWorker struct{}
+type escapedChildRun struct{ child *replacedChildGroup }
+
+func (*escapedChildWorker) start() *escapedChildRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
+	r := &escapedChildRun{child: &replacedChildGroup{}}
+	swapChild(&r.child)
+	r.child.wg.Go(func() {})
+	return r
+}
+
+func (r *escapedChildRun) stop() { r.child.wg.Wait() }
+
+// A write to a sibling field replaces nothing along the group path: only a
+// prefix write invalidates provenance.
+type siblingWriteWorker struct{}
+type siblingWriteRun struct {
+	wg      sync.WaitGroup
+	started bool
+}
+
+func (*siblingWriteWorker) start() *siblingWriteRun {
+	r := &siblingWriteRun{}
+	r.started = true
+	r.wg.Go(func() {})
+	return r
+}
+
+func (r *siblingWriteRun) stop() { r.wg.Wait() }
+
 // A value copy of a group is not an alias: launching through the copy
 // registers work on a different WaitGroup than the owner's, so the owner's
 // wait proves nothing. The copy is foreign, not the owner's group.
@@ -274,6 +340,76 @@ func (*addAfterGoWorker) start() *addAfterGoRun { // want `\[SLC103\].*launches 
 }
 
 func (r *addAfterGoRun) stop() { r.wg.Wait() }
+
+// Registration must dominate the launch, not merely precede it in the
+// source: an Add inside a conditional branch may never have executed.
+type conditionalAddWorker struct{}
+type conditionalAddRun struct{ wg sync.WaitGroup }
+
+func (*conditionalAddWorker) start(cond bool) *conditionalAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &conditionalAddRun{}
+	if cond {
+		r.wg.Add(1)
+	}
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *conditionalAddRun) stop() { r.wg.Wait() }
+
+// A deferred Add occupies an earlier source position but executes only at
+// return: it registers nothing before the launch.
+type deferredAddWorker struct{}
+type deferredAddRun struct{ wg sync.WaitGroup }
+
+func (*deferredAddWorker) start() *deferredAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &deferredAddRun{}
+	defer r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *deferredAddRun) stop() { r.wg.Wait() }
+
+// A Done in the start body consumes registration the model granted: the
+// counter is back to zero before the launch, so the capacity is poisoned
+// and the goroutine stays raw.
+type depletedAddWorker struct{}
+type depletedAddRun struct{ wg sync.WaitGroup }
+
+func (*depletedAddWorker) start() *depletedAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &depletedAddRun{}
+	r.wg.Add(1)
+	r.wg.Done()
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *depletedAddRun) stop() { r.wg.Wait() }
+
+// An Add in an enclosing block dominates a launch nested below it: every
+// structured path to the go statement passes the registration first.
+type dominatingAddWorker struct{}
+type dominatingAddRun struct{ wg sync.WaitGroup }
+
+func (*dominatingAddWorker) start(cond bool) *dominatingAddRun {
+	r := &dominatingAddRun{}
+	r.wg.Add(1)
+	if cond {
+		go func() {
+			defer r.wg.Done()
+		}()
+	}
+	return r
+}
+
+func (r *dominatingAddRun) stop() { r.wg.Wait() }
 
 // Mixed raw go and WaitGroup work: the group wait alone cannot discharge
 // the raw goroutine, and the channel join alone cannot discharge the group.

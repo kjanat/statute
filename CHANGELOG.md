@@ -351,21 +351,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   different groups even when they end in the same declared field type,
   a wait on another owner's group or another object's identically
   declared field proves nothing, and a `Wait` can no longer discharge
-  raw `go` work or vice versa. Normalization is storage-conscious:
-  it resolves only through variables the body never reassigns — a root
-  assigned twice may denote two different objects, so launches through
-  it are unresolvable — and only through pointer-typed aliases
-  (`run := r`, `wg := &r.wg`), because a value copy like `wg := r.wg`
-  names a different `WaitGroup` than the owner's. Launches through a
-  group no lifecycle owner root reaches, or whose provenance cannot be
-  resolved, fail closed as undischargeable and are diagnosed. Matching
-  `Wait` evidence inside typed `sync.Once.Do` callbacks still counts.
-  The conventional `Add(1)` + `go` + `defer Done()` shape spends
-  explicit registration capacity: only `Add` calls with a constant
-  positive count that precede the launch register capacity, each unit
-  is spent by at most one deferred-`Done` goroutine, and anything
-  beyond that — a second goroutine on one `Add(1)`, `Add(0)`, an `Add`
-  after the `go` — stays a raw obligation. Raw `go` statements remain
+  raw `go` work or vice versa. Normalization is storage identity, not
+  a lexical path: it resolves only through variables the body never
+  reassigns — a root assigned twice may denote two different objects,
+  so launches through it are unresolvable — only through pointer-typed
+  aliases (`run := r`, `wg := &r.wg`), because a value copy like
+  `wg := r.wg` names a different `WaitGroup` than the owner's, and a
+  write or address escape anywhere along a field path (`r.child = ...`
+  after launching on `r.child.wg`) invalidates every path below that
+  prefix, since the storage the path names may have been replaced.
+  Launches through a group no lifecycle owner root reaches, or whose
+  provenance cannot be resolved, fail closed as undischargeable and
+  are diagnosed. Matching `Wait` evidence inside typed `sync.Once.Do`
+  callbacks still counts. The conventional `Add(1)` + `go` +
+  `defer Done()` shape spends explicit registration capacity: only a
+  plain `Add` statement with a constant positive count whose block
+  position dominates the launch registers capacity — an `Add` inside a
+  conditional branch or a `defer` is not provably executed before the
+  goroutine starts — each unit is spent by at most one deferred-`Done`
+  goroutine, and a counter operation the model cannot account for (a
+  `Done` in the start body, a non-constant or negative `Add`) poisons
+  that group's capacity entirely. Anything beyond that — a second
+  goroutine on one `Add(1)`, `Add(0)`, an `Add` after the `go` — stays
+  a raw obligation. Raw `go` statements remain
   deliberately count-based: each owes one completion signal discharged
   by visible channel receives in the cleanup by count; channel
   identity is out of SLC103's scope per the issue's non-goals, so that
