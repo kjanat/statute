@@ -326,6 +326,116 @@ func TestStatusRecorderHijack(t *testing.T) {
 	}
 }
 
+// TestStatusRecorderHijackRecords101 — a hijacked upgrade is written to
+// the taken-over connection, bypassing the writer, so the recorder can only
+// learn of it through its own Hijack. Both stacked recorders must latch 101:
+// the access log line and the by-status metric both reflect what the client
+// actually received instead of the implicit 200.
+func TestStatusRecorderHijackRecords101(t *testing.T) {
+	t.Parallel()
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := http.NewResponseController(w).Hijack(); err != nil {
+			t.Errorf("hijack through the recorder: %v", err)
+		}
+	})
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	cfg := resolved.AccessLog{Enabled: true, Writer: &mu_writer{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
+	st := newStats()
+	h := metricsMiddleware(st, accessLogMiddleware(cfg, inner))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if !rec.hijacked {
+		t.Fatal("hijack did not reach the underlying ResponseWriter")
+	}
+	mu.Lock()
+	line := buf.String()
+	mu.Unlock()
+	var v map[string]any
+	if err := json.Unmarshal([]byte(line), &v); err != nil {
+		t.Fatalf("parse access log line %q: %v", line, err)
+	}
+	if v["status"].(float64) != 101 {
+		t.Errorf("logged status %v, want 101 for a hijacked upgrade", v["status"])
+	}
+	var prom bytes.Buffer
+	st.WritePrometheus(&prom)
+	if !strings.Contains(prom.String(), `statute_requests_by_status_total{status="101"} 1`) {
+		t.Errorf("metrics missing 101 counter:\n%s", prom.String())
+	}
+}
+
+// TestStatusRecorderHijackKeepsCommittedStatus — first commit wins in both
+// directions: a response committed before the hijack keeps its status, and
+// a WriteHeader after the hijack cannot rewrite the latched 101.
+func TestStatusRecorderHijackKeepsCommittedStatus(t *testing.T) {
+	t.Parallel()
+
+	committed := &statusRecorder{ResponseWriter: &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}, status: 200}
+	committed.WriteHeader(http.StatusTeapot)
+	if _, _, err := committed.Hijack(); err != nil {
+		t.Fatalf("hijack after commit: %v", err)
+	}
+	if committed.status != http.StatusTeapot {
+		t.Errorf("status %d after post-commit hijack, want 418 kept", committed.status)
+	}
+
+	hijackedFirst := &statusRecorder{ResponseWriter: &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}, status: 200}
+	if _, _, err := hijackedFirst.Hijack(); err != nil {
+		t.Fatalf("hijack: %v", err)
+	}
+	hijackedFirst.WriteHeader(http.StatusInternalServerError)
+	if hijackedFirst.status != http.StatusSwitchingProtocols {
+		t.Errorf("status %d after post-hijack WriteHeader, want latched 101", hijackedFirst.status)
+	}
+}
+
+// TestStatusRecorderHijackNotSupported — a writer whose connection cannot
+// be hijacked keeps failing exactly as before, and the failed attempt
+// latches nothing: the response the handler then writes is what is
+// recorded.
+func TestStatusRecorderHijackNotSupported(t *testing.T) {
+	t.Parallel()
+	s := &statusRecorder{ResponseWriter: httptest.NewRecorder(), status: 200}
+	if _, _, err := s.Hijack(); err == nil {
+		t.Fatal("hijack over a non-hijackable writer succeeded, want error")
+	}
+	s.WriteHeader(http.StatusNotFound)
+	if s.status != http.StatusNotFound {
+		t.Errorf("status %d after failed hijack then WriteHeader, want 404", s.status)
+	}
+}
+
+// TestAccessLog_StatusFilter101MatchesHijack — Statuses("101") now selects
+// proxied upgrades too, not only handler-written 101s: the filter compares
+// against the latched hijack status.
+func TestAccessLog_StatusFilter101MatchesHijack(t *testing.T) {
+	t.Parallel()
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	cfg := resolved.AccessLog{
+		Enabled:    true,
+		Writer:     &mu_writer{Mutex: &mu, w: &buf},
+		Format:     "json",
+		SampleRate: 1,
+		Statuses:   []resolved.StatusRange{{From: 101, To: 101}},
+	}
+	h := accessLogMiddleware(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := http.NewResponseController(w).Hijack(); err != nil {
+			t.Errorf("hijack: %v", err)
+		}
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	mu.Lock()
+	logged := buf.Len() > 0
+	mu.Unlock()
+	if !logged {
+		t.Error("hijacked upgrade was filtered out by Statuses(\"101\")")
+	}
+}
+
 // TestAccessLog_DisabledIsNoOp
 func TestAccessLog_DisabledIsNoOp(t *testing.T) {
 	t.Parallel()

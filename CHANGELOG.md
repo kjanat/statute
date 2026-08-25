@@ -341,6 +341,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   proxy derives its own, so the route's value wins without making the fields
   it leaves alone spoofable.
 
+- Hijacked protocol upgrades are observable as 101. The status recorder
+  implements `Hijack`, delegating through `http.ResponseController` so a
+  writer whose connection cannot be hijacked fails exactly as before; a
+  successful hijack before any committed response latches 101 Switching
+  Protocols and commits the recorder, while a failed attempt latches
+  nothing and a response committed before the hijack keeps its status.
+  The access log records `status: 101` for proxied WebSocket upgrades,
+  `statute_requests_by_status_total` counts them under `101`, and
+  `Statuses("101")` matches them alongside handler-written 101s. The
+  recorded duration is unchanged and spans the tunneled connection
+  lifetime, because the proxy handler returns when the tunnel closes.
+
 ### Changed
 
 - The `statutelifecycle` SLC103 analyzer now requires exact WaitGroup
@@ -428,8 +440,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reach the connection through `Hijacker` or `Unwrap` — so no WebSocket
   upgrade could pass through an observability-wrapped listener at all.
   The hijacked handshake is written directly to the taken-over
-  connection, bypassing the recorder, so a proxied upgrade records the
-  implicit 200 rather than 101.
+  connection, bypassing the recorder, which at first recorded a proxied
+  upgrade as the implicit 200; the recorder now implements `Hijack`
+  itself (see below), so upgrades latch 101.
 
 - `Start` is transactional, two-phase, and retryable. Phase one starts
   the non-listener prerequisites — pool health checkers, ACME managers
