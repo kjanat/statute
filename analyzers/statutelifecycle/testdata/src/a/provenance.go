@@ -140,6 +140,51 @@ func (r *reassignedAliasRun) stop() {
 	wg.Wait()
 }
 
+// A reassigned root variable may denote different objects at different
+// points: the launch ran on the first object, the caller holds the second,
+// and stop would wait an empty group. Fails closed as unresolved.
+type reassignedRootWorker struct{}
+type reassignedRootRun struct{ wg sync.WaitGroup }
+
+func (*reassignedRootWorker) start() *reassignedRootRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
+	r := &reassignedRootRun{}
+	r.wg.Go(func() {})
+	r = &reassignedRootRun{}
+	return r
+}
+
+func (r *reassignedRootRun) stop() { r.wg.Wait() }
+
+// A value copy of a group is not an alias: launching through the copy
+// registers work on a different WaitGroup than the owner's, so the owner's
+// wait proves nothing. The copy is foreign, not the owner's group.
+type copiedGroupWorker struct{}
+type copiedGroupRun struct{ wg sync.WaitGroup }
+
+func (*copiedGroupWorker) start() *copiedGroupRun { // want `\[SLC103\].*on WaitGroup wg outside its lifecycle owner`
+	r := &copiedGroupRun{}
+	wg := r.wg //nolint:govet // the copy is the point: it must not alias the owner's group
+	wg.Go(func() {})
+	return r
+}
+
+func (r *copiedGroupRun) stop() { r.wg.Wait() }
+
+// A value copy on the wait side is equally worthless as evidence.
+type copiedWaitWorker struct{}
+type copiedWaitRun struct{ wg sync.WaitGroup }
+
+func (*copiedWaitWorker) start() *copiedWaitRun { // want `\[SLC103\].*on WaitGroup copiedWaitRun\.wg but stop never waits on that group`
+	r := &copiedWaitRun{}
+	r.wg.Go(func() {})
+	return r
+}
+
+func (r *copiedWaitRun) stop() {
+	wg := r.wg //nolint:govet // the copy is the point: waiting it joins nothing
+	wg.Wait()
+}
+
 // The conventional Add(1) + go + defer Done() shape is one obligation on
 // that group, discharged by the matching Wait.
 type addDoneWorker struct{}
@@ -177,6 +222,58 @@ func (r *mismatchedAddDoneRun) stop() {
 	r.addWG.Wait()
 	r.doneWG.Wait()
 }
+
+// One Add(1) cannot vouch for two deferred-Done goroutines: only one was
+// registered, so whichever finishes first releases Wait while the other
+// still runs. The second launch stays a raw obligation.
+type doubleDoneWorker struct{}
+type doubleDoneRun struct{ wg sync.WaitGroup }
+
+func (*doubleDoneWorker) start() *doubleDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &doubleDoneRun{}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+	}()
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *doubleDoneRun) stop() { r.wg.Wait() }
+
+// Add(0) registers nothing; the deferred Done cannot spend capacity that
+// was never added, so the launch stays raw.
+type addZeroWorker struct{}
+type addZeroRun struct{ wg sync.WaitGroup }
+
+func (*addZeroWorker) start() *addZeroRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &addZeroRun{}
+	r.wg.Add(0)
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *addZeroRun) stop() { r.wg.Wait() }
+
+// Registration must precede the launch: an Add after the go statement
+// cannot prove the goroutine was registered when it started.
+type addAfterGoWorker struct{}
+type addAfterGoRun struct{ wg sync.WaitGroup }
+
+func (*addAfterGoWorker) start() *addAfterGoRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &addAfterGoRun{}
+	go func() {
+		defer r.wg.Done()
+	}()
+	r.wg.Add(1)
+	return r
+}
+
+func (r *addAfterGoRun) stop() { r.wg.Wait() }
 
 // Mixed raw go and WaitGroup work: the group wait alone cannot discharge
 // the raw goroutine, and the channel join alone cannot discharge the group.

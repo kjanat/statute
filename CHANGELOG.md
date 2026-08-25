@@ -345,23 +345,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The `statutelifecycle` SLC103 analyzer now requires exact WaitGroup
   provenance instead of reducing a start to one launch count and a
-  cleanup to a `Wait`-anywhere boolean. Every launch is an obligation
-  with provenance: a raw `go` owes one completion signal (a channel
-  receive), and a `WaitGroup` launch owes a `Wait` on the exact same
-  group, normalized to lifecycle owner root plus the complete
-  field-selection path — `r.a.wg` and `r.b.wg` are different groups
-  even when they end in the same declared field type, a wait on
-  another owner's group or another object's identically declared field
-  proves nothing, and a `Wait` can no longer discharge raw `go` work
-  or vice versa. Launches through a group no lifecycle owner root
-  reaches, or whose provenance cannot be resolved, fail closed as
-  undischargeable and are diagnosed. Simple single-assignment aliases
-  (`run := r`, `wg := &r.wg`) resolve on both the launch and the wait
-  side, matching `Wait` evidence inside typed `sync.Once.Do` callbacks
-  still counts, and the conventional `Add(1)` + `go` + `defer Done()`
-  shape is one obligation on that group when Add and Done name the
-  same normalized group; reassigned or ambiguous aliases never count
-  as proof. Statute's own tree audits clean before and after.
+  cleanup to a `Wait`-anywhere boolean. A `WaitGroup` launch owes a
+  `Wait` on the exact same group, normalized to lifecycle owner root
+  plus the complete field-selection path — `r.a.wg` and `r.b.wg` are
+  different groups even when they end in the same declared field type,
+  a wait on another owner's group or another object's identically
+  declared field proves nothing, and a `Wait` can no longer discharge
+  raw `go` work or vice versa. Normalization is storage-conscious:
+  it resolves only through variables the body never reassigns — a root
+  assigned twice may denote two different objects, so launches through
+  it are unresolvable — and only through pointer-typed aliases
+  (`run := r`, `wg := &r.wg`), because a value copy like `wg := r.wg`
+  names a different `WaitGroup` than the owner's. Launches through a
+  group no lifecycle owner root reaches, or whose provenance cannot be
+  resolved, fail closed as undischargeable and are diagnosed. Matching
+  `Wait` evidence inside typed `sync.Once.Do` callbacks still counts.
+  The conventional `Add(1)` + `go` + `defer Done()` shape spends
+  explicit registration capacity: only `Add` calls with a constant
+  positive count that precede the launch register capacity, each unit
+  is spent by at most one deferred-`Done` goroutine, and anything
+  beyond that — a second goroutine on one `Add(1)`, `Add(0)`, an `Add`
+  after the `go` — stays a raw obligation. Raw `go` statements remain
+  deliberately count-based: each owes one completion signal discharged
+  by visible channel receives in the cleanup by count; channel
+  identity is out of SLC103's scope per the issue's non-goals, so that
+  half is conservative join evidence, not per-channel provenance.
+  Statute's own tree audits clean before and after.
 
 ### Security
 

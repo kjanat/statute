@@ -88,15 +88,19 @@ patch to miss:
 - `SLC102` — a `net/http` or quic-go HTTP/3 `Serve*` error is discarded. A dead
   serving goroutine must not leave a bound endpoint advertised as healthy.
 - `SLC103` — a paired `start`/`stop` lifecycle launches work its stop path does not
-  visibly join. Obligations carry provenance: a raw `go` owes one completion
-  signal (a channel receive), and a `WaitGroup` launch owes a `Wait` on the exact
-  same group, normalized to lifecycle owner root plus the complete field-selection
-  path — so `r.a.wg` and `r.b.wg` are different groups, a wait on another owner's
-  group proves nothing, and a launch through a group no owner root reaches, or
-  whose provenance cannot be resolved, fails closed as undischargeable. Simple
-  single-assignment aliases and the `Add(1)` + `go` + `defer Done()` shape on one
-  group are recognized; anything ambiguous is intentionally a conservative
-  diagnostic, not proof that a particular goroutine leaked.
+  visibly join. A `WaitGroup` launch owes a `Wait` on the exact same group,
+  normalized to lifecycle owner root plus the complete field-selection path — so
+  `r.a.wg` and `r.b.wg` are different groups, a wait on another owner's group
+  proves nothing, and a launch through a group no owner root reaches, or whose
+  provenance cannot be resolved, fails closed as undischargeable. Normalization
+  refuses reassigned root variables and value-copy aliases (only pointer-typed
+  aliases preserve storage identity), and the `Add(1)` + `go` + `defer Done()`
+  shape spends explicit registration capacity: constant positive `Add`s before
+  the launch, one unit per deferred-`Done` goroutine, everything else raw. Raw
+  `go` launches stay deliberately count-based against visible channel receives —
+  channel identity is out of scope — so that half is conservative join evidence,
+  and anything ambiguous is intentionally a conservative diagnostic, not proof
+  that a particular goroutine leaked.
 - `SLC104` — lifecycle cleanup discards an error from `Close` or `Shutdown`.
 
 The analyzer is initially disabled from the ordinary `make lint` set because current
