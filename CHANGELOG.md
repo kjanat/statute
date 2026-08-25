@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `statute.Health(addr, path)` configures a dedicated process health
+  endpoint on its own listener that brackets application availability:
+  `Start` binds and serves it first — before certificate managers, the
+  initial Docker sync, and every other socket — and `Shutdown` closes
+  it last, after the content and metrics listeners drain. Liveness at
+  the configured path (default `/healthz`) answers `200 "ok"` for the
+  whole time the process runs; readiness at the path plus `/ready`
+  answers `503 "not ready"` throughout startup, `200 "ok"` once startup
+  commits (listeners bound, certificate managers started, initial
+  Docker sync complete), and `503 "not ready"` again for the entire
+  shutdown grace period — probes get answers, not refused connections,
+  until the drain completes. Readiness does not wait for asynchronous
+  HTTP-01 certificate warm-up. Matching is exact: only the two health
+  paths answer, everything else — trailing-slash and subtree requests
+  included — returns 404, and no metrics or pprof are mounted. The path
+  must start with `/`, must not be `/`, and must not end with `/`;
+  `Resolve` rejects other shapes. A failed `Start` fully stops the
+  health server (socket released, serve goroutine awaited) and a
+  retried `Start` constructs a fresh one and serves health again. The
+  `statutelifecycle` SLC100 analyzer now models this rollback-owned
+  early publication: a publish rooted at a start attempt whose deferred
+  rollback provably stops and awaits the server is attempt-bracketed,
+  not a leak.
+
 - `Transport.FlushInterval` exposes the reverse proxy's response flush
   interval as pool policy, e.g. `"100ms"`: every route proxying to the
   pool shares the one interval, and active health probes are unaffected

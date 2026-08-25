@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+
+	"statute.kjanat.dev/resolved"
 )
 
 type closeErrorListener struct {
@@ -1361,4 +1363,523 @@ func waitForListen(t *testing.T, addr string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("listener at %s never accepted within %s", addr, deadline)
+}
+
+// redirectHealthConfig is the minimal valid config the health lifecycle
+// tests share: one plain content listener with a redirect route, plus the
+// health endpoint on healthAddr.
+func redirectHealthConfig(healthAddr string) Config {
+	return Config{
+		Listeners:     Listeners{HTTP("127.0.0.1:0")},
+		Routes:        Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+		Observability: Observability{Health: Health(healthAddr, "/healthz")},
+		Shutdown:      Shutdown{GracePeriod: "2s"},
+	}
+}
+
+// mustServeHealth asserts the "/healthz" liveness and readiness paths
+// both answer 200 "ok" on addr.
+func mustServeHealth(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	for _, p := range []string{"/healthz", "/healthz/ready"} {
+		resp, err := http.Get("http://" + addr + p)
+		if err != nil {
+			t.Fatalf("GET %s: %v", p, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+			t.Errorf("%s: status %d body %q, want 200 ok", p, resp.StatusCode, body)
+		}
+	}
+}
+
+// wantHealthGet asserts one GET over the socket at addr answers with the given status and body; a connection error fails, so refusal never passes as not-ready.
+// healthProbeClient bounds every probe so a wedged listener fails the
+// assertion instead of riding out the go-test deadline.
+var healthProbeClient = &http.Client{Timeout: 5 * time.Second}
+
+func wantHealthGet(t *testing.T, addr, path string, code int, body string) {
+	t.Helper()
+	resp, err := healthProbeClient.Get("http://" + addr + path)
+	if err != nil {
+		t.Fatalf("GET %s%s: %v", addr, path, err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != code || string(got) != body {
+		t.Errorf("%s: status %d body %q, want %d %q", path, resp.StatusCode, got, code, body)
+	}
+}
+
+// mustServeHealthStarting asserts the not-yet-ready bracket over a real socket: liveness 200 "ok", readiness 503 "not ready".
+func mustServeHealthStarting(t *testing.T, addr string) {
+	t.Helper()
+	waitForListen(t, addr)
+	wantHealthGet(t, addr, "/healthz", http.StatusOK, "ok")
+	wantHealthGet(t, addr, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
+}
+
+// wantHealthResponse asserts one GET against the health mux; an empty
+// body means only the status code is checked.
+func wantHealthResponse(t *testing.T, h http.Handler, path string, code int, body string) {
+	t.Helper()
+	rec := runRequest(t, h, httptest.NewRequest("GET", path, nil))
+	if rec.Code != code || (body != "" && rec.Body.String() != body) {
+		t.Errorf("%s: status %d body %q, want %d %q", path, rec.Code, rec.Body.String(), code, body)
+	}
+}
+
+// TestBuildHealthServer — the health handler answers exactly the liveness
+// path and path+"/ready" gated on the ready flag, and nothing else: no
+// metrics, no pprof, no subtree — a trailing-slash request 404s and can
+// never reach the liveness or readiness handler.
+func TestBuildHealthServer(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, redirectHealthConfig("127.0.0.1:0"))
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	h := srv.buildHealthServer(r.Observability.Health).Handler
+
+	wantHealthResponse(t, h, "/healthz", http.StatusOK, "ok")
+	wantHealthResponse(t, h, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
+	srv.ready.Store(true)
+	wantHealthResponse(t, h, "/healthz/ready", http.StatusOK, "ok")
+	srv.ready.Store(false)
+	wantHealthResponse(t, h, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
+
+	for _, path := range []string{"/metrics", "/debug/pprof/", "/", "/healthz/", "/healthz/other", "/healthz/ready/"} {
+		wantHealthResponse(t, h, path, http.StatusNotFound, "")
+	}
+}
+
+// TestNewServerWithoutHealthConfig — no Health in the config means an
+// attempt binds and serves no health listener, and count() stays zero.
+func TestNewServerWithoutHealthConfig(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP(":0")},
+		Routes:    Routes{Match("/*").RedirectTo("https://example.com", http.StatusMovedPermanently)},
+	})
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	var attempt startAttempt
+	if err := attempt.serveHealthEarly(srv); err != nil {
+		t.Fatalf("serveHealthEarly: %v", err)
+	}
+	if attempt.listeners.health != nil {
+		t.Fatal("health listener bound without health configuration")
+	}
+	if n := (&boundListeners{}).count(); n != 0 {
+		t.Fatalf("empty boundListeners count = %d, want 0", n)
+	}
+}
+
+// TestHealthServesLiveAndReadyAfterStart — a started server answers 200 on
+// both the liveness and readiness paths over a real socket.
+func TestHealthServesLiveAndReadyAfterStart(t *testing.T) {
+	healthAddr := reserveAddr(t)
+	r := mustResolve(t, redirectHealthConfig(healthAddr))
+	r.Listeners[0].Addr = reserveAddr(t)
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeHealth(t, healthAddr)
+}
+
+// TestStartHealthBindFailureReleasesListeners — a busy health address
+// fails Start closed before anything else starts, leaves the content
+// address free, and the retried Start must actually serve both content
+// and health: the retry constructs a fresh health server and flips the
+// ready flag at its commit.
+func TestStartHealthBindFailureReleasesListeners(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+
+	r := mustResolve(t, redirectHealthConfig(busy.Addr().String()))
+	contentAddr := reserveAddr(t)
+	r.Listeners[0].Addr = contentAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite a conflicting health address")
+	}
+	mustBindNow(t, contentAddr)
+	if srv.ready.Load() {
+		t.Fatal("failed Start flipped the ready flag")
+	}
+
+	healthAddr := busy.Addr().String()
+	if err := busy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeRedirect(t, contentAddr)
+	mustServeHealth(t, healthAddr)
+}
+
+// TestHealthRollbackStopsServerAndReleasesPort — attempt rollback owns the
+// full teardown of the early-serving health server: while the attempt is
+// live the socket answers, rollback closes the server AND awaits the serve
+// goroutine, the port is immediately rebindable, and a fresh attempt
+// serves again because each attempt constructs its own http.Server.
+func TestHealthRollbackStopsServerAndReleasesPort(t *testing.T) {
+	r := mustResolve(t, redirectHealthConfig("127.0.0.1:0"))
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	var attempt startAttempt
+	if err := attempt.serveHealthEarly(srv); err != nil {
+		t.Fatalf("serveHealthEarly: %v", err)
+	}
+	b := attempt.listeners.health
+	addr := b.listener.Addr().String()
+	mustServeHealthStarting(t, addr)
+	if err := attempt.rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	select {
+	case <-b.done:
+	default:
+		t.Fatal("health serve goroutine still running after rollback")
+	}
+	mustBindNow(t, addr)
+
+	// The retried attempt gets a fresh, unpoisoned server; rollback again to leave nothing alive.
+	var second startAttempt
+	if err := second.serveHealthEarly(srv); err != nil {
+		t.Fatalf("second serveHealthEarly: %v", err)
+	}
+	addr2 := second.listeners.health.listener.Addr().String()
+	mustServeHealthStarting(t, addr2)
+	if err := second.rollback(); err != nil {
+		t.Fatalf("second rollback: %v", err)
+	}
+	mustBindNow(t, addr2)
+}
+
+// TestFailedStartServesHealthThenReleases — health answers live=200 and
+// ready=503 over the socket in the middle of a failing attempt, the failed
+// Start fully releases it (port rebindable, serve goroutine gone via the
+// awaited rollback), and a retried Start serves content and health again.
+func TestFailedStartServesHealthThenReleases(t *testing.T) {
+	healthAddr := reserveAddr(t)
+	contentAddr := reserveAddr(t)
+	r := mustResolve(t, redirectHealthConfig(healthAddr))
+	r.Listeners[0].Addr = contentAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	fail := true
+	srv.listenTCP = func(ctx context.Context, network, addr string) (net.Listener, error) {
+		if fail && addr == contentAddr {
+			// The attempt is mid-flight: health must already answer over its socket.
+			mustServeHealthStarting(t, healthAddr)
+			return nil, errors.New("injected content bind failure")
+		}
+		return (&net.ListenConfig{}).Listen(ctx, network, addr)
+	}
+
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite the injected content bind failure")
+	}
+	if srv.ready.Load() {
+		t.Fatal("failed Start flipped the ready flag")
+	}
+	mustBindNow(t, healthAddr)
+
+	fail = false
+	if err := srv.Start(); err != nil {
+		t.Fatalf("retried Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeRedirect(t, contentAddr)
+	mustServeHealth(t, healthAddr)
+}
+
+// waitReadyFalse polls the ready flag until it drops, failing if the drain
+// completes first or the flag never flips.
+func waitReadyFalse(t *testing.T, srv *server, contentDone <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.ready.Load() {
+		select {
+		case err := <-contentDone:
+			t.Fatalf("drain finished (content err=%v) before ready flipped false", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ready still true while shutdown drains")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestShutdownFlipsReadyBeforeDrain — while an in-flight content request drains, health answers live=200/ready=503 over the socket; the health listener closes only after the drain, then the port is rebindable.
+func TestShutdownFlipsReadyBeforeDrain(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseOnce)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		_, _ = w.Write([]byte("done"))
+	}))
+	t.Cleanup(backend.Close)
+
+	healthAddr := reserveAddr(t)
+	contentAddr := reserveAddr(t)
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Upstreams: Upstreams{
+			"api": Pool{Backends: []Backend{{Address: strings.TrimPrefix(backend.URL, "http://")}}},
+		},
+		Routes:        Routes{Match("/*").ProxyTo("api")},
+		Observability: Observability{Health: Health(healthAddr, "/healthz")},
+		Shutdown:      Shutdown{GracePeriod: "5s"},
+	})
+	r.Listeners[0].Addr = contentAddr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustServeHealth(t, healthAddr)
+
+	contentDone := make(chan error, 1)
+	go func() {
+		resp, err := http.Get("http://" + contentAddr + "/slow")
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		contentDone <- err
+	}()
+	<-entered // the content request is now in flight, held at the backend
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- srv.Shutdown() }()
+
+	waitReadyFalse(t, srv, contentDone)
+
+	// The backend still holds the content drain open, so health must ANSWER over the socket — a refused connection is a failure, since health closes only after the drain.
+	wantHealthGet(t, healthAddr, "/healthz", http.StatusOK, "ok")
+	wantHealthGet(t, healthAddr, "/healthz/ready", http.StatusServiceUnavailable, "not ready")
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned (err=%v) while the content drain was still held", err)
+	default:
+	}
+
+	releaseOnce()
+	if err := <-contentDone; err != nil {
+		t.Errorf("in-flight content request: %v", err)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+	mustBindNow(t, healthAddr)
+}
+
+// TestHealthProbesAbsentFromRequestMetrics — probe traffic rides the aux
+// plane, outside metricsMiddleware: hitting the health endpoints must not
+// count into statute_requests_total.
+func TestHealthProbesAbsentFromRequestMetrics(t *testing.T) {
+	t.Parallel()
+	cfg := redirectHealthConfig("127.0.0.1:0")
+	cfg.Observability.Metrics = Prometheus("127.0.0.1:0", "/metrics")
+	r := mustResolve(t, cfg)
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	healthHandler := srv.buildHealthServer(r.Observability.Health).Handler
+	for _, path := range []string{"/healthz", "/healthz/ready"} {
+		runRequest(t, healthHandler, httptest.NewRequest("GET", path, nil))
+	}
+	rec := runRequest(t, srv.metricsServer.Handler, httptest.NewRequest("GET", "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "statute_requests_total 0") {
+		t.Errorf("health probes counted into request metrics; body=%s", rec.Body.String())
+	}
+}
+
+// TestDockerSyncFailureNeverReady — a failing Docker initial sync fails
+// Start: the ready flag never flips, and the early health listener is
+// fully released by the rollback so the address rebinds immediately.
+func TestDockerSyncFailureNeverReady(t *testing.T) {
+	healthAddr := reserveAddr(t)
+	cfg := redirectHealthConfig(healthAddr)
+	// Nothing listens on port 1; the provider's startup ping fails fast.
+	cfg.Docker = Docker().Endpoint("tcp://127.0.0.1:1")
+	r := mustResolve(t, cfg)
+	r.Listeners[0].Addr = reserveAddr(t)
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded despite an unreachable docker daemon")
+	}
+	if srv.ready.Load() {
+		t.Fatal("failed Start flipped the ready flag")
+	}
+	mustBindNow(t, healthAddr)
+}
+
+// TestReadinessWaitsForDockerInitialSync: the initial Docker sync is a
+// synchronous Start prerequisite: while it is still held in flight, health
+// already ANSWERS over the socket — liveness 200, readiness 503 — and
+// readiness answers 200 only once Start has returned.
+func TestReadinessWaitsForDockerInitialSync(t *testing.T) {
+	syncReached := make(chan struct{})
+	syncGate := make(chan struct{})
+	releaseSync := sync.OnceFunc(func() { close(syncGate) })
+	t.Cleanup(releaseSync)
+	var firstSync sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
+	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) {
+		firstSync.Do(func() {
+			close(syncReached)
+			<-syncGate
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	})
+	mux.HandleFunc("/events", func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	daemon := httptest.NewServer(mux)
+	t.Cleanup(daemon.Close)
+
+	healthAddr := reserveAddr(t)
+	cfg := redirectHealthConfig(healthAddr)
+	cfg.Docker = Docker().Endpoint("tcp://" + strings.TrimPrefix(daemon.URL, "http://"))
+	r := mustResolve(t, cfg)
+	r.Listeners[0].Addr = reserveAddr(t)
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- srv.Start() }()
+	<-syncReached // Start is now blocked inside the initial Docker sync
+	if srv.ready.Load() {
+		t.Error("ready flipped while the initial Docker sync was still in flight")
+	}
+	// Health brackets startup: a refused connection here is a failure, not an acceptable not-ready signal.
+	mustServeHealthStarting(t, healthAddr)
+
+	releaseSync()
+	if err := <-startDone; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	mustServeHealth(t, healthAddr)
+}
+
+// TestReadinessDoesNotWaitForHTTP01Warmup — HTTP-01 warm-up issuance runs
+// asynchronously after commit; readiness must already answer 200 while the
+// warm-up order is still held in flight at the CA.
+func TestReadinessDoesNotWaitForHTTP01Warmup(t *testing.T) {
+	httpAddr := reserveAddr(t)
+	healthAddr := reserveAddr(t)
+	cfg := Config{
+		Listeners: Listeners{
+			HTTP(httpAddr),
+			HTTPS("127.0.0.1:0", AutoTLS("pin.example").
+				HTTP01().
+				Email("ops@pin.example").
+				Storage(t.TempDir())),
+		},
+		Upstreams:     Upstreams{"a": Pool{Backends: []Backend{{Address: "127.0.0.1:1"}}}},
+		Routes:        Routes{Match("/*").ProxyTo("a")},
+		Observability: Observability{Health: Health(healthAddr, "/healthz")},
+		Shutdown:      Shutdown{GracePeriod: "2s"},
+	}
+	r := mustResolve(t, cfg)
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	var src *resolved.AutoTLS
+	for _, l := range r.Listeners {
+		if len(l.AutoTLSSources) > 0 {
+			src = l.AutoTLSSources[0]
+		}
+	}
+	if src == nil {
+		t.Fatal("resolved config has no AutoTLS source")
+	}
+	mgr := srv.acmeManagers[src]
+	if mgr == nil {
+		t.Fatal("no acme manager built for the HTTP-01 source")
+	}
+
+	fake := newFakeACME(t, nil)
+	fake.challengeURL = "http://" + httpAddr
+	mgr.directoryURL = fake.url("/dir")
+	reached := make(chan struct{})
+	gate := make(chan struct{})
+	releaseGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(releaseGate)
+	fake.mu.Lock()
+	fake.authzReached, fake.authzGate = reached, gate
+	fake.mu.Unlock()
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+	// Released before the Shutdown defer (LIFO) so the drain never waits
+	// on the gated warm-up order.
+	defer releaseGate()
+
+	<-reached // the warm-up order is now in flight, blocked at the CA
+	mustServeHealth(t, healthAddr)
 }

@@ -33,6 +33,10 @@ type server struct {
 	metricsServer *http.Server
 	http3Servers  []*http3Server
 
+	// ready flips true at Start's commit and false when Shutdown begins;
+	// the health readiness handler reads it, nothing else writes it.
+	ready atomic.Bool
+
 	pools map[string]*poolHandler
 
 	// docker is the label-discovery provider; nil unless configured.
@@ -331,6 +335,33 @@ func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
 	}
 }
 
+// buildHealthServer builds one attempt's fresh health http.Server: an exact-path handler (no ServeMux subtrees) answering liveness at h.Path, readiness at h.Path+"/ready", 404 otherwise, with neither metrics nor pprof mounted.
+func (s *server) buildHealthServer(h resolved.Health) *http.Server {
+	readyPath := h.Path + "/ready"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case h.Path:
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+		case readyPath:
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			if !s.ready.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte("not ready"))
+				return
+			}
+			_, _ = w.Write([]byte("ok"))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	return &http.Server{
+		Addr:              h.Addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+}
+
 type boundHTTP struct {
 	server   *http.Server
 	policy   *resolved.Listener
@@ -378,12 +409,42 @@ func (b *boundMetrics) rollback() error {
 	return nil
 }
 
+// boundHealth owns one attempt's already-serving health server; done closes when its serve goroutine exits so teardown can await it.
+type boundHealth struct {
+	server   *http.Server
+	listener net.Listener
+	done     chan struct{}
+}
+
+func (b *boundHealth) serve() {
+	defer close(b.done)
+	logServeExit("health", b.server.Addr, b.server.Serve(b.listener))
+}
+
+// rollback fully retires the early-serving health server: close it, await the serve goroutine, and join any close error.
+func (b *boundHealth) rollback() error {
+	err := b.server.Close()
+	<-b.done
+	if err != nil {
+		return fmt.Errorf("rollback close health %s: %w", b.server.Addr, err)
+	}
+	return nil
+}
+
+// shutdown drains the health server and awaits its serve goroutine; serverRun.shutdown calls it last so probes get answers for the whole grace period.
+func (b *boundHealth) shutdown(ctx context.Context) error {
+	err := b.server.Shutdown(ctx)
+	<-b.done
+	return err
+}
+
 // boundListeners is the typed socket ownership of one Start attempt. It
 // cannot confuse configured server controls with the sockets rollback owns.
 type boundListeners struct {
 	http    []*boundHTTP
 	http3   []*boundHTTP3
 	metrics *boundMetrics
+	health  *boundHealth
 }
 
 func (b *boundListeners) rollback() error {
@@ -397,9 +458,13 @@ func (b *boundListeners) rollback() error {
 	if b.metrics != nil {
 		errs = append(errs, b.metrics.rollback())
 	}
+	if b.health != nil {
+		errs = append(errs, b.health.rollback())
+	}
 	return errors.Join(errs...)
 }
 
+// serve launches the content and metrics serve loops; health is absent because serveHealthEarly already launched it before the prerequisite phase.
 func (b *boundListeners) serve() {
 	for _, listener := range b.http {
 		go listener.serve()
@@ -427,6 +492,7 @@ func (b *boundListeners) shutdown(ctx context.Context, wg *sync.WaitGroup, errs 
 	}
 }
 
+// count sizes the shutdown errs channel: one slot per drain goroutine, so health — drained separately, last — is excluded.
 func (b *boundListeners) count() int {
 	n := len(b.http) + len(b.http3)
 	if b.metrics != nil {
@@ -459,6 +525,24 @@ func (a *startAttempt) rollback() error {
 		pool.shutdown()
 	}
 	return err
+}
+
+// serveHealthEarly binds and serves the health endpoint before the fallible prerequisite phase, ready still false, so supervisors observe live=200/ready=503 throughout startup.
+// INVARIANT: it runs only after Start defers attempt.rollback, which closes the server and awaits the serve goroutine, so a failed Start leaves nothing alive and a retry builds a fresh server.
+func (a *startAttempt) serveHealthEarly(s *server) error {
+	h := s.cfg.Observability.Health
+	if !h.Enabled {
+		return nil
+	}
+	hs := s.buildHealthServer(h)
+	ln, err := s.bindTCP(context.Background(), hs.Addr)
+	if err != nil {
+		return fmt.Errorf("health listen %s: %w", hs.Addr, err)
+	}
+	b := &boundHealth{server: hs, listener: ln, done: make(chan struct{})}
+	a.listeners.health = b
+	go b.serve()
+	return nil
 }
 
 func (a *startAttempt) commit() *serverRun {
@@ -505,6 +589,10 @@ func (s *server) Start() (err error) {
 			err = errors.Join(err, attempt.rollback())
 		}
 	}()
+	// Health serves first, rollback-owned, so probes are answered while the fallible prerequisite phase runs.
+	if err := attempt.serveHealthEarly(s); err != nil {
+		return err
+	}
 	if err := s.startPrerequisites(&attempt); err != nil {
 		return err
 	}
@@ -515,6 +603,9 @@ func (s *server) Start() (err error) {
 	// synchronous failure path remains once traffic can reach a handler.
 	s.run = attempt.commit()
 	s.started = true
+	// Every readiness fact holds at commit; flip before serve so no probe
+	// can observe a serving health listener that still reports not ready.
+	s.ready.Store(true)
 	s.run.listeners.serve()
 	warmACMERuns(s.run.acme, true)
 	return nil
@@ -546,13 +637,14 @@ func (s *server) startPrerequisites(attempt *startAttempt) error {
 	return nil
 }
 
-// bindSockets binds every socket the configuration calls for — each
-// content listener's TCP socket, each HTTP/3 listener's UDP socket, the
-// metrics listener — recording them in rb, and returns the serve loops
-// for Start to launch at commit. No loop runs here: binding everything
-// before serving anything is what keeps a failed Start invisible. The
-// HTTP/3 socket binds here rather than inside its serve goroutine so a
-// bind failure fails Start instead of vanishing into a discarded error.
+// bindSockets binds every remaining socket the configuration calls for —
+// each content listener's TCP socket, each HTTP/3 listener's UDP socket,
+// the metrics listener — recording them in the attempt; the health socket
+// already bound and serves via serveHealthEarly. No serve loop runs here:
+// binding everything before serving content is what keeps a failed Start
+// invisible. The HTTP/3 socket binds here rather than inside its serve
+// goroutine so a bind failure fails Start instead of vanishing into a
+// discarded error.
 func (s *server) bindSockets(attempt *startAttempt) error {
 	for _, hs := range s.listeners {
 		// Without a matching resolved listener, serveListener would fall
@@ -639,11 +731,16 @@ func goShutdown(ctx context.Context, wg *sync.WaitGroup, errs chan<- error, fn f
 // Shutdown gracefully drains and stops the server within the configured
 // shutdown grace period.
 func (s *server) Shutdown() error {
+	// Readiness flips off the moment shutdown begins, before any drain, so
+	// probes read not-ready for the whole grace period.
+	s.ready.Store(false)
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Shutdown.GracePeriod)
 	defer cancel()
 
 	s.mu.Lock()
 	run := s.run
+	// Repeated under the lock so a Start that was mid-commit cannot leave it true.
+	s.ready.Store(false)
 	s.mu.Unlock()
 	var err error
 	if run != nil {
@@ -678,6 +775,10 @@ func (r *serverRun) shutdown(ctx context.Context) error {
 	// Stop health checkers after listeners drain.
 	for _, pool := range r.pools {
 		pool.shutdown()
+	}
+	// Health closes last so probes read live=200/ready=503, never refused, for the whole drain.
+	if h := r.listeners.health; h != nil {
+		err = errors.Join(err, h.shutdown(ctx))
 	}
 	return err
 }
