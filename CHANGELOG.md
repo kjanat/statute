@@ -358,8 +358,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   aliases (`run := r`, `wg := &r.wg`), because a value copy like
   `wg := r.wg` names a different `WaitGroup` than the owner's, and a
   write or address escape anywhere along a field path (`r.child = ...`
-  after launching on `r.child.wg`) invalidates every path below that
-  prefix, since the storage the path names may have been replaced.
+  after launching on `r.child.wg`, or a pointer alias to the field
+  passed onward as a value) invalidates every path below that prefix,
+  since the storage the path names may have been replaced.
   Launches through a group no lifecycle owner root reaches, or whose
   provenance cannot be resolved, fail closed as undischargeable and
   are diagnosed. Matching `Wait` evidence inside typed `sync.Once.Do`
@@ -368,10 +369,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   plain `Add` statement with a constant positive count whose block
   position dominates the launch registers capacity — an `Add` inside a
   conditional branch or a `defer` is not provably executed before the
-  goroutine starts — each unit is spent by at most one deferred-`Done`
-  goroutine, and a counter operation the model cannot account for (a
-  `Done` in the start body, a non-constant or negative `Add`) poisons
-  that group's capacity entirely. Anything beyond that — a second
+  goroutine starts, and a `goto` anywhere in the body disables
+  registration entirely, because block ordering is dominance only for
+  structured control flow — each unit is spent by at most one
+  deferred-`Done` goroutine, and a counter operation the model cannot
+  account for (a `Done` in the start body, a non-constant or negative
+  `Add`, any counter operation inside a function literal other than
+  the launched literal's own deferred `Done`) poisons that group's
+  capacity entirely. Anything beyond that — a second
   goroutine on one `Add(1)`, `Add(0)`, an `Add` after the `go` — stays
   a raw obligation. Raw `go` statements remain
   deliberately count-based: each owes one completion signal discharged

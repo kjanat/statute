@@ -6,14 +6,16 @@ package statutelifecycle
 // field-selection path, resolved only through variables the body never
 // reassigns and aliases that preserve storage identity. Provenance is
 // storage identity, not a lexical path: a write or address escape anywhere
-// along the field path replaces or may replace the storage the path names,
-// so the whole path becomes unresolvable. A Wait on one group can never
-// discharge work launched through another group, another owner, or a raw
-// go, and a launch whose group cannot be attributed to a lifecycle owner
-// is undischargeable and diagnosed: unknown provenance fails closed.
-// Add(n) registration counts only when its statement dominates the launch
-// in the block structure, and any counter operation the model cannot
-// account for poisons that group's capacity entirely. Raw go statements
+// along the field path — a pointer alias to it leaving the body as a value
+// included — replaces or may replace the storage the path names, so the
+// whole path becomes unresolvable. A Wait on one group can never discharge
+// work launched through another group, another owner, or a raw go, and a
+// launch whose group cannot be attributed to a lifecycle owner is
+// undischargeable and diagnosed: unknown provenance fails closed. Add(n)
+// registration counts only when its statement dominates the launch in the
+// block structure — a goto disables registration for the whole body — and
+// any counter operation the model cannot account for, function literals
+// included, poisons that group's capacity entirely. Raw go statements
 // are deliberately count-based: each owes one completion signal,
 // discharged by visible channel receives in the cleanup by count —
 // channel identity is out of SLC103's scope (issue #62 non-goals), so
@@ -371,11 +373,15 @@ type addEvent struct {
 // has left. Registration counts only when the Add statement dominates the
 // launch in the block structure: an Add inside a conditional branch, a
 // defer, or after the go statement is not provably executed before the
-// goroutine starts. Each unit is spent once — one Add(1) cannot vouch for
-// two goroutines — and any counter operation the model cannot account for
-// (a Done in the start body, a non-constant or negative Add) poisons that
-// group's capacity: the model no longer knows the counter's value, so no
-// launch may claim registration through it.
+// goroutine starts. Block ordering is dominance only while control flow is
+// structured, so a goto anywhere in the body — a jump can land between
+// registration and launch — poisons all capacity. Each unit is spent once
+// — one Add(1) cannot vouch for two goroutines — and any counter operation
+// the model cannot account for (a Done in the start body or in any
+// function literal outside the recognized launched shape, a non-constant
+// or negative Add) poisons that group's capacity: the model no longer
+// knows the counter's value, so no launch may claim registration through
+// it.
 type addCapacity struct {
 	body        *ast.BlockStmt
 	events      map[groupKey][]addEvent
@@ -463,14 +469,15 @@ func dominates(addChain, goChain []blockRef) bool {
 }
 
 // collectAddCapacity records the start body's WaitGroup counter operations
-// per normalized group, outside function literals. Only a plain Add
-// statement with a constant non-negative count is accountable: a positive
+// per normalized group. Only a plain Add statement with a constant
+// non-negative count, directly in the body, is accountable: a positive
 // count registers capacity at its block position, zero registers nothing.
 // Every other counter operation — Done in the start body proper, an Add
-// buried in a defer or expression, a non-constant or negative count —
-// leaves the counter in a state the model cannot see and poisons the
-// group; an operation whose receiver cannot even be normalized poisons all
-// capacity.
+// buried in a defer or expression, a non-constant or negative count, any
+// Add or Done inside a function literal other than the launched literal's
+// own deferred Done — leaves the counter in a state the model cannot see
+// and poisons the group; an operation whose receiver cannot even be
+// normalized, or a goto anywhere in the body, poisons all capacity.
 func collectAddCapacity(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver) *addCapacity {
 	capacity := &addCapacity{
 		body:     body,
@@ -479,21 +486,98 @@ func collectAddCapacity(pass *analysis.Pass, body *ast.BlockStmt, resolver *path
 		poisoned: make(map[groupKey]bool),
 	}
 	registered := make(map[*ast.CallExpr]bool)
+	launched := make(map[*ast.FuncLit]bool)
 	ast.Inspect(body, func(node ast.Node) bool {
+		return capacity.visitBodyNode(pass, node, resolver, registered, launched)
+	})
+	return capacity
+}
+
+// visitBodyNode handles one node of the start body's capacity walk.
+func (c *addCapacity) visitBodyNode(pass *analysis.Pass, node ast.Node, resolver *pathResolver, registered map[*ast.CallExpr]bool, launched map[*ast.FuncLit]bool) bool {
+	switch n := node.(type) {
+	case nil:
+		return false
+	case *ast.BranchStmt:
+		if n.Tok == token.GOTO {
+			c.poisonedAll = true
+		}
+	case *ast.GoStmt:
+		if lit, ok := n.Call.Fun.(*ast.FuncLit); ok {
+			launched[lit] = true
+			c.scanLaunchedLiteral(pass, lit, resolver)
+		}
+	case *ast.FuncLit:
+		if !launched[n] {
+			c.poisonCounterOps(pass, n.Body, resolver)
+		}
+		return false
+	case *ast.ExprStmt:
+		c.recordAddStmt(pass, n, resolver, registered)
+	case *ast.CallExpr:
+		c.recordUnaccountedOp(pass, n, resolver, registered)
+	}
+	return true
+}
+
+// recordAddStmt registers one plain statement's Add call, when it is one.
+func (c *addCapacity) recordAddStmt(pass *analysis.Pass, stmt *ast.ExprStmt, resolver *pathResolver, registered map[*ast.CallExpr]bool) {
+	call, ok := ast.Unparen(stmt.X).(*ast.CallExpr)
+	if !ok || !isSyncMethodCall(pass, call, "WaitGroup", "Add") {
+		return
+	}
+	registered[call] = true
+	c.recordAdd(call, resolver)
+}
+
+// scanLaunchedLiteral inspects a go statement's own function literal: its
+// deferred Done calls are the recognized discharge shape and stay exempt,
+// but any other counter operation inside it — a plain Done, an Add, or
+// anything in a nested literal — mutates the counter at a time the
+// registration model cannot order and poisons the group.
+func (c *addCapacity) scanLaunchedLiteral(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) {
+	exempt := make(map[*ast.CallExpr]bool)
+	ast.Inspect(lit.Body, func(node ast.Node) bool {
 		switch n := node.(type) {
-		case nil, *ast.FuncLit:
+		case *ast.FuncLit:
+			c.poisonCounterOps(pass, n.Body, resolver)
 			return false
-		case *ast.ExprStmt:
-			if call, ok := ast.Unparen(n.X).(*ast.CallExpr); ok && isSyncMethodCall(pass, call, "WaitGroup", "Add") {
-				registered[call] = true
-				capacity.recordAdd(call, resolver)
+		case *ast.DeferStmt:
+			if isSyncMethodCall(pass, n.Call, "WaitGroup", "Done") {
+				exempt[n.Call] = true
 			}
 		case *ast.CallExpr:
-			capacity.recordUnaccountedOp(pass, n, resolver, registered)
+			if !exempt[n] && (isSyncMethodCall(pass, n, "WaitGroup", "Done") || isSyncMethodCall(pass, n, "WaitGroup", "Add")) {
+				c.poisonCall(n, resolver)
+			}
 		}
 		return true
 	})
-	return capacity
+}
+
+// poisonCounterOps poisons the group of every WaitGroup Add or Done found
+// under node, nested literals included: counter operations inside an
+// ordinary function literal run at times the registration model cannot
+// account for.
+func (c *addCapacity) poisonCounterOps(pass *analysis.Pass, node ast.Node, resolver *pathResolver) {
+	ast.Inspect(node, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if isSyncMethodCall(pass, call, "WaitGroup", "Done") || isSyncMethodCall(pass, call, "WaitGroup", "Add") {
+				c.poisonCall(call, resolver)
+			}
+		}
+		return true
+	})
+}
+
+// poisonCall poisons one counter operation's group, or all capacity when
+// its receiver cannot be normalized.
+func (c *addCapacity) poisonCall(call *ast.CallExpr, resolver *pathResolver) {
+	if key, ok := resolveReceiverGroup(call, resolver); ok {
+		c.poisoned[key] = true
+		return
+	}
+	c.poisonedAll = true
 }
 
 // recordAdd accounts one plain Add statement: constant positive counts
@@ -522,11 +606,7 @@ func (c *addCapacity) recordUnaccountedOp(pass *analysis.Pass, call *ast.CallExp
 	if !isDone && !isAdd {
 		return
 	}
-	if key, ok := resolveReceiverGroup(call, resolver); ok {
-		c.poisoned[key] = true
-		return
-	}
-	c.poisonedAll = true
+	c.poisonCall(call, resolver)
 }
 
 // constantAddCount extracts an Add call's registration count when it is a
@@ -674,23 +754,26 @@ func scanCleanupCall(pass *analysis.Pass, call *ast.CallExpr, recv *types.Var, r
 // Aliases resolve only through pointer-typed definitions, because only a
 // pointer preserves the identity of the storage it names.
 type pathResolver struct {
-	pass     *analysis.Pass
-	aliases  map[*types.Var]aliasTarget
-	aliasRHS map[ast.Expr]bool
-	written  map[*types.Var][]string
-	mutated  map[*types.Var]bool
+	pass        *analysis.Pass
+	aliases     map[*types.Var]aliasTarget
+	aliasRHS    map[ast.Expr]bool
+	addrAliases map[*types.Var]bool
+	written     map[*types.Var][]string
+	mutated     map[*types.Var]bool
 }
 
 func newPathResolver(pass *analysis.Pass, body *ast.BlockStmt) *pathResolver {
 	r := &pathResolver{
-		pass:     pass,
-		aliases:  make(map[*types.Var]aliasTarget),
-		aliasRHS: make(map[ast.Expr]bool),
-		written:  make(map[*types.Var][]string),
-		mutated:  collectMutatedVars(pass, body),
+		pass:        pass,
+		aliases:     make(map[*types.Var]aliasTarget),
+		aliasRHS:    make(map[ast.Expr]bool),
+		addrAliases: make(map[*types.Var]bool),
+		written:     make(map[*types.Var][]string),
+		mutated:     collectMutatedVars(pass, body),
 	}
 	r.collectAliases(body)
 	r.collectWrittenPaths(body)
+	r.collectAliasEscapes(body)
 	return r
 }
 
@@ -812,6 +895,9 @@ func (r *pathResolver) collectAliases(body *ast.BlockStmt) {
 			}
 			r.aliases[v] = aliasTarget{root: root, path: path}
 			r.aliasRHS[rhs] = true
+			if r.aliasTakesAddress(rhs) {
+				r.addrAliases[v] = true
+			}
 			changed = true
 		}
 	}
@@ -870,6 +956,69 @@ func (r *pathResolver) collectWrittenPaths(body *ast.BlockStmt) {
 		}
 		return true
 	})
+}
+
+// aliasTakesAddress reports whether an accepted alias definition names the
+// address of a field cell rather than copying an existing pointer: its
+// right-hand side takes an address directly, or is an identifier whose own
+// alias already does.
+func (r *pathResolver) aliasTakesAddress(rhs ast.Expr) bool {
+	switch e := ast.Unparen(rhs).(type) {
+	case *ast.UnaryExpr:
+		return e.Op == token.AND
+	case *ast.Ident:
+		v, _ := r.pass.TypesInfo.Uses[e].(*types.Var)
+		return v != nil && r.addrAliases[v]
+	}
+	return false
+}
+
+// collectAliasEscapes invalidates the target path of every address-taken
+// alias the body uses as a value: passing, storing, comparing, or
+// returning the pointer hands replacement of the aliased storage to code
+// the local model cannot see. Using the alias as a selector or
+// dereference base stays safe — those reads and writes are resolved and
+// recorded through the alias itself.
+func (r *pathResolver) collectAliasEscapes(body *ast.BlockStmt) {
+	if len(r.addrAliases) == 0 {
+		return
+	}
+	safe := safeAliasBaseUses(body)
+	ast.Inspect(body, func(node ast.Node) bool {
+		id, ok := node.(*ast.Ident)
+		if !ok || safe[id] || r.aliasRHS[id] {
+			return true
+		}
+		v, _ := r.pass.TypesInfo.Uses[id].(*types.Var)
+		if v == nil || !r.addrAliases[v] {
+			return true
+		}
+		target := r.aliases[v]
+		r.written[target.root] = append(r.written[target.root], target.path)
+		return true
+	})
+}
+
+// safeAliasBaseUses collects the identifier occurrences used as selector or
+// dereference bases: reads and writes through those go through path
+// resolution and are accounted elsewhere.
+func safeAliasBaseUses(body *ast.BlockStmt) map[*ast.Ident]bool {
+	safe := make(map[*ast.Ident]bool)
+	mark := func(expr ast.Expr) {
+		if id, ok := ast.Unparen(expr).(*ast.Ident); ok {
+			safe[id] = true
+		}
+	}
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.SelectorExpr:
+			mark(n.X)
+		case *ast.StarExpr:
+			mark(n.X)
+		}
+		return true
+	})
+	return safe
 }
 
 // recordWrittenPath resolves one written or escaped expression and records

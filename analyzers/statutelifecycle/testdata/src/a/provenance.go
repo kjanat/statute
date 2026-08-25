@@ -204,6 +204,22 @@ func (*escapedChildWorker) start() *escapedChildRun { // want `\[SLC103\].*WaitG
 
 func (r *escapedChildRun) stop() { r.child.wg.Wait() }
 
+// Escape through an already-created pointer alias is the same handover:
+// once the alias leaves the local model as a value, its target storage
+// can be replaced by code the model cannot see.
+type escapedAliasWorker struct{}
+type escapedAliasRun struct{ child *replacedChildGroup }
+
+func (*escapedAliasWorker) start() *escapedAliasRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
+	r := &escapedAliasRun{child: &replacedChildGroup{}}
+	p := &r.child
+	r.child.wg.Go(func() {})
+	swapChild(p)
+	return r
+}
+
+func (r *escapedAliasRun) stop() { r.child.wg.Wait() }
+
 // A write to a sibling field replaces nothing along the group path: only a
 // prefix write invalidates provenance.
 type siblingWriteWorker struct{}
@@ -392,6 +408,64 @@ func (*depletedAddWorker) start() *depletedAddRun { // want `\[SLC103\].*launche
 }
 
 func (r *depletedAddRun) stop() { r.wg.Wait() }
+
+// Block ordering is dominance only for structured control flow: a goto
+// can land between the Add and the launch, so it disables registration
+// for the whole body and the goroutine stays raw.
+type gotoAddWorker struct{}
+type gotoAddRun struct{ wg sync.WaitGroup }
+
+func (*gotoAddWorker) start() *gotoAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &gotoAddRun{}
+	goto launch
+	r.wg.Add(1)
+launch:
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *gotoAddRun) stop() { r.wg.Wait() }
+
+// A Done inside a synchronously invoked function literal consumes the
+// registration before the launch just as a direct Done does: counter
+// operations do not become invisible behind a literal.
+type iifeDoneWorker struct{}
+type iifeDoneRun struct{ wg sync.WaitGroup }
+
+func (*iifeDoneWorker) start() *iifeDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &iifeDoneRun{}
+	r.wg.Add(1)
+	func() {
+		r.wg.Done()
+	}()
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *iifeDoneRun) stop() { r.wg.Wait() }
+
+// The same through a deferred literal: it mutates the counter at return,
+// a time the registration model cannot order against the launch.
+type deferLitDoneWorker struct{}
+type deferLitDoneRun struct{ wg sync.WaitGroup }
+
+func (*deferLitDoneWorker) start() *deferLitDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &deferLitDoneRun{}
+	r.wg.Add(1)
+	defer func() {
+		r.wg.Done()
+	}()
+	go func() {
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *deferLitDoneRun) stop() { r.wg.Wait() }
 
 // An Add in an enclosing block dominates a launch nested below it: every
 // structured path to the go statement passes the registration first.
