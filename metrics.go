@@ -121,6 +121,16 @@ func (s *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(s.ResponseWriter, r)
 }
 
+// Unwrap exposes the underlying writer to http.ResponseController, so
+// optional interfaces the recorder does not implement itself — Hijacker
+// above all — stay reachable. The reverse proxy's protocol-upgrade path
+// hijacks through the controller, and metricsMiddleware wraps every
+// listener with this recorder, so without Unwrap no WebSocket could
+// upgrade at all. A hijacked handshake is written to the taken-over
+// connection, not through this writer, so it is not a response the
+// recorder can observe.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // Flush propagates Flush calls so streaming responses still flush through us.
 // A flush is a commit: net/http writes an implicit 200 when no header has
 // been sent yet, so the recorder latches it before forwarding — a later

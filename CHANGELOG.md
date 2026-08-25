@@ -365,6 +365,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   matter doubly with the new status filters, which key on exactly this
   recorded status.
 
+- The status recorder now exposes `Unwrap`, so `http.ResponseController`
+  can reach the underlying writer's `Hijacker`. `metricsMiddleware`
+  wraps every listener with this recorder and the reverse proxy's
+  protocol-upgrade path hijacks through the controller, which can only
+  reach the connection through `Hijacker` or `Unwrap` — so no WebSocket
+  upgrade could pass through an observability-wrapped listener at all.
+  The hijacked handshake is written directly to the taken-over
+  connection, bypassing the recorder, so a proxied upgrade records the
+  implicit 200 rather than 101.
+
 - `Start` is transactional, two-phase, and retryable. Phase one starts
   the non-listener prerequisites — pool health checkers, ACME managers
   with their DNS-01 warm-up, the Docker provider's initial sync — and

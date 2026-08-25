@@ -72,7 +72,7 @@ status range filter
     <400  → sampling applies
 ```
 
-So `Statuses("200-299")` really does suppress 500s — errors **within the selected ranges** are never sampled out, and everything outside the ranges is never logged at all. Filtering applies to the final status as committed to the client: the recorder ignores 1xx interim responses, so a 103 → 404 exchange filters as 404. Two commit edge cases are honoured — a `Flush` before any `WriteHeader` commits an implicit 200 (a later `WriteHeader(500)` cannot change what the client saw, so the filter sees 200), and 101 Switching Protocols is final, not interim, so `Statuses("101")` matches real protocol upgrades.
+So `Statuses("200-299")` really does suppress 500s — errors **within the selected ranges** are never sampled out, and everything outside the ranges is never logged at all. Filtering applies to the final status as committed to the client: the recorder ignores 1xx interim responses, so a 103 → 404 exchange filters as 404. Two commit edge cases are honoured — a `Flush` before any `WriteHeader` commits an implicit 200 (a later `WriteHeader(500)` cannot change what the client saw, so the filter sees 200), and 101 Switching Protocols is final, not interim, so a handler-written 101 filters as 101. A proxied upgrade is different: the reverse proxy hijacks the connection and writes the 101 handshake directly to it, bypassing the response writer entirely, so a hijacked exchange records the implicit 200 — `Statuses("101")` does not match proxied WebSocket upgrades.
 
 `Resolve` rejects malformed or out-of-range (`[100, 599]`) inputs and normalizes the rest — sorted ascending, overlapping and adjacent ranges merged — and the canonical ranges appear in the exported schema.
 

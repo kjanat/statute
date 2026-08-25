@@ -301,6 +301,31 @@ func TestAccessLog_StatusFilter101(t *testing.T) {
 	}
 }
 
+// TestStatusRecorderHijack — an upgrade must still be able to take the
+// connection through the full observability stack: metricsMiddleware wraps
+// every listener with the statusRecorder, the access log adds a second one,
+// and the reverse proxy hijacks via http.ResponseController, which can only
+// reach the underlying writer through Hijacker or Unwrap.
+func TestStatusRecorderHijack(t *testing.T) {
+	t.Parallel()
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := http.NewResponseController(w).Hijack(); err != nil {
+			t.Errorf("hijack through the recorder: %v", err)
+		}
+	})
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	cfg := resolved.AccessLog{Enabled: true, Writer: &mu_writer{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
+	// Stack both recorders the way server.go does: access log inside, metrics outside.
+	h := metricsMiddleware(&stats{}, accessLogMiddleware(cfg, inner))
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if !rec.hijacked {
+		t.Error("hijack did not reach the underlying ResponseWriter")
+	}
+}
+
 // TestAccessLog_DisabledIsNoOp
 func TestAccessLog_DisabledIsNoOp(t *testing.T) {
 	t.Parallel()
