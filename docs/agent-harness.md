@@ -99,10 +99,11 @@ patch to miss:
   directly or by passing a pointer alias onward as a value. The
   `Add(1)` + `go` + `defer Done()` shape spends explicit registration
   capacity: a constant positive `Add` whose statement dominates the launch in
-  the block structure (a `goto` disables registration for the whole body),
-  one unit per deferred-`Done` goroutine; a counter operation the model
-  cannot account for — function literals included — poisons that group's
-  capacity, and everything else stays raw. Raw
+  the block structure with no loop between them (a launch the runtime repeats
+  spends capacity counted once; a `goto` disables registration for the whole
+  body), one unit per goroutine deferring exactly one `Done`; a counter
+  operation the model cannot account for — function literals included —
+  poisons that group's capacity, and everything else stays raw. Raw
   `go` launches stay deliberately count-based against visible channel receives —
   channel identity is out of scope — so that half is conservative join evidence,
   and anything ambiguous is intentionally a conservative diagnostic, not proof

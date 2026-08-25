@@ -467,6 +467,62 @@ func (*deferLitDoneWorker) start() *deferLitDoneRun { // want `\[SLC103\].*launc
 
 func (r *deferLitDoneRun) stop() { r.wg.Wait() }
 
+// A loop between the registration and the launch multiplies the launch:
+// one Add(1) outside the loop cannot vouch for a go statement the runtime
+// executes ten times, so the launch stays raw.
+type loopLaunchWorker struct{}
+type loopLaunchRun struct{ wg sync.WaitGroup }
+
+func (*loopLaunchWorker) start() *loopLaunchRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &loopLaunchRun{}
+	r.wg.Add(1)
+	for range 10 {
+		go func() {
+			defer r.wg.Done()
+		}()
+	}
+	return r
+}
+
+func (r *loopLaunchRun) stop() { r.wg.Wait() }
+
+// Registration and launch inside the same loop body pair one-to-one per
+// iteration and stay clean.
+type loopPairedWorker struct{}
+type loopPairedRun struct{ wg sync.WaitGroup }
+
+func (*loopPairedWorker) start() *loopPairedRun {
+	r := &loopPairedRun{}
+	for range 10 {
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+		}()
+	}
+	return r
+}
+
+func (r *loopPairedRun) stop() { r.wg.Wait() }
+
+// Two deferred Dones on one group inside one launched literal are not the
+// conventional shape: the goroutine consumes two registrations for one
+// launch, releasing Wait early and driving the counter negative. The
+// launch stays raw.
+type doubleDeferredDoneWorker struct{}
+type doubleDeferredDoneRun struct{ wg sync.WaitGroup }
+
+func (*doubleDeferredDoneWorker) start() *doubleDeferredDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
+	r := &doubleDeferredDoneRun{}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		defer r.wg.Done()
+	}()
+	return r
+}
+
+func (r *doubleDeferredDoneRun) stop() { r.wg.Wait() }
+
 // An Add in an enclosing block dominates a launch nested below it: every
 // structured path to the go statement passes the registration first.
 type dominatingAddWorker struct{}

@@ -13,8 +13,10 @@ package statutelifecycle
 // launch whose group cannot be attributed to a lifecycle owner is
 // undischargeable and diagnosed: unknown provenance fails closed. Add(n)
 // registration counts only when its statement dominates the launch in the
-// block structure — a goto disables registration for the whole body — and
-// any counter operation the model cannot account for, function literals
+// block structure with no loop between them — a launch the runtime repeats
+// spends capacity counted once, and a goto disables registration for the
+// whole body — the launched literal must defer exactly one Done, and any
+// counter operation the model cannot account for, function literals
 // included, poisons that group's capacity entirely. Raw go statements
 // are deliberately count-based: each owes one completion signal,
 // discharged by visible channel receives in the cleanup by count —
@@ -285,9 +287,10 @@ func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResol
 	attributeGroup(key, ownerRoots, obligations, foreign)
 }
 
-// deferredDoneGroup finds the single normalized group a launched literal
-// defers Done on; two distinct groups or an unresolvable receiver are
-// ambiguous and resolve to no group.
+// deferredDoneGroup finds the exactly-one deferred Done a launched literal
+// carries and resolves its group. A second deferred Done — even on the
+// same group, which would drive the counter past its single registration —
+// or an unresolvable receiver is ambiguous and resolves to no group.
 func deferredDoneGroup(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) (groupKey, bool) {
 	var found groupKey
 	count := 0
@@ -303,18 +306,17 @@ func deferredDoneGroup(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathReso
 			if !ok {
 				return true
 			}
+			if count > 0 {
+				count = 2 // any second deferred Done: fail closed
+				return true
+			}
 			root, path, ok := resolver.resolve(sel.X)
 			if !ok {
 				count = 2 // unresolvable Done: fail closed
 				return true
 			}
-			key := groupKey{root: root, path: path}
-			if count == 0 || key == found {
-				found = key
-				count = 1
-				return true
-			}
-			count = 2
+			found = groupKey{root: root, path: path}
+			count = 1
 		}
 		return true
 	})
@@ -375,7 +377,9 @@ type addEvent struct {
 // defer, or after the go statement is not provably executed before the
 // goroutine starts. Block ordering is dominance only while control flow is
 // structured, so a goto anywhere in the body — a jump can land between
-// registration and launch — poisons all capacity. Each unit is spent once
+// registration and launch — poisons all capacity, and a loop between the
+// registration and the launch multiplies the launch past the registration
+// count, so such an Add grants it nothing. Each unit is spent once
 // — one Add(1) cannot vouch for two goroutines — and any counter operation
 // the model cannot account for (a Done in the start body or in any
 // function literal outside the recognized launched shape, a non-constant
@@ -451,10 +455,14 @@ func childBlock(stmt ast.Stmt, pos token.Pos) *ast.BlockStmt {
 	return found
 }
 
-// dominates reports whether the Add at addChain provably executes before
-// every arrival at goChain: the Add sits in a block the launch's chain
-// passes through, at an earlier statement index, so structured control flow
-// cannot reach the go statement without passing the Add first.
+// dominates reports whether the Add at addChain provably executes exactly
+// once before every arrival at goChain: the Add sits in a block the
+// launch's chain passes through, at an earlier statement index, so
+// structured control flow cannot reach the go statement without passing
+// the Add first — and no loop sits between them, because a launch the
+// runtime repeats below a single registration spends capacity that was
+// counted once. An Add and a go inside the same loop body pair per
+// iteration and stay dominated.
 func dominates(addChain, goChain []blockRef) bool {
 	if len(addChain) == 0 || len(addChain) > len(goChain) {
 		return false
@@ -465,7 +473,31 @@ func dominates(addChain, goChain []blockRef) bool {
 			return false
 		}
 	}
-	return addChain[last].block == goChain[last].block && addChain[last].index < goChain[last].index
+	if addChain[last].block != goChain[last].block || addChain[last].index >= goChain[last].index {
+		return false
+	}
+	for k := last; k < len(goChain); k++ {
+		if isLoopStmt(goChain[k].block.List[goChain[k].index]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLoopStmt reports whether stmt repeats its body, looking through labels.
+func isLoopStmt(stmt ast.Stmt) bool {
+	for {
+		labeled, ok := stmt.(*ast.LabeledStmt)
+		if !ok {
+			break
+		}
+		stmt = labeled.Stmt
+	}
+	switch stmt.(type) {
+	case *ast.ForStmt, *ast.RangeStmt:
+		return true
+	}
+	return false
 }
 
 // collectAddCapacity records the start body's WaitGroup counter operations

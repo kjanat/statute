@@ -367,12 +367,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   callbacks still counts. The conventional `Add(1)` + `go` +
   `defer Done()` shape spends explicit registration capacity: only a
   plain `Add` statement with a constant positive count whose block
-  position dominates the launch registers capacity — an `Add` inside a
-  conditional branch or a `defer` is not provably executed before the
-  goroutine starts, and a `goto` anywhere in the body disables
-  registration entirely, because block ordering is dominance only for
-  structured control flow — each unit is spent by at most one
-  deferred-`Done` goroutine, and a counter operation the model cannot
+  position dominates the launch, with no loop between them, registers
+  capacity — an `Add` inside a conditional branch or a `defer` is not
+  provably executed before the goroutine starts, a launch the runtime
+  repeats inside a loop spends capacity that was counted once, and a
+  `goto` anywhere in the body disables registration entirely, because
+  block ordering is dominance only for structured control flow — each
+  unit is spent by at most one goroutine deferring exactly one `Done`
+  (a second deferred `Done` on the same group would drive the counter
+  past its registration), and a counter operation the model cannot
   account for (a `Done` in the start body, a non-constant or negative
   `Add`, any counter operation inside a function literal other than
   the launched literal's own deferred `Done`) poisons that group's
