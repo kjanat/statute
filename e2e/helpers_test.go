@@ -63,6 +63,38 @@ func originJournal(ctx context.Context, r *harness.Run, origin, scheme string) [
 	return entries
 }
 
+// awaitOriginJournal polls one origin's journal until want accepts the
+// snapshot, then returns exactly that snapshot for the caller's
+// assertions. The origin records an entry on arrival, so traffic a
+// client plan just drove is already in the journal — but traffic the
+// origin receives on someone else's schedule, such as an active health
+// probe on the pool's own ticker, is not, and reading once races
+// whatever produced it.
+func awaitOriginJournal(ctx context.Context, t *testing.T, r *harness.Run, origin, scheme, what string, want func([]journalEntry) (bool, string)) []journalEntry {
+	t.Helper()
+	var snapshot []journalEntry
+	pollUntil(t, 30*time.Second, what, func() (bool, string) {
+		snapshot = originJournal(ctx, r, origin, scheme)
+		return want(snapshot)
+	})
+	return snapshot
+}
+
+// awaitServiceLog polls one service's logs until want accepts the
+// snapshot, then returns exactly that snapshot. A server's own log
+// output is not synchronous with the client response that provoked it:
+// the client has its bytes while the server is still writing the access
+// log line and the container log pipeline is still carrying it.
+func awaitServiceLog(ctx context.Context, t *testing.T, r *harness.Run, service, what string, want func(string) (bool, string)) string {
+	t.Helper()
+	var snapshot string
+	pollUntil(t, 30*time.Second, what, func() (bool, string) {
+		snapshot = r.Logs(ctx, service)
+		return want(snapshot)
+	})
+	return snapshot
+}
+
 // setOriginHealth flips one origin's /health endpoint.
 func setOriginHealth(ctx context.Context, r *harness.Run, origin, state string) {
 	r.T.Helper()

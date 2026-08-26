@@ -201,30 +201,49 @@ func TestRegression_UpstreamTLSParity(t *testing.T) {
 	}})
 
 	// Parity: proxied traffic and health probes carry the same SNI and
-	// Host at the origin.
-	entries := originJournal(ctx, r, "origin-1", "https")
-	var sawEcho, sawProbe bool
-	for _, e := range entries {
-		switch e.Path {
-		case "/echo":
-			sawEcho = true
-		case "/health":
-			sawProbe = true
-		default:
-			continue
-		}
-		if e.SNI != "origin-1" || e.Host != "origin-1:7000" {
-			t.Errorf("%s at origin-1: SNI %q Host %q; proxy and probe policy must match TargetHost", e.Path, e.SNI, e.Host)
-		}
-	}
-	if !sawEcho || !sawProbe {
-		t.Errorf("origin-1 journal: echo=%v probe=%v; both traffic kinds must appear", sawEcho, sawProbe)
-	}
+	// Host at the origin; the probe lands on the pool's 2s ticker.
+	entries := awaitOriginJournal(ctx, t, r, "origin-1", "https",
+		"origin-1 journal carries both proxy traffic and a health probe", bothTrafficKinds)
+	assertJournalParity(t, entries, "origin-1", "origin-1:7000")
+
 	// Verification fails during handshake, so no request ever completes
 	// at origin-2.
 	for _, e := range originJournal(ctx, r, "origin-2", "https") {
 		if e.Path == "/echo" {
 			t.Errorf("origin-2 served %q despite an unverifiable pool root", e.Path)
+		}
+	}
+}
+
+// bothTrafficKinds accepts a journal snapshot only once it holds both
+// proxied traffic and an active health probe, so the parity assertion
+// compares two kinds that are genuinely present rather than passing
+// vacuously on whichever kind arrived first.
+func bothTrafficKinds(entries []journalEntry) (bool, string) {
+	var echo, probe bool
+	for _, e := range entries {
+		switch e.Path {
+		case "/echo":
+			echo = true
+		case "/health":
+			probe = true
+		}
+	}
+	return echo && probe, fmt.Sprintf("echo=%v probe=%v", echo, probe)
+}
+
+// assertJournalParity requires every proxied and probe entry at one
+// origin to carry the same SNI and Host: the pool owns one transport and
+// one UpstreamHost policy, so health traffic may never diverge from real
+// traffic.
+func assertJournalParity(t *testing.T, entries []journalEntry, origin, host string) {
+	t.Helper()
+	for _, e := range entries {
+		if e.Path != "/echo" && e.Path != "/health" {
+			continue
+		}
+		if e.SNI != origin || e.Host != host {
+			t.Errorf("%s at %s: SNI %q Host %q; proxy and probe policy must match TargetHost", e.Path, origin, e.SNI, e.Host)
 		}
 	}
 }
@@ -471,7 +490,13 @@ func TestRegression_TrustedClientIdentity(t *testing.T) {
 		},
 	}})
 
-	logs := r.Logs(ctx, harness.Server1)
+	// The access log is not on stdout merely because the plan returned;
+	// wait for both legs, then assert their exact count on that snapshot.
+	logs := awaitServiceLog(ctx, t, r, harness.Server1,
+		"both access log legs reach statute-1's log", func(logs string) (bool, string) {
+			u, tr := logLinesContaining(logs, "leg=untrusted", `"remote"`), logLinesContaining(logs, "leg=trusted", `"remote"`)
+			return len(u) > 0 && len(tr) > 0, fmt.Sprintf("untrusted=%d trusted=%d", len(u), len(tr))
+		})
 	untrusted := logLinesContaining(logs, "leg=untrusted", `"remote"`)
 	trusted := logLinesContaining(logs, "leg=trusted", `"remote"`)
 	if len(untrusted) != 1 || len(trusted) != 1 {

@@ -166,11 +166,12 @@ func TestRegression_Observability(t *testing.T) {
 		t.Fatal("client report carries no request id")
 	}
 
-	// The same identifier in the access log...
-	logs := r.Logs(ctx, harness.Server1)
-	if lines := logLinesContaining(logs, requestID, "probe=trace"); len(lines) == 0 {
-		t.Errorf("access log holds no line for request %s\n%s", requestID, logs)
-	}
+	// The same identifier in the access log, which is not on stdout
+	// merely because the plan returned.
+	awaitServiceLog(ctx, t, r, harness.Server1,
+		"access log carries request "+requestID, func(logs string) (bool, string) {
+			return len(logLinesContaining(logs, requestID, "probe=trace")) > 0, logs
+		})
 	// ...and in the origin's own journal.
 	var atOrigin bool
 	for _, e := range originJournal(ctx, r, "origin-1", "http") {
