@@ -635,6 +635,18 @@ func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acm
 	}
 	certDER, _, err := m.acmeClient.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
 	if err != nil {
+		// RFC 8555 does not require a Location header on the finalize
+		// response, and a CA that omits it (Pebble does) breaks
+		// CreateOrderCert's internal completion poll: the order is still
+		// "processing", and the poll posts an empty order URL. The order
+		// URI from AuthorizeOrder is authoritative, so finish the wait
+		// and the fetch from it; the original error stands unless the
+		// order really completed.
+		if der, rerr := m.recoverFinalizedOrder(ctx, order); rerr == nil {
+			certDER, err = der, nil
+		}
+	}
+	if err != nil {
 		return nil, fmt.Errorf("finalize: %w", err)
 	}
 
@@ -643,6 +655,24 @@ func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acm
 		log.Printf("statute: %s: persist for %s failed: %v", m.name, host, err)
 	}
 	return cert, nil
+}
+
+// recoverFinalizedOrder polls a finalized order at its AuthorizeOrder
+// URI until the CA settles it and fetches the issued chain. It succeeds
+// only for an order that actually reached "valid"; any other outcome
+// leaves the caller's original finalize error in force.
+func (m *acmeManager) recoverFinalizedOrder(ctx context.Context, order *acme.Order) ([][]byte, error) {
+	if order.URI == "" {
+		return nil, errors.New("order has no URI")
+	}
+	o, err := m.acmeClient.WaitOrder(ctx, order.URI)
+	if err != nil {
+		return nil, err
+	}
+	if o.Status != acme.StatusValid || o.CertURL == "" {
+		return nil, fmt.Errorf("order status %q", o.Status)
+	}
+	return m.acmeClient.FetchCert(ctx, o.CertURL, true)
 }
 
 // --- account + cert persistence ---

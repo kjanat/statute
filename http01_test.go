@@ -56,6 +56,10 @@ type fakeACME struct {
 	// rejectValidation fails validation without a token fetch; not a
 	// fixture error, so it stays off t unlike a failed fetch.
 	rejectValidation bool
+	// finalizeProcessing makes finalize answer "processing" with no
+	// Location header, the RFC-legal shape Pebble produces; the client
+	// must then settle the order through its AuthorizeOrder URI.
+	finalizeProcessing bool
 	// authzGate blocks authorization polls until closed; authzReached
 	// closes once, signaling an order is genuinely in flight.
 	authzReached chan struct{}
@@ -159,6 +163,12 @@ func (f *fakeACME) handle(w http.ResponseWriter, r *http.Request) {
 		f.handleChallenge(w, r)
 	case "/finalize/1":
 		f.handleFinalize(w, r)
+	case "/order/1":
+		f.writeJSON(w, http.StatusOK, map[string]any{
+			"status":      "valid",
+			"finalize":    f.url("/finalize/1"),
+			"certificate": f.url("/cert/1"),
+		})
 	case "/cert/1":
 		w.Header().Set("Content-Type", "application/pem-certificate-chain")
 		w.WriteHeader(http.StatusOK)
@@ -315,8 +325,15 @@ func (f *fakeACME) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.csrCN = csr.Subject.CommonName
 	f.csrNames = append([]string(nil), csr.DNSNames...)
+	processing := f.finalizeProcessing
 	f.mu.Unlock()
 	f.signCSR(csr)
+	if processing {
+		// Deliberately no Location header: RFC 8555 does not require
+		// one on the finalize response.
+		f.writeJSON(w, http.StatusOK, map[string]any{"status": "processing"})
+		return
+	}
 	f.writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "valid",
 		"finalize":    f.url("/finalize/1"),
@@ -877,5 +894,38 @@ func TestAccountRegistrationTimesOut(t *testing.T) {
 	}
 	if elapsed := time.Since(begin); elapsed > 5*time.Second {
 		t.Fatalf("start took %s despite the 100ms registration deadline", elapsed)
+	}
+}
+
+// TestHTTP01_FinalizeWithoutLocationRecovers — RFC 8555 does not require
+// a Location header on the finalize response, and a CA that omits it
+// while the order is still processing (Pebble does) breaks
+// CreateOrderCert's internal completion poll with an empty order URL.
+// The manager must settle the order through the URI it already holds
+// from AuthorizeOrder and fetch the issued chain.
+func TestHTTP01_FinalizeWithoutLocationRecovers(t *testing.T) {
+	t.Parallel()
+	m, fake := newPinnedManager(t)
+	fake.mu.Lock()
+	fake.finalizeProcessing = true
+	fake.mu.Unlock()
+
+	run, err := m.start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer run.stop()
+	cert, err := m.issueOnce(context.Background(), "pin.example")
+	if err != nil {
+		t.Fatalf("issuance against a Location-less finalize: %v", err)
+	}
+	if cert == nil || len(cert.Certificate) == 0 {
+		t.Fatal("no certificate issued")
+	}
+	fake.mu.Lock()
+	polls := fake.requests["/order/1"]
+	fake.mu.Unlock()
+	if polls == 0 {
+		t.Fatal("recovery never consulted the order URI")
 	}
 }
