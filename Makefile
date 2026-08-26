@@ -17,6 +17,7 @@ E2E_REPEAT      ?= 1
 E2E_TIMEOUT            ?= 30m
 E2E_REGRESSION_TIMEOUT ?= 60m
 E2E_SOAK_TIMEOUT       ?= 120m
+COMMENT_COP_BASE       ?=
 
 .PHONY: all help comment-cop test test-race lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
 

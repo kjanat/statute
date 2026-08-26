@@ -274,7 +274,11 @@ const git = args => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 1 <
 function defaultBase() {
 	for (const ref of ['origin/master', 'master']) {
 		try {
-			return git(['merge-base', 'HEAD', ref]).trim();
+			// A probe: a missing ref is expected, so keep git's stderr quiet.
+			return execFileSync('git', ['merge-base', 'HEAD', ref], {
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'pipe'],
+			}).trim();
 		} catch {
 			continue;
 		}
@@ -730,7 +734,12 @@ async function main() {
 			process.exitCode = 2;
 			return;
 		}
-		process.exitCode = scanLocal(slug);
+		try {
+			process.exitCode = scanLocal(slug);
+		} catch (error) {
+			console.error(errorMessage(error));
+			process.exitCode = 2;
+		}
 		return;
 	}
 
