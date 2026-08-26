@@ -21,7 +21,14 @@ func TestSoak_MeshSustained(t *testing.T) {
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	reports := make(map[string]*report.Report, len(topo.Clients))
+	// The clients are independent: their plans run concurrently so the
+	// mesh actually carries sustained simultaneous load.
+	type outcome struct {
+		client string
+		rep    *report.Report
+		err    error
+	}
+	done := make(chan outcome, len(topo.Clients))
 	for _, client := range topo.Clients {
 		plan := &report.Plan{Name: "sustained"}
 		for _, server := range topo.Servers {
@@ -40,13 +47,24 @@ func TestSoak_MeshSustained(t *testing.T) {
 				},
 			)
 		}
-		rep := r.ExecutePlan(ctx, client, plan)
-		for _, res := range rep.Results {
+		go func() {
+			rep, err := r.ExecutePlanE(ctx, client, plan)
+			done <- outcome{client: client, rep: rep, err: err}
+		}()
+	}
+	reports := make(map[string]*report.Report, len(topo.Clients))
+	for range topo.Clients {
+		got := <-done
+		if got.err != nil {
+			t.Errorf("steady state: %s: %v", got.client, got.err)
+			continue
+		}
+		for _, res := range got.rep.Results {
 			if !res.OK {
-				t.Errorf("steady state: %s -> %s: %s", client, res.TargetServer, res.Err)
+				t.Errorf("steady state: %s -> %s: %s", got.client, res.TargetServer, res.Err)
 			}
 		}
-		reports[client] = rep
+		reports[got.client] = got.rep
 	}
 	r.AssertFullMesh(reports)
 }
@@ -62,24 +80,39 @@ func TestSoak_RollingRestartUnderLoad(t *testing.T) {
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	stablePlan := func(name string) *report.Plan {
+	// ~15s of continuous traffic: it must outlast the journal poll plus
+	// the restart, both docker CLI round trips costing seconds, or the
+	// restart would land after the client already exited.
+	stablePlan := func(name, marker string) *report.Plan {
 		return &report.Plan{Name: name, Steps: []report.Step{{
 			Name: "stable", TargetServer: harness.Server2, Proto: "h1",
-			URL:   fmt.Sprintf("http://%s:%d/echo", harness.Server2, harness.PortHTTP),
+			URL:   fmt.Sprintf("http://%s:%d/slow?d=1s&%s", harness.Server2, harness.PortHTTP, marker),
 			Count: 60, Concurrency: 4,
 			Expect: report.Expect{Status: 200},
 		}}}
 	}
+	type outcome struct {
+		rep *report.Report
+		err error
+	}
 	for cycle := range 3 {
-		done := make(chan *report.Report, 1)
+		marker := fmt.Sprintf("cycle=%d", cycle)
+		done := make(chan outcome, 1)
 		go func() {
-			done <- r.ExecutePlan(ctx, harness.Client1, stablePlan(fmt.Sprintf("cycle-%d", cycle)))
+			rep, err := r.ExecutePlanE(ctx, harness.Client1, stablePlan(fmt.Sprintf("cycle-%d", cycle), marker))
+			done <- outcome{rep: rep, err: err}
 		}()
+		// The origin journals a request on arrival, before its 1s hold,
+		// so the marker proves this cycle's traffic is in flight now.
+		awaitOriginQuery(ctx, t, r, marker)
 		if err := r.Compose.Restart(ctx, harness.Server1); err != nil {
 			t.Fatalf("cycle %d restart: %v", cycle, err)
 		}
-		rep := <-done
-		for _, res := range rep.Results {
+		got := <-done
+		if got.err != nil {
+			t.Fatalf("cycle %d: stable plan: %v", cycle, got.err)
+		}
+		for _, res := range got.rep.Results {
 			if !res.OK {
 				t.Errorf("cycle %d: stable node failed a request: %s", cycle, res.Err)
 			}

@@ -134,17 +134,27 @@ func (r *Run) AwaitReady(ctx context.Context) {
 // its in-container path.
 func (r *Run) WritePlan(client string, plan *report.Plan) string {
 	r.T.Helper()
+	path, err := r.WritePlanE(client, plan)
+	if err != nil {
+		r.T.Fatal(err)
+	}
+	return path
+}
+
+// WritePlanE is WritePlan without a fatal failure, for callers off the
+// test goroutine.
+func (r *Run) WritePlanE(client string, plan *report.Plan) (string, error) {
 	plan.ClientID = client
 	plan.Topology = r.Topology.Name
 	name := fmt.Sprintf("%s-%s-plan.json", client, sanitize(plan.Name))
 	blob, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
-		r.T.Fatal(err)
+		return "", fmt.Errorf("plan %s: %w", plan.Name, err)
 	}
 	if err := os.WriteFile(filepath.Join(r.ReportsDir, name), blob, 0o644); err != nil {
-		r.T.Fatal(err)
+		return "", fmt.Errorf("plan %s: %w", plan.Name, err)
 	}
-	return "/reports/" + name
+	return "/reports/" + name, nil
 }
 
 // ExecutePlan runs one client's plan to completion and parses the
@@ -152,27 +162,51 @@ func (r *Run) WritePlan(client string, plan *report.Plan) string {
 // planned edge had no successful traversal, which fails the test here.
 func (r *Run) ExecutePlan(ctx context.Context, client string, plan *report.Plan) *report.Report {
 	r.T.Helper()
-	planPath := r.WritePlan(client, plan)
+	rep, err := r.ExecutePlanE(ctx, client, plan)
+	if err != nil {
+		r.T.Fatal(err)
+	}
+	return rep
+}
+
+// ExecutePlanE is ExecutePlan for callers off the test goroutine: a
+// fatal failure there would abandon the caller's synchronization instead
+// of failing the test, so the whole path returns errors.
+func (r *Run) ExecutePlanE(ctx context.Context, client string, plan *report.Plan) (*report.Report, error) {
+	planPath, err := r.WritePlanE(client, plan)
+	if err != nil {
+		return nil, err
+	}
 	outName := fmt.Sprintf("%s-%s-report.json", client, sanitize(plan.Name))
 	out, err := r.Compose.RunClient(ctx, client, "run", "-plan", planPath, "-out", "/reports/"+outName)
 	if err != nil {
-		r.T.Fatalf("client %s plan %s: %v\n%s", client, plan.Name, err, out)
+		return nil, fmt.Errorf("client %s plan %s: %w\n%s", client, plan.Name, err, out)
 	}
-	return r.ReadReport(outName)
+	return r.ReadReportE(outName)
 }
 
 // ReadReport parses one report file from the shared mount.
 func (r *Run) ReadReport(name string) *report.Report {
 	r.T.Helper()
+	rep, err := r.ReadReportE(name)
+	if err != nil {
+		r.T.Fatal(err)
+	}
+	return rep
+}
+
+// ReadReportE is ReadReport without a fatal failure, for callers off the
+// test goroutine.
+func (r *Run) ReadReportE(name string) (*report.Report, error) {
 	blob, err := os.ReadFile(filepath.Join(r.ReportsDir, name))
 	if err != nil {
-		r.T.Fatalf("report %s: %v", name, err)
+		return nil, fmt.Errorf("report %s: %w", name, err)
 	}
 	var rep report.Report
 	if err := json.Unmarshal(blob, &rep); err != nil {
-		r.T.Fatalf("report %s: %v", name, err)
+		return nil, fmt.Errorf("report %s: %w", name, err)
 	}
-	return &rep
+	return &rep, nil
 }
 
 // AssertFullMesh fails unless every (client, server) edge in the

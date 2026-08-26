@@ -103,6 +103,23 @@ func awaitOriginPath(ctx context.Context, t *testing.T, r *harness.Run, path str
 	})
 }
 
+// awaitOriginQuery waits until either origin's journal records a request
+// whose query carries the marker — proof that this batch of traffic, not
+// an earlier one, is already on the wire.
+func awaitOriginQuery(ctx context.Context, t *testing.T, r *harness.Run, marker string) {
+	t.Helper()
+	pollUntil(t, 60*time.Second, "request carrying "+marker+" reaches an origin", func() (bool, string) {
+		for _, origin := range []string{"origin-1", "origin-2"} {
+			for _, e := range originJournal(ctx, r, origin, "http") {
+				if strings.Contains(e.Query, marker) {
+					return true, ""
+				}
+			}
+		}
+		return false, "no journal entry yet"
+	})
+}
+
 // logLinesContaining returns the log lines that contain every marker.
 func logLinesContaining(logs string, markers ...string) []string {
 	var out []string
