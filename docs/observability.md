@@ -14,20 +14,20 @@ One JSON line per request, written to the configured destination (`Stdout`, `Std
 
 ### Fields
 
-| Field           | Type   | Description                                                   |
-| --------------- | ------ | ------------------------------------------------------------- |
-| `ts`            | string | Request start time, RFC 3339 with nanosecond precision, UTC.  |
-| `method`        | string | HTTP method.                                                  |
-| `host`          | string | Host header value as received.                                |
-| `path`          | string | URL path (no query).                                          |
-| `query`         | string | Raw query string (no leading `?`).                            |
-| `remote`        | string | Best-effort client IP. See "client IP attribution" below.     |
-| `user_agent`    | string | `User-Agent` header.                                          |
-| `referer`       | string | `Referer` header.                                             |
-| `status`        | int    | Response status code as committed to the client.              |
-| `duration_us`   | int64  | Wall-clock duration from request start to response committed. |
-| `proto`         | string | Protocol version, e.g. `HTTP/1.1`, `HTTP/2.0`.                |
-| `forwarded_for` | string | Raw `X-Forwarded-For` header (full chain, not parsed).        |
+| Field           | Type   | Description                                                                                                                                                                                    |
+| --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`            | string | Request start time, RFC 3339 with nanosecond precision, UTC.                                                                                                                                   |
+| `method`        | string | HTTP method.                                                                                                                                                                                   |
+| `host`          | string | Host header value as received.                                                                                                                                                                 |
+| `path`          | string | URL path (no query).                                                                                                                                                                           |
+| `query`         | string | Raw query string (no leading `?`).                                                                                                                                                             |
+| `remote`        | string | Best-effort client IP. See "client IP attribution" below.                                                                                                                                      |
+| `user_agent`    | string | `User-Agent` header.                                                                                                                                                                           |
+| `referer`       | string | `Referer` header.                                                                                                                                                                              |
+| `status`        | int    | Response status code as committed to the client.                                                                                                                                               |
+| `duration_us`   | int64  | Wall-clock duration from request start until the handler returns — for most requests that is when the response is committed; for a hijacked upgrade it is when the tunneled connection closes. |
+| `proto`         | string | Protocol version, e.g. `HTTP/1.1`, `HTTP/2.0`.                                                                                                                                                 |
+| `forwarded_for` | string | Raw `X-Forwarded-For` header (full chain, not parsed).                                                                                                                                         |
 
 ### Client IP attribution
 
@@ -72,7 +72,7 @@ status range filter
     <400  → sampling applies
 ```
 
-So `Statuses("200-299")` really does suppress 500s — errors **within the selected ranges** are never sampled out, and everything outside the ranges is never logged at all. Filtering applies to the final status as committed to the client: the recorder ignores 1xx interim responses, so a 103 → 404 exchange filters as 404. Two commit edge cases are honoured — a `Flush` before any `WriteHeader` commits an implicit 200 (a later `WriteHeader(500)` cannot change what the client saw, so the filter sees 200), and 101 Switching Protocols is final, not interim, so a handler-written 101 filters as 101. A proxied upgrade is different: the reverse proxy hijacks the connection and writes the 101 handshake directly to it, bypassing the response writer entirely, so a hijacked exchange records the implicit 200 — `Statuses("101")` does not match proxied WebSocket upgrades.
+So `Statuses("200-299")` really does suppress 500s — errors **within the selected ranges** are never sampled out, and everything outside the ranges is never logged at all. Filtering applies to the final status as committed to the client: the recorder ignores 1xx interim responses, so a 103 → 404 exchange filters as 404. Two commit edge cases are honoured — a `Flush` before any `WriteHeader` commits an implicit 200 (a later `WriteHeader(500)` cannot change what the client saw, so the filter sees 200), and 101 Switching Protocols is final, not interim, so a handler-written 101 filters as 101. A proxied upgrade takes the same path from the other side: the reverse proxy hijacks the connection and writes the 101 handshake directly to it, bypassing the response writer — but the recorder implements `Hijack` itself, so a successful hijack before any committed response latches 101. Proxied WebSocket upgrades therefore log and count as 101, and `Statuses("101")` matches them alongside handler-written 101s. The recorded duration still spans the whole tunneled connection lifetime, since the proxy's handler only returns when the tunnel closes.
 
 `Resolve` rejects malformed or out-of-range (`[100, 599]`) inputs and normalizes the rest — sorted ascending, overlapping and adjacent ranges merged — and the canonical ranges appear in the exported schema.
 

@@ -28,7 +28,7 @@ jobs:
         with:
           tool_versions: |
             golangci-lint 2.13.1
-      - uses: kjanat/dprint-check@a0cb69ef4b3508623238086e8ba125c9c2f64361 # v3
+      - uses: kjanat/dprint-check@eccefcd4705624893283494253344be8ac9b9b8b # v3.0.14
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9

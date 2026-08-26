@@ -1,8 +1,10 @@
 package statute
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -122,14 +124,34 @@ func (s *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
 }
 
 // Unwrap exposes the underlying writer to http.ResponseController, so
-// optional interfaces the recorder does not implement itself — Hijacker
-// above all — stay reachable. The reverse proxy's protocol-upgrade path
-// hijacks through the controller, and metricsMiddleware wraps every
-// listener with this recorder, so without Unwrap no WebSocket could
-// upgrade at all. A hijacked handshake is written to the taken-over
-// connection, not through this writer, so it is not a response the
-// recorder can observe.
+// optional interfaces the recorder does not implement itself — deadline
+// control among them — stay reachable. Hijacking is not one of those:
+// the recorder implements Hijack below, precisely so the takeover does
+// not slip past it.
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// Hijack lets a protocol upgrade take over the connection while the
+// recorder finally learns it happened. The handshake is written to the
+// taken-over connection, never through this writer, so without latching
+// here a proxied upgrade would keep the implicit 200 the recorder starts
+// with. A successful hijack before any committed response latches 101
+// Switching Protocols — the status the upgrade writes to the wire — and
+// commits the recorder, so a later WriteHeader cannot rewrite what the
+// client saw; a response committed before the hijack keeps its status.
+// Delegation goes through http.ResponseController, so a writer whose
+// underlying connection cannot be hijacked fails with the same error as
+// before, and a failed attempt latches nothing.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(s.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !s.wroteHeader {
+		s.status = http.StatusSwitchingProtocols
+		s.wroteHeader = true
+	}
+	return conn, rw, nil
+}
 
 // Flush propagates Flush calls so streaming responses still flush through us.
 // A flush is a commit: net/http writes an implicit 200 when no header has
