@@ -435,6 +435,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The access log's `request_id` field now appears in real deployments.
+  The RequestID middleware stored the identifier only in a derived
+  downstream request context, while the runtime composes the access log
+  at the listener level outside the route middleware chain, so the
+  logger could never see it; the existing unit test had wired the two
+  in the opposite, unrealistic order. The logger now installs a holder
+  ahead of routing that the middleware fills, and a new test pins the
+  runtime's actual composition. Found by the new black-box e2e
+  observability scenario.
+
+- Pinned ACME issuance now completes against CAs that answer the
+  finalize request without a `Location` header while the order is still
+  processing — RFC 8555 does not require one, and Pebble omits it,
+  which made the client's internal completion poll fail on an empty
+  order URL. The manager now settles such orders through the URI it
+  already holds from order creation and fetches the issued chain; a
+  genuine CA rejection still surfaces as before.
+
 - The access-log/metrics status recorder now reports the status actually
   committed to the client in two edge cases where it previously drifted.
   A `Flush` before any `WriteHeader` commits an implicit 200, so a later

@@ -93,3 +93,34 @@ func TestRequestID_AbsentFromLogWhenMiddlewareNotApplied(t *testing.T) {
 		t.Errorf("request_id present without middleware: %v", entry["request_id"])
 	}
 }
+
+// TestRequestID_PropagatesToListenerLevelAccessLog proves the id
+// reaches the log in the runtime's real composition: the access log
+// wraps the routed content path from the listener, OUTSIDE the route
+// middleware chain, so the value must travel upward through the
+// installed holder rather than a derived downstream context.
+func TestRequestID_PropagatesToListenerLevelAccessLog(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	cfg := resolved.AccessLog{Enabled: true, Format: "json", Writer: &buf, SampleRate: 1.0}
+
+	chain := accessLogMiddleware(cfg, requestIDHandler(
+		resolved.Middleware{Type: resolved.MWRequestID, RequestIDHeader: "X-Request-Id"},
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	))
+	rec := runRequest(t, chain, httptest.NewRequest("GET", "/", nil))
+	expected := rec.Header().Get("X-Request-Id")
+	if expected == "" {
+		t.Fatal("middleware did not set X-Request-Id")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("log not JSON: %v\n%s", err, buf.String())
+	}
+	if entry["request_id"] != expected {
+		t.Errorf("log request_id = %v, want %q", entry["request_id"], expected)
+	}
+}
