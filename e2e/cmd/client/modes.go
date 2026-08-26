@@ -139,15 +139,21 @@ func runProbeNegative(args []string) error {
 	if err != nil {
 		return err
 	}
+	// A redirect would prove some other endpoint answered, not this one.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	var probeErr error
 	switch *proto {
 	case "h3":
 		tr := &http3.Transport{TLSClientConfig: tlsCfg}
 		defer tr.Close()
-		client := &http.Client{Timeout: *timeout, Transport: tr}
+		client := &http.Client{Timeout: *timeout, Transport: tr, CheckRedirect: noRedirect}
 		probeErr = drainGet(client, *target)
 	case "h1":
-		client := &http.Client{Timeout: *timeout, Transport: &http.Transport{TLSClientConfig: tlsCfg}}
+		client := &http.Client{
+			Timeout:       *timeout,
+			Transport:     &http.Transport{TLSClientConfig: tlsCfg},
+			CheckRedirect: noRedirect,
+		}
 		probeErr = drainGet(client, *target)
 	default:
 		return fmt.Errorf("probe-negative: unknown proto %q", *proto)
@@ -252,9 +258,8 @@ func runStream(args []string) error {
 	if lines != *chunks {
 		return fmt.Errorf("stream: got %d lines, want %d", lines, *chunks)
 	}
-	// The origin spaces its chunks out, so a proxy that streams delivers
-	// the first line well before the body completes; a buffering proxy
-	// collapses the two.
+	// The origin spaces its chunks out, so only a buffering proxy holds
+	// the first byte past the halfway mark.
 	if total > 0 && firstByte*2 > total {
 		return fmt.Errorf("stream: first byte at %s of %s total suggests buffering", firstByte, total)
 	}

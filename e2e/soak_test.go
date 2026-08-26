@@ -16,7 +16,7 @@ import (
 // shared transport, and steady state tolerates zero failed requests.
 func TestSoak_MeshSustained(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("2s2c")
+	topo := harness.MustTopology(t, "2s2c")
 	r := harness.Start(t, "mesh", topo)
 	ctx := context.Background()
 	r.AwaitReady(ctx)
@@ -75,14 +75,13 @@ func TestSoak_MeshSustained(t *testing.T) {
 // cycle.
 func TestSoak_RollingRestartUnderLoad(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("2s1c")
+	topo := harness.MustTopology(t, "2s1c")
 	r := harness.Start(t, "mesh", topo)
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	// ~15s of continuous traffic: it must outlast the journal poll plus
-	// the restart, both docker CLI round trips costing seconds, or the
-	// restart would land after the client already exited.
+	// ~15s of traffic: it must outlast the journal poll plus the restart,
+	// both docker CLI round trips, or the restart lands after client exit.
 	stablePlan := func(name, marker string) *report.Plan {
 		return &report.Plan{Name: name, Steps: []report.Step{{
 			Name: "stable", TargetServer: harness.Server2, Proto: "h1",
@@ -130,7 +129,7 @@ func TestSoak_RollingRestartUnderLoad(t *testing.T) {
 // must still finish inside the grace period.
 func TestSoak_SlowStreamAcrossShutdown(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	r := harness.Start(t, "h3", topo)
 	ctx := context.Background()
 	r.AwaitReady(ctx)

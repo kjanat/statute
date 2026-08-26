@@ -91,6 +91,7 @@ func assertBothOriginsServed(t *testing.T, topo harness.Topology, reports map[st
 	for _, client := range topo.Clients {
 		rep := reports[client]
 		if rep == nil {
+			t.Errorf("no report for %s", client)
 			continue
 		}
 		for _, server := range topo.Servers {

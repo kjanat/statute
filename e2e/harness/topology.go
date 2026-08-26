@@ -7,7 +7,10 @@
 // import guard makes that boundary mechanical.
 package harness
 
-import "fmt"
+import (
+	"fmt"
+	"testing"
+)
 
 // Stable node identities of the base stack and its overrides.
 const (
@@ -35,6 +38,18 @@ var Topologies = []Topology{
 	{Name: "1s2c", Servers: []string{Server1}, Clients: []string{Client1, Client2}},
 	{Name: "2s1c", Servers: []string{Server1, Server2}, Clients: []string{Client1}},
 	{Name: "2s2c", Servers: []string{Server1, Server2}, Clients: []string{Client1, Client2}},
+}
+
+// MustTopology resolves one matrix entry or fails the test. An unknown
+// name must never leave a scenario running on an empty topology, which
+// would assert nothing and still pass.
+func MustTopology(t *testing.T, name string) Topology {
+	t.Helper()
+	topo, err := TopologyByName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return topo
 }
 
 // TopologyByName resolves one matrix entry.

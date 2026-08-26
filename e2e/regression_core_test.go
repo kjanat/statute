@@ -19,7 +19,7 @@ import (
 // from the origin's own journal.
 func TestRegression_RoutesRewriteRetry(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	r := harness.Start(t, "routes", topo)
 	ctx := context.Background()
 	r.AwaitReady(ctx)
@@ -34,9 +34,7 @@ func TestRegression_RoutesRewriteRetry(t *testing.T) {
 		{
 			Name: "catchall", URL: "http://statute-1:8080/api2/echo", TargetServer: harness.Server1,
 			Proto: "h1", Count: 1,
-			// The catch-all route applies no rewrite: the origin sees the
-			// original path even though a sibling route strips a similar
-			// prefix.
+			// The sibling route strips /api; this catch-all must not.
 			Expect: report.Expect{Status: 200, BodyContains: `"path":"/api2/echo"`},
 		},
 		{
@@ -75,7 +73,7 @@ func TestRegression_BackendsHealthFailover(t *testing.T) {
 	for _, name := range []string{"1s1c", "2s2c"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			topo, _ := harness.TopologyByName(name)
+			topo := harness.MustTopology(t, name)
 			runBackendsHealth(t, topo)
 		})
 	}
@@ -96,9 +94,7 @@ func runBackendsHealth(t *testing.T, topo harness.Topology) {
 
 	echoPlan("baseline", both, "want both origins")
 
-	// Demote origin-2 through its real health endpoint; the pool probes
-	// every 2s and demotes after 2 consecutive failures. Each node runs
-	// its own health checker, so every node must be proven to converge.
+	// Health is per-node state, so every node must be proven to converge.
 	setOriginHealth(ctx, r, "origin-2", "down")
 	for _, server := range topo.Servers {
 		awaitNodeOrigins(ctx, t, r, server, "demoted", "converges on origin-1", func(got map[string]int) bool {
@@ -184,7 +180,7 @@ func awaitNodeOrigins(ctx context.Context, t *testing.T, r *harness.Run, server,
 // closed.
 func TestRegression_UpstreamTLSParity(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	r := harness.Start(t, "upstream-tls", topo, "scenarios/upstream-tls/compose.yml")
 	ctx := context.Background()
 	r.AwaitReady(ctx)
@@ -224,9 +220,8 @@ func TestRegression_UpstreamTLSParity(t *testing.T) {
 	if !sawEcho || !sawProbe {
 		t.Errorf("origin-1 journal: echo=%v probe=%v; both traffic kinds must appear", sawEcho, sawProbe)
 	}
-	// The failing pool never reached its backend with a completed
-	// request: TLS verification fails during handshake, so origin-2's
-	// journal must hold no proxied echo.
+	// Verification fails during handshake, so no request ever completes
+	// at origin-2.
 	for _, e := range originJournal(ctx, r, "origin-2", "https") {
 		if e.Path == "/echo" {
 			t.Errorf("origin-2 served %q despite an unverifiable pool root", e.Path)
@@ -241,7 +236,7 @@ func TestRegression_HTTP3(t *testing.T) {
 	for _, name := range []string{"1s1c", "2s1c"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			topo, _ := harness.TopologyByName(name)
+			topo := harness.MustTopology(t, name)
 			runHTTP3(t, topo)
 		})
 	}
@@ -292,7 +287,7 @@ func assertSocketRelease(ctx context.Context, t *testing.T, r *harness.Run) {
 		{"probe-negative", "-url", fmt.Sprintf("https://%s:%d/echo", harness.Server1, harness.PortHTTPS), "-proto", "h3", "-roots", "/certs/ca.crt"},
 	} {
 		if out, err := r.Compose.RunClient(ctx, harness.Client1, probe...); err != nil {
-			t.Errorf("release proof %v: %v\n%s", probe[3], err, out)
+			t.Errorf("release proof %v: %v\n%s", probe[2], err, out)
 		}
 	}
 }
@@ -302,11 +297,9 @@ func assertSocketRelease(ctx context.Context, t *testing.T, r *harness.Run) {
 // connection upgrade round-trips raw bytes both ways.
 func TestRegression_StreamingAndUpgrade(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
-	// The h3 scenario's route carries no Retry: Retry(OnStatus) must
-	// buffer the response to decide on re-entry, which both defeats
-	// streaming and hides http.Hijacker from the upgrade path. Streams
-	// and upgrades belong on Retry-free routes by design.
+	topo := harness.MustTopology(t, "1s1c")
+	// The h3 scenario's route is Retry-free: Retry(OnStatus) buffers the
+	// response, defeating streaming and hiding http.Hijacker.
 	r := harness.Start(t, "h3", topo)
 	ctx := context.Background()
 	r.AwaitReady(ctx)
@@ -326,7 +319,7 @@ func TestRegression_StreamingAndUpgrade(t *testing.T) {
 // service slot actually serves — not merely starts.
 func TestRegression_StartupRetry(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	r := harness.StartServices(t, "startup-bad", topo, []string{"origin-1", "origin-2"})
 	ctx := context.Background()
 
@@ -361,7 +354,7 @@ func TestRegression_ShutdownInFlight(t *testing.T) {
 	for _, name := range []string{"1s1c", "1s2c"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			topo, _ := harness.TopologyByName(name)
+			topo := harness.MustTopology(t, name)
 			runShutdownInFlight(t, topo)
 		})
 	}
@@ -381,9 +374,8 @@ func runShutdownInFlight(t *testing.T, topo harness.Topology) {
 	wg.Go(func() {
 		slowOut, slowErr = clientGet(ctx, r, slow)
 	})
-	// A fixed sleep races one-shot container startup under load; the
-	// origin journal records the request the moment it arrives, so wait
-	// for that before draining the node under it.
+	// Drain only once the request is provably at the origin; a fixed
+	// sleep races one-shot container startup under load.
 	awaitOriginPath(ctx, t, r, "/slow")
 	if err := r.Compose.Signal(ctx, harness.Server1, "SIGTERM"); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
@@ -410,14 +402,13 @@ func runShutdownInFlight(t *testing.T, topo harness.Topology) {
 // serving both.
 func TestRegression_NodeStateIsolation(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("2s2c")
+	topo := harness.MustTopology(t, "2s2c")
 	r := harness.Start(t, "isolation", topo)
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	// Feed statute-1 failures that only origin-1 produces; round-robin
-	// hands it enough to cross the passive MaxFailures threshold. Mixed
-	// 200/502 results are expected — the step passes on any success.
+	// Only origin-1 fails these, so round-robin feeds it past
+	// MaxFailures; the step asserts no status because 502s are expected.
 	r.ExecutePlan(ctx, harness.Client1, &report.Plan{Name: "perturb", Steps: []report.Step{{
 		Name:         "fail-origin-1",
 		URL:          fmt.Sprintf("http://%s:%d/fail?origin=origin-1&key=iso&n=100", harness.Server1, harness.PortHTTP),
@@ -458,7 +449,7 @@ func TestRegression_NodeStateIsolation(t *testing.T) {
 // attributes the forwarded client.
 func TestRegression_TrustedClientIdentity(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	r := harness.Start(t, "trusted", topo)
 	ctx := context.Background()
 	r.AwaitReady(ctx)

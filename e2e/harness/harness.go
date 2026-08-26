@@ -252,9 +252,8 @@ func (r *Run) Logs(ctx context.Context, service string) string {
 // across compose versions, unlike `compose ps` JSON).
 func (r *Run) WaitExit(ctx context.Context, service string) int {
 	r.T.Helper()
-	// `compose wait` propagates the container's exit code as its own, so
-	// a non-zero container is not an invocation failure; the code is
-	// read authoritatively from inspect below either way.
+	// `compose wait` exits with the container's own code, so its error
+	// says nothing; inspect below is authoritative.
 	_, _ = r.Compose.Output(ctx, "wait", service)
 	ids := dockerLines(ctx, r.T, "ps", "-aq",
 		"--filter", "label=com.docker.compose.project="+r.Compose.Project,

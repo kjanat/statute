@@ -32,7 +32,7 @@ func dockerCLI(ctx context.Context, t *testing.T, args ...string) {
 // static route shadows the label-derived catch-all throughout.
 func TestRegression_DockerDiscovery(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	r := harness.Start(t, "docker", topo, "scenarios/docker/compose.yml")
 	ctx := context.Background()
 	r.AwaitReady(ctx)
@@ -113,15 +113,14 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 // for the domain.
 func TestRegression_ACMEHTTP01(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	services := []string{harness.Server1, "origin-1", "origin-2", "pebble"}
 	r := harness.StartServices(t, "acme-http01", topo, services, "scenarios/acme-http01/compose.yml")
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	// Pebble mints its issuance root per run; fetch it from the
-	// management API inside the network so the client can verify the
-	// certificate Statute serves.
+	// Pebble mints its issuance root per run, so the client cannot verify
+	// the served certificate until it has fetched this one.
 	if out, err := r.Compose.RunClient(ctx, harness.Client1, "fetch-roots",
 		"-url", "https://pebble:15000/roots/0", "-insecure", "-out", "/reports/pebble-root.pem"); err != nil {
 		t.Fatalf("fetch pebble root: %v\n%s", err, out)
@@ -148,7 +147,7 @@ func TestRegression_ACMEHTTP01(t *testing.T) {
 // endpoints.
 func TestRegression_Observability(t *testing.T) {
 	t.Parallel()
-	topo, _ := harness.TopologyByName("1s1c")
+	topo := harness.MustTopology(t, "1s1c")
 	services := []string{harness.Server1, "origin-1", "origin-2", "otelcol"}
 	r := harness.StartServices(t, "observability", topo, services, "scenarios/observability/compose.yml")
 	ctx := context.Background()
@@ -159,6 +158,9 @@ func TestRegression_Observability(t *testing.T) {
 		TargetServer: harness.Server1, Proto: "h1", Count: 3,
 		Expect: report.Expect{Status: 200},
 	}}})
+	if len(rep.Results) == 0 {
+		t.Fatal("client report holds no results")
+	}
 	requestID := rep.Results[0].RequestID
 	if requestID == "" {
 		t.Fatal("client report carries no request id")

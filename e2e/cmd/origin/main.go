@@ -63,6 +63,11 @@ type origin struct {
 	journal  []journalEntry
 }
 
+// journalMax bounds the retained journal so a soak run cannot grow it
+// without limit. It is far above any single scenario's burst: the
+// largest is the sustained mesh at a few hundred requests per origin.
+const journalMax = 4096
+
 // journalEntry records one served request exactly as the origin saw it —
 // the harness proves rewrite and header semantics from this view, so the
 // path must be the as-received one, never a normalized form.
@@ -122,6 +127,9 @@ func (o *origin) record(r *http.Request) journalEntry {
 	}
 	o.mu.Lock()
 	o.journal = append(o.journal, e)
+	if len(o.journal) > journalMax {
+		o.journal = o.journal[len(o.journal)-journalMax:]
+	}
 	o.mu.Unlock()
 	return e
 }
