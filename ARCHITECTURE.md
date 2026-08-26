@@ -46,6 +46,16 @@ Static routes compile in declaration order and are consulted before Docker's
 current dynamic generation. Dynamic discovery must not shadow compiled static
 configuration.
 
+A configured `Fallback` handler is the router's terminal stage, reached only
+after both tables miss; unset, the terminal behavior stays `http.NotFound`. It
+is not a route — no matcher, no route middleware — and it lives inside the
+content router, so everything wrapping the router keeps its precedence over it:
+pending HTTP-01 challenge responses on a plain HTTP listener, Alt-Svc, and
+listener observability all sit outside it, and a redirect-only listener never
+reaches it. What each ACME source claims differs: an automatic source absorbs
+the whole challenge namespace, while a pinned HTTP-01 source answers only its
+pending tokens and passes other paths through to the router.
+
 A compiled route combines:
 
 - the resolved matcher/action,

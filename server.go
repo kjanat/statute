@@ -843,9 +843,18 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 	return nil
 }
 
+// fallbackHandler returns the router's terminal stage: the configured
+// fallback handler, or net/http's 404 when none is configured.
+func (s *server) fallbackHandler() http.Handler {
+	if s.cfg.Fallback != nil {
+		return s.cfg.Fallback
+	}
+	return http.NotFoundHandler()
+}
+
 // buildRouter returns an http.Handler that dispatches to the matching
 // static route in declaration order, then to the docker provider's dynamic
-// routes when one is configured.
+// routes when one is configured, then to the fallback handler.
 func (s *server) buildRouter() http.Handler {
 	static := make([]compiledRoute, 0, len(s.cfg.Routes))
 	for _, r := range s.cfg.Routes {
@@ -869,6 +878,8 @@ func (s *server) buildRouter() http.Handler {
 		})
 	}
 
+	fallback := s.fallbackHandler()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host := stripPort(req.Host)
 		if h := findHandler(static, host, req); h != nil {
@@ -881,7 +892,7 @@ func (s *server) buildRouter() http.Handler {
 				return
 			}
 		}
-		http.NotFound(w, req)
+		fallback.ServeHTTP(w, req)
 	})
 }
 

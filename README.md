@@ -268,6 +268,23 @@ statute.Match("/healthz").Host("foo.example.com").Handle(http.HandlerFunc(
 
 The handler composes with route middleware like any other action and drains through graceful shutdown like proxied requests. It receives the request path unstripped — the wildcard prefix stripping above is `Serve`-specific — though the hoisted header operations and path rewrites apply to it as usual. Under a `Retry` the handler may run once per attempt (idempotent methods only, as `Retry` enforces), and it is invoked concurrently, so it must be safe for concurrent use. Because a handler is opaque code, the JSON export carries only a `HandlerRoute` marker for it, the DOT graph renders the route as an edge-less route node, and Docker labels cannot reference or construct one — handlers exist solely in your compiled configuration.
 
+A `Fallback` handler answers the requests no route matched at all:
+
+```go
+statute.Config{
+    Docker: statute.Docker().TraefikLabels(),
+    Fallback: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        http.Error(w, "not found", http.StatusNotFound)
+    }),
+}
+```
+
+It is the router's terminal stage, so the precedence chain is static routes (declaration order) → the current Docker generation → the fallback. A hostless `Match("/*")` route cannot express that: static routes are consulted before Docker's dynamic routes, so it would shadow every discovered one — declare one anyway and the fallback, along with every Docker-discovered route, becomes permanently unreachable. Nil leaves the terminal 404 in place, and a non-nil interface wrapping a nil handler is a startup error rather than a silent 404.
+
+The fallback is not a route: it has no matcher, and it carries no route middleware, which is route-scoped. Listener wrapping still covers it — access log, metrics, tracing, and the `TrustedProxy` policy wrap the whole router, so a fallback response is logged and counted like any other — and everything wrapping the router answers ahead of it: a pending ACME HTTP-01 challenge response always does, and an automatic (autocert) source absorbs the whole `/.well-known/acme-challenge/` namespace, answering unknown tokens with its own 404. A pinned `HTTP01()` source only answers its pending tokens, so unknown paths under that prefix fall through to the fallback, as the whole prefix does when no ACME source is configured. A redirect-only listener never reaches the router at all. Like a handler route it is opaque code, so the JSON export carries only a `HasFallback` marker, the DOT graph renders it as one node reached from the content listeners, and Docker labels cannot name one.
+
+The fallback cannot tell a genuine miss from a Docker router whose routes were dropped fail-closed — an unregistered middleware reference drops them, and both look like nothing matched. A fallback that answers 404 is unaffected; one that proxies or redirects will send traffic meant for a protected route somewhere instead of refusing it.
+
 Middleware:
 
 - **`Timeout(dur)`** — wraps the handler in `http.TimeoutHandler`. Returns 503 when exceeded.

@@ -18,10 +18,23 @@ import (
 
 // Config is the resolved top-level configuration.
 type Config struct {
-	Listeners     []*Listener
-	Upstreams     map[string]*Pool
-	Routes        []*Route
-	Docker        *Docker // nil unless Docker label discovery is enabled
+	Listeners []*Listener
+	Upstreams map[string]*Pool
+	Routes    []*Route
+	Docker    *Docker // nil unless Docker label discovery is enabled
+
+	// Fallback is the handler the router serves when neither a static
+	// route nor the current Docker generation matched; nil leaves the
+	// terminal 404 in place. Like Route.Handler it is an opaque immutable
+	// reference carried through from the surface config, not mutable
+	// runtime state, and it cannot serialize — the HasFallback marker
+	// stands in for it in the JSON export.
+	Fallback http.Handler `json:"-"`
+	// HasFallback is true exactly when Fallback is non-nil; Resolve
+	// maintains that. It exists so tooling reading the JSON export can see
+	// a fallback the export cannot carry.
+	HasFallback bool
+
 	Defaults      Defaults
 	Observability Observability
 	Shutdown      Shutdown
