@@ -88,29 +88,7 @@ func runBackendsHealth(t *testing.T, topo harness.Topology) {
 
 	echoPlan := func(name string, expectOrigins func(map[string]bool) bool, desc string) {
 		t.Helper()
-		for _, client := range topo.Clients {
-			plan := &report.Plan{Name: name}
-			for _, server := range topo.Servers {
-				plan.Steps = append(plan.Steps, report.Step{
-					Name: name + "-" + server, TargetServer: server, Proto: "h1",
-					URL:   fmt.Sprintf("http://%s:%d/echo", server, harness.PortHTTP),
-					Count: 8, Concurrency: 2,
-					Expect: report.Expect{Status: 200},
-				})
-			}
-			rep := r.ExecutePlan(ctx, client, plan)
-			for _, server := range topo.Servers {
-				got := make(map[string]bool)
-				for _, res := range rep.Results {
-					if res.OK && res.TargetServer == server {
-						got[res.OriginID] = true
-					}
-				}
-				if !expectOrigins(got) {
-					t.Errorf("%s via %s -> %s: origins %v (%s)", name, client, server, got, desc)
-				}
-			}
-		}
+		assertMeshOrigins(ctx, t, r, name, expectOrigins, desc)
 	}
 
 	both := func(o map[string]bool) bool { return o["origin-1"] && o["origin-2"] }
@@ -119,22 +97,85 @@ func runBackendsHealth(t *testing.T, topo harness.Topology) {
 	echoPlan("baseline", both, "want both origins")
 
 	// Demote origin-2 through its real health endpoint; the pool probes
-	// every 2s and demotes after 2 consecutive failures.
+	// every 2s and demotes after 2 consecutive failures. Each node runs
+	// its own health checker, so every node must be proven to converge.
 	setOriginHealth(ctx, r, "origin-2", "down")
-	pollUntil(t, 30*time.Second, "traffic converges on origin-1", func() (bool, string) {
-		body := mustClientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", topo.Servers[0], harness.PortHTTP))
-		return strings.Contains(body, `"origin":"origin-1"`), body
-	})
-	// Convergence must hold steadily on every node, not just once.
-	time.Sleep(5 * time.Second)
+	for _, server := range topo.Servers {
+		awaitNodeOrigins(ctx, t, r, server, "demoted", "converges on origin-1", func(got map[string]int) bool {
+			return got["origin-1"] == originProbeCount && got["origin-2"] == 0
+		})
+	}
 	echoPlan("converged", only1, "origin-2 is demoted and may not serve")
 
 	setOriginHealth(ctx, r, "origin-2", "up")
-	pollUntil(t, 30*time.Second, "origin-2 recovers", func() (bool, string) {
-		body := mustClientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", topo.Servers[0], harness.PortHTTP))
-		return strings.Contains(body, `"origin":"origin-2"`), body
-	})
+	for _, server := range topo.Servers {
+		awaitNodeOrigins(ctx, t, r, server, "recovered", "serves origin-2 again", func(got map[string]int) bool {
+			return got["origin-2"] > 0
+		})
+	}
 	echoPlan("recovered", both, "want both origins after recovery")
+}
+
+// assertMeshOrigins drives every client at every node and checks which
+// origins each node served.
+func assertMeshOrigins(ctx context.Context, t *testing.T, r *harness.Run, name string, expectOrigins func(map[string]bool) bool, desc string) {
+	t.Helper()
+	topo := r.Topology
+	for _, client := range topo.Clients {
+		plan := &report.Plan{Name: name}
+		for _, server := range topo.Servers {
+			plan.Steps = append(plan.Steps, report.Step{
+				Name: name + "-" + server, TargetServer: server, Proto: "h1",
+				URL:   fmt.Sprintf("http://%s:%d/echo", server, harness.PortHTTP),
+				Count: 8, Concurrency: 2,
+				Expect: report.Expect{Status: 200},
+			})
+		}
+		rep := r.ExecutePlan(ctx, client, plan)
+		for _, server := range topo.Servers {
+			got := make(map[string]bool)
+			for _, res := range rep.Results {
+				if res.OK && res.TargetServer == server {
+					got[res.OriginID] = true
+				}
+			}
+			if !expectOrigins(got) {
+				t.Errorf("%s via %s -> %s: origins %v (%s)", name, client, server, got, desc)
+			}
+		}
+	}
+}
+
+// originProbeCount is how many consecutive requests one convergence
+// probe makes; with two round-robin backends it is far more than enough
+// for an eligible origin-2 to appear at least once.
+const originProbeCount = 4
+
+// awaitNodeOrigins polls one Statute node with consecutive requests
+// until the origins it serves satisfy want. Health is per-node runtime
+// state: one node converging proves nothing about its siblings, and a
+// fixed sleep proves nothing about either.
+func awaitNodeOrigins(ctx context.Context, t *testing.T, r *harness.Run, server, phase, what string, want func(map[string]int) bool) {
+	t.Helper()
+	plan := &report.Plan{Name: "probe-" + phase + "-" + server, Steps: []report.Step{{
+		Name: "echo", TargetServer: server, Proto: "h1",
+		URL:   fmt.Sprintf("http://%s:%d/echo", server, harness.PortHTTP),
+		Count: originProbeCount, Concurrency: 1,
+		Expect: report.Expect{Status: 200},
+	}}}
+	pollUntil(t, 60*time.Second, server+" "+what, func() (bool, string) {
+		rep, err := r.ExecutePlanE(ctx, r.Topology.Clients[0], plan)
+		if err != nil {
+			return false, err.Error()
+		}
+		got := make(map[string]int)
+		for _, res := range rep.Results {
+			if res.OK {
+				got[res.OriginID]++
+			}
+		}
+		return want(got), fmt.Sprintf("%v", got)
+	})
 }
 
 // TestRegression_UpstreamTLSParity proves backend TLS verification and
