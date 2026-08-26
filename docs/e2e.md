@@ -37,7 +37,7 @@ The lane is black-box by contract, and the contract is mechanical:
 | `e2e/harness`        | host-side orchestration: project naming, readiness, artifacts, teardown, the orphan proof                                |
 | `e2e/report`         | the JSON plan/report schema between harness and client                                                                   |
 | `e2e/testdata/certs` | throwaway checked-in PKI (see its README)                                                                                |
-| `e2e/*_test.go`      | the scenarios themselves: `TestSmoke_*` (PR gate), `TestRegression_*` (deterministic), `TestSoak_*` (scheduled)          |
+| `e2e/*_test.go`      | the scenarios themselves: `TestSmoke_*` and `TestRegression_*` (PR gate), `TestSoak_*` (scheduled)                       |
 
 Everything carries the `e2e` build tag, so plain `go test ./...` never
 compiles the lane and never needs Docker. Lint sees it because
@@ -50,12 +50,22 @@ Nothing publishes a host port and images are digest-pinned, so runs are
 parallel-safe and, after the images are pulled once, offline.
 
 ```sh
-make test-e2e                 # the four-topology smoke matrix (PR gate)
-make test-e2e-regression      # smoke + the deterministic regression set
+make test-e2e                 # the four-topology smoke matrix
+make test-e2e-regression      # smoke + the deterministic regression set (PR gate)
 make test-e2e-soak            # the stress/soak tier
 make test-e2e E2E_REPEAT=20   # the orphan/collision audit
 make e2e-clean                # recover from a killed run
 ```
+
+`E2E_REPEAT` (default `1`) multiplies the smoke matrix via `go test
+-count`. Because that multiplies wall clock under one fixed budget, each
+tier's `go test -timeout` is its own variable: `E2E_TIMEOUT` (default
+`30m`, smoke), `E2E_REGRESSION_TIMEOUT` (default `60m`), and
+`E2E_SOAK_TIMEOUT` (default `120m`). Raise the matching one whenever you
+raise `E2E_REPEAT` or run on a slower machine — a `go test` timeout
+panic bypasses teardown and the orphan proofs, which is exactly the
+state the lane must never end in. The nightly workflow pairs
+`E2E_REPEAT=20` with `E2E_TIMEOUT=240m` for this reason.
 
 One scenario, verbosely:
 

@@ -110,7 +110,8 @@ This table is a floor, not an exhaustive list.
   Statute internals, and only `e2e/cmd/statute` imports the `statute` package.
   Scenarios assert through network behavior, client reports, and artifacts —
   never in-process state — and must fail, not skip, on a missing prerequisite.
-  Changes that cross process or container boundaries run `make test-e2e`.
+  Changes that cross process or container boundaries run
+  `make test-e2e-regression`, the tier the PR gate runs.
 
 ## Review rules
 
