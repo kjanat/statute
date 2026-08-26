@@ -1,0 +1,6 @@
+# The e2e image builds from the repository root; .git would carry the
+# Actions checkout credentials into the builder context and its cache.
+.git
+.worktrees
+e2e/artifacts
+cover.out
