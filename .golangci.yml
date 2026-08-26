@@ -16,6 +16,10 @@ run:
   timeout: 5m
   tests: true
   modules-download-mode: mod
+  # The e2e lane is gated behind the e2e build tag so `go test ./...`
+  # stays fast and Docker-free; without the tag here the whole lane would
+  # be invisible to lint, depguard included.
+  build-tags: [e2e]
 
 issues:
   max-issues-per-linter: 0
@@ -33,6 +37,7 @@ linters:
     - bodyclose
     - contextcheck
     - copyloopvar
+    - depguard
     - errcheck
     - errchkjson
     - errorlint
@@ -73,6 +78,30 @@ linters:
   disable:
     - statutelifecycle
   settings:
+    # The e2e lane is black-box by contract (AGENTS.md): it observes the
+    # compiled binary over real sockets. These rules make the boundary
+    # enforceable rather than reviewed-for.
+    depguard:
+      rules:
+        # Everything under e2e/: no in-process HTTP shortcuts, no reaching
+        # into Statute internals.
+        e2e-blackbox:
+          files: ["**/e2e/**"]
+          deny:
+            - pkg: net/http/httptest
+              desc: the e2e lane is black-box; drive real listeners over real sockets
+            - pkg: statute.kjanat.dev/internal
+              desc: e2e must not reach Statute internals
+        # The orchestrator, actors, and harness may not import Statute at
+        # all; only e2e/cmd/statute (the binary under test) embeds it. The
+        # strict allow-list keeps the boundary explicit for future deps.
+        e2e-orchestrator:
+          list-mode: strict
+          files: ["**/e2e/**", "!**/e2e/cmd/statute/**"]
+          allow:
+            - $gostd
+            - statute.kjanat.dev/e2e
+            - github.com/quic-go/quic-go
     errcheck:
       check-type-assertions: false
       check-blank: false
@@ -100,4 +129,10 @@ linters:
       # everyone's afternoon. usestdlibvars/noctx still apply to prod code.
       - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, statutehttp, statutelifecycle, usestdlibvars] }
       - { path: examples/, linters: [errcheck] }
+      - { path: e2e/cmd/, linters: [errcheck] }
+      # The e2e actors deliberately do what gosec flags: read CA roots
+      # from a flag-named file, echo request data back, and best-effort
+      # close/flush real sockets. They never run outside the lane's
+      # private network.
+      - { path: e2e/, linters: [gosec] }
       - { path: dns01\.go, linters: [bodyclose] }

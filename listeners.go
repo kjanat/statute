@@ -61,6 +61,7 @@ type AutoTLSConfig struct {
 	Domains        []string
 	email          string
 	storage        string
+	directory      string
 	dns01          *cloudflareDNS01Config
 	propagation    *DNSPropagation
 	explicitHTTP01 bool
@@ -86,6 +87,18 @@ func (a *AutoTLSConfig) Email(email string) *AutoTLSConfig {
 // persisted. Required for production use.
 func (a *AutoTLSConfig) Storage(path string) *AutoTLSConfig {
 	a.storage = path
+	return a
+}
+
+// Directory overrides the ACME directory URL for this source. Empty (the
+// default) uses Let's Encrypt production. Point it at Let's Encrypt
+// staging while testing rate-limit-sensitive rollouts, or at a private
+// ACME CA (step-ca, Pebble) on networks the public CAs cannot reach.
+// Sources sharing an ACME account — the same storage for automatic
+// sources, the same storage and challenge for pinned ones — must agree on
+// the directory: one account key cannot be registered with two CAs.
+func (a *AutoTLSConfig) Directory(url string) *AutoTLSConfig {
+	a.directory = url
 	return a
 }
 

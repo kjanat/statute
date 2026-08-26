@@ -29,6 +29,12 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := &statusRecorder{ResponseWriter: w, status: 200}
+		// Direct composition below the RequestID middleware (as unit
+		// fixtures do) finds the value already in the inbound context.
+		inherited := requestIDFromContext(r.Context())
+		// The holder lets the route-level RequestID middleware hand its
+		// identifier back up to this listener-level wrapper.
+		r, rid := installRIDHolder(r)
 		next.ServeHTTP(ww, r)
 		if !shouldLog(ww.status, rate, cfg.Statuses) {
 			return
@@ -47,7 +53,11 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 			"proto":         r.Proto,
 			"forwarded_for": r.Header.Get("X-Forwarded-For"),
 		}
-		if id := requestIDFromContext(r.Context()); id != "" {
+		id := rid.id
+		if id == "" {
+			id = inherited
+		}
+		if id != "" {
 			entry["request_id"] = id
 		}
 		enc.Encode(entry)

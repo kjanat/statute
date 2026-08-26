@@ -54,6 +54,22 @@ func requestIDFromContext(ctx context.Context) string {
 	return v
 }
 
+// ridHolder carries the request ID upward to the listener edge. The
+// access log wraps the routed content path from outside the route
+// middleware chain, so a value stored only in a derived downstream
+// context can never reach it; the logger installs a holder ahead of
+// routing and requestIDHandler fills it when it runs.
+type ridHolder struct{ id string }
+
+type ridHolderKey struct{}
+
+// installRIDHolder derives a request whose context carries a fresh
+// holder, returning both.
+func installRIDHolder(r *http.Request) (*http.Request, *ridHolder) {
+	h := &ridHolder{}
+	return r.WithContext(context.WithValue(r.Context(), ridHolderKey{}, h)), h
+}
+
 // requestIDHandler attaches the configured request ID to the request context
 // (so the access log middleware can pick it up), sets it on the outgoing
 // request headers (so upstream backends see it), and emits it on the
@@ -77,6 +93,9 @@ func requestIDHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			r.Header.Set(respHeader, id)
 			w.Header().Set(respHeader, id)
 			r = r.WithContext(context.WithValue(r.Context(), ridCtxKey{}, id))
+			if h, ok := r.Context().Value(ridHolderKey{}).(*ridHolder); ok {
+				h.id = id
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

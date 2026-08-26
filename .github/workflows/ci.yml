@@ -106,3 +106,47 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
       - uses: kjanat/actionlint@7c5b0a3880b3d29c51072b1e5e0730e5988f8b7d # v1
+  typecheck:
+    name: typecheck scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: "26", cache: npm }
+      # comment-cop.yml runs only base-branch tooling, so a PR cannot
+      # live-test its own copy; this is the enforceable check on it.
+      - { name: typecheck, run: make typecheck }
+  e2e:
+    name: e2e regression
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # Must exceed E2E_REGRESSION_TIMEOUT so `go test` reports its own
+    # timeout instead of the runner killing the job mid-teardown.
+    timeout-minutes: 75
+    steps:
+      # The e2e image builds from the repository root; a persisted
+      # credential must not reach the Docker build context.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache: true }
+      - { name: vet e2e lane, run: go vet -tags e2e ./e2e/... }
+      - { name: smoke + regression tiers, run: make test-e2e-regression }
+      # A build or daemon failure legitimately leaves no artifacts; erroring
+      # on that would mask the real failure.
+      - name: upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with: { name: e2e-artifacts, path: e2e/artifacts/**, if-no-files-found: warn, retention-days: 14 }
+      # The lane's own teardown must leave nothing behind; a sweep that
+      # finds anything is a failed invariant, not housekeeping.
+      - name: prove no orphans
+        if: always()
+        run: |
+          leaked="$(docker ps -aq --filter label=statute.e2e=1)"
+          if [ -n "${leaked}" ]; then
+            echo "leaked containers: ${leaked}"
+            printf '%s\n' "${leaked}" | xargs -r docker rm -f
+            exit 1
+          fi

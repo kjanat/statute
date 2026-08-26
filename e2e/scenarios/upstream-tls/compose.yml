@@ -1,0 +1,11 @@
+# Origins serve HTTPS from the lane PKI so the upstream-TLS scenario can
+# prove verification and Host/SNI parity between proxy and health traffic.
+services:
+  origin-1:
+    environment:
+      ORIGIN_TLS_CERT: /certs/origin.crt
+      ORIGIN_TLS_KEY: /certs/origin.key
+  origin-2:
+    environment:
+      ORIGIN_TLS_CERT: /certs/origin.crt
+      ORIGIN_TLS_KEY: /certs/origin.key

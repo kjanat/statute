@@ -1,0 +1,12 @@
+# A real OpenTelemetry collector with a file exporter onto the shared
+# reports mount, so the harness can correlate spans offline.
+services:
+  otelcol:
+    image: otel/opentelemetry-collector-contrib@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+    command: ["--config=/etc/otelcol.yml"]
+    user: "0"
+    volumes:
+      - ./scenarios/observability/otelcol.yml:/etc/otelcol.yml:ro
+      - ${E2E_REPORTS}:/reports
+    networks: [mesh]
+    labels: { statute.e2e: "1" }

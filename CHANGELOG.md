@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A black-box end-to-end lane under `e2e/` runs the compiled binary in
+  Docker across all four server/client topologies with independent
+  origin and client processes, full-mesh per-edge assertions from
+  structured client reports, and provable cleanup. Three tiers:
+  `make test-e2e` (PR-gating smoke matrix), `make test-e2e-regression`
+  (routing/rewrite-across-Retry, health failover, upstream TLS parity,
+  HTTP/3 with UDP release, streaming/upgrade, startup retry, graceful
+  drain, two-node state isolation, real Docker discovery, hermetic
+  Pebble ACME HTTP-01, observability correlation, trusted-proxy
+  identity), and `make test-e2e-soak` (scheduled stress). A depguard
+  rule makes the black-box boundary mechanical: no `httptest`, no
+  Statute internals, and only the binary under test may import the
+  `statute` package. See `docs/e2e.md`.
+
+- `AutoTLS(...).Directory(url)` overrides the ACME directory URL for one
+  source: Let's Encrypt staging during rate-limit-sensitive rollouts, or
+  a private ACME CA (step-ca, Pebble). Empty stays Let's Encrypt
+  production, and the resolved/exported schema always carries the final
+  `Directory` value. The override reaches both issuance paths — the
+  shared autocert manager and the in-tree pinned HTTP-01/DNS-01
+  managers. `Resolve` rejects a directory that is not an absolute HTTPS
+  URL — plain HTTP fails closed, because ACME account and order material
+  must never travel unencrypted — and, mirroring the email rule, rejects
+  sources that share one ACME account while naming different
+  directories. New lint warnings: `TLS005` (Let's Encrypt staging),
+  `TLS006` (any other non-Let's-Encrypt directory).
+
 - `JSONLog(...).Statuses("400-499", "500-599")` restricts the access log
   to requests whose final status falls in the given inclusive ranges
   (a single status like `"404"` also works), independently of sampling.
@@ -422,6 +449,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   peer is the client.
 
 ### Fixed
+
+- The access log's `request_id` field now appears in real deployments.
+  The RequestID middleware stored the identifier only in a derived
+  downstream request context, while the runtime composes the access log
+  at the listener level outside the route middleware chain, so the
+  logger could never see it; the existing unit test had wired the two
+  in the opposite, unrealistic order. The logger now installs a holder
+  ahead of routing that the middleware fills, and a new test pins the
+  runtime's actual composition. Found by the new black-box e2e
+  observability scenario.
+
+- Pinned ACME issuance now completes against CAs that answer the
+  finalize request without a `Location` header while the order is still
+  processing — RFC 8555 does not require one, and Pebble omits it,
+  which made the client's internal completion poll fail on an empty
+  order URL. The manager now settles such orders through the URI it
+  already holds from order creation and fetches the issued chain; a
+  genuine CA rejection still surfaces as before.
 
 - The access-log/metrics status recorder now reports the status actually
   committed to the client in two edge cases where it previously drifted.

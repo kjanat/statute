@@ -12,13 +12,24 @@ name: Comment Cop
 # comments are allowed when they document an actual SAFETY:, INVARIANT:,
 # PROTOCOL:, or COMPAT: constraint.
 #
-# Runs entirely against the GitHub API. pull_request_target is safe here
-# because no PR-controlled code is ever checked out or executed.
+# Runs entirely against the GitHub API; the diff is read through the API, not
+# from a working tree. pull_request_target is safe here because the checkout
+# below takes actions/checkout's default ref, which under pull_request_target
+# is the BASE branch of the target repository, never the pull request's head.
+# The only file executed is scripts/comment-cop.mjs as it exists on the base
+# branch: a fork's copy of that script, or any other PR-controlled code, is
+# never fetched and never runs. Credentials are not persisted into the
+# checkout, and no build, install, or Go toolchain step touches the tree.
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# contents: write looks excessive but is required: the GraphQL
+# resolveReviewThread mutation maps to the contents permission for
+# GITHUB_TOKEN, and under contents: read it fails with "Resource not
+# accessible by integration" (run 32690602380), silently disabling
+# stale-thread auto-resolution.
 permissions:
   contents: write
   pull-requests: write
@@ -37,354 +48,21 @@ jobs:
       cancel-in-progress: true
 
     steps:
+      # actions/checkout under pull_request_target defaults to the base ref of
+      # the target repository, so this is repository-owned code only. The pull
+      # request's own copy of the script is never fetched or executed.
+      - name: Check out base-branch tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Scan diff for paragraph-length implementation comments
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            const crypto = require("crypto");
+            const { pathToFileURL } = require("node:url");
 
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const pull_number = context.payload.pull_request.number;
-            const headSha = context.payload.pull_request.head.sha;
+            const module = `${process.env.GITHUB_WORKSPACE}/scripts/comment-cop.mjs`;
+            const { default: run } = await import(pathToFileURL(module).href);
 
-            const GO_FILE = /\.go$/;
-            const MIN_LINES = 3;
-
-            // These are deliberate escape hatches for comments whose length
-            // exists because the constraint itself matters, rather than
-            // because the implementation needs narrating.
-            const ALLOWED_MARKER =
-              /\b(?:SAFETY|INVARIANT|PROTOCOL|COMPAT):/;
-
-            function isCommentLine(line) {
-              const t = line.trimStart();
-
-              if (t.startsWith("//")) return true;
-              if (t.startsWith("/*")) return true;
-              if (t === "*" || t === "*/" || t.startsWith("* ")) return true;
-
-              return false;
-            }
-
-            function indentation(line) {
-              return line.match(/^[\t ]*/)?.[0].length ?? 0;
-            }
-
-            function stripCommentPrefix(line) {
-              return line
-                .trimStart()
-                .replace(/^\/\/\s?/, "")
-                .replace(/^\/\*\s?/, "")
-                .replace(/^\*\s?/, "")
-                .trim();
-            }
-
-            // Go requires / encourages declaration comments. Those are not
-            // what this workflow is policing.
-            //
-            // Top-level comment groups are treated as declaration/package
-            // documentation. Indented docs for exported fields, methods,
-            // constants, etc. are recognized by the conventional:
-            //
-            //   // Foo ...
-            //   Foo ...
-            //
-            // shape.
-            function looksLikeGoDoc(cur, nextLine) {
-              if (cur.indent === 0) return true;
-              if (!nextLine) return false;
-
-              const first = stripCommentPrefix(cur.lines[0]);
-              const next = nextLine.trim();
-
-              const declaration = /^([A-Z][A-Za-z0-9_]*)\b/.exec(next);
-              if (!declaration) return false;
-
-              const name = declaration[1];
-              return (
-                first === name ||
-                first.startsWith(`${name} `) ||
-                first.startsWith(`${name}.`) ||
-                first.startsWith(`${name},`)
-              );
-            }
-
-            function groupsFromPatch(path, patch) {
-              const out = [];
-
-              let newLine = 0;
-              let cur = null;
-
-              const flush = nextLine => {
-                if (cur && cur.lines.length >= MIN_LINES) {
-                  const text = cur.lines.join("\n");
-
-                  if (
-                    !ALLOWED_MARKER.test(text) &&
-                    !looksLikeGoDoc(cur, nextLine)
-                  ) {
-                    out.push({
-                      path,
-                      start: cur.start,
-                      end: cur.end,
-                      text,
-                    });
-                  }
-                }
-
-                cur = null;
-              };
-
-              for (const raw of patch.split("\n")) {
-                if (raw.startsWith("@@")) {
-                  flush("");
-
-                  const match = /\+(\d+)/.exec(raw);
-                  newLine = match ? Number.parseInt(match[1], 10) : 1;
-                  continue;
-                }
-
-                if (raw.startsWith("+")) {
-                  const content = raw.slice(1);
-
-                  if (isCommentLine(content)) {
-                    if (cur) {
-                      cur.end = newLine;
-                      cur.lines.push(content);
-                    } else {
-                      cur = {
-                        start: newLine,
-                        end: newLine,
-                        indent: indentation(content),
-                        lines: [content],
-                      };
-                    }
-                  } else {
-                    flush(content);
-                  }
-
-                  newLine++;
-                  continue;
-                }
-
-                if (raw.startsWith("-")) {
-                  flush("");
-                  continue;
-                }
-
-                if (raw.startsWith("\\")) {
-                  // "\ No newline at end of file"
-                  continue;
-                }
-
-                // Context line. It is useful as lookahead for detecting
-                // declaration documentation immediately following an added
-                // comment block.
-                const content = raw.startsWith(" ") ? raw.slice(1) : raw;
-                flush(content);
-                newLine++;
-              }
-
-              flush("");
-              return out;
-            }
-
-            const files = await github.paginate(
-              github.rest.pulls.listFiles,
-              {
-                owner,
-                repo,
-                pull_number,
-                per_page: 100,
-              },
-            );
-
-            const groups = [];
-
-            for (const file of files) {
-              if (file.status === "removed") continue;
-              if (!GO_FILE.test(file.filename)) continue;
-
-              // Never police vendored code if it appears in a PR.
-              if (
-                file.filename.startsWith("vendor/") ||
-                file.filename.includes("/vendor/")
-              ) {
-                continue;
-              }
-
-              if (!file.patch) {
-                core.warning(
-                  `No patch available for ${file.filename}; skipping comment scan.`,
-                );
-                continue;
-              }
-
-              for (const group of groupsFromPatch(file.filename, file.patch)) {
-                groups.push(group);
-              }
-            }
-
-            const keyFor = group =>
-              `${group.path}:${crypto
-                .createHash("sha256")
-                .update(group.text)
-                .digest("hex")
-                .slice(0, 12)}`;
-
-            const presentKeys = new Set(groups.map(keyFor));
-
-            // Existing Comment Cop review threads are used both to avoid
-            // duplicate comments and to resolve findings automatically once
-            // their corresponding block disappears from the current diff.
-            const threads = [];
-
-            {
-              const query = `
-                query(
-                  $owner: String!
-                  $repo: String!
-                  $pr: Int!
-                  $after: String
-                ) {
-                  repository(owner: $owner, name: $repo) {
-                    pullRequest(number: $pr) {
-                      reviewThreads(first: 100, after: $after) {
-                        pageInfo {
-                          hasNextPage
-                          endCursor
-                        }
-                        nodes {
-                          id
-                          isResolved
-                          comments(first: 1) {
-                            nodes {
-                              body
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              `;
-
-              let after = null;
-
-              for (;;) {
-                const response = await github.graphql(query, {
-                  owner,
-                  repo,
-                  pr: pull_number,
-                  after,
-                });
-
-                const page =
-                  response.repository.pullRequest.reviewThreads;
-
-                threads.push(...page.nodes);
-
-                if (!page.pageInfo.hasNextPage) break;
-                after = page.pageInfo.endCursor;
-              }
-            }
-
-            const seenKeys = new Set();
-            const toResolve = [];
-
-            for (const thread of threads) {
-              const body = thread.comments.nodes[0]?.body ?? "";
-
-              const match =
-                /<!-- statute-comment-cop:([^>\s]+) -->/.exec(body);
-
-              if (!match) continue;
-
-              const key = match[1];
-              seenKeys.add(key);
-
-              if (!thread.isResolved && !presentKeys.has(key)) {
-                toResolve.push(thread.id);
-              }
-            }
-
-            if (toResolve.length > 0) {
-              const mutation = `
-                mutation($id: ID!) {
-                  resolveReviewThread(input: { threadId: $id }) {
-                    thread {
-                      id
-                    }
-                  }
-                }
-              `;
-
-              let resolved = 0;
-              let failed = 0;
-
-              for (const id of toResolve) {
-                try {
-                  await github.graphql(mutation, { id });
-                  resolved++;
-                } catch (error) {
-                  failed++;
-                  core.warning(
-                    `resolveReviewThread failed for ${id}: ${error.message}`,
-                  );
-                }
-              }
-
-              core.info(
-                `Stale Comment Cop threads: ${resolved} resolved, ${failed} failed.`,
-              );
-            }
-
-            const fresh = groups.filter(
-              group => !seenKeys.has(keyFor(group)),
-            );
-
-            if (fresh.length === 0) {
-              core.info(
-                `No new comment groups to flag (${groups.length} currently present).`,
-              );
-              return;
-            }
-
-            const bodyFor = group =>
-              `<!-- statute-comment-cop:${keyFor(group)} -->\n` +
-              `This comment is doing too much of the code's job. ` +
-              `Prefer making the ownership, state, or control flow explicit in code and keep only the non-obvious constraint here.\n\n` +
-              `Paragraph-length implementation comments are reserved for genuine ` +
-              `\`SAFETY:\`, \`INVARIANT:\`, \`PROTOCOL:\`, or \`COMPAT:\` constraints.`;
-
-            let posted = 0;
-
-            for (const group of fresh) {
-              const params = {
-                owner,
-                repo,
-                pull_number,
-                commit_id: headSha,
-                path: group.path,
-                line: group.end,
-                side: "RIGHT",
-                body: bodyFor(group),
-              };
-
-              if (group.start < group.end) {
-                params.start_line = group.start;
-                params.start_side = "RIGHT";
-              }
-
-              try {
-                await github.rest.pulls.createReviewComment(params);
-                posted++;
-              } catch (error) {
-                core.warning(
-                  `createReviewComment failed for ${group.path}:${group.start}-${group.end}: ${error.message}`,
-                );
-              }
-            }
-
-            core.info(`Posted ${posted} Comment Cop review comment(s).`);
+            await run({ github, context, core });

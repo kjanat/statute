@@ -1,0 +1,27 @@
+# Two Statute servers, two clients.
+volumes:
+  statute-2-state:
+
+services:
+  statute-2:
+    image: ${STATUTE_E2E_IMAGE}
+    entrypoint: ["/statute"]
+    environment:
+      STATUTE_SCENARIO: ${STATUTE_SCENARIO}
+      STATUTE_NODE: "2"
+    networks: [mesh]
+    volumes:
+      - statute-2-state:/var/lib/statute
+      - ./testdata/certs:/certs:ro
+    labels: { statute.e2e: "1" }
+
+  client-2:
+    image: ${STATUTE_E2E_IMAGE}
+    entrypoint: ["/client"]
+    environment:
+      CLIENT_ID: client-2
+    networks: [mesh]
+    volumes:
+      - ${E2E_REPORTS}:/reports
+      - ./testdata/certs:/certs:ro
+    labels: { statute.e2e: "1" }

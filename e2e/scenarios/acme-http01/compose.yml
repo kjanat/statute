@@ -1,0 +1,31 @@
+# Hermetic ACME: Pebble is the CA, reached through the Directory knob.
+# The statute service carries a network alias equal to the ACME domain,
+# so Pebble's HTTP-01 validation dials resolve to the statute container
+# without a separate challenge-DNS service. httpPort in the Pebble
+# config matches the plain listener that serves the challenge tokens.
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
+    command: ["-config", "/pebble-config.json", "-strict"]
+    environment:
+      # Deterministic, prompt validation; sleeps only add wall clock.
+      PEBBLE_VA_NOSLEEP: "1"
+    volumes:
+      - ./scenarios/acme-http01/pebble-config.json:/pebble-config.json:ro
+    networks: [mesh]
+    labels: { statute.e2e: "1" }
+
+  statute-1:
+    # ACME registration runs during startup and a failed start exits by
+    # design; until Pebble listens, the supervisor's restart is the
+    # retry, exactly as in a real deployment.
+    restart: on-failure:10
+    environment:
+      # Pebble's directory endpoint presents a certificate from its
+      # static minica root; Go honors SSL_CERT_FILE for the system pool.
+      SSL_CERT_FILE: /pebble-minica.pem
+    volumes:
+      - ./scenarios/acme-http01/pebble.minica.pem:/pebble-minica.pem:ro
+    networks:
+      mesh:
+        aliases: [proxy.e2e.test]

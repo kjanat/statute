@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
 	"statute.kjanat.dev/resolved"
@@ -14,47 +15,67 @@ import (
 // the union of their domains. Pinned sources are excluded — DNS-01 and
 // explicit HTTP-01 each get their own in-tree acmeManager, because
 // autocert's challenge preference is hard-coded (TLS-ALPN-01 first) and
-// cannot be pinned. Email and storage path must agree across all automatic
+// cannot be pinned. Email, storage path, and directory must agree across all automatic
 // sources; running multiple independent ACME accounts from one autocert
 // manager is intentionally unsupported.
 func buildAutocertManager(listeners []*resolved.Listener) (*autocert.Manager, error) {
-	var (
-		domains []string
-		email   string
-		storage string
-		seen    bool
-	)
+	sources := automaticAutoTLSSources(listeners)
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	first := sources[0]
+	var domains []string
+	for _, a := range sources {
+		if err := autocertSourceAgreement(first, a); err != nil {
+			return nil, err
+		}
+		domains = append(domains, a.Domains...)
+	}
+	if first.Storage == "" {
+		return nil, errors.New("auto_tls: storage path is required")
+	}
+	m := &autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		Email:      first.Email,
+		Cache:      autocert.DirCache(first.Storage),
+		HostPolicy: autocert.HostWhitelist(domains...),
+	}
+	if first.Directory != "" && first.Directory != acme.LetsEncryptURL {
+		// autocert defaults to Let's Encrypt when Client is nil; only a
+		// non-default directory needs an explicit client.
+		m.Client = &acme.Client{DirectoryURL: first.Directory}
+	}
+	return m, nil
+}
+
+// automaticAutoTLSSources collects the ChallengeAuto sources across all
+// listeners — the ones served by the shared autocert manager. Pinned
+// sources get their own in-tree manager.
+func automaticAutoTLSSources(listeners []*resolved.Listener) []*resolved.AutoTLS {
+	var sources []*resolved.AutoTLS
 	for _, l := range listeners {
 		for _, a := range l.AutoTLSSources {
-			// Pinned sources get their own in-tree manager.
 			if a.DNS01 != nil || a.Challenge == resolved.ChallengeHTTP01 {
 				continue
 			}
-			if !seen {
-				email = a.Email
-				storage = a.Storage
-				seen = true
-			} else {
-				if email != a.Email {
-					return nil, fmt.Errorf("auto_tls: email mismatch across sources (%q vs %q)", email, a.Email)
-				}
-				if storage != a.Storage {
-					return nil, fmt.Errorf("auto_tls: storage mismatch across sources (%q vs %q)", storage, a.Storage)
-				}
-			}
-			domains = append(domains, a.Domains...)
+			sources = append(sources, a)
 		}
 	}
-	if !seen {
-		return nil, nil
+	return sources
+}
+
+// autocertSourceAgreement rejects an automatic source that disagrees with
+// the first one on the account-defining fields. All automatic sources feed
+// one shared autocert manager, which holds a single ACME account.
+func autocertSourceAgreement(first, a *resolved.AutoTLS) error {
+	if first.Email != a.Email {
+		return fmt.Errorf("auto_tls: email mismatch across sources (%q vs %q)", first.Email, a.Email)
 	}
-	if storage == "" {
-		return nil, errors.New("auto_tls: storage path is required")
+	if first.Storage != a.Storage {
+		return fmt.Errorf("auto_tls: storage mismatch across sources (%q vs %q)", first.Storage, a.Storage)
 	}
-	return &autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		Email:      email,
-		Cache:      autocert.DirCache(storage),
-		HostPolicy: autocert.HostWhitelist(domains...),
-	}, nil
+	if first.Directory != a.Directory {
+		return fmt.Errorf("auto_tls: directory mismatch across sources (%q vs %q)", first.Directory, a.Directory)
+	}
+	return nil
 }

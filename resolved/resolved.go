@@ -110,6 +110,13 @@ type AutoTLS struct {
 	Storage string
 	DNS01   *CloudflareDNS01
 
+	// Directory is the ACME directory URL. Always non-empty in the
+	// resolved model: Resolve fills in Let's Encrypt production when the
+	// surface config leaves it unset, so the exported configuration shows
+	// the directory actually used and the runtime has no second
+	// defaulting site.
+	Directory string
+
 	// Challenge is the source's ACME challenge policy. ChallengeDNS01 holds
 	// exactly when DNS01 is non-nil.
 	Challenge Challenge

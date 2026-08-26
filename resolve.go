@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/acme"
+
 	"statute.kjanat.dev/internal/parse"
 	"statute.kjanat.dev/resolved"
 )
@@ -163,7 +165,7 @@ func validatePinnedDomainCollisions(listeners []*resolved.Listener) error {
 }
 
 // validatePinnedACMEAccounts rejects pinned sources that share one ACME
-// account but disagree on the contact email. A pinned source keeps its
+// account but disagree on the contact email or directory. A pinned source keeps its
 // account key at <storage>/<challenge>/account.key (newACMEManager), so
 // two sources share an account exactly when both the storage root and the
 // challenge subdirectory match. x/crypto's Client.Register then returns
@@ -186,6 +188,9 @@ func validatePinnedACMEAccounts(listeners []*resolved.Listener) error {
 			}
 			if prev.Email != a.Email {
 				return fmt.Errorf("auto_tls: email mismatch across sources sharing the ACME account at %s (%q vs %q)", account, prev.Email, a.Email)
+			}
+			if prev.Directory != a.Directory {
+				return fmt.Errorf("auto_tls: directory mismatch across sources sharing the ACME account at %s (%q vs %q); one account key cannot be registered with two CAs", account, prev.Directory, a.Directory)
 			}
 		}
 	}
@@ -651,10 +656,15 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 	if err != nil {
 		return nil, err
 	}
+	directory, err := resolveACMEDirectory(a.directory)
+	if err != nil {
+		return nil, err
+	}
 	at := &resolved.AutoTLS{
-		Domains: domains,
-		Email:   a.email,
-		Storage: a.storage,
+		Domains:   domains,
+		Email:     a.email,
+		Storage:   a.storage,
+		Directory: directory,
 	}
 	switch {
 	case a.dns01 != nil:
@@ -668,6 +678,26 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 		at.Challenge = resolved.ChallengeHTTP01
 	}
 	return at, nil
+}
+
+// resolveACMEDirectory normalises a source's ACME directory: empty means
+// Let's Encrypt production, anything else must be an absolute HTTPS URL
+// with a host. The resolved model always carries the final value so
+// export shows the directory actually used and the runtime never defaults
+// a second time.
+func resolveACMEDirectory(directory string) (string, error) {
+	if directory == "" {
+		return acme.LetsEncryptURL, nil
+	}
+	u, err := url.Parse(directory)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return "", fmt.Errorf("auto_tls: directory %q must be an absolute https URL", directory)
+	}
+	// Fails closed: ACME account keys and orders never travel cleartext.
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("auto_tls: directory %q must use https; ACME account and order material must not travel unencrypted", directory)
+	}
+	return directory, nil
 }
 
 // DNS-01 propagation bounds. The maxima are absurdity guards, not tuning

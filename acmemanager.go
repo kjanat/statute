@@ -145,6 +145,12 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("storage: %w", err)
 	}
+	directory := cfg.Directory
+	if directory == "" {
+		// Resolved configs always carry a directory; hand-built test
+		// fixtures may not.
+		directory = acme.LetsEncryptURL
+	}
 	return &acmeManager{
 		name:            name,
 		domains:         cfg.Domains,
@@ -152,7 +158,7 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 		storage:         dir,
 		solver:          solver,
 		issueTimeout:    acmeIssueTimeout + dns01PropagationBudget(cfg),
-		directoryURL:    acme.LetsEncryptURL,
+		directoryURL:    directory,
 		registerTimeout: acmeRegisterTimeout,
 		cache:           make(map[string]*tls.Certificate),
 		issuing:         make(map[string]*issueState),
@@ -629,6 +635,13 @@ func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acm
 	}
 	certDER, _, err := m.acmeClient.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
 	if err != nil {
+		// COMPAT: Pebble omits the RFC-optional Location header on finalize,
+		// wedging CreateOrderCert's completion poll on an empty order URL.
+		if der, rerr := m.recoverFinalizedOrder(ctx, order); rerr == nil {
+			certDER, err = der, nil
+		}
+	}
+	if err != nil {
 		return nil, fmt.Errorf("finalize: %w", err)
 	}
 
@@ -637,6 +650,24 @@ func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acm
 		log.Printf("statute: %s: persist for %s failed: %v", m.name, host, err)
 	}
 	return cert, nil
+}
+
+// recoverFinalizedOrder polls a finalized order at its AuthorizeOrder
+// URI until the CA settles it and fetches the issued chain. It succeeds
+// only for an order that actually reached "valid"; any other outcome
+// leaves the caller's original finalize error in force.
+func (m *acmeManager) recoverFinalizedOrder(ctx context.Context, order *acme.Order) ([][]byte, error) {
+	if order.URI == "" {
+		return nil, errors.New("order has no URI")
+	}
+	o, err := m.acmeClient.WaitOrder(ctx, order.URI)
+	if err != nil {
+		return nil, err
+	}
+	if o.Status != acme.StatusValid || o.CertURL == "" {
+		return nil, fmt.Errorf("order status %q", o.Status)
+	}
+	return m.acmeClient.FetchCert(ctx, o.CertURL, true)
 }
 
 // --- account + cert persistence ---
