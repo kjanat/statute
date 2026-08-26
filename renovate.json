@@ -1,0 +1,151 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Europe/Amsterdam",
+  "schedule": ["before 6am on monday"],
+  "dependencyDashboard": true,
+  "configMigration": true,
+  "semanticCommits": "enabled",
+  "semanticCommitScope": "deps",
+  "platformCommit": "enabled",
+  "automerge": false,
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rebaseWhen": "conflicted",
+  "postUpdateOptions": ["gomodTidy"],
+  "labels": ["dependencies"],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "dist/**",
+    ".worktrees/**",
+    "e2e/compose.yml"
+  ],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "automerge": false,
+    "schedule": ["at any time"],
+    "prCreation": "immediate",
+    "minimumReleaseAge": null
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": false,
+    "schedule": ["before 6am on the first day of the month"],
+    "semanticCommitType": "chore"
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "golangci-lint release that .custom-gcl.yml builds the custom linter from (v-prefixed)",
+      "managerFilePatterns": ["/^\\.custom-gcl\\.yml$/"],
+      "matchStrings": ["\\nversion:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "golangci-lint release installed by mise in the ci lint job (bare, no v prefix)",
+      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": ["golangci-lint (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "gpg-signing-service release consumed by the sign-commits composite action",
+      "managerFilePatterns": ["/^\\.github/workflows/sign-commits\\.yml$/"],
+      "matchStrings": ["signing-service-version:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "kjanat/gpg-signing-service",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Go module updates carry the go label",
+      "matchManagers": ["gomod"],
+      "addLabels": ["go"]
+    },
+    {
+      "description": "The go directive and toolchain line set the minimum supported Go for consumers and feed the CI go-version-file, so they never open a PR unattended",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go", "toolchain"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "golang.org/x modules move together",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["/^golang\\.org\\/x\\//"],
+      "groupName": "golang.org/x"
+    },
+    {
+      "description": "A Go major bump can move the import path, so rewrite imports before tidying",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["major"],
+      "postUpdateOptions": ["gomodUpdateImportPaths", "gomodTidy"]
+    },
+    {
+      "description": "GitHub-hosted runner labels are not a reproducible artifact and pinning them only adds churn; the github-actions manager extracts them under the github-runners datasource",
+      "matchDatasources": ["github-runners"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "addLabels": ["github-actions"],
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "One PR converts the remaining floating action tags to SHA pins",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["pin", "pinDigest"],
+      "groupName": "github action digest pins"
+    },
+    {
+      "description": "Same-major action moves land together instead of one PR each",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "The two npm devDependencies are typecheck-only and move together",
+      "matchManagers": ["npm"],
+      "groupName": "npm dev dependencies",
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "The e2e lane is reproducible by digest, so every image there stays tag-plus-digest",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchFileNames": ["e2e/**"],
+      "pinDigests": true,
+      "groupName": "e2e images",
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "Example images stay readable tags; they are documentation, not a reproducible lane",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchFileNames": ["examples/**"],
+      "pinDigests": false,
+      "groupName": "example images",
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "The custom linter build and every installed golangci-lint must be the same release, so all four version strings land in one PR",
+      "matchDepNames": ["golangci/golangci-lint"],
+      "groupName": "golangci-lint",
+      "semanticCommitType": "ci"
+    },
+    {
+      "matchDepNames": ["kjanat/gpg-signing-service"],
+      "addLabels": ["github-actions"],
+      "semanticCommitType": "ci"
+    }
+  ]
+}
