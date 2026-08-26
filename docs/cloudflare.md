@@ -228,7 +228,7 @@ This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash 
 ## What `BehindCloudflare()` does NOT do
 
 - It does not refresh the CF IP list. Add an external mechanism if you want to enforce that requests come from CF.
-- It does not enable Authenticated Origin Pulls (mTLS between CF and origin). That requires StaticTLS with a CF-issued client CA, configured separately.
+- It does not enable Authenticated Origin Pulls (mTLS between CF and origin). statute cannot verify client certificates today: no listener option requests, requires, or validates one. Authenticated Origin Pulls therefore has to be terminated in front of statute. Tracked in [#82](https://github.com/kjanat/statute/issues/82).
 - It does not change the upstream-facing transport. Requests to your backends still go out as configured in the pool's `Transport`.
 
 ## Quick checklist
