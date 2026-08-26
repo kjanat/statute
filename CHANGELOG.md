@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `AutoTLS(...).Directory(url)` overrides the ACME directory URL for one
+  source: Let's Encrypt staging during rate-limit-sensitive rollouts, or
+  a private ACME CA (step-ca, Pebble). Empty stays Let's Encrypt
+  production, and the resolved/exported schema always carries the final
+  `Directory` value. The override reaches both issuance paths — the
+  shared autocert manager and the in-tree pinned HTTP-01/DNS-01
+  managers. `Resolve` rejects a directory that is not an absolute
+  http(s) URL and, mirroring the email rule, rejects sources that share
+  one ACME account while naming different directories. New lint
+  warnings: `TLS005` (plain-HTTP directory), `TLS006` (Let's Encrypt
+  staging), `TLS007` (any other non-Let's-Encrypt directory).
+
 - `JSONLog(...).Statuses("400-499", "500-599")` restricts the access log
   to requests whose final status falls in the given inclusive ranges
   (a single status like `"404"` also works), independently of sampling.

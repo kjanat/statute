@@ -145,6 +145,12 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("storage: %w", err)
 	}
+	directory := cfg.Directory
+	if directory == "" {
+		// Resolved configs always carry a directory; hand-built test
+		// fixtures may not.
+		directory = acme.LetsEncryptURL
+	}
 	return &acmeManager{
 		name:            name,
 		domains:         cfg.Domains,
@@ -152,7 +158,7 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 		storage:         dir,
 		solver:          solver,
 		issueTimeout:    acmeIssueTimeout + dns01PropagationBudget(cfg),
-		directoryURL:    acme.LetsEncryptURL,
+		directoryURL:    directory,
 		registerTimeout: acmeRegisterTimeout,
 		cache:           make(map[string]*tls.Certificate),
 		issuing:         make(map[string]*issueState),

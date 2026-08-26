@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/acme"
+
 	"statute.kjanat.dev/resolved"
 )
 
@@ -71,6 +73,7 @@ var lintRules = []func(*resolved.Config) []Finding{
 	ruleGracePeriod,
 	ruleDuplicateACMEOrders,
 	ruleRSAOnlySuitesWithAutocert,
+	ruleACMEDirectory,
 }
 
 func ruleReadHeaderTimeout(c *resolved.Config) []Finding {
@@ -341,4 +344,48 @@ func hasAutomaticACMESource(l *resolved.Listener) bool {
 		}
 	}
 	return false
+}
+
+// acmeStagingURL is Let's Encrypt's staging directory — a deliberate
+// choice during rollout testing, distinct enough from an unknown CA that
+// the lint message can name it.
+const acmeStagingURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+// ruleACMEDirectory audits overridden ACME directories. A plain-HTTP
+// directory sends account signatures and orders unencrypted; Let's
+// Encrypt staging issues certificates no client trusts; any other
+// directory is fine for a private CA but worth a second look in a
+// production checklist. All stay warnings: a non-default directory is a
+// legitimate operator decision the resolver has already validated.
+func ruleACMEDirectory(c *resolved.Config) []Finding {
+	var out []Finding
+	for i, l := range c.Listeners {
+		for j, a := range l.AutoTLSSources {
+			path := fmt.Sprintf("listeners[%d].auto_tls[%d].directory", i, j)
+			switch {
+			case strings.HasPrefix(a.Directory, "http://"):
+				out = append(out, Finding{
+					Severity: SeverityWarning,
+					Code:     "TLS005",
+					Message:  fmt.Sprintf("ACME directory %q uses plain HTTP; account requests and orders travel unencrypted.", a.Directory),
+					Path:     path,
+				})
+			case a.Directory == acmeStagingURL:
+				out = append(out, Finding{
+					Severity: SeverityWarning,
+					Code:     "TLS006",
+					Message:  "ACME directory is Let's Encrypt staging; issued certificates are not publicly trusted.",
+					Path:     path,
+				})
+			case a.Directory != acme.LetsEncryptURL:
+				out = append(out, Finding{
+					Severity: SeverityWarning,
+					Code:     "TLS007",
+					Message:  fmt.Sprintf("ACME directory %q is not a Let's Encrypt endpoint; verify this CA is intended for production.", a.Directory),
+					Path:     path,
+				})
+			}
+		}
+	}
+	return out
 }
