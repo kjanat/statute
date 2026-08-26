@@ -35,15 +35,13 @@ func meshConfig(string) statute.Config {
 			},
 		},
 		Routes: statute.Routes{
-			// Retry(3) covers the smoke failover path: with a per-key
-			// failure budget armed on each origin independently, three
-			// attempts guarantee one lands on an origin whose budget is
-			// already spent.
-			// No Timeout middleware here: its http.TimeoutHandler buffers
-			// bodies and hides http.Hijacker, which would break the
-			// streaming and upgrade scenarios this route also serves.
+			// No Timeout here: http.TimeoutHandler buffers bodies and hides
+			// http.Hijacker, breaking the streaming and upgrade scenarios.
 			statute.Match("/*").ProxyTo(poolOrigins).
 				With(
+					// INVARIANT: Retry(3) — /fail arms its budget per origin,
+					// so only a third attempt is guaranteed to land on one
+					// already spent.
 					statute.Retry(3, statute.OnStatus(502)),
 					// From lets the client-stamped id survive to the origin,
 					// which is what the smoke identity assertion checks.

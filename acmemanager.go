@@ -635,13 +635,8 @@ func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acm
 	}
 	certDER, _, err := m.acmeClient.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
 	if err != nil {
-		// RFC 8555 does not require a Location header on the finalize
-		// response, and a CA that omits it (Pebble does) breaks
-		// CreateOrderCert's internal completion poll: the order is still
-		// "processing", and the poll posts an empty order URL. The order
-		// URI from AuthorizeOrder is authoritative, so finish the wait
-		// and the fetch from it; the original error stands unless the
-		// order really completed.
+		// COMPAT: Pebble omits the RFC-optional Location header on finalize,
+		// wedging CreateOrderCert's completion poll on an empty order URL.
 		if der, rerr := m.recoverFinalizedOrder(ctx, order); rerr == nil {
 			certDER, err = der, nil
 		}

@@ -56,9 +56,8 @@ type fakeACME struct {
 	// rejectValidation fails validation without a token fetch; not a
 	// fixture error, so it stays off t unlike a failed fetch.
 	rejectValidation bool
-	// finalizeProcessing makes finalize answer "processing" with no
-	// Location header, the RFC-legal shape Pebble produces; the client
-	// must then settle the order through its AuthorizeOrder URI.
+	// finalizeProcessing answers finalize with "processing" and no
+	// Location header, the RFC-legal shape Pebble produces.
 	finalizeProcessing bool
 	// authzGate blocks authorization polls until closed; authzReached
 	// closes once, signaling an order is genuinely in flight.
