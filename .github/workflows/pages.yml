@@ -62,9 +62,12 @@ jobs:
       # Additive: /api/ is a real directory, so Pages serves it directly and the
       # 404.html redirect above never sees the request.
       - { name: creates /api reference from the pkg.go.dev API, run: node scripts/api-page.mjs }
-      - { uses: actions/upload-pages-artifact@v5, with: { path: dist } }
+      - uses: actions/upload-pages-artifact@v5
+        with: { path: dist }
   deploy:
     needs: build
     runs-on: ubuntu-slim
     environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
-    steps: [{ id: deployment, uses: actions/deploy-pages@v5 }]
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
