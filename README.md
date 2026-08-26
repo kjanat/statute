@@ -74,7 +74,7 @@ What's implemented:
 - Graceful shutdown with listener draining
 - Cloudflare-aware mode: `BehindCloudflare()` flips ALPN to suppress TLS-ALPN-01 and trusts `CF-Connecting-IP`
 - Docker label discovery: containers register routes and pools via `statute.*` labels, with a `traefik.*` label compat mode for drop-in migration
-- `statute.Main` CLI wrapper with `-validate` and `-export` flags
+- `statute.Main` CLI wrapper with `-validate`, `-export`, `-graph`, and `-lint` flags
 
 ## Install
 
@@ -438,12 +438,43 @@ When `HTTP3()` is on a listener, statute runs a quic-go HTTP/3 server alongside 
 The `statute.Main(cfg)` wrapper provides standard flags:
 
 ```
-$ ./myproxy -validate          # parse and resolve, exit 0/1
+$ ./myproxy -validate           # parse and resolve, exit 0/1
 $ ./myproxy -export             # write resolved config as JSON to stdout
+$ ./myproxy -graph              # write topology as Graphviz DOT to stdout
+$ ./myproxy -lint               # audit the resolved config, exit 0/1
 $ ./myproxy                     # run the server
 ```
 
+The four operation flags are mutually exclusive; passing two exits 2.
+
 Use `Run(cfg)` directly if you want to handle flags yourself.
+
+**Lint rules.** `-lint` resolves the configuration and runs the production-readiness rule set over the resolved model, printing one line per finding as `[severity] CODE: message (at path)`. Severity decides the exit status: one `error` finding exits 1, warnings are reported and still exit 0. Warnings are judgement calls a deliberate operator may keep; errors are shapes that are unsafe or cannot serve.
+
+The table is the index. The paragraph beside each feature above stays the explanation, and the config path column is the shape of the `Path` on the finding, with `i`/`j` standing for the offending element's index and `name` for a pool's key.
+
+<!-- lint-rules:start -->
+
+| Code      | Severity | Config path                                      | Fires when                                                                                                                |
+| --------- | -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH001` | error    | `routes[i].middleware[j]`                        | A route uses `BasicAuth` and no HTTPS listener serves content, so credentials would travel in clear-text.                 |
+| `HC001`   | warning  | `upstreams[name]`                                | A pool has neither active nor passive health checks, so dead backends keep receiving traffic.                             |
+| `LB001`   | warning  | `upstreams[name]`                                | A pool has exactly one primary (non-backup) backend, so it has no failover and no load distribution.                      |
+| `OBS001`  | warning  | `observability.metrics`                          | The metrics endpoint is disabled, leaving no Prometheus visibility.                                                       |
+| `OBS002`  | warning  | `observability.access_log`                       | The access log is disabled, leaving no per-request audit trail.                                                           |
+| `RHT001`  | error    | `defaults.read_header_timeout`                   | `ReadHeaderTimeout` resolves to zero, which is the Slowloris exposure.                                                    |
+| `RL001`   | warning  | `routes[i].middleware[j]`                        | A `RateLimit` resolves below 1 request per second, low enough to block legitimate clients.                                |
+| `SHUT001` | warning  | `shutdown.grace_period`                          | `Shutdown.GracePeriod` is under 5s, so deploys may cut off in-flight requests.                                            |
+| `TLS001`  | error    | `listeners[i].auto_tls[j].storage`               | AutoTLS storage is under `/tmp`: wiped on reboot, then re-issued until the account hits the rate limit.                   |
+| `TLS002`  | warning  | `upstreams[name].transport.insecure_skip_verify` | Backend certificate verification is off, so anyone on the path to the pool can impersonate it.                            |
+| `TLS003`  | warning  | `listeners[i].auto_tls[j]`                       | One domain is issued by more than one ACME manager, each spending the duplicate-certificate limit on its own renewals.    |
+| `TLS004`  | warning  | `listeners[i].tls_policy`                        | A TLS 1.2 cap with RSA-only suites governs a listener with an automatic ACME source, whose leaves are ECDSA.              |
+| `TLS005`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is Let's Encrypt staging, which issues certificates no public trust store accepts.                     |
+| `TLS006`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is some other non-Let's-Encrypt endpoint, named in the message so a private CA surfaces before deploy. |
+
+<!-- lint-rules:end -->
+
+`TestLintRuleTableDocumentsEveryRule` holds this table to the rule set: a code that fires in `lint.go` without a row here, a row naming a code no rule emits, or a severity that disagrees with the code fails the test.
 
 ## Production checklist
 

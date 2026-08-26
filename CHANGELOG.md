@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- The `-lint` rule set has a reference table in `README.md`: every
+  code with its severity, the resolved-config path it reports, and what
+  makes it fire. `OBS002` appeared in no documentation at all before
+  this, and eight further codes only in a changelog entry for an old
+  release. `-graph` and `-lint` join the documented CLI flags too. A
+  test reads the codes out of `lint.go` and the rows out of the README
+  and fails on any disagreement in either direction, so a new rule
+  cannot ship undocumented and a retired one cannot leave a stale row.
+
 - `make fmt-check` gates Go formatting drift, and `make lint` and the CI
   lint job now run it. `golangci-lint run` never applies the formatters
   configured under `formatters:`; only `golangci-lint fmt` does, so an
