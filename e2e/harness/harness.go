@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +188,31 @@ func (r *Run) AssertFullMesh(reports map[string]*report.Report) {
 	}
 }
 
+// WaitExit blocks until one service's container stops and returns its
+// exit code, read from the container state by label filter (stable
+// across compose versions, unlike `compose ps` JSON).
+func (r *Run) WaitExit(ctx context.Context, service string) int {
+	r.T.Helper()
+	if _, err := r.Compose.Output(ctx, "wait", service); err != nil {
+		r.T.Fatalf("wait for %s: %v", service, err)
+	}
+	ids := dockerLines(ctx, r.T, "ps", "-aq",
+		"--filter", "label=com.docker.compose.project="+r.Compose.Project,
+		"--filter", "label=com.docker.compose.service="+service)
+	if len(ids) != 1 {
+		r.T.Fatalf("wait for %s: found containers %v", service, ids)
+	}
+	out := dockerLines(ctx, r.T, "inspect", "--format", "{{.State.ExitCode}}", ids[0])
+	if len(out) != 1 {
+		r.T.Fatalf("exit code of %s: %v", service, out)
+	}
+	code, err := strconv.Atoi(out[0])
+	if err != nil {
+		r.T.Fatalf("exit code of %s: %q", service, out[0])
+	}
+	return code
+}
+
 // teardown collects diagnostics, tears the project down, and proves
 // nothing project-owned survived. Ordering is deliberate: diagnostics
 // before down (down destroys their sources), the orphan proof after.
@@ -250,27 +276,37 @@ func (r *Run) proveNoOrphans(ctx context.Context) {
 
 // SweepLaneOrphans is the suite-level epilogue: after everything ran,
 // no statute.e2e-labeled container may remain on the host, regardless
-// of which run leaked it.
-func SweepLaneOrphans(ctx context.Context, t *testing.T) {
-	t.Helper()
-	ids := dockerLines(ctx, t, "ps", "-aq", "--filter", "label=statute.e2e=1")
-	if len(ids) == 0 {
-		return
+// of which run leaked it. It returns the ids it had to reap — a
+// non-empty result means the suite must fail — after force-removing
+// them so one leak cannot poison the next invocation.
+func SweepLaneOrphans(ctx context.Context) []string {
+	ids, err := rawDocker(ctx, "ps", "-aq", "--filter", "label=statute.e2e=1")
+	if err != nil || len(ids) == 0 {
+		return nil
 	}
-	t.Errorf("lane orphan containers: %v", ids)
-	dockerLines(ctx, t, append([]string{"rm", "-f"}, ids...)...)
+	// Best-effort reap: the returned ids fail the suite either way.
+	_, _ = rawDocker(ctx, append([]string{"rm", "-f"}, ids...)...)
+	return ids
 }
 
 // dockerLines runs one raw docker command (not compose) and returns
-// its non-empty output lines.
+// its non-empty output lines, logging failures to the test.
 func dockerLines(ctx context.Context, t *testing.T, args ...string) []string {
 	t.Helper()
+	lines, err := rawDocker(ctx, args...)
+	if err != nil {
+		t.Logf("docker %s: %v", strings.Join(args, " "), err)
+	}
+	return lines
+}
+
+// rawDocker runs one docker command under the invocation timeout.
+func rawDocker(ctx context.Context, args ...string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, composeTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "docker", args...).Output()
 	if err != nil {
-		t.Logf("docker %s: %v", strings.Join(args, " "), err)
-		return nil
+		return nil, err
 	}
 	var lines []string
 	for l := range strings.SplitSeq(string(out), "\n") {
@@ -278,7 +314,7 @@ func dockerLines(ctx context.Context, t *testing.T, args ...string) []string {
 			lines = append(lines, l)
 		}
 	}
-	return lines
+	return lines, nil
 }
 
 // randomID returns eight hex characters of collision resistance for

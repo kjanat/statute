@@ -26,6 +26,8 @@ services:
       ORIGIN_ID: origin-1
       ORIGIN_ADDR: ":7000"
     networks: [mesh]
+    volumes:
+      - ./testdata/certs:/certs:ro
     labels: { statute.e2e: "1" }
 
   origin-2:
@@ -35,6 +37,8 @@ services:
       ORIGIN_ID: origin-2
       ORIGIN_ADDR: ":7000"
     networks: [mesh]
+    volumes:
+      - ./testdata/certs:/certs:ro
     labels: { statute.e2e: "1" }
 
   statute-1:
@@ -49,6 +53,7 @@ services:
     # safe multi-instance ownership.
     volumes:
       - statute-1-state:/var/lib/statute
+      - ./testdata/certs:/certs:ro
     labels: { statute.e2e: "1" }
 
   # Clients are one-shot actors the harness starts with `compose run`;
@@ -61,4 +66,5 @@ services:
     networks: [mesh]
     volumes:
       - ${E2E_REPORTS}:/reports
+      - ./testdata/certs:/certs:ro
     labels: { statute.e2e: "1" }

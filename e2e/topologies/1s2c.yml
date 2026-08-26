@@ -8,4 +8,5 @@ services:
     networks: [mesh]
     volumes:
       - ${E2E_REPORTS}:/reports
+      - ./testdata/certs:/certs:ro
     labels: { statute.e2e: "1" }
