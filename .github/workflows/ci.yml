@@ -23,7 +23,10 @@ jobs:
     name: lint
     runs-on: ubuntu-slim
     steps:
+      # This job runs repository-controlled commands, so the checkout must
+      # not leave a usable token in .git/config for them to reach.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
       - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
         with:
           tool_versions: |
@@ -31,6 +34,10 @@ jobs:
       - uses: kjanat/dprint-check@eccefcd4705624893283494253344be8ac9b9b8b # v3.0.14
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
+      # golangci-lint-action runs `run`, which never applies the configured
+      # formatters; `make fmt-check` is the gate for Go formatting drift,
+      # mirroring what dprint-check does for the non-Go files above.
+      - { name: format check, run: make fmt-check }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with: { version: v2.13.1, args: --timeout=5m }
   lifecycle_lint:

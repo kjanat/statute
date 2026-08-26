@@ -19,7 +19,7 @@ E2E_REGRESSION_TIMEOUT ?= 60m
 E2E_SOAK_TIMEOUT       ?= 120m
 COMMENT_COP_BASE       ?=
 
-.PHONY: all help comment-cop test test-race lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
+.PHONY: all help comment-cop test test-race fmt-check lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -32,7 +32,24 @@ test: ## Run all unit tests
 test-race: ## Run tests with the race detector (x86 only; Pi cannot run -race)
 	$(GO) test -race ./...
 
-lint: ## Build the custom golangci-lint and run all linters
+# golangci-lint applies the configured formatters through `fmt`, not `run`,
+# so an unformatted tree passes `run`. Both gates run: gofmt for the printer
+# form, golangci-lint fmt for the configured gci/goimports grouping.
+#
+# COMPAT: golangci-lint vendors its own go/printer, so on rare map literals
+# the two disagree in BOTH directions, each rejecting what the other emits,
+# and no formatter run satisfies both. Separating the short keys from the
+# long ones with a blank line breaks the alignment run and settles it. See
+# internal/docker/labels_test.go for the one instance in this tree.
+fmt-check: ## Fail if any tracked Go file is not formatted
+	@if [ -z "$$(git ls-files -- '*.go')" ]; then \
+		echo "fmt-check: no tracked Go files (not a git checkout?)" >&2; exit 1; fi; \
+	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r gofmt -l --)"; then \
+		echo "fmt-check: gofmt failed" >&2; exit 1; fi; \
+	if [ -n "$$drift" ]; then echo "gofmt drift:"; echo "$$drift"; exit 1; fi
+	$(GOLANGCI_LINT) fmt --diff
+
+lint: fmt-check ## Check formatting, build the custom golangci-lint, run all linters
 	$(GOLANGCI_LINT) custom
 	$(CUSTOM_GCL) run ./...
 

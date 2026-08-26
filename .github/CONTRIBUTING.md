@@ -21,7 +21,7 @@ cd statute
 go test ./...
 ```
 
-That should work on any platform with Go 1.25+. The Makefile is the canonical interface for development tasks:
+That should work on any platform with Go 1.27+. The Makefile is the canonical interface for development tasks:
 
 ```sh
 make test            # all unit tests

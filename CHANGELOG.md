@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `make fmt-check` gates Go formatting drift, and `make lint` and the CI
+  lint job now run it. `golangci-lint run` never applies the formatters
+  configured under `formatters:`; only `golangci-lint fmt` does, so an
+  unformatted tree used to pass lint. The target runs both gates,
+  because they catch different drift: `gofmt -l` over the tracked Go
+  files, and `golangci-lint fmt --diff` for the configured `gci` and
+  `goimports` import grouping that `gofmt` has no opinion about.
+  golangci-lint vendors its own printer, so on rare map literals the two
+  disagree in both directions and no formatter run satisfies both; a
+  blank line separating short keys from long ones breaks the alignment
+  run and settles it.
+
 ## [0.6.0] — 2026-08-26
 
 ### Added
