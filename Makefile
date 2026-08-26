@@ -18,7 +18,7 @@ E2E_TIMEOUT            ?= 30m
 E2E_REGRESSION_TIMEOUT ?= 60m
 E2E_SOAK_TIMEOUT       ?= 120m
 
-.PHONY: all help test test-race lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
+.PHONY: all help comment-cop test test-race lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -95,9 +95,12 @@ e2e-clean: ## Force-remove anything the e2e lane leaked (labeled containers, nam
 apidiff: ## Diff the exported API against the surface published on pkg.go.dev
 	$(GO) run ./scripts/apidiff
 
-typecheck: ## Strict-typecheck scripts/api-page.mjs (installs dev deps on first run)
+typecheck: ## Strict-typecheck scripts/ (installs dev deps on first run)
 	@test -d node_modules || npm ci --no-audit --no-fund
 	npm run typecheck
+
+comment-cop: ## Flag paragraph-length Go comments in the working tree
+	node scripts/comment-cop.mjs $(COMMENT_COP_BASE)
 
 tidy: ## Run go mod tidy
 	$(GO) mod tidy

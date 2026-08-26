@@ -3,17 +3,24 @@
 // Comment Cop: flags paragraph-length implementation comments added to Go
 // source in a pull request, and resolves its own stale review threads.
 //
-// Two entry points, one implementation:
+// Three entry points, one scanner:
 //
 //   - GitHub Actions: `.github/workflows/comment-cop.yml` imports this file
 //     and calls the default export with the `actions/github-script` objects.
-//   - Locally: `node scripts/comment-cop.mjs kjanat/statute 72`
+//   - Working tree (the default): `node scripts/comment-cop.mjs`, or
+//     `make comment-cop`, or `... <base-ref>` to compare against something
+//     other than the merge base with master. Scans the local diff,
+//     uncommitted and untracked Go files included. No token, no network;
+//     exits 1 on any finding, so it gates a push before the PR exists.
+//   - A pull request: `node scripts/comment-cop.mjs kjanat/statute 72`
 //     Requires Node >= 24.2 (for `import.meta.main`) or Bun, and a
 //     `GITHUB_TOKEN` in the environment.
 //
-// Local runs are DRY RUN unless `--apply` is passed: they scan, print every
-// finding and every thread that would be resolved, and call no mutating API.
+// Pull-request runs are DRY RUN unless `--apply` is passed: they scan, print
+// every finding and every thread that would be resolved, and call no mutating
+// API. `--local` never has anything to post and ignores `--apply`.
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 /* ------------------------------------------------------------------- types */
@@ -252,6 +259,93 @@ const bodyFor = group =>
  */
 function errorMessage(error) {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/* -------------------------------------------------------------- local scan */
+
+/** @type {(args: string[]) => string} */
+const git = args => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 1 << 28 });
+
+/**
+ * The merge base with the default branch, whichever remote-tracking or local
+ * ref exists here.
+ * @returns {string}
+ */
+function defaultBase() {
+	for (const ref of ['origin/master', 'master']) {
+		try {
+			return git(['merge-base', 'HEAD', ref]).trim();
+		} catch {
+			continue;
+		}
+	}
+	throw new Error('no origin/master or master to compare against; pass a base ref explicitly');
+}
+
+/**
+ * Diff one untracked file as wholly added, so a brand-new file is scanned the
+ * way the pull-request lister would see it.
+ * @param {string} name
+ * @returns {string}
+ */
+function untrackedPatch(name) {
+	try {
+		return git(['diff', '--no-index', '--', '/dev/null', name]);
+	} catch (error) {
+		// --no-index exits non-zero whenever the inputs differ, which is always.
+		const stdout = /** @type {{stdout?: unknown}} */ (error)?.stdout;
+		return typeof stdout === 'string' ? stdout : '';
+	}
+}
+
+/** @type {(name: string) => boolean} */
+const scannable = name =>
+	name !== ''
+	&& GO_FILE.test(name)
+	&& !name.startsWith('vendor/')
+	&& !name.includes('/vendor/');
+
+/** @type {(out: string) => string[]} */
+const lines = out => out.split('\n').map(line => line.trim()).filter(name => name !== '');
+
+/**
+ * Scan the working tree against a base ref and print every finding.
+ * @param {string} [base]
+ * @returns {number} the process exit code
+ */
+function scanLocal(base) {
+	const from = base ?? defaultBase();
+
+	const tracked = lines(git(['diff', '--name-only', '--diff-filter=d', from, '--'])).filter(scannable);
+	const untracked = lines(git(['ls-files', '--others', '--exclude-standard'])).filter(scannable);
+
+	/** @type {Group[]} */
+	const groups = [];
+
+	for (const name of tracked) {
+		groups.push(...groupsFromPatch(name, git(['diff', '-U3', from, '--', name])));
+	}
+	for (const name of untracked) {
+		groups.push(...groupsFromPatch(name, untrackedPatch(name)));
+	}
+
+	const scope = `${tracked.length + untracked.length} Go file(s) vs ${from.slice(0, 12)}`;
+	if (groups.length === 0) {
+		console.log(`comment-cop: clean (${scope}).`);
+		return 0;
+	}
+
+	for (const group of groups) {
+		console.log(`${group.path}:${group.start}-${group.end}`);
+		console.log(`${group.text}\n`);
+	}
+
+	console.log(
+		`comment-cop: ${groups.length} finding(s) (${scope}).\n`
+			+ 'Keep only the non-obvious constraint, or mark a genuine '
+			+ 'SAFETY:/INVARIANT:/PROTOCOL:/COMPAT: constraint.',
+	);
+	return 1;
 }
 
 /* ------------------------------------------------------------------ runner */
@@ -577,20 +671,66 @@ function localClient(token) {
 	};
 }
 
+const USAGE = `comment-cop — flag paragraph-length implementation comments in Go source.
+
+usage:
+  comment-cop.mjs [<base-ref>]                 scan the working tree (default)
+  comment-cop.mjs <owner>/<repo> <pr-number>   scan a pull request
+  comment-cop.mjs --help
+
+working tree:
+  Diffs against <base-ref>, or the merge base with master when omitted.
+  Uncommitted and untracked Go files are included. No token, no network.
+  Exits 1 when anything is flagged, so it can gate a commit or push.
+
+pull request:
+  Needs GITHUB_TOKEN (try: GITHUB_TOKEN=$(gh auth token) ...). Dry run —
+  printing findings and the threads it would resolve — unless --apply is
+  passed, which posts review comments and resolves stale threads.
+
+options:
+  --local     force working-tree mode even when a repo and number are given
+  --apply     pull-request mode only: actually post and resolve
+  -h, --help  show this help
+
+A comment is flagged when it is indented, three or more lines long, and is
+neither Go declaration documentation nor a SAFETY:/INVARIANT:/PROTOCOL:/COMPAT:
+constraint.`;
+
 /**
  * @returns {Promise<void>}
  */
 async function main() {
 	const argv = process.argv.slice(2);
-	const apply = argv.includes('--apply');
-	const positional = argv.filter(arg => !arg.startsWith('--'));
+	const flags = argv.filter(arg => arg.startsWith('-'));
+	const positional = argv.filter(arg => !arg.startsWith('-'));
 
+	if (flags.includes('--help') || flags.includes('-h')) {
+		console.log(USAGE);
+		return;
+	}
+
+	const unknown = flags.filter(flag => !['--local', '--apply'].includes(flag));
+	if (unknown.length > 0) {
+		console.error(`unknown option: ${unknown.join(' ')}\n\n${USAGE}`);
+		process.exitCode = 2;
+		return;
+	}
+
+	const apply = flags.includes('--apply');
 	const slug = positional[0];
 	const number = Number(positional[1]);
+	// Scanning the working tree is the common case, so it is the default;
+	// naming a repo and a PR number is what selects the pull-request mode.
+	const pullRequest = slug !== undefined && slug.includes('/') && Number.isInteger(number);
 
-	if (!slug || !slug.includes('/') || !Number.isInteger(number)) {
-		console.error('usage: node scripts/comment-cop.mjs <owner>/<repo> <pr-number> [--apply]');
-		process.exitCode = 2;
+	if (flags.includes('--local') || !pullRequest) {
+		if (positional.length > 1 || (slug !== undefined && Number.isInteger(Number(slug)))) {
+			console.error(`not a base ref, and not <owner>/<repo> <pr-number>\n\n${USAGE}`);
+			process.exitCode = 2;
+			return;
+		}
+		process.exitCode = scanLocal(slug);
 		return;
 	}
 
