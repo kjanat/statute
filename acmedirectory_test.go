@@ -46,6 +46,21 @@ func TestResolveACMEDirectoryInvalid(t *testing.T) {
 	}
 }
 
+// TestResolveACMEDirectoryPlainHTTPRejected — ACME account keys and orders
+// must never travel cleartext, so a plain-HTTP directory fails closed at
+// Resolve rather than resolving into a lint warning.
+func TestResolveACMEDirectoryPlainHTTPRejected(t *testing.T) {
+	t.Parallel()
+	for _, dir := range []string{"http://pebble:14000/dir", "http://acme.example/directory"} {
+		_, err := Resolve(multiListenerConfig(
+			HTTPS(":443", AutoTLS("a.example").Email("x@x").Storage("/v").Directory(dir)),
+		))
+		if err == nil || !strings.Contains(err.Error(), "https") {
+			t.Errorf("directory %q: got %v, want an https-only rejection", dir, err)
+		}
+	}
+}
+
 // TestPinnedACMEAccountDirectoryMismatch — pinned sources sharing
 // <storage>/<challenge>/account.key share one account key, and one key
 // cannot be registered with two CAs; mirrors the email-mismatch rule.
@@ -151,23 +166,18 @@ func TestLint_ACMEDirectoryFindings(t *testing.T) {
 		return out
 	}
 
-	got := codes(t, base("http://pebble:14000/dir"))
+	got := codes(t, base(acmeStagingURL))
 	if !got["TLS005"] {
-		t.Errorf("plain-HTTP directory: TLS005 missing (got %v)", got)
-	}
-
-	got = codes(t, base(acmeStagingURL))
-	if !got["TLS006"] {
-		t.Errorf("staging directory: TLS006 missing (got %v)", got)
+		t.Errorf("staging directory: TLS005 missing (got %v)", got)
 	}
 
 	got = codes(t, base("https://ca.internal/dir"))
-	if !got["TLS007"] {
-		t.Errorf("non-LE directory: TLS007 missing (got %v)", got)
+	if !got["TLS006"] {
+		t.Errorf("non-LE directory: TLS006 missing (got %v)", got)
 	}
 
 	got = codes(t, base(""))
-	if got["TLS005"] || got["TLS006"] || got["TLS007"] {
+	if got["TLS005"] || got["TLS006"] {
 		t.Errorf("default directory: unexpected directory findings (got %v)", got)
 	}
 }

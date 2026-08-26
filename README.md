@@ -356,8 +356,10 @@ statute.AutoTLS("example.com", "api.example.com").
 
 // Against a different ACME directory: Let's Encrypt staging while testing
 // rate-limit-sensitive rollouts, or a private CA (step-ca, Pebble). Empty
-// (the default) is Let's Encrypt production. Sources sharing an ACME
-// account must agree on the directory.
+// (the default) is Let's Encrypt production. It must be an absolute HTTPS
+// URL — plain HTTP is a resolve error, since ACME account and order
+// material must never travel unencrypted. Sources sharing an ACME account
+// must agree on the directory.
 statute.AutoTLS("example.com").
     Email("ops@example.com").
     Storage("/var/lib/statute/certs").

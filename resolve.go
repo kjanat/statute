@@ -681,7 +681,7 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 }
 
 // resolveACMEDirectory normalises a source's ACME directory: empty means
-// Let's Encrypt production, anything else must be an absolute http(s) URL
+// Let's Encrypt production, anything else must be an absolute HTTPS URL
 // with a host. The resolved model always carries the final value so
 // export shows the directory actually used and the runtime never defaults
 // a second time.
@@ -690,8 +690,12 @@ func resolveACMEDirectory(directory string) (string, error) {
 		return acme.LetsEncryptURL, nil
 	}
 	u, err := url.Parse(directory)
-	if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return "", fmt.Errorf("auto_tls: directory %q must be an absolute http(s) URL", directory)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return "", fmt.Errorf("auto_tls: directory %q must be an absolute https URL", directory)
+	}
+	// Fails closed: ACME account keys and orders never travel cleartext.
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("auto_tls: directory %q must use https; ACME account and order material must not travel unencrypted", directory)
 	}
 	return directory, nil
 }
