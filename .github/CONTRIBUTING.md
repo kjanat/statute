@@ -53,6 +53,34 @@ Go's race detector (and TSAN underneath) does not work on Raspberry Pi or older 
    - Update godoc on any exported symbol you add or change.
 4. Open a PR. Fill in the template; mark the new-middleware checklist if applicable.
 
+## Dependency updates
+
+Renovate owns dependency updates for this repository. The configuration lives in [`renovate.json`](../renovate.json) at the repository root, next to the other tool configs. Dependabot's config is gone; its _security alerts_ are a repository setting rather than a file, so those keep arriving independently.
+
+Renovate covers the Go module, the npm devDependencies and their lockfile, GitHub Actions, and the container images in `e2e/` and `examples/`. Custom regex managers in the same file pick up the version strings that do not live in a manifest at all: the golangci-lint release in `.custom-gcl.yml` and in the mise block of `ci.yml`, and the `kjanat/gpg-signing-service` release the `sign-commits` composite action installs.
+
+Two couplings are worth knowing about before you edit any of it by hand:
+
+- **golangci-lint is bumped in four places at once.** `.custom-gcl.yml` builds the custom linter binary that carries this repo's own analyzers, and `.github/workflows/ci.yml` installs golangci-lint through mise and passes a version to `golangci-lint-action` twice. If those drift, the analyzers run against a different linter than the one CI installs, and the mismatch is silent. Renovate groups all four into a single PR. Keep them together if you edit them by hand.
+- **Images in `e2e/` are pinned as `image:tag@sha256:digest`.** The digest is what makes a run reproducible; the tag is what makes the pin readable and trackable. A bare `image@sha256:...` has no tag to anchor it, so it resolves against `latest`, and the next "digest refresh" silently swaps the image for something else entirely. Example images under `examples/` deliberately stay on plain tags, because they are documentation.
+
+Grouping mostly follows what Dependabot did, with one deliberate divergence: Renovate knows opentelemetry-go and opentelemetry-go-contrib as two separate monorepos, so the core `v1.x` modules and the `v0.x` contrib ones (`otelhttp`) now bump independently instead of being unioned into one `otel` group. That is the better shape here, because it stops a core release waiting on an unrelated contrib release.
+
+Renovate opens a dependency dashboard issue listing everything it knows about, including updates it is holding back. The `go` directive in `go.mod` is one of those: raising it raises the minimum Go a consumer needs, so it waits for a human to tick the box on the dashboard rather than arriving as a surprise PR.
+
+Nothing automerges. Renovate PRs go through the same review as every other change.
+
+There is no CI job validating `renovate.json`; Renovate reports its own config errors on the dashboard and in its PRs. If you want to check a config change locally before pushing, two traps are worth knowing, because both fail in a way that looks like a real answer:
+
+```sh
+npx --yes --package renovate@44.46.0 renovate-config-validator --strict renovate.json
+```
+
+- Keep the `--package renovate@<version>` form. Bare `renovate-config-validator` is a _different_ npm package, a third-party placeholder with no executable, so `npx renovate-config-validator` never runs the real tool.
+- Keep the version pinned. Renovate 44 declares `engines.node: ^24.11.0`, so on a newer Node an unpinned install silently walks back to 37.440.7, whose validator reports false errors for `platformCommit`, `managerFilePatterns` and `github-runners`.
+
+Note what the validator does not do: it checks syntax, unknown keys and malformed regexes, but it exits 0 on a `packageRules` entry that matches nothing at all. A rule aimed at a manager or datasource that does not exist is accepted in silence, so if a rule is meant to disable or group something, confirm it by running an extraction rather than by a clean validator run.
+
 ## Adding new middleware
 
 The framework has a strict template for middleware to keep the codebase navigable:
