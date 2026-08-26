@@ -130,4 +130,9 @@ linters:
       - { path: _test\.go, linters: [errcheck, errchkjson, bodyclose, noctx, revive, goconst, statutehttp, statutelifecycle, usestdlibvars] }
       - { path: examples/, linters: [errcheck] }
       - { path: e2e/cmd/, linters: [errcheck] }
+      # The e2e actors deliberately do what gosec flags: read CA roots
+      # from a flag-named file, echo request data back, and best-effort
+      # close/flush real sockets. They never run outside the lane's
+      # private network.
+      - { path: e2e/, linters: [gosec] }
       - { path: dns01\.go, linters: [bodyclose] }
