@@ -437,12 +437,12 @@ When `HTTP3()` is on a listener, statute runs a quic-go HTTP/3 server alongside 
 
 The `statute.Main(cfg)` wrapper provides standard flags:
 
-```
-$ ./myproxy -validate           # parse and resolve, exit 0/1
-$ ./myproxy -export             # write resolved config as JSON to stdout
-$ ./myproxy -graph              # write topology as Graphviz DOT to stdout
-$ ./myproxy -lint               # audit the resolved config, exit 0/1
-$ ./myproxy                     # run the server
+```sh
+./myproxy -validate  # parse and resolve, exit 0/1
+./myproxy -export    # write resolved config as JSON to stdout
+./myproxy -graph     # write topology as Graphviz DOT to stdout
+./myproxy -lint      # audit the resolved config, exit 0/1
+./myproxy            # run the server
 ```
 
 The four operation flags are mutually exclusive; passing two exits 2.
@@ -516,9 +516,9 @@ go run ./examples/cloudflare-wildcard       # needs CLOUDFLARE_API_TOKEN
 ## Testing
 
 ```sh
-go test ./...           # all unit tests
-go vet ./...            # vet
-make lint               # built-in + statute-specific linters
+go test ./...  # all unit tests
+go vet  ./...  # vet
+make lint      # built-in + statute-specific linters
 ```
 
 The race detector (`go test -race`) does not work on Raspberry Pi / older 64-bit Arm kernels with VMA range < 48; this is a TSAN limitation, not a code issue.
