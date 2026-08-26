@@ -5,7 +5,7 @@
 # config matches the plain listener that serves the challenge tokens.
 services:
   pebble:
-    image: ghcr.io/letsencrypt/pebble@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
+    image: ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
     command: ["-config", "/pebble-config.json", "-strict"]
     environment:
       # Deterministic, prompt validation; sleeps only add wall clock.
