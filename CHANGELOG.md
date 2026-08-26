@@ -6,13 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-26
+
 ### Added
 
 - A black-box end-to-end lane under `e2e/` runs the compiled binary in
   Docker across all four server/client topologies with independent
   origin and client processes, full-mesh per-edge assertions from
   structured client reports, and provable cleanup. Three tiers:
-  `make test-e2e` (PR-gating smoke matrix), `make test-e2e-regression`
+  `make test-e2e` (smoke matrix), the PR-gating `make test-e2e-regression`
   (routing/rewrite-across-Retry, health failover, upstream TLS parity,
   HTTP/3 with UDP release, streaming/upgrade, startup retry, graceful
   drain, two-node state isolation, real Docker discovery, hermetic
@@ -790,7 +792,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/kjanat/statute/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/kjanat/statute/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/kjanat/statute/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kjanat/statute/compare/v0.3.0...v0.4.0
