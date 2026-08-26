@@ -25,7 +25,7 @@ One JSON line per request, written to the configured destination (`Stdout`, `Std
 | `user_agent`    | string | `User-Agent` header.                                          |
 | `referer`       | string | `Referer` header.                                             |
 | `status`        | int    | Response status code as committed to the client.              |
-| `duration_us`   | int64  | Wall-clock duration from request start to response committed. |
+| `duration_us`   | int64  | Wall-clock duration from request start until the handler returns — for most requests that is when the response is committed; for a hijacked upgrade it is when the tunneled connection closes. |
 | `proto`         | string | Protocol version, e.g. `HTTP/1.1`, `HTTP/2.0`.                |
 | `forwarded_for` | string | Raw `X-Forwarded-For` header (full chain, not parsed).        |
 

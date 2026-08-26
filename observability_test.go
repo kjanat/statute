@@ -1,15 +1,20 @@
 package statute
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -434,6 +439,107 @@ func TestAccessLog_StatusFilter101MatchesHijack(t *testing.T) {
 	if !logged {
 		t.Error("hijacked upgrade was filtered out by Statuses(\"101\")")
 	}
+}
+
+// TestReverseProxyUpgradeRecords101 — the real stdlib upgrade path, over
+// real sockets: the backend answers 101 and takes over its connection, the
+// reverse proxy hijacks the front connection through the stacked recorders
+// via http.ResponseController, and the client reads an actual 101 off the
+// wire. After the tunnel closes, the access log line and the by-status
+// metric must both say 101. The synthetic-recorder tests above pin the
+// recorder's unit behavior; this pins the stdlib integration the feature
+// exists for.
+func TestReverseProxyUpgradeRecords101(t *testing.T) {
+	t.Parallel()
+
+	backend := upgradeEchoBackend(t)
+	defer backend.Close()
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	cfg := resolved.AccessLog{Enabled: true, Writer: &mu_writer{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
+	st := newStats()
+	front := httptest.NewServer(metricsMiddleware(st, accessLogMiddleware(cfg, httputil.NewSingleHostReverseProxy(backendURL))))
+	defer front.Close()
+
+	dialUpgradeAndAssert101(t, front.Listener.Addr().String())
+
+	line := awaitLogLine(t, &mu, &buf)
+	var v map[string]any
+	if err := json.Unmarshal([]byte(line), &v); err != nil {
+		t.Fatalf("parse access log line %q: %v", line, err)
+	}
+	if v["status"].(float64) != 101 {
+		t.Errorf("logged status %v for a proxied upgrade, want 101", v["status"])
+	}
+	var prom bytes.Buffer
+	st.WritePrometheus(&prom)
+	if !strings.Contains(prom.String(), `statute_requests_by_status_total{status="101"} 1`) {
+		t.Errorf("metrics missing 101 counter:\n%s", prom.String())
+	}
+}
+
+// upgradeEchoBackend answers every request by taking over the connection,
+// writing a raw 101 handshake, and holding the tunnel open until the peer
+// closes.
+func upgradeEchoBackend(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("backend hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: raw\r\nConnection: Upgrade\r\n\r\n")
+		_ = rw.Flush()
+		_, _ = io.Copy(io.Discard, conn)
+	}))
+}
+
+// dialUpgradeAndAssert101 speaks the upgrade request over a raw TCP
+// connection, asserts the client-visible status line is a 101, and closes
+// the tunnel so the proxy handler returns.
+func dialUpgradeAndAssert101(t *testing.T, addr string) {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	req := "GET / HTTP/1.1\r\nHost: " + addr + "\r\nUpgrade: raw\r\nConnection: Upgrade\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	statusLine, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read status line: %v", err)
+	}
+	if !strings.Contains(statusLine, "101") {
+		t.Fatalf("client received %q, want a 101 status line", statusLine)
+	}
+}
+
+// awaitLogLine polls the shared buffer until a complete access-log line
+// appears; the line is only written after the proxy handler returns.
+func awaitLogLine(t *testing.T, mu *sync.Mutex, buf *bytes.Buffer) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		line := buf.String()
+		mu.Unlock()
+		if strings.Contains(line, "\n") {
+			return line
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no access log line within deadline")
+	return ""
 }
 
 // TestAccessLog_DisabledIsNoOp
