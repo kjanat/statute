@@ -1,0 +1,37 @@
+name: e2e nightly
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch: null
+permissions: { contents: read }
+concurrency: { group: e2e-nightly, cancel-in-progress: false }
+jobs:
+  regression:
+    name: regression + repeat + soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache: true }
+      # A previous run's wreckage must never turn into this run's failure.
+      - { name: sweep before, run: make e2e-clean }
+      - { name: regression scenarios, run: make test-e2e-regression }
+      # The 20x repetition is the issue's orphan/collision audit: every
+      # run ends with a per-project orphan proof and the suite ends with
+      # a lane-wide sweep that fails on anything it reaps.
+      - { name: smoke matrix x20, run: make test-e2e E2E_REPEAT=20 }
+      - { name: stress/soak tier, run: make test-e2e-soak }
+      - name: upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with: { name: e2e-nightly-artifacts, path: e2e/artifacts/**, if-no-files-found: error, retention-days: 14 }
+      - name: prove no orphans
+        if: always()
+        run: |
+          leaked="$(docker ps -aq --filter label=statute.e2e=1)"
+          if [ -n "${leaked}" ]; then
+            echo "leaked containers: ${leaked}"
+            printf '%s\n' "${leaked}" | xargs -r docker rm -f
+            exit 1
+          fi

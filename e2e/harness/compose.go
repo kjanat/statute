@@ -109,6 +109,12 @@ func (c *Compose) Stop(ctx context.Context, service string, timeout time.Duratio
 	return err
 }
 
+// Restart restarts one service and waits for its container to run.
+func (c *Compose) Restart(ctx context.Context, service string) error {
+	_, err := c.Output(ctx, "restart", "-t", "20", service)
+	return err
+}
+
 // Down removes the project's containers, network, and volumes.
 func (c *Compose) Down(ctx context.Context) error {
 	_, err := c.Output(ctx, "down", "-v", "--remove-orphans", "-t", "20")

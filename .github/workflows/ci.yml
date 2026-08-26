@@ -106,3 +106,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
       - uses: kjanat/actionlint@7c5b0a3880b3d29c51072b1e5e0730e5988f8b7d # v1
+  e2e_smoke:
+    name: e2e smoke matrix
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache: true }
+      - { name: vet e2e lane, run: go vet -tags e2e ./e2e/... }
+      - { name: smoke matrix, run: make test-e2e }
+      - name: upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with: { name: e2e-artifacts, path: e2e/artifacts/**, if-no-files-found: error, retention-days: 14 }
+      # The lane's own teardown must leave nothing behind; a sweep that
+      # finds anything is a failed invariant, not housekeeping.
+      - name: prove no orphans
+        if: always()
+        run: |
+          leaked="$(docker ps -aq --filter label=statute.e2e=1)"
+          if [ -n "${leaked}" ]; then
+            echo "leaked containers: ${leaked}"
+            printf '%s\n' "${leaked}" | xargs -r docker rm -f
+            exit 1
+          fi
