@@ -25,8 +25,13 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# contents: write looks excessive but is required: the GraphQL
+# resolveReviewThread mutation maps to the contents permission for
+# GITHUB_TOKEN, and under contents: read it fails with "Resource not
+# accessible by integration" (run 32690602380), silently disabling
+# stale-thread auto-resolution.
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
