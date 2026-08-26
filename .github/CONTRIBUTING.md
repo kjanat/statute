@@ -31,7 +31,11 @@ make cover           # write coverage report + HTML
 make bench           # microbenchmarks
 make fuzz            # 30s per fuzz target
 make build-examples  # compile all examples
-make all             # everything
+make test-e2e        # black-box smoke matrix in Docker (see docs/e2e.md)
+make test-e2e-regression  # deterministic e2e regression scenarios
+make test-e2e-soak   # e2e stress/soak tier
+make e2e-clean       # remove anything a killed e2e run leaked
+make all             # everything fast (the e2e lane stays separate)
 ```
 
 ### A note on `-race`

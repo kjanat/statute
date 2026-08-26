@@ -105,6 +105,12 @@ This table is a floor, not an exhaustive list.
 - Lifecycle changes run `make lint-lifecycle` in addition to `make lint`. Treat
   `SLC100`–`SLC104` diagnostics as architecture findings, not style warnings; do
   not suppress one merely to make the branch green.
+- The e2e lane (`e2e/`, [`docs/e2e.md`](docs/e2e.md)) is black-box by contract
+  and the depguard rules in `.golangci.yml` are normative: no `httptest`, no
+  Statute internals, and only `e2e/cmd/statute` imports the `statute` package.
+  Scenarios assert through network behavior, client reports, and artifacts —
+  never in-process state — and must fail, not skip, on a missing prerequisite.
+  Changes that cross process or container boundaries run `make test-e2e`.
 
 ## Review rules
 

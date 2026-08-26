@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A black-box end-to-end lane under `e2e/` runs the compiled binary in
+  Docker across all four server/client topologies with independent
+  origin and client processes, full-mesh per-edge assertions from
+  structured client reports, and provable cleanup. Three tiers:
+  `make test-e2e` (PR-gating smoke matrix), `make test-e2e-regression`
+  (routing/rewrite-across-Retry, health failover, upstream TLS parity,
+  HTTP/3 with UDP release, streaming/upgrade, startup retry, graceful
+  drain, two-node state isolation, real Docker discovery, hermetic
+  Pebble ACME HTTP-01, observability correlation, trusted-proxy
+  identity), and `make test-e2e-soak` (scheduled stress). A depguard
+  rule makes the black-box boundary mechanical: no `httptest`, no
+  Statute internals, and only the binary under test may import the
+  `statute` package. See `docs/e2e.md`.
+
 - `AutoTLS(...).Directory(url)` overrides the ACME directory URL for one
   source: Let's Encrypt staging during rate-limit-sensitive rollouts, or
   a private ACME CA (step-ca, Pebble). Empty stays Let's Encrypt
