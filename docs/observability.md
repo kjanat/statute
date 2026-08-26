@@ -14,20 +14,20 @@ One JSON line per request, written to the configured destination (`Stdout`, `Std
 
 ### Fields
 
-| Field           | Type   | Description                                                   |
-| --------------- | ------ | ------------------------------------------------------------- |
-| `ts`            | string | Request start time, RFC 3339 with nanosecond precision, UTC.  |
-| `method`        | string | HTTP method.                                                  |
-| `host`          | string | Host header value as received.                                |
-| `path`          | string | URL path (no query).                                          |
-| `query`         | string | Raw query string (no leading `?`).                            |
-| `remote`        | string | Best-effort client IP. See "client IP attribution" below.     |
-| `user_agent`    | string | `User-Agent` header.                                          |
-| `referer`       | string | `Referer` header.                                             |
-| `status`        | int    | Response status code as committed to the client.              |
+| Field           | Type   | Description                                                                                                                                                                                    |
+| --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`            | string | Request start time, RFC 3339 with nanosecond precision, UTC.                                                                                                                                   |
+| `method`        | string | HTTP method.                                                                                                                                                                                   |
+| `host`          | string | Host header value as received.                                                                                                                                                                 |
+| `path`          | string | URL path (no query).                                                                                                                                                                           |
+| `query`         | string | Raw query string (no leading `?`).                                                                                                                                                             |
+| `remote`        | string | Best-effort client IP. See "client IP attribution" below.                                                                                                                                      |
+| `user_agent`    | string | `User-Agent` header.                                                                                                                                                                           |
+| `referer`       | string | `Referer` header.                                                                                                                                                                              |
+| `status`        | int    | Response status code as committed to the client.                                                                                                                                               |
 | `duration_us`   | int64  | Wall-clock duration from request start until the handler returns — for most requests that is when the response is committed; for a hijacked upgrade it is when the tunneled connection closes. |
-| `proto`         | string | Protocol version, e.g. `HTTP/1.1`, `HTTP/2.0`.                |
-| `forwarded_for` | string | Raw `X-Forwarded-For` header (full chain, not parsed).        |
+| `proto`         | string | Protocol version, e.g. `HTTP/1.1`, `HTTP/2.0`.                                                                                                                                                 |
+| `forwarded_for` | string | Raw `X-Forwarded-For` header (full chain, not parsed).                                                                                                                                         |
 
 ### Client IP attribution
 
