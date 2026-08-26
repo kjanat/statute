@@ -42,9 +42,10 @@ test-race: ## Run tests with the race detector (x86 only; Pi cannot run -race)
 # long ones with a blank line breaks the alignment run and settles it. See
 # internal/docker/labels_test.go for the one instance in this tree.
 fmt-check: ## Fail if any tracked Go file is not formatted
-	@files="$$(git ls-files '*.go')"; \
-	if [ -z "$$files" ]; then echo "fmt-check: no tracked Go files (not a git checkout?)" >&2; exit 1; fi; \
-	drift="$$(gofmt -l -- $$files)"; \
+	@if [ -z "$$(git ls-files -- '*.go')" ]; then \
+		echo "fmt-check: no tracked Go files (not a git checkout?)" >&2; exit 1; fi; \
+	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r gofmt -l --)"; then \
+		echo "fmt-check: gofmt failed" >&2; exit 1; fi; \
 	if [ -n "$$drift" ]; then echo "gofmt drift:"; echo "$$drift"; exit 1; fi
 	$(GOLANGCI_LINT) fmt --diff
 
