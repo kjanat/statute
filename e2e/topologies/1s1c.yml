@@ -1,0 +1,3 @@
+# One Statute server, one client: the base stack as-is. The file exists
+# so every topology names an override and the harness stays uniform.
+services: {}

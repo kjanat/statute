@@ -1,0 +1,64 @@
+# Base stack of the e2e lane: the private mesh network, both origin
+# actors, the first Statute node, and the first client. Topology
+# overrides (topologies/*.yml) add statute-2/client-2; scenario
+# overrides add supporting services (Pebble, an OTel collector, DinD).
+#
+# Nothing publishes a host port: the network is internal, and every
+# probe or request runs inside it through the client actor. That is
+# what makes parallel and 20x-repeated runs collision-free and keeps
+# the harness host-agnostic.
+#
+# The harness supplies STATUTE_E2E_IMAGE (one image per commit),
+# STATUTE_SCENARIO, and E2E_REPORTS (the artifact subdirectory bind-
+# mounted at /reports).
+networks:
+  mesh:
+    internal: true
+
+volumes:
+  statute-1-state:
+
+services:
+  origin-1:
+    image: ${STATUTE_E2E_IMAGE}
+    entrypoint: ["/origin"]
+    environment:
+      ORIGIN_ID: origin-1
+      ORIGIN_ADDR: ":7000"
+    networks: [mesh]
+    labels: { statute.e2e: "1" }
+
+  origin-2:
+    image: ${STATUTE_E2E_IMAGE}
+    entrypoint: ["/origin"]
+    environment:
+      ORIGIN_ID: origin-2
+      ORIGIN_ADDR: ":7000"
+    networks: [mesh]
+    labels: { statute.e2e: "1" }
+
+  statute-1:
+    image: ${STATUTE_E2E_IMAGE}
+    entrypoint: ["/statute"]
+    environment:
+      STATUTE_SCENARIO: ${STATUTE_SCENARIO}
+      STATUTE_NODE: "1"
+    networks: [mesh]
+    # Isolated writable state per node; shared ACME storage between
+    # nodes is deliberately not a thing until a future feature defines
+    # safe multi-instance ownership.
+    volumes:
+      - statute-1-state:/var/lib/statute
+    labels: { statute.e2e: "1" }
+
+  # Clients are one-shot actors the harness starts with `compose run`;
+  # they are never part of `up`.
+  client-1:
+    image: ${STATUTE_E2E_IMAGE}
+    entrypoint: ["/client"]
+    environment:
+      CLIENT_ID: client-1
+    networks: [mesh]
+    volumes:
+      - ${E2E_REPORTS}:/reports
+    labels: { statute.e2e: "1" }
