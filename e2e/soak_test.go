@@ -108,12 +108,9 @@ func TestSoak_SlowStreamAcrossShutdown(t *testing.T) {
 		_, err := r.Compose.RunClient(ctx, harness.Client1, "stream", "-url", url, "-chunks", "8")
 		done <- err
 	}()
-	// Let the one-shot client start and receive the first chunks, then
+	// Wait until the stream is genuinely flowing at an origin, then
 	// drain the node under it.
-	if out, err := r.Compose.RunClient(ctx, harness.Client1, "wait", "-url",
-		fmt.Sprintf("http://%s:%d/healthz", harness.Server1, harness.PortHealth), "-timeout", "10s"); err != nil {
-		t.Fatalf("liveness: %v\n%s", err, out)
-	}
+	awaitOriginPath(ctx, t, r, "/stream")
 	if err := r.Compose.Signal(ctx, harness.Server1, "SIGTERM"); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
 	}

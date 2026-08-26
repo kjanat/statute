@@ -86,6 +86,23 @@ func pollUntil(t *testing.T, budget time.Duration, what string, fn func() (bool,
 	t.Fatalf("%s: not reached within %s; last: %s", what, budget, last)
 }
 
+// awaitOriginPath waits until either origin's journal records a request
+// for the given path — proof the request is on the wire, not merely
+// planned.
+func awaitOriginPath(ctx context.Context, t *testing.T, r *harness.Run, path string) {
+	t.Helper()
+	pollUntil(t, 30*time.Second, "request for "+path+" reaches an origin", func() (bool, string) {
+		for _, origin := range []string{"origin-1", "origin-2"} {
+			for _, e := range originJournal(ctx, r, origin, "http") {
+				if e.Path == path {
+					return true, ""
+				}
+			}
+		}
+		return false, "no journal entry yet"
+	})
+}
+
 // logLinesContaining returns the log lines that contain every marker.
 func logLinesContaining(logs string, markers ...string) []string {
 	var out []string

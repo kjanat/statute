@@ -74,10 +74,10 @@ test-e2e: e2e-image ## Run the e2e smoke matrix across all four topologies (PR g
 	STATUTE_E2E_IMAGE=$(E2E_IMAGE) $(GO) test -tags e2e -count=$(E2E_REPEAT) -run '^TestSmoke' -timeout 30m ./e2e
 
 test-e2e-regression: e2e-image ## Run the deterministic e2e regression scenarios
-	STATUTE_E2E_IMAGE=$(E2E_IMAGE) $(GO) test -tags e2e -run '^Test(Smoke|Regression)' -timeout 60m ./e2e
+	STATUTE_E2E_IMAGE=$(E2E_IMAGE) $(GO) test -tags e2e -count=1 -run '^Test(Smoke|Regression)' -timeout 60m ./e2e
 
 test-e2e-soak: e2e-image ## Run the e2e stress/soak tier (scheduled lane)
-	STATUTE_E2E_IMAGE=$(E2E_IMAGE) $(GO) test -tags e2e -run '^TestSoak' -timeout 120m ./e2e
+	STATUTE_E2E_IMAGE=$(E2E_IMAGE) $(GO) test -tags e2e -count=1 -run '^TestSoak' -timeout 120m ./e2e
 
 e2e-clean: ## Force-remove anything the e2e lane leaked (labeled containers, named projects)
 	-docker ps -aq --filter label=statute.e2e=1 | xargs -r docker rm -f

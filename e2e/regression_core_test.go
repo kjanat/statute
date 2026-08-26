@@ -331,7 +331,7 @@ func runShutdownInFlight(t *testing.T, topo harness.Topology) {
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	slow := fmt.Sprintf("http://%s:%d/slow?d=8s", harness.Server1, harness.PortHTTP)
+	slow := fmt.Sprintf("http://%s:%d/slow?d=10s", harness.Server1, harness.PortHTTP)
 	var (
 		wg      sync.WaitGroup
 		slowOut string
@@ -340,9 +340,10 @@ func runShutdownInFlight(t *testing.T, topo harness.Topology) {
 	wg.Go(func() {
 		slowOut, slowErr = clientGet(ctx, r, slow)
 	})
-	// Give the one-shot client container time to start and put the slow
-	// request on the wire before the signal lands.
-	time.Sleep(3 * time.Second)
+	// A fixed sleep races one-shot container startup under load; the
+	// origin journal records the request the moment it arrives, so wait
+	// for that before draining the node under it.
+	awaitOriginPath(ctx, t, r, "/slow")
 	if err := r.Compose.Signal(ctx, harness.Server1, "SIGTERM"); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
 	}
