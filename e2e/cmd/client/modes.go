@@ -51,6 +51,36 @@ func get(client *http.Client, target string) (*http.Response, error) {
 	return client.Do(req)
 }
 
+// runGet performs one GET and writes the raw response body to stdout —
+// the harness's generic in-network read for origin admin endpoints,
+// journals, and metrics. A non-2xx status is an error exit.
+func runGet(args []string) error {
+	fs := flag.NewFlagSet("get", flag.ExitOnError)
+	target := fs.String("url", "", "URL to fetch")
+	roots := fs.String("roots", "", "PEM roots for HTTPS targets")
+	fs.Parse(args)
+	if *target == "" {
+		return errors.New("get: -url required")
+	}
+	tlsCfg, err := tlsConfigFor(*roots, "")
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: tlsCfg}}
+	resp, err := get(client, *target)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("get: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // runWait polls a URL until it answers 200 or the deadline passes. It is
 // the lane's readiness gate: reachability of the Statute health
 // endpoint's ready path over the real network, never container state.

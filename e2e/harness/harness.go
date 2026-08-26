@@ -54,6 +54,15 @@ type Run struct {
 // silently skips declared coverage.
 func Start(t *testing.T, scenario string, topo Topology, extraFiles ...string) *Run {
 	t.Helper()
+	return StartServices(t, scenario, topo, append(append([]string{}, topo.Servers...), origins()...), extraFiles...)
+}
+
+// StartServices is Start with an explicit set of services to bring up —
+// for scenarios that add supporting services (Pebble, a collector) or
+// must observe a Statute node failing to start rather than waiting for
+// it to run.
+func StartServices(t *testing.T, scenario string, topo Topology, services []string, extraFiles ...string) *Run {
+	t.Helper()
 	image := os.Getenv("STATUTE_E2E_IMAGE")
 	if image == "" {
 		t.Fatal("STATUTE_E2E_IMAGE is not set; run through `make test-e2e` or build the image and export the variable")
@@ -65,6 +74,11 @@ func Start(t *testing.T, scenario string, topo Topology, extraFiles ...string) *
 	}
 	reportsDir := filepath.Join(artifactDir, "reports")
 	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The reports mount is written by container users that do not match
+	// the host uid (the collector's file exporter, non-root actors).
+	if err := os.Chmod(reportsDir, 0o777); err != nil {
 		t.Fatal(err)
 	}
 	files := append([]string{"compose.yml", filepath.Join("topologies", topo.Name+".yml")}, extraFiles...)
@@ -88,10 +102,10 @@ func Start(t *testing.T, scenario string, topo Topology, extraFiles ...string) *
 	// diagnostics come first because down removes their sources.
 	t.Cleanup(r.teardown)
 
-	ctx := context.Background()
-	services := append(append([]string{}, topo.Servers...), origins()...)
-	if err := r.Compose.Up(ctx, services...); err != nil {
-		t.Fatalf("compose up: %v", err)
+	if len(services) > 0 {
+		if err := r.Compose.Up(context.Background(), services...); err != nil {
+			t.Fatalf("compose up: %v", err)
+		}
 	}
 	return r
 }
@@ -188,14 +202,26 @@ func (r *Run) AssertFullMesh(reports map[string]*report.Report) {
 	}
 }
 
+// Logs returns one service's log output so far — the in-test view of
+// the access log and lifecycle stderr lines.
+func (r *Run) Logs(ctx context.Context, service string) string {
+	r.T.Helper()
+	out, err := r.Compose.Output(ctx, "logs", "--no-color", service)
+	if err != nil {
+		r.T.Fatalf("logs of %s: %v", service, err)
+	}
+	return out
+}
+
 // WaitExit blocks until one service's container stops and returns its
 // exit code, read from the container state by label filter (stable
 // across compose versions, unlike `compose ps` JSON).
 func (r *Run) WaitExit(ctx context.Context, service string) int {
 	r.T.Helper()
-	if _, err := r.Compose.Output(ctx, "wait", service); err != nil {
-		r.T.Fatalf("wait for %s: %v", service, err)
-	}
+	// `compose wait` propagates the container's exit code as its own, so
+	// a non-zero container is not an invocation failure; the code is
+	// read authoritatively from inspect below either way.
+	_, _ = r.Compose.Output(ctx, "wait", service)
 	ids := dockerLines(ctx, r.T, "ps", "-aq",
 		"--filter", "label=com.docker.compose.project="+r.Compose.Project,
 		"--filter", "label=com.docker.compose.service="+service)

@@ -54,20 +54,22 @@ func (c *Compose) command(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 // Output runs one compose subcommand under the invocation timeout and
-// returns combined output; the error carries that output so failures
-// are diagnosable from the test log alone.
+// returns its stdout. Compose writes progress noise to stderr, so
+// keeping the streams separate is what makes stdout parseable; on
+// failure the error carries both streams so the test log alone
+// diagnoses it.
 func (c *Compose) Output(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, composeTimeout)
 	defer cancel()
-	var buf bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd := c.command(ctx, args...)
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err != nil {
-		err = fmt.Errorf("docker compose %s: %w\n%s", strings.Join(args, " "), err, buf.String())
+		err = fmt.Errorf("docker compose %s: %w\n%s%s", strings.Join(args, " "), err, stdout.String(), stderr.String())
 	}
-	return buf.String(), err
+	return stdout.String(), err
 }
 
 // Up starts the named services (or the whole project) detached and
@@ -75,6 +77,15 @@ func (c *Compose) Output(ctx context.Context, args ...string) (string, error) {
 // ready; readiness is proven separately over the network.
 func (c *Compose) Up(ctx context.Context, services ...string) error {
 	args := append([]string{"up", "-d", "--wait", "--wait-timeout", "60"}, services...)
+	_, err := c.Output(ctx, args...)
+	return err
+}
+
+// UpDetached starts services without waiting for a running state — for
+// containers expected to exit, such as a Statute node whose startup
+// must fail.
+func (c *Compose) UpDetached(ctx context.Context, services ...string) error {
+	args := append([]string{"up", "-d"}, services...)
 	_, err := c.Output(ctx, args...)
 	return err
 }

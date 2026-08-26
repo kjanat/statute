@@ -19,10 +19,10 @@ func meshConfig(string) statute.Config {
 			),
 		},
 		Upstreams: statute.Upstreams{
-			"origins": statute.Pool{
+			poolOrigins: statute.Pool{
 				Backends: []statute.Backend{
-					{Address: "origin-1:7000"},
-					{Address: "origin-2:7000"},
+					{Address: origin1Addr},
+					{Address: origin2Addr},
 				},
 				Strategy: statute.RoundRobin,
 				HealthCheck: statute.HealthCheck{
@@ -39,27 +39,19 @@ func meshConfig(string) statute.Config {
 			// failure budget armed on each origin independently, three
 			// attempts guarantee one lands on an origin whose budget is
 			// already spent.
-			statute.Match("/*").ProxyTo("origins").
+			// No Timeout middleware here: its http.TimeoutHandler buffers
+			// bodies and hides http.Hijacker, which would break the
+			// streaming and upgrade scenarios this route also serves.
+			statute.Match("/*").ProxyTo(poolOrigins).
 				With(
 					statute.Retry(3, statute.OnStatus(502)),
 					// From lets the client-stamped id survive to the origin,
 					// which is what the smoke identity assertion checks.
 					statute.RequestID().From("X-Request-Id"),
-					statute.Timeout("30s"),
 				),
 		},
-		Defaults: statute.Defaults{
-			ReadHeaderTimeout: "5s",
-			WriteTimeout:      "60s",
-			IdleTimeout:       "60s",
-		},
-		Observability: statute.Observability{
-			AccessLog: statute.JSONLog(statute.Stdout),
-			Health:    statute.Health(":8081", "/healthz"),
-		},
-		Shutdown: statute.Shutdown{
-			GracePeriod:    "10s",
-			DrainListeners: true,
-		},
+		Defaults:      e2eDefaults(),
+		Observability: e2eObservability(),
+		Shutdown:      e2eShutdown(),
 	}
 }

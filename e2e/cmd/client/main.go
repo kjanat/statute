@@ -15,10 +15,12 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: client <wait|probe-negative|fetch-roots|run|stream|upgrade> [flags]")
+		fail("usage: client <get|wait|probe-negative|fetch-roots|run|stream|upgrade> [flags]")
 	}
 	var err error
 	switch mode := os.Args[1]; mode {
+	case "get":
+		err = runGet(os.Args[2:])
 	case "wait":
 		err = runWait(os.Args[2:])
 	case "probe-negative":

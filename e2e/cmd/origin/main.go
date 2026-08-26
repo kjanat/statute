@@ -246,8 +246,14 @@ func echoLines(conn net.Conn, rw *bufio.ReadWriter, id string) {
 
 // handleFail returns 502 for the first n requests per key, then echoes.
 // The budget arms on first sight of a key, so a retry scenario forces
-// exactly n backend failures without pre-seeding origin state.
+// exactly n backend failures without pre-seeding origin state. An
+// origin query parameter scopes the failures to one instance, giving
+// scenarios a deterministic backend asymmetry behind a shared pool.
 func (o *origin) handleFail(w http.ResponseWriter, r *http.Request) {
+	if only := r.URL.Query().Get("origin"); only != "" && only != o.id {
+		o.handleEcho(w, r)
+		return
+	}
 	key := r.URL.Query().Get("key")
 	n := queryInt(r, "n", 1)
 	o.mu.Lock()

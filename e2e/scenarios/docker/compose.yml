@@ -1,0 +1,8 @@
+# Real Docker Engine discovery: the statute node reads the host daemon
+# through the mounted socket. Discovery is opt-in per container label
+# (ExposedByDefault stays off), so only the containers the test launches
+# with statute.* labels ever surface as routes.
+services:
+  statute-1:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
