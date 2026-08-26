@@ -134,7 +134,9 @@ func TestSoak_SlowStreamAcrossShutdown(t *testing.T) {
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	url := fmt.Sprintf("http://%s:%d/stream?chunks=8&interval=1s", harness.Server1, harness.PortHTTP)
+	// Eight flushes still prove streaming, but the whole stream must fit
+	// well inside the 10s grace once the drain starts under it.
+	url := fmt.Sprintf("http://%s:%d/stream?chunks=8&interval=500ms", harness.Server1, harness.PortHTTP)
 	done := make(chan error, 1)
 	go func() {
 		_, err := r.Compose.RunClient(ctx, harness.Client1, "stream", "-url", url, "-chunks", "8")

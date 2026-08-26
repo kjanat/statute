@@ -86,38 +86,36 @@ func pollUntil(t *testing.T, budget time.Duration, what string, fn func() (bool,
 	t.Fatalf("%s: not reached within %s; last: %s", what, budget, last)
 }
 
-// awaitOriginPath waits until either origin's journal records a request
-// for the given path — proof the request is on the wire, not merely
-// planned.
-func awaitOriginPath(ctx context.Context, t *testing.T, r *harness.Run, path string) {
+// awaitOriginLog waits until an origin's stdout carries the marker. The
+// origin logs every journal entry as it arrives, so this is the same
+// evidence as the journal API but costs one CLI call instead of a client
+// container — and these callers race a live request, so the wait's own
+// latency is part of what they are timing.
+func awaitOriginLog(ctx context.Context, t *testing.T, r *harness.Run, what, marker string) {
 	t.Helper()
-	pollUntil(t, 30*time.Second, "request for "+path+" reaches an origin", func() (bool, string) {
+	pollUntil(t, 60*time.Second, what, func() (bool, string) {
 		for _, origin := range []string{"origin-1", "origin-2"} {
-			for _, e := range originJournal(ctx, r, origin, "http") {
-				if e.Path == path {
-					return true, ""
-				}
+			if strings.Contains(r.Logs(ctx, origin), marker) {
+				return true, ""
 			}
 		}
-		return false, "no journal entry yet"
+		return false, "not in origin logs yet"
 	})
 }
 
-// awaitOriginQuery waits until either origin's journal records a request
-// whose query carries the marker — proof that this batch of traffic, not
-// an earlier one, is already on the wire.
+// awaitOriginPath waits until an origin has received a request for the
+// given path — proof it is on the wire, not merely planned.
+func awaitOriginPath(ctx context.Context, t *testing.T, r *harness.Run, path string) {
+	t.Helper()
+	awaitOriginLog(ctx, t, r, "request for "+path+" reaches an origin", fmt.Sprintf(`"path":%q`, path))
+}
+
+// awaitOriginQuery waits until an origin has received a request whose
+// query carries the marker — proof that this batch of traffic, not an
+// earlier one, is already on the wire.
 func awaitOriginQuery(ctx context.Context, t *testing.T, r *harness.Run, marker string) {
 	t.Helper()
-	pollUntil(t, 60*time.Second, "request carrying "+marker+" reaches an origin", func() (bool, string) {
-		for _, origin := range []string{"origin-1", "origin-2"} {
-			for _, e := range originJournal(ctx, r, origin, "http") {
-				if strings.Contains(e.Query, marker) {
-					return true, ""
-				}
-			}
-		}
-		return false, "no journal entry yet"
-	})
+	awaitOriginLog(ctx, t, r, "request carrying "+marker+" reaches an origin", marker)
 }
 
 // logLinesContaining returns the log lines that contain every marker.

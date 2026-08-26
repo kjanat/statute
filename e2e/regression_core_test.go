@@ -365,7 +365,9 @@ func runShutdownInFlight(t *testing.T, topo harness.Topology) {
 	ctx := context.Background()
 	r.AwaitReady(ctx)
 
-	slow := fmt.Sprintf("http://%s:%d/slow?d=10s", harness.Server1, harness.PortHTTP)
+	// Must fit inside the 10s grace with room to spare: Go's 500ms
+	// shutdown poll alone overruns a drain that needs the whole grace.
+	slow := fmt.Sprintf("http://%s:%d/slow?d=5s", harness.Server1, harness.PortHTTP)
 	var (
 		wg      sync.WaitGroup
 		slowOut string
