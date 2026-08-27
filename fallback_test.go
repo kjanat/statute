@@ -563,6 +563,12 @@ const fallbackDrainBody = "fallback finished after shutdown began"
 // the tombstones miss, and it is the configured handler rather than one
 // statute compiled. The request parks inside it, Shutdown starts draining,
 // and the response must still arrive whole inside the grace period.
+//
+// The release is gated on the content listener actually closing rather than
+// on the readiness flag. Shutdown stores that flag as its first statement,
+// before it reaches serverRun at all, so a test synchronising on it can
+// release the request and collect a whole response while the listener is
+// still accepting — proving the fallback answered, but nothing about draining.
 func TestFallbackDrainsThroughShutdown(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -616,8 +622,8 @@ func TestFallbackDrainsThroughShutdown(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- srv.Shutdown() }()
 	// Load-bearing: released before the drain begins, the response proves
-	// nothing. Shutdown drops ready first, so that flag is the drain's onset.
-	waitReadyFalse(t, srv, shutdownDone)
+	// nothing. A closed listener is that moment; the readiness flag is not.
+	waitForRefused(t, addr, shutdownDone)
 	close(release)
 
 	res := <-got

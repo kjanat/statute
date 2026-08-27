@@ -431,9 +431,15 @@ func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute 
 // once and wrong for the fail-closed tier, where a rule that is repaired and
 // later regresses would disable the fallback again in silence. Keying on the
 // previous generation repeats the announcement without logging once per poll,
-// and makes the clearing edge audible: an operator told the fallback was
-// switched off is also told when it came back, since the repair is as much an
-// operational event as the refusal was.
+// and makes the clearing edge audible: an operator told which requests are
+// being refused is also told when that refusal is lifted, since the repair is
+// as much an operational event as the refusal was.
+//
+// That clearing line names what the tier stopped doing rather than what
+// happens next. Config.Fallback is optional and this tier does not know
+// whether one is configured; with none the terminal handler is the same 404
+// http.NotFoundHandler the tombstones served, so promising that the fallback
+// is reached again would be false for exactly those deployments.
 func (p *dockerProvider) announceRefusal(env []docker.Matcher) {
 	msg := ""
 	if len(env) > 0 {
@@ -449,7 +455,7 @@ func (p *dockerProvider) announceRefusal(env []docker.Matcher) {
 	}
 	// Reached only from a non-empty refusal: when the previous generation
 	// also refused nothing, the dedupe above has already returned.
-	log.Printf("statute: docker: generation: refusals cleared, unmatched requests reach the fallback again")
+	log.Printf("statute: docker: generation: refusals cleared; unmatched requests are no longer blocked by Docker tombstones")
 }
 
 // servicePoolHandler returns the pool handler for the named service,

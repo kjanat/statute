@@ -1365,6 +1365,49 @@ func waitForListen(t *testing.T, addr string) {
 	t.Fatalf("listener at %s never accepted within %s", addr, deadline)
 }
 
+// waitForRefused is the inverse of waitForListen: it polls addr until the
+// connection is refused, which is the externally observable onset of the
+// drain. http.Server.Shutdown closes every open listener before it waits
+// for in-flight requests to finish, so a refused connection proves shutdown
+// has passed the close step and is now inside the wait — the phase a test
+// holding a request open means to exercise. The readiness flag proves far
+// less: Shutdown stores it before it touches serverRun at all, so a caller
+// synchronising on it can still act while the listener is wide open.
+//
+// Nothing in the server is instrumented for this. The observation is a TCP
+// connect from outside, so it tests the socket the client uses rather than
+// a hook that exists only for the test.
+//
+// drainDone is whatever ends when the drain does, so a caller that means to
+// act mid-drain cannot act after it instead.
+func waitForRefused(t *testing.T, addr string, drainDone <-chan error) {
+	t.Helper()
+	const deadline = 5 * time.Second
+	stop := time.Now().Add(deadline)
+	for time.Now().Before(stop) {
+		select {
+		case err := <-drainDone:
+			t.Fatalf("drain finished (err=%v) before the listener at %s closed", err, addr)
+		default:
+		}
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		var netErr net.Error
+		switch {
+		case err == nil:
+			// Closed at once: a connection that never sends a request
+			// holds the server out of quiescence and delays Shutdown.
+			_ = conn.Close()
+		case errors.As(err, &netErr) && netErr.Timeout():
+			// An unanswered dial is not proof the socket closed, and
+			// accepting it would resynchronise on the wrong event again.
+		default:
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("listener at %s still accepting %s after Shutdown began", addr, deadline)
+}
+
 // redirectHealthConfig is the minimal valid config the health lifecycle
 // tests share: one plain content listener with a redirect route, plus the
 // health endpoint on healthAddr.

@@ -1,12 +1,9 @@
 package docker
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-// topBases are rules ParseRule accepts, so their matchers give an oracle for
-// the request set a zero-argument sibling must not shrink.
+// topBases are rules both readers accept: ParseRule for the strict one, and
+// the deriver for the envelope each identity below is stated against.
 var topBases = []string{
 	"Host(`a.example.com`)",
 	"Path(`/login`)",
@@ -25,50 +22,68 @@ var zeroArgMatchers = []string{"Path()", "Host()", "PathPrefix()", "ClientIP()",
 
 // TestRuleEnvelopeZeroArgMatcherIsTop — a zero-argument matcher is the top
 // envelope, and the two operators must read that one fact in opposite
-// directions: a meet is contained in each operand, so the readable operand
-// survives; a union contains each operand, so a top branch poisons it.
+// directions. Over every base B in the table, with T a zero-argument call:
 //
-// FuzzRuleEnvelope cannot reach either. It only compares rules ParseRule
-// accepts, ParseRule rejects every zero-argument call, and the working-set
-// cap that also raises the flag sits far above ParseRule's own matcher
-// budget — so no accepted rule raises it anywhere in its tree. Containment
-// alone would not settle it either: over-refusing satisfies the invariant,
-// so widening back to global passes every containment check ever written.
-// This is the guard for the pair over more shapes than one fixed table.
+//	B && T == B      T && B == B
+//	B || T == top    T || B == top
+//
+// Equality, not containment, is the whole point. Containment is what the
+// tier's invariant demands and what FuzzRuleEnvelope checks, but it cannot
+// see this distinction at all: collapsing the meet back to the global
+// envelope still covers every request B covers, so a containment assertion
+// passes exactly as happily for the widened answer as for the narrowed one.
+// Only comparing against B's own envelope separates "kept the bounded
+// operand" from "refused every request in the generation".
+//
+// FuzzRuleEnvelope cannot reach these shapes either. It only compares rules
+// ParseRule accepts, ParseRule rejects every zero-argument call, and the
+// working-set cap that also raises the flag sits far above ParseRule's own
+// matcher budget — so no accepted rule raises it anywhere in its tree. This
+// is the guard for the pair, over more shapes than one fixed table.
+//
+// Two bases derive the global envelope legitimately — PathPrefix(`/`) bounds
+// nothing, and a percent-escaped literal widens — so a base deriving it is
+// not itself a failure. Every base deriving it would be: the identities would
+// then hold for a deriver that widened everything, which is why the count
+// below refuses a table where none of them is bounded.
 func TestRuleEnvelopeZeroArgMatcherIsTop(t *testing.T) {
 	t.Parallel()
+	bounded := 0
 	for _, base := range topBases {
-		routes, err := ParseRule(base)
-		if err != nil {
-			t.Fatalf("base %q rejected: %v; this table needs an oracle", base, err)
+		if _, err := ParseRule(base); err != nil {
+			t.Fatalf("base %q rejected: %v; every base here must be a rule both readers accept", base, err)
+		}
+		want := RuleEnvelope(base)
+		if len(want) == 0 {
+			t.Fatalf("RuleEnvelope(%q) returned no envelope for a base rule", base)
+		}
+		if !matchersEqual(want, global()) {
+			bounded++
 		}
 		for _, z := range zeroArgMatchers {
-			assertMeetKeepsBase(t, "("+base+") && "+z, routes)
-			assertMeetKeepsBase(t, z+" && ("+base+")", routes)
+			assertMeetIsBase(t, "("+base+") && "+z, base, want)
+			assertMeetIsBase(t, z+" && ("+base+")", base, want)
 			assertUnionIsGlobal(t, "("+base+") || "+z)
 			assertUnionIsGlobal(t, z+" || ("+base+")")
 		}
 	}
+	// A deriver that widened everything to global satisfies both identities
+	// above, so at least one base must derive a bounded envelope.
+	if bounded == 0 {
+		t.Fatal("no base derived a bounded envelope; the identities above would hold vacuously")
+	}
 }
 
-// assertMeetKeepsBase checks that the envelope of a conjunction still covers
-// every request the readable operand alone would have matched.
-func assertMeetKeepsBase(t *testing.T, rule string, routes []Matcher) {
+// assertMeetIsBase checks that the readable operand survives a meet with a
+// top operand unchanged. want is the base's own envelope rather than a
+// literal, so the table states the identity and not a second copy of the
+// expectations TestRuleEnvelope already pins. Comparison is elementwise
+// because EnvelopeOf sorts and absorbs, so one request set has exactly one
+// representation here.
+func assertMeetIsBase(t *testing.T, rule, base string, want []Matcher) {
 	t.Helper()
-	env := RuleEnvelope(rule)
-	if len(env) == 0 {
-		t.Fatalf("RuleEnvelope(%q) returned no envelope", rule)
-	}
-	for _, mt := range routes {
-		for _, req := range probeRequests(mt) {
-			host, path := req[0], req[1]
-			if !matchesRequest(mt, host, path) {
-				continue
-			}
-			if !matchesAny(env, strings.TrimSuffix(host, "."), path) {
-				t.Fatalf("rule %q: request %q %q matches route %+v but no element of %v", rule, host, path, mt, env)
-			}
-		}
+	if got := RuleEnvelope(rule); !matchersEqual(got, want) {
+		t.Errorf("RuleEnvelope(%q) = %v, want RuleEnvelope(%q) = %v: a meet is contained in each operand, so an unreadable conjunct is dropped rather than propagated", rule, got, base, want)
 	}
 }
 
