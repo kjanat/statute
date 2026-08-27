@@ -29,8 +29,20 @@ all: lint test cover build-examples ## Run lint, test, coverage, build examples
 test: ## Run all unit tests
 	$(GO) test ./...
 
-test-race: ## Run tests with the race detector (x86 only; Pi cannot run -race)
-	$(GO) test -race ./...
+# No `-race` on 64-bit arm
+test-race: ## Run tests with the race detector, skipped where TSAN cannot start
+	@if probe="$$($(GO) test -race -run '^$$' -count=1 ./internal/parse 2>&1)"; then \
+		echo "$(GO) test -race ./..."; \
+		$(GO) test -race ./...; \
+	elif printf '%s' "$$probe" | grep -q ThreadSanitizer; then \
+		echo "test-race: skipped, this kernel cannot start ThreadSanitizer binaries."; \
+		echo "           64-bit Arm with a 47-bit VMA does this; CI runs the"; \
+		echo "           detector on x86, so the tier is not lost."; \
+	else \
+		printf '%s\n' "$$probe" >&2; \
+		echo "test-race: the probe failed for a reason other than ThreadSanitizer" >&2; \
+		exit 1; \
+	fi
 
 # golangci-lint applies the configured formatters through `fmt`, not `run`,
 # so an unformatted tree passes `run`. Both gates run: gofmt for the printer
