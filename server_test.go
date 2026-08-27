@@ -1633,14 +1633,16 @@ func TestFailedStartServesHealthThenReleases(t *testing.T) {
 }
 
 // waitReadyFalse polls the ready flag until it drops, failing if the drain
-// completes first or the flag never flips.
-func waitReadyFalse(t *testing.T, srv *server, contentDone <-chan error) {
+// completes first or the flag never flips. drainDone is whatever ends when
+// the drain does — the in-flight request, or Shutdown itself — so a caller
+// that means to act while the drain is held cannot act after it instead.
+func waitReadyFalse(t *testing.T, srv *server, drainDone <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for srv.ready.Load() {
 		select {
-		case err := <-contentDone:
-			t.Fatalf("drain finished (content err=%v) before ready flipped false", err)
+		case err := <-drainDone:
+			t.Fatalf("drain finished (err=%v) before ready flipped false", err)
 		default:
 		}
 		if time.Now().After(deadline) {

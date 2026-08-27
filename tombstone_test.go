@@ -451,6 +451,18 @@ func TestDockerTombstoneGenerationReplacement(t *testing.T) {
 	}
 }
 
+// appRouter is one container exposing a Traefik router with the given rule:
+// the fixture the repair tests move between a rejected and an accepted rule.
+func appRouter(rule string) fakeDaemonContainer {
+	return fakeDaemonContainer{
+		name: "app-1", ip: "10.0.0.9", port: 3000,
+		labels: map[string]string{
+			"traefik.enable":                "true",
+			"traefik.http.routers.app.rule": rule,
+		},
+	}
+}
+
 // TestDockerTombstoneReannouncesAfterRepair — the standing refusal is a
 // fact about the current generation, not a one-off remark about a label, so
 // a rule that is repaired and later regresses is announced again. The
@@ -464,20 +476,8 @@ func TestDockerTombstoneReannouncesAfterRepair(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	broken := fakeDaemonContainer{
-		name: "app-1", ip: "10.0.0.9", port: 3000,
-		labels: map[string]string{
-			"traefik.enable":                "true",
-			"traefik.http.routers.app.rule": "Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)",
-		},
-	}
-	fixed := fakeDaemonContainer{
-		name: "app-1", ip: "10.0.0.9", port: 3000,
-		labels: map[string]string{
-			"traefik.enable":                "true",
-			"traefik.http.routers.app.rule": "Host(`app.example.com`)",
-		},
-	}
+	broken := appRouter("Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)")
+	fixed := appRouter("Host(`app.example.com`)")
 	const announcement = "generation: routes dropped, refusing app.example.com/*"
 	announcements := func() int { return strings.Count(logs.String(), announcement) }
 
@@ -496,6 +496,55 @@ func TestDockerTombstoneReannouncesAfterRepair(t *testing.T) {
 	mustSync(t, p)
 	if got := announcements(); got != 2 {
 		t.Errorf("a refusal that returned after a repair announced %d times in total, want 2", got)
+	}
+}
+
+// TestDockerTombstoneAnnouncesRepair — the tier switches the operator's
+// fallback off for a whole generation, so it must say when it is switched
+// back on; a refusal that is only ever announced on its onset leaves the
+// operator reading a stale log line. The clearing edge is announced on the
+// transition and only there: a generation refusing nothing after one that
+// also refused nothing is silent, or the line would repeat every poll.
+func TestDockerTombstoneAnnouncesRepair(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	broken := appRouter("Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)")
+	fixed := appRouter("Host(`app.example.com`)")
+	const cleared = "refusals cleared"
+	repairs := func() int { return strings.Count(logs.String(), cleared) }
+
+	p, srv, setContainers := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{fixed})
+	mustSync(t, p)
+	if got := repairs(); got != 0 {
+		t.Fatalf("a provider that never refused anything announced a repair %d times, want 0", got)
+	}
+	mustSync(t, p)
+	if got := repairs(); got != 0 {
+		t.Fatalf("polling without a refusal announced a repair %d times, want 0", got)
+	}
+
+	setContainers([]fakeDaemonContainer{broken})
+	mustSync(t, p)
+	if got := tombstoneSet(t, srv); len(got) != 1 {
+		t.Fatalf("tombstones = %v, want the rejected router refused", got)
+	}
+	if got := repairs(); got != 0 {
+		t.Fatalf("the onset of a refusal announced a repair %d times, want 0", got)
+	}
+
+	setContainers([]fakeDaemonContainer{fixed})
+	mustSync(t, p)
+	if got := tombstoneSet(t, srv); len(got) != 0 {
+		t.Fatalf("tombstones = %v after the repair, want none", got)
+	}
+	if got := repairs(); got != 1 {
+		t.Fatalf("the repair was announced %d times, want 1", got)
+	}
+	mustSync(t, p)
+	if got := repairs(); got != 1 {
+		t.Errorf("an unchanged all-clear generation announced the repair %d times, want 1 — a generation is rebuilt every poll", got)
 	}
 }
 

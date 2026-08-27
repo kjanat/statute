@@ -129,26 +129,52 @@ func hasPrefixedLabels(labels map[string]string, prefix string) bool {
 	return false
 }
 
-// boolLabel parses a boolean label the way Traefik does (strconv.ParseBool:
-// 1/t/true/True/TRUE and friends). present is false when the label is
-// absent; an unparseable value counts as present-and-false with a warning.
-func boolLabel(c Container, labels map[string]string, key string) (value, present bool, warn string) {
+// parseBoolLabel parses a boolean label the way Traefik does
+// (strconv.ParseBool: 1/t/true/True/TRUE and friends). present is false
+// when the label is absent; an unparseable value reads as
+// present-and-false with a non-empty warn, and that warn is the only thing
+// separating it from a value that really says false.
+//
+// consequence completes the warning, because what an unreadable value costs
+// is not the same at every call site and one shared sentence would be wrong
+// at half of them: an optional flag carries on with the flag off, while an
+// unreadable enable rejects the whole registration and refuses its declared
+// routes. Callers go through optionBoolLabel or enableBoolLabel rather than
+// spelling the clause out, so each consequence has exactly one wording.
+func parseBoolLabel(c Container, labels map[string]string, key, consequence string) (value, present bool, warn string) {
 	v, ok := labels[key]
 	if !ok {
 		return false, false, ""
 	}
 	b, err := strconv.ParseBool(strings.TrimSpace(v))
 	if err != nil {
-		return false, true, fmt.Sprintf("container %s: invalid boolean %q for label %s, treating as false", c.Name, v, key)
+		return false, true, fmt.Sprintf("container %s: invalid boolean %q for label %s, %s", c.Name, v, key, consequence)
 	}
 	return b, true, ""
+}
+
+// optionBoolLabel reads an optional boolean that only tunes a registration
+// statute still builds, so an unreadable value costs the option and nothing
+// else.
+func optionBoolLabel(c Container, labels map[string]string, key string) (value bool, warn string) {
+	v, _, warn := parseBoolLabel(c, labels, key, "treating as false")
+	return v, warn
+}
+
+// enableBoolLabel reads an enable label. An unreadable value here is not an
+// opt-out: the intent could not be read, so the registration is rejected
+// and the routes it declared are refused rather than served. The refusal
+// line that follows names the traffic; this one must not promise the
+// registration continues with the label off.
+func enableBoolLabel(c Container, key string) (value, present bool, warn string) {
+	return parseBoolLabel(c, c.Labels, key, "which is not an opt-out: the registration is rejected and its declared routes are refused")
 }
 
 // nativeEnabled decides whether the statute.* schema applies: an explicit
 // statute.enable wins; otherwise ExposedByDefault or the presence of any
 // statute.* label opts the container in.
 func nativeEnabled(c Container, opts ExtractOptions) (bool, string) {
-	b, present, warn := boolLabel(c, c.Labels, "statute.enable")
+	b, present, warn := enableBoolLabel(c, "statute.enable")
 	if present {
 		return b, warn
 	}
@@ -159,7 +185,7 @@ func nativeEnabled(c Container, opts ExtractOptions) (bool, string) {
 // off, only an explicit traefik.enable=true exposes the container — router
 // labels alone do not.
 func traefikEnabled(c Container, opts ExtractOptions) (bool, string) {
-	b, present, warn := boolLabel(c, c.Labels, "traefik.enable")
+	b, present, warn := enableBoolLabel(c, "traefik.enable")
 	if present {
 		return b, warn
 	}
@@ -268,9 +294,10 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []st
 	if !on {
 		// INVARIANT: an explicit opt-out declares no routing and must
 		// never delete the operator's fallback, but an unreadable value
-		// is not an opt-out — boolLabel warns only when ParseBool failed,
-		// so the routes are discarded with the intent unread and the
-		// envelope is all that stands between them and Config.Fallback.
+		// is not an opt-out — enableBoolLabel warns only when ParseBool
+		// failed, so the routes are discarded with the intent unread and
+		// the envelope is all that stands between them and
+		// Config.Fallback.
 		if enableWarn == "" {
 			return nil, nil, nil
 		}
@@ -377,7 +404,7 @@ func nativeBackend(c Container, labels map[string]string, opts ExtractOptions) (
 	if weightWarn != "" {
 		warns = append(warns, weightWarn)
 	}
-	backup, _, backupWarn := boolLabel(c, labels, "statute.backup")
+	backup, backupWarn := optionBoolLabel(c, labels, "statute.backup")
 	if backupWarn != "" {
 		warns = append(warns, backupWarn)
 	}

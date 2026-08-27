@@ -236,8 +236,24 @@ func TestRuleEnvelope(t *testing.T) {
 			why:  "a zero-argument matcher bounds nothing and, being the whole rule, gives the global envelope",
 		}, {
 			rule: "Host(`a.example.com`) && Path()",
+			want: []Matcher{m("a.example.com", "/*")},
+			why:  "a conjunction is contained in each operand, so an operand that bounds nothing is dropped like any other unrepresentable conjunct",
+		}, {
+			rule: "Path() && Host(`a.example.com`)",
+			want: []Matcher{m("a.example.com", "/*")},
+			why:  "the meet is symmetric; reading only the right operand's flag would widen this one back to global",
+		}, {
+			rule: "Host(`a.example.com`) && Path() && PathPrefix(`/api`)",
+			want: []Matcher{m("a.example.com", "/api/*")},
+			why:  "the unbounded conjunct leaves the other two to meet as they always would",
+		}, {
+			rule: "Host() && Path()",
 			want: global(),
-			why:  "zero arguments widen the whole rule, deliberately coarser than the sibling-conjunct proof",
+			why:  "neither operand bounds anything, so the meet has nothing to keep and stays the top envelope",
+		}, {
+			rule: "(Host(`a.example.com`) && Path()) || Host(`b.example.com`)",
+			want: []Matcher{m("a.example.com", "/*"), m("b.example.com", "/*")},
+			why:  "a branch narrowed past its unbounded conjunct reaches the union as a bounded branch, so the union stays branch-scoped",
 		}, {
 			rule: "Path() || Host(`a.example.com`)",
 			want: global(),

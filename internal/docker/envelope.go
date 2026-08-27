@@ -20,10 +20,13 @@ import (
 // ParseRule stops at the first construct it cannot represent, and every
 // such stop destroys the sibling constraints that were the only thing
 // bounding the rule. RuleEnvelope instead widens: an unrepresentable
-// conjunct is dropped, which can only add requests; a disjunction is a
-// branch-aware union, so one unreadable branch widens the whole rule; and a
-// construct it cannot bound at all collapses to the global "any host, /*"
-// envelope. It never returns a subset.
+// conjunct is dropped, which can only add requests, and a conjunct that
+// bounds nothing at all is dropped the same way, since a conjunction is
+// contained in each of its operands; a disjunction is a branch-aware
+// union, so one unreadable branch widens the whole rule; and only a rule
+// nothing bounds — it does not lex or parse, or every operand widened away
+// — collapses to the global "any host, /*" envelope. It never returns a
+// subset.
 //
 // A blank rule is the one empty answer. Traefik matches nothing without a
 // rule, so the request set is empty and any envelope, including none,

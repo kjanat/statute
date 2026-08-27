@@ -93,7 +93,7 @@ a pool named after the compose service. The full schema:
 
 | Label                                                 | Meaning                                                                                                                                                                                                                                                 |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `statute.enable`                                      | Boolean (parsed like Traefik: `1`/`t`/`true`/`True`, …). Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. An explicit false always wins; an unparseable value counts as false with a warning.             |
+| `statute.enable`                                      | Boolean (parsed like Traefik: `1`/`t`/`true`/`True`, …). Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. An explicit false always wins; an unparseable value is not an opt-out: it leaves a tombstone.   |
 | `statute.service`                                     | Pool name. Containers sharing it pool together (replicas). Default: compose service name, else container name.                                                                                                                                          |
 | `statute.host`                                        | Comma-separated hosts; each becomes a route (matched case-insensitively). Empty fragments are skipped. Empty or unset: any host.                                                                                                                        |
 | `statute.path`                                        | statute pattern: `/exact` or `/prefix/*`. Default `/*`.                                                                                                                                                                                                 |
@@ -183,13 +183,20 @@ than guessed at:
 | ``Host(`admin.example.com`) && ClientIP(`10.0.0.0/8`)``      | `admin.example.com`, all paths |
 | ``Host(`a.example.com`) && PathPrefix(`/api`) && Header(…)`` | `a.example.com/api/*`          |
 | ``PathPrefix(`/private`) && ClientIP(…)``                    | `/private/*` on every host     |
+| ``Host(`a.example.com`) && Path()``                          | `a.example.com`, all paths     |
 | ``Host(`a.example.com`) \|\| ClientIP(…)``                   | everything                     |
-| `ClientIP(…)`, `HostRegexp(…)`, a typo, `Path()`             | everything                     |
+| `ClientIP(…)`, `HostRegexp(…)`, `Path()`, a typo             | everything                     |
 
-A disjunction is a union of its branches, so one unreadable branch widens
-the whole rule. The last row is the **global tombstone**: it refuses every
-unmatched request in that generation, which disables the fallback until the
-labels are fixed.
+Dropping a conjunct only adds requests, which is why a matcher statute
+cannot read at all — a zero-argument `Path()` — costs no more, standing
+beside a readable conjunct, than one statute reads but cannot represent: a
+rule matches every one of its conjuncts, so any single conjunct already
+covers it. A disjunction is the opposite: it is a union of its branches, so
+one unreadable branch widens the whole rule. The last row is the **global
+tombstone**, reached when nothing in the rule bounds it — it does not
+parse, or every matcher in it widened away. It refuses every unmatched
+request in that generation, which disables the fallback until the labels
+are fixed.
 
 Every tombstone is logged with the traffic it now refuses, and the global
 one says so in as many words. What else the line names is whatever the stage

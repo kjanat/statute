@@ -195,14 +195,21 @@ func TestExtractBackupAndWeight(t *testing.T) {
 }
 
 func TestExtractInvalidBackup(t *testing.T) {
-	// Invalid backup value: warn and treat as false.
+	// Invalid backup value: warn and treat as false. The registration is
+	// still built, so that sentence is the whole consequence.
 	c := webContainer(map[string]string{"statute.enable": "true", "statute.backup": "yep"})
-	svcs, _, warns := Extract(c, ExtractOptions{})
+	svcs, tombs, warns := Extract(c, ExtractOptions{})
 	if len(svcs) != 1 || svcs[0].Backend.Backup {
 		t.Errorf("invalid backup not false: %+v", svcs)
 	}
+	if len(tombs) != 0 {
+		t.Errorf("an unreadable backup value left the refusal %v; it costs the option, not the registration", tombs)
+	}
 	if len(warns) == 0 || !strings.Contains(warns[0], "invalid boolean") {
 		t.Errorf("warns = %v", warns)
+	}
+	if len(warns) == 0 || !strings.Contains(warns[0], "treating as false") {
+		t.Errorf("backup warning does not say the label is treated as false: %v", warns)
 	}
 }
 
@@ -214,15 +221,63 @@ func TestExtractEnableParsing(t *testing.T) {
 			t.Errorf("statute.enable=%q did not register", v)
 		}
 	}
-	// Unparseable enable: false, with a warning.
+}
+
+// assertEnableRejectionWarning holds the enable path's warning to what
+// actually happens. The option path's "treating as false" describes a
+// registration that carries on with the label off; an enable rejection
+// discards the registration and refuses its routes, and the refusal line
+// printed right after would contradict the softer sentence.
+func assertEnableRejectionWarning(t *testing.T, warns []string) {
+	t.Helper()
+	if len(warns) == 0 {
+		t.Fatal("no warning for an unreadable enable label")
+	}
+	w := warns[0]
+	if !strings.Contains(w, "invalid boolean") {
+		t.Errorf("warns = %v", warns)
+	}
+	if strings.Contains(w, "treating as false") {
+		t.Errorf("enable warning claims the label was merely treated as false: %q", w)
+	}
+	if !strings.Contains(w, "not an opt-out") || !strings.Contains(w, "rejected") {
+		t.Errorf("enable warning does not say the registration was rejected: %q", w)
+	}
+}
+
+// TestExtractUnreadableEnableRejects — an unparseable statute.enable is a
+// rejection, not an opt-out: nothing registers, a refusal stands in the way
+// of Config.Fallback, and the warning says so. tombstone_test.go covers
+// what the refusal covers.
+func TestExtractUnreadableEnableRejects(t *testing.T) {
 	c := webContainer(map[string]string{"statute.enable": "banana"})
-	svcs, _, warns := Extract(c, ExtractOptions{})
+	svcs, tombs, warns := Extract(c, ExtractOptions{})
 	if len(svcs) != 0 {
 		t.Errorf("invalid enable registered: %+v", svcs)
 	}
-	if len(warns) == 0 || !strings.Contains(warns[0], "invalid boolean") {
-		t.Errorf("warns = %v", warns)
+	if len(tombs) == 0 {
+		t.Error("an unreadable enable left no refusal; the routes it declared would reach Config.Fallback")
 	}
+	assertEnableRejectionWarning(t, warns)
+}
+
+// TestTraefikUnreadableEnableRejects — the Traefik enable label reaches the
+// same reader, so it owes the same consequence. A split that fixed only the
+// native caller would leave this one lying.
+func TestTraefikUnreadableEnableRejects(t *testing.T) {
+	c := webContainer(map[string]string{
+		"traefik.enable":                       "banana",
+		"traefik.http.routers.app.rule":        "Host(`app.example.com`)",
+		"traefik.http.routers.app.middlewares": "corp-sso",
+	})
+	svcs, tombs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(svcs) != 0 {
+		t.Errorf("invalid traefik.enable registered: %+v", svcs)
+	}
+	if len(tombs) == 0 {
+		t.Error("an unreadable traefik.enable left no refusal")
+	}
+	assertEnableRejectionWarning(t, warns)
 }
 
 func TestExtractSchemeCaseFold(t *testing.T) {

@@ -430,7 +430,10 @@ func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute 
 // the provider's lifetime, which is right for a label typo an operator fixes
 // once and wrong for the fail-closed tier, where a rule that is repaired and
 // later regresses would disable the fallback again in silence. Keying on the
-// previous generation repeats the announcement without logging once per poll.
+// previous generation repeats the announcement without logging once per poll,
+// and makes the clearing edge audible: an operator told the fallback was
+// switched off is also told when it came back, since the repair is as much an
+// operational event as the refusal was.
 func (p *dockerProvider) announceRefusal(env []docker.Matcher) {
 	msg := ""
 	if len(env) > 0 {
@@ -442,7 +445,11 @@ func (p *dockerProvider) announceRefusal(env []docker.Matcher) {
 	p.refusal = msg
 	if msg != "" {
 		log.Printf("statute: docker: %s", msg)
+		return
 	}
+	// Reached only from a non-empty refusal: when the previous generation
+	// also refused nothing, the dedupe above has already returned.
+	log.Printf("statute: docker: generation: refusals cleared, unmatched requests reach the fallback again")
 }
 
 // servicePoolHandler returns the pool handler for the named service,

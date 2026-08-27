@@ -105,9 +105,12 @@ func lexEnvString(s string, i int) (*envToken, int, error) {
 
 // envExpr is a node in the tolerantly parsed rule tree. Its envelope method
 // returns the node's disjunctive normal form, plus a bool reporting that the
-// whole rule collapses to the global envelope. That bool propagates upward,
-// since a subexpression statute cannot bound leaves no narrower superset of
-// the rule.
+// node is the top envelope — every request — rather than a set the normal
+// form can carry. The flag names a set, not a derivation failure, and the
+// two operators read it differently: a union with top is top, so it
+// propagates through envOrExpr, while a meet is a subset of each operand,
+// so envAndExpr keeps the bounded operand and only reports top when both
+// operands are top.
 type envExpr interface {
 	envelope() ([]conj, bool)
 }
@@ -147,11 +150,24 @@ func (e envOrExpr) envelope() ([]conj, bool) {
 	return out, false
 }
 
+// envelope intersects the two operands. A top operand is not a reason to
+// widen the meet: [[A && B]] is contained in [[B]], so when only one side
+// is top the other side alone is already a sound superset, and collapsing
+// there would refuse every unmatched request in the generation — disabling
+// Config.Fallback outright — on the strength of one unreadable conjunct.
+// The narrowing does not depend on why the flag was raised. Both sources,
+// a zero-argument matcher and the working-set cap below, mean the same
+// thing: that side bounds nothing.
 func (e envAndExpr) envelope() ([]conj, bool) {
 	ls, lg := e.left.envelope()
 	rs, rg := e.right.envelope()
-	if lg || rg {
+	switch {
+	case lg && rg:
 		return nil, true
+	case lg:
+		return rs, false
+	case rg:
+		return ls, false
 	}
 	if len(ls)*len(rs) > envWorkingCap {
 		ls, rs = coarsenConjs(ls), coarsenConjs(rs)
@@ -213,6 +229,10 @@ func conjPathLE(a, b conj) bool {
 // and reduces to the top envelope. Names are never special-cased and a
 // literal is never mined out of a regexp: statute has no wildcard-host
 // matcher, and alternation defeats prefix mining even in principle.
+//
+// A zero-argument call is a matcher statute cannot read at all, so it
+// reports top through the flag. As the whole rule that is the global
+// tombstone; beside a bounded conjunct the meet keeps the conjunct.
 func (e envFnExpr) envelope() ([]conj, bool) {
 	if len(e.args) == 0 {
 		return nil, true

@@ -615,9 +615,9 @@ func TestFallbackDrainsThroughShutdown(t *testing.T) {
 
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- srv.Shutdown() }()
-	// Load-bearing: without it the fallback can finish before the drain
-	// starts, and a pass proves nothing.
-	time.Sleep(100 * time.Millisecond)
+	// Load-bearing: released before the drain begins, the response proves
+	// nothing. Shutdown drops ready first, so that flag is the drain's onset.
+	waitReadyFalse(t, srv, shutdownDone)
 	close(release)
 
 	res := <-got
