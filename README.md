@@ -521,7 +521,7 @@ go vet  ./...  # vet
 make lint      # built-in + statute-specific linters
 ```
 
-The race detector (`go test -race`) does not work on Raspberry Pi / older 64-bit Arm kernels with VMA range < 48; this is a TSAN limitation, not a code issue.
+The race detector (`go test -race`) does not work on Raspberry Pi / older 64-bit Arm kernels with VMA range < 48; this is a TSAN limitation, not a code issue. `make test-race` probes for it and skips with a note instead of failing, so the target is safe to run anywhere; CI runs the detector on x86. A probe failure that is not ThreadSanitizer still fails the target.
 
 ## License
 

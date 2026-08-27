@@ -29,8 +29,28 @@ all: lint test cover build-examples ## Run lint, test, coverage, build examples
 test: ## Run all unit tests
 	$(GO) test ./...
 
-test-race: ## Run tests with the race detector (x86 only; Pi cannot run -race)
-	$(GO) test -race ./...
+# ThreadSanitizer, which backs -race, needs a 48-bit virtual address
+# space. Raspberry Pi OS and other 64-bit Arm kernels ship a 47-bit VMA,
+# where every -race binary aborts at startup with "unsupported VMA
+# range" before running a single test. That is the kernel's limit, not
+# the board's and not this code's, so the gate is a capability probe
+# rather than a uname check: an Arm kernel built with 48 bits runs the
+# detector fine and must not be skipped, and an x86 host that somehow
+# cannot is caught too. The probe builds one small race binary — cached
+# after the first run — and matches no test, so it exits immediately.
+test-race: ## Run tests with the race detector, skipped where TSAN cannot start
+	@if probe="$$($(GO) test -race -run '^$$' -count=1 ./internal/parse 2>&1)"; then \
+		echo "$(GO) test -race ./..."; \
+		$(GO) test -race ./...; \
+	elif printf '%s' "$$probe" | grep -q ThreadSanitizer; then \
+		echo "test-race: skipped, this kernel cannot start ThreadSanitizer binaries."; \
+		echo "           64-bit Arm with a 47-bit VMA does this; CI runs the"; \
+		echo "           detector on x86, so the tier is not lost."; \
+	else \
+		printf '%s\n' "$$probe" >&2; \
+		echo "test-race: the probe failed for a reason other than ThreadSanitizer" >&2; \
+		exit 1; \
+	fi
 
 # golangci-lint applies the configured formatters through `fmt`, not `run`,
 # so an unformatted tree passes `run`. Both gates run: gofmt for the printer
