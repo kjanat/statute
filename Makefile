@@ -29,15 +29,7 @@ all: lint test cover build-examples ## Run lint, test, coverage, build examples
 test: ## Run all unit tests
 	$(GO) test ./...
 
-# ThreadSanitizer, which backs -race, needs a 48-bit virtual address
-# space. Raspberry Pi OS and other 64-bit Arm kernels ship a 47-bit VMA,
-# where every -race binary aborts at startup with "unsupported VMA
-# range" before running a single test. That is the kernel's limit, not
-# the board's and not this code's, so the gate is a capability probe
-# rather than a uname check: an Arm kernel built with 48 bits runs the
-# detector fine and must not be skipped, and an x86 host that somehow
-# cannot is caught too. The probe builds one small race binary — cached
-# after the first run — and matches no test, so it exits immediately.
+# No `-race` on 64-bit arm
 test-race: ## Run tests with the race detector, skipped where TSAN cannot start
 	@if probe="$$($(GO) test -race -run '^$$' -count=1 ./internal/parse 2>&1)"; then \
 		echo "$(GO) test -race ./..."; \
