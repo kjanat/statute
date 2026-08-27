@@ -1,6 +1,7 @@
 package statute
 
 import (
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -389,5 +390,148 @@ func assertTLS004(t *testing.T, findings []Finding, wantPath string, wantALPN bo
 	}
 	if got := strings.Contains(f.Message, "TLS-ALPN-01"); got != wantALPN {
 		t.Errorf("ALPN mention: got %v, want %v: %s", got, wantALPN, f.Message)
+	}
+}
+
+// TestLint_FB001CatchAllShadowsFallback — a hostless catch-all is declared
+// before the tiers it hides, so the rule fires once per such route and
+// names it by index. The constrained routes in the same config are
+// reachable-after shapes and must stay silent.
+func TestLint_FB001CatchAllShadowsFallback(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":80")},
+		Upstreams: Upstreams{
+			"api": Pool{Backends: []Backend{{Address: "10.0.0.1:8080"}, {Address: "10.0.0.2:8080"}}},
+		},
+		Routes: Routes{
+			Match("/*").Host("api.example.com").ProxyTo("api"), // host-scoped: no finding
+			Match("/api/*").ProxyTo("api"),                     // prefix-scoped: no finding
+			Match("/*").ClientIPs("10.0.0.0/8").ProxyTo("api"), // client-scoped: no finding
+			Match("/*").ProxyTo("api"),                         // the trap
+			Match("/*").ProxyTo("api"),                         // and again: every one is reported, not just the first
+		},
+		Docker:   Docker().TraefikLabels(),
+		Fallback: http.NotFoundHandler(),
+		Defaults: Defaults{ReadHeaderTimeout: "5s"},
+		Shutdown: Shutdown{GracePeriod: "30s"},
+	}
+	findings, err := Lint(cfg)
+	if err != nil {
+		t.Fatalf("Lint: %v", err)
+	}
+	var got []Finding
+	for _, f := range findings {
+		if f.Code == "FB001" {
+			got = append(got, f)
+		}
+	}
+	// Every catch-all is reported, not only the first: each one is a
+	// separate declaration an operator has to fix.
+	if len(got) != 2 {
+		t.Fatalf("FB001 fired %d times, want once per catch-all route: %v", len(got), got)
+	}
+	for i, wantPath := range []string{"routes[3]", "routes[4]"} {
+		if got[i].Path != wantPath {
+			t.Errorf("FB001[%d] path: got %q, want %q", i, got[i].Path, wantPath)
+		}
+	}
+	if got[0].Severity != SeverityWarning {
+		t.Errorf("FB001 severity: got %q, want %q", got[0].Severity, SeverityWarning)
+	}
+	for _, want := range []string{"Docker-discovered route", "refusals standing in for the routers", "fallback"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Errorf("FB001 message %q does not name the shadowed tier %q", got[0].Message, want)
+		}
+	}
+}
+
+// TestLint_FB001SilentWithoutShadowedTiers — with neither Docker nor a
+// fallback configured, the only thing a catch-all hides is the terminal
+// 404, which is not a finding. The rule must not warn about every
+// single-route config in the wild.
+func TestLint_FB001SilentWithoutShadowedTiers(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":80")},
+		Upstreams: Upstreams{
+			"api": Pool{Backends: []Backend{{Address: "10.0.0.1:8080"}, {Address: "10.0.0.2:8080"}}},
+		},
+		Routes:   Routes{Match("/*").ProxyTo("api")},
+		Defaults: Defaults{ReadHeaderTimeout: "5s"},
+		Shutdown: Shutdown{GracePeriod: "30s"},
+	}
+	findings, err := Lint(cfg)
+	if err != nil {
+		t.Fatalf("Lint: %v", err)
+	}
+	if slices.Contains(findingCodes(findings), "FB001") {
+		t.Errorf("FB001 fired with no Docker and no fallback: %v", findings)
+	}
+}
+
+// TestLint_FB001EachShadowedTierAlone — Docker without a fallback and a
+// fallback without Docker each lose something to the catch-all, so both
+// fire, and the "can never be reached" clause claims only the tier that
+// config actually has. The dispatch order in the message's preamble names
+// both tiers either way; that sentence describes the router, not the
+// finding.
+func TestLint_FB001EachShadowedTierAlone(t *testing.T) {
+	t.Parallel()
+	base := func() Config {
+		return Config{
+			Listeners: Listeners{HTTP(":80")},
+			Upstreams: Upstreams{
+				"api": Pool{Backends: []Backend{{Address: "10.0.0.1:8080"}, {Address: "10.0.0.2:8080"}}},
+			},
+			Routes:   Routes{Match("/*").ProxyTo("api")},
+			Defaults: Defaults{ReadHeaderTimeout: "5s"},
+			Shutdown: Shutdown{GracePeriod: "30s"},
+		}
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wants   string
+		unwants string
+	}{
+		{
+			name:    "docker only",
+			mutate:  func(c *Config) { c.Docker = Docker().TraefikLabels() },
+			wants:   "every Docker-discovered route, and the refusals standing in for the routers statute had to drop can never be reached",
+			unwants: "the fallback can never be reached",
+		},
+		{
+			name:    "fallback only",
+			mutate:  func(c *Config) { c.Fallback = http.NotFoundHandler() },
+			wants:   "the fallback can never be reached",
+			unwants: "Docker-discovered route can never be reached",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			tc.mutate(&cfg)
+			findings, err := Lint(cfg)
+			if err != nil {
+				t.Fatalf("Lint: %v", err)
+			}
+			var msg string
+			for _, f := range findings {
+				if f.Code == "FB001" {
+					msg = f.Message
+				}
+			}
+			if msg == "" {
+				t.Fatalf("FB001 did not fire: %v", findings)
+			}
+			if !strings.Contains(msg, tc.wants) {
+				t.Errorf("FB001 message %q does not contain %q", msg, tc.wants)
+			}
+			if strings.Contains(msg, tc.unwants) {
+				t.Errorf("FB001 message %q claims %q, which this config does not configure", msg, tc.unwants)
+			}
+		})
 	}
 }

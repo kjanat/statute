@@ -74,6 +74,7 @@ var lintRules = []func(*resolved.Config) []Finding{
 	ruleDuplicateACMEOrders,
 	ruleRSAOnlySuitesWithAutocert,
 	ruleACMEDirectory,
+	ruleCatchAllShadowsFallback,
 }
 
 func ruleReadHeaderTimeout(c *resolved.Config) []Finding {
@@ -381,4 +382,68 @@ func ruleACMEDirectory(c *resolved.Config) []Finding {
 		}
 	}
 	return out
+}
+
+// catchAllPattern is the only pattern matchPattern accepts for every path:
+// a trailing wildcard whose prefix is empty. "/x/*" bounds its traffic to a
+// prefix; this one bounds nothing.
+const catchAllPattern = "/*"
+
+// ruleCatchAllShadowsFallback reports a static route that matches every
+// request — no host, the catch-all pattern, no client constraint — declared
+// in a config that also configures Docker discovery or a fallback. Static
+// routes are consulted before the Docker generation, before that
+// generation's tombstones, and before Config.Fallback, so such a route
+// answers first for every request and nothing behind it is ever reached.
+//
+// It stays a warning rather than an error because the route is legal and
+// still serves: what a declaration cannot distinguish is a deliberate
+// single-route deployment from an operator who expected the tiers behind it
+// to keep working. Nothing fires without Docker or a fallback — with
+// neither, the only thing a catch-all shadows is the terminal 404.
+func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
+	shadowed := shadowedTiers(c)
+	if shadowed == "" {
+		return nil
+	}
+	var out []Finding
+	for i, route := range c.Routes {
+		if route.Host != "" || route.Pattern != catchAllPattern || len(route.ClientIPCIDRs) > 0 {
+			continue
+		}
+		out = append(out, Finding{
+			Severity: SeverityWarning,
+			Code:     "FB001",
+			Message: fmt.Sprintf(
+				"Route matches every request (no host, %q, no ClientIPs) and static routes are consulted before every tier behind them, so %s can never be reached. Give it a host, a narrower pattern, or a ClientIPs constraint — or move its handler into Config.Fallback, which is the tier meant for unmatched requests.",
+				catchAllPattern, shadowed,
+			),
+			Path: fmt.Sprintf("routes[%d]", i),
+		})
+	}
+	return out
+}
+
+// shadowedTiers names the dispatch tiers a hostless catch-all would hide,
+// or "" when the config declares neither, in which case there is nothing
+// behind the route to lose. The tiers are named rather than assumed, so the
+// finding never cites Docker to a config that has none.
+//
+// With Docker configured the generation's tombstones are shadowed too, and
+// that is the consequence worth spelling out: a router whose auth chain
+// statute could not supply is refused by a tombstone, and a catch-all ahead
+// of it does not merely hide the refusal, it serves the request the
+// refusal existed to stop.
+func shadowedTiers(c *resolved.Config) string {
+	const dockerTiers = "every Docker-discovered route, and the refusals standing in for the routers statute had to drop"
+	switch {
+	case c.Docker != nil && c.HasFallback:
+		return dockerTiers + ", and the fallback"
+	case c.Docker != nil:
+		return dockerTiers
+	case c.HasFallback:
+		return "the fallback"
+	default:
+		return ""
+	}
 }

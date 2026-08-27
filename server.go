@@ -843,6 +843,21 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 	return nil
 }
 
+// tombstoneHandler is the one fixed refusal every tombstone serves: the
+// same 404 a dropped router produced before Config.Fallback existed. It
+// does not vary with the rule that produced it, and no other status is
+// invented, so a deployment without a fallback sees no change at all.
+var tombstoneHandler http.Handler = http.NotFoundHandler()
+
+// tombstoneHost normalizes a request host for the tombstone tier. The
+// routed tiers compare with EqualFold alone, which leaves the trailing FQDN
+// dot Traefik's own host matcher strips; without this a request to
+// "admin.example.com." would slip past an admin.example.com tombstone and
+// reach the fallback.
+func tombstoneHost(host string) string {
+	return strings.TrimSuffix(host, ".")
+}
+
 // fallbackHandler returns the router's terminal stage: the configured
 // fallback handler, or net/http's 404 when none is configured.
 func (s *server) fallbackHandler() http.Handler {
@@ -854,7 +869,14 @@ func (s *server) fallbackHandler() http.Handler {
 
 // buildRouter returns an http.Handler that dispatches to the matching
 // static route in declaration order, then to the docker provider's dynamic
-// routes when one is configured, then to the fallback handler.
+// routes when one is configured, then to that generation's tombstones, then
+// to the fallback handler.
+//
+// INVARIANT: the tombstone tier sits between discovered routes and the
+// fallback because a Docker registration whose routes were discarded must
+// not reach operator code that no longer knows it asked for a policy
+// statute could not supply. Its envelopes cover every request such a router
+// would have matched, so the refusal is never narrower than the drop.
 func (s *server) buildRouter() http.Handler {
 	static := make([]compiledRoute, 0, len(s.cfg.Routes))
 	for _, r := range s.cfg.Routes {
@@ -888,6 +910,10 @@ func (s *server) buildRouter() http.Handler {
 		}
 		if t := s.dynamic.Load(); t != nil {
 			if h := findHandler(t.routes, host, req); h != nil {
+				h.ServeHTTP(w, req)
+				return
+			}
+			if h := findHandler(t.tombstones, tombstoneHost(host), req); h != nil {
 				h.ServeHTTP(w, req)
 				return
 			}

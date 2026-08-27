@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -512,12 +514,16 @@ func TestGraphDOT_Fallback(t *testing.T) {
 	}
 }
 
-// TestFallbackAfterFailClosedDockerRoute — a router whose label references
-// an unregistered middleware drops its routes, so those requests reach the
-// fallback. That is not a policy bypass: the service keeps no pool and no
-// route, so the protected backend stays unreachable; only the response to a
-// request for it changes from the terminal 404 to the operator's handler.
-func TestFallbackAfterFailClosedDockerRoute(t *testing.T) {
+// TestFallbackNotReachedByFailClosedDockerRoute — a router whose label
+// references an unregistered middleware drops its routes, and those requests
+// must not reach the fallback. An earlier revision of this test asserted the
+// opposite, on the reasoning that the protected backend stays unreachable
+// either way; what it missed is that the operator's fallback is typically a
+// catch-all proxy to the very same container, so handing it the traffic the
+// router asked to protect serves it unauthenticated. The generation's
+// tombstone answers instead, with the 404 the drop produced before Fallback
+// existed. TestDockerTombstoneEnvelopes covers the envelope shapes.
+func TestFallbackNotReachedByFailClosedDockerRoute(t *testing.T) {
 	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
 		name: "app-1", ip: "10.0.0.9", port: 3000,
 		labels: map[string]string{
@@ -537,8 +543,99 @@ func TestFallbackAfterFailClosedDockerRoute(t *testing.T) {
 	if len(tab.routes) != 0 || len(tab.pools) != 0 {
 		t.Fatalf("fail-closed router kept state: routes=%+v pools=%+v", tab.routes, tab.pools)
 	}
+	if len(tab.tombstones) != 1 {
+		t.Fatalf("fail-closed router left %d tombstones, want 1", len(tab.tombstones))
+	}
 	rec := runRequest(t, srv.buildRouter(), httptest.NewRequest("GET", "http://app.example.com/", nil))
-	if rec.Code != http.StatusTeapot || calls.Load() != 1 {
-		t.Errorf("dropped route: code=%d calls=%d, want 418 from the fallback", rec.Code, calls.Load())
+	if rec.Code != http.StatusNotFound || calls.Load() != 0 {
+		t.Errorf("dropped route: code=%d calls=%d, want a 404 refusal with the fallback untouched", rec.Code, calls.Load())
+	}
+}
+
+// fallbackDrainBody is long enough that a truncated write is visible in the
+// comparison rather than passing as an empty-but-successful response.
+const fallbackDrainBody = "fallback finished after shutdown began"
+
+// TestFallbackDrainsThroughShutdown — the Config.Fallback godoc promises
+// requests in the fallback drain through normal graceful shutdown. The
+// fallback is not a route, so the route drain test does not cover it: it
+// hangs off the router's terminal stage, reached only after both tables and
+// the tombstones miss, and it is the configured handler rather than one
+// statute compiled. The request parks inside it, Shutdown starts draining,
+// and the response must still arrive whole inside the grace period.
+func TestFallbackDrainsThroughShutdown(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Routes: Routes{
+			// A route that does not match, so the request provably
+			// arrives through the terminal stage and not this handler.
+			Match("/known").Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})),
+		},
+		Fallback: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(entered)
+			<-release
+			w.WriteHeader(http.StatusTeapot)
+			_, _ = io.WriteString(w, fallbackDrainBody)
+		}),
+		Defaults: Defaults{ReadHeaderTimeout: "1s"},
+		Shutdown: Shutdown{GracePeriod: "5s"},
+	})
+	addr := reserveAddr(t)
+	r.Listeners[0].Addr = addr
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForListen(t, addr)
+
+	type result struct {
+		status int
+		body   string
+		err    error
+	}
+	got := make(chan result, 1)
+	go func() {
+		resp, err := http.Get("http://" + addr + "/unmatched")
+		if err != nil {
+			got <- result{err: err}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		got <- result{status: resp.StatusCode, body: string(body), err: err}
+	}()
+	<-entered
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- srv.Shutdown() }()
+	// Load-bearing: without it the fallback can finish before the drain
+	// starts, and a pass proves nothing.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+
+	res := <-got
+	if res.err != nil {
+		t.Fatalf("in-flight fallback request failed across Shutdown: %v", res.err)
+	}
+	if res.status != http.StatusTeapot {
+		t.Errorf("in-flight fallback status: got %d, want %d", res.status, http.StatusTeapot)
+	}
+	if res.body != fallbackDrainBody {
+		t.Errorf("in-flight fallback body: got %q, want %q", res.body, fallbackDrainBody)
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return after the fallback drained")
 	}
 }

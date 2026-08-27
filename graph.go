@@ -27,7 +27,8 @@ import (
 //   - Listener → Route for the matching relation (every content listener
 //     reaches every route; the host filter is on the route node).
 //   - Listener → Fallback, dashed, from the same content listeners: the
-//     terminal stage they reach when no route matches.
+//     terminal stage they reach when no route and no Docker tombstone
+//     matches.
 //   - Route → Pool for ProxyTo.
 //   - Pool → Backend for membership; weighted edges show Weight.
 //
@@ -114,7 +115,10 @@ func graphRoutes(d *dotWriter, r *resolved.Config) {
 }
 
 // graphFallback renders the terminal fallback stage, reached from the same
-// content listeners the routes are, and from no redirect-only listener.
+// content listeners the routes are, and from no redirect-only listener. It
+// is reached only when no route and no tombstone of the current Docker
+// generation matched; neither the generation's routes nor its tombstones
+// are in the resolved model, so neither is in the graph.
 func graphFallback(d *dotWriter, r *resolved.Config) {
 	if !r.HasFallback {
 		return

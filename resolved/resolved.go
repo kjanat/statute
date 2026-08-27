@@ -24,8 +24,10 @@ type Config struct {
 	Docker    *Docker // nil unless Docker label discovery is enabled
 
 	// Fallback is the handler the router serves when neither a static
-	// route nor the current Docker generation matched; nil leaves the
-	// terminal 404 in place. Like Route.Handler it is an opaque immutable
+	// route, the current Docker generation, nor that generation's refusal
+	// envelopes matched; nil leaves the terminal 404 in place. A Docker
+	// router whose routes were dropped is refused by an envelope and never
+	// reaches this handler. Like Route.Handler it is an opaque immutable
 	// reference carried through from the surface config, not mutable
 	// runtime state, and it cannot serialize — the HasFallback marker
 	// stands in for it in the JSON export.
@@ -41,8 +43,12 @@ type Config struct {
 }
 
 // Docker is the resolved Docker label-discovery provider configuration.
-// The provider's output (label-derived routes and pools) is runtime state,
-// not part of the resolved schema; only the discovery settings are.
+// The provider's output (label-derived routes and pools, and the refusal
+// tombstones standing in for the registrations it had to drop) is runtime
+// state, not part of the resolved schema; only the discovery settings are.
+// The tombstones are runtime state for the same reason the routes are:
+// they belong to one generation, are replaced with it, and describe
+// containers rather than configuration.
 type Docker struct {
 	Endpoint         string
 	Network          string
