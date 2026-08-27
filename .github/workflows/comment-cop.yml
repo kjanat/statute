@@ -6,11 +6,8 @@
 ---
 name: Comment Cop
 
-# Flags paragraph-length implementation comments added to Go source.
-#
-# Go declaration documentation is intentionally ignored. Long implementation
-# comments are allowed when they document an actual SAFETY:, INVARIANT:,
-# PROTOCOL:, or COMPAT: constraint.
+# Two rules over the comments and Markdown a pull request adds: ordinary
+# comments of three or more lines, and style tells at any length.
 #
 # Runs entirely against the GitHub API; the diff is read through the API, not
 # from a working tree. pull_request_target is safe here because the checkout
