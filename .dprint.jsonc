@@ -5,7 +5,8 @@
   "exec": {
     "cwd": "${configDir}",
     "commands": [
-      { "command": "go tool goimports -local statute.kjanat.dev", "exts": ["go"], "cacheKeyFiles": ["go.mod"] }
+      { "command": "go tool goimports -local statute.kjanat.dev", "exts": ["go"], "cacheKeyFiles": ["go.mod"] },
+      { "command": "gofmt -s", "exts": ["go"], "cacheKeyFiles": ["go.mod"] }
     ],
   },
   "gofumpt": {

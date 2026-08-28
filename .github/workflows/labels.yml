@@ -1,5 +1,8 @@
 name: Sync Labels
-on: { push: { branches: [master], paths: [".github/**/labels.yml"] }, workflow_dispatch: null }
+on:
+  push: { branches: [master], paths: [".github/**/labels.yml"] }
+  pull_request: { branches: [master], paths: [".github/**/labels.yml"] }
+  workflow_dispatch: null
 permissions: { contents: read, issues: write }
 jobs:
   sync:

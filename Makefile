@@ -56,6 +56,7 @@ fmt-check: ## Fail if any tracked Go file is not formatted
 	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r $(GO) tool goimports -local statute.kjanat.dev -l --)"; then \
 		echo "fmt-check: goimports failed" >&2; exit 1; fi; \
 	if [ -n "$$drift" ]; then echo "goimports drift:"; echo "$$drift"; exit 1; fi
+	dprint check
 
 lint: fmt-check ## Check formatting, build the custom golangci-lint, run all linters
 	$(GOLANGCI_LINT) custom

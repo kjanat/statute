@@ -34,6 +34,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3.0.15
+        with: { install-only: true }
       # golangci-lint-action runs `run`, which never applies the configured
       # formatters. `make fmt-check` and dprint use the same pinned goimports
       # tool, while this explicit step also checks every tracked Go file.

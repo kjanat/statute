@@ -43,6 +43,9 @@ labels:
   - name: github-actions
     description: GitHub Actions workflow updates
     color: 2088FF
+  - name: "area: tooling"
+    description: Developer tooling, formatting, linting, and repository automation
+    color: C2E0C6
   - name: "area: middleware"
     description: Request and response middleware
     color: "5319E7"
