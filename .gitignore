@@ -1,8 +1,10 @@
+/.worktrees/
 /basic
-/dist
-/fuzz-matrix.json
-/node_modules
 /cover.out
 /custom-gcl
-/.worktrees/
+/dist
+/docs/reports/
+/fuzz-matrix.json
+/node_modules
+/wiki
 e2e/artifacts/

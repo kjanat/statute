@@ -156,7 +156,7 @@ OTLP/gRPC export to an OpenTelemetry collector. Spans use HTTP semantic conventi
 
 For a single proxied request you'll see:
 
-```
+```text
 statute.request                          [server span, root or child of incoming traceparent]
 └── HTTP GET                             [client span, the proxy call to the backend]
     └── (backend's spans, if instrumented)

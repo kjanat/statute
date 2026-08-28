@@ -177,7 +177,7 @@ The zone ID is shown on the zone overview page in the Cloudflare dashboard.
 
 Each pinned source persists state under `<storage>/<challenge>/` — `dns01/` for `CloudflareDNS01()`, `http01/` for `.HTTP01()`:
 
-```
+```text
 <storage>/
 ├── dns01/
 │   ├── account.key        # ACME account private key (ECDSA P-256, PEM)

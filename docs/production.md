@@ -71,7 +71,7 @@ Don't. There is no good reason. The proxy handles untrusted input from the netwo
 
 AutoTLS (every challenge policy) requires persistent storage for the ACME account key, issued certs, and renewal state. The directory layout depends on the policy each source declares:
 
-```
+```text
 <storage>/
 ├── acme_account+key            # autocert account state (automatic policy)
 ├── example.com                 # autocert cert files (automatic policy)

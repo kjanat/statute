@@ -1,0 +1,2 @@
+[bootstrap.repos]
+wiki = { url = "https://github.com/kjanat/statute.wiki.git" }
