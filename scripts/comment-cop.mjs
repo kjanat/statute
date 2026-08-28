@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
-// Comment Cop: flags paragraph-length implementation comments added to Go
-// source in a pull request, and resolves its own stale review threads.
+// Comment Cop: flags prose a pull request adds to comments and Markdown,
+// and resolves its own stale review threads.
 //
 // Three entry points, one scanner:
 //
@@ -10,7 +10,7 @@
 //   - Working tree (the default): `node scripts/comment-cop.mjs`, or
 //     `make comment-cop`, or `... <base-ref>` to compare against something
 //     other than the merge base with master. Scans the local diff,
-//     uncommitted and untracked Go files included. No token, no network;
+//     uncommitted and untracked files included. No token, no network;
 //     exits 1 on any finding, so it gates a push before the PR exists.
 //   - A pull request: `node scripts/comment-cop.mjs kjanat/statute 72`
 //     Requires Node >= 24.2 (for `import.meta.main`) or Bun, and a
@@ -32,6 +32,7 @@ import { createHash } from 'node:crypto';
  * @property {number} start
  * @property {number} end
  * @property {string} text
+ * @property {string[]} reasons
  */
 
 /**
@@ -39,8 +40,18 @@ import { createHash } from 'node:crypto';
  * @typedef {object} PendingGroup
  * @property {number} start
  * @property {number} end
- * @property {number} indent
+ * @property {Lang} lang
+ * @property {boolean} topLevel
+ * @property {boolean} doc
+ * @property {boolean} maybeDoc
  * @property {string[]} lines
+ */
+
+/**
+ * How a file carries prose. `go` and `js` both use slash comments but only
+ * Go has a doc-comment contract; `hash` covers YAML, shell, and friends;
+ * `md` has no comment wrapper at all, the paragraph is the block.
+ * @typedef {'go' | 'js' | 'hash' | 'md'} Lang
  */
 
 /**
@@ -68,20 +79,92 @@ import { createHash } from 'node:crypto';
 
 /* -------------------------------------------------------------- heuristics */
 
-const GO_FILE = /\.go$/;
+// Prose lives in comments and in Markdown alike. Formats with no comment
+// syntax, machine-owned files, key material and path lists are skipped.
+/** @type {Array<[RegExp, Lang]>} */
+const LANGS = [
+	[/\.go$/, 'go'],
+	[/\.(?:mjs|cjs|js|ts|jsonc)$/, 'js'],
+	[/\.(?:ya?ml|py|sh|bash|toml)$/, 'hash'],
+	[/(?:^|\/)(?:Makefile|Dockerfile)(?:\.[\w.-]+)?$/, 'hash'],
+	[/\.md$/, 'md'],
+];
+
+/**
+ * How this path carries prose, or null when it carries none.
+ * @param {string} path
+ * @returns {Lang | null}
+ */
+function langFor(path) {
+	for (const [pattern, lang] of LANGS) {
+		if (pattern.test(path)) return lang;
+	}
+	return null;
+}
+
+// Length measures ordinary comments only. Doc comments are read without the
+// code at hand, where line count says nothing about quality.
 const MIN_LINES = 3;
 
-// These are deliberate escape hatches for comments whose length
-// exists because the constraint itself matters, rather than
-// because the implementation needs narrating.
-const ALLOWED_MARKER = /\b(?:SAFETY|INVARIANT|PROTOCOL|COMPAT):/;
+// go.dev/doc/comment: a doc comment appears immediately before a top-level
+// package, const, func, type, or var declaration, with no blank line between.
+const TOP_LEVEL_DECL = /^(?:package|const|func|type|var)\b/;
+
+// Matched against the block's joined text, so a wrapped construction still
+// reads as one sentence. These apply at any length and any position.
+/** @type {Array<[string, RegExp]>} */
+const TELLS = [
+	['em dash', /[—–]/],
+	['"X, not Y"', /,[\s]+not\s+\S/],
+	['"X rather than Y"', /\brather than\b/i],
+	['"X instead of Y"', /\b(?:instead of|as opposed to)\b/i],
+	['"not just X but Y"', /\bnot (?:just|merely|only|because)\b[^.]{0,80}?\bbut\b/i],
+	[
+		'emphatic cleft',
+		/\b(?:which|that) is (?:what|why|how)\b|\bexactly (?:what|why|how|the)\b/i,
+	],
+	[
+		'filler phrase',
+		/\b(?:in other words|it(?:'s| is) (?:worth noting|important to note)|that said|under the hood|at its core|(?:simply put|put simply)|in short|in essence|bottom line|needless to say|when it comes to|at the end of the day|think of (?:it|this) as|no more,? no less|(?:that|which) is to say|here(?:'s| is) (?:why|the thing)|the (?:whole|entire) point|the key (?:insight|takeaway))\b/i,
+	],
+	[
+		'inflated diction',
+		/\b(?:leverag(?:e|es|ing)|utiliz(?:e|es|ing)|seamless(?:ly)?|delv(?:e|es|ing)|myriad|plethora|robust|comprehensive(?:ly)?|crucial(?:ly)?|vital(?:ly)?|elegant(?:ly)?|powerful(?:ly)?|intuitive(?:ly)?|nuanced|holistic|granular|meticulous|facilitat(?:e|es|ing)|streamlin(?:e|es|ing)|empower(?:s|ing)?|cutting[-\s]edge|state[-\s]of[-\s]the[-\s]art|arguably|essentially|fundamentally|a wealth of)\b/i,
+	],
+	[
+		'connective glue',
+		/\b(?:moreover|furthermore|conversely|as such|it turns out|notably|importantly)\b/i,
+	],
+	[
+		'counterfactual justification',
+		/\bso\b[^.]{0,60}\b(?:cannot|can't|could not|never|would)\b|\bwithout\b[^.]{0,70}\bwould\b|\bwould otherwise\b|\botherwise\b[^.]{0,70}\bwould\b|\bso that\b|\b(?:which|that) (?:prevents|keeps|stops)\b/i,
+	],
+	// Not typed by hand. These arrive by paste.
+	['paste artifact', /[“”‘’]|[\u00A0\u00AD\u200B-\u200D\uFEFF]/],
+];
+
+// A comment about the character has to be able to print it.
+const DASH_AS_SUBJECT = /[`'"][—–][`'"]|\b(?:em|en)[-\s]dash|U\+201[34]/i;
+
+const FENCE = /^\s*(?:```|~~~)/;
+
+// A list, heading or table row is its own block. Markdown puts no blank line
+// between items, and a whole list reported as one finding is unreadable.
+const MD_ITEM = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\||>\s)/;
+
+const JSDOC_TAG = /^\s*\*\s*@\w+/;
 
 /**
  * @param {string} line
+ * @param {Lang} lang
  * @returns {boolean}
  */
-function isCommentLine(line) {
+function isCommentLine(line, lang) {
 	const t = line.trimStart();
+
+	if (lang === 'hash') {
+		return t.startsWith('#') && !t.startsWith('#!');
+	}
 
 	if (t.startsWith('//')) return true;
 	if (t.startsWith('/*')) return true;
@@ -91,11 +174,22 @@ function isCommentLine(line) {
 }
 
 /**
- * @param {string} line
- * @returns {number}
+ * Whether this block is documentation the language's own tooling reads: a Go
+ * doc comment, or a JSDoc block. Both are written for someone without the
+ * code in front of them, so neither is measured by length.
+ * @param {PendingGroup} cur
+ * @param {string} nextLine
+ * @returns {boolean}
  */
-function indentation(line) {
-	return line.match(/^[\t ]*/)?.[0].length ?? 0;
+function isDocBlock(cur, nextLine) {
+	if (cur.doc) return true;
+
+	// A `*` fragment is either JSDoc past its `/**` or an ordinary block
+	// comment past its `/*`. A tag tells the two apart.
+	if (cur.maybeDoc && cur.lines.some(line => JSDOC_TAG.test(line))) return true;
+
+	// TOP_LEVEL_DECL matches JavaScript's const and var too, hence the guard.
+	return cur.lang === 'go' && cur.topLevel && TOP_LEVEL_DECL.test(nextLine);
 }
 
 /**
@@ -107,43 +201,41 @@ function stripCommentPrefix(line) {
 		.trimStart()
 		.replace(/^\/\/\s?/, '')
 		.replace(/^\/\*\s?/, '')
+		.replace(/^#\s?/, '')
 		.replace(/^\*\s?/, '')
 		.trim();
 }
 
-// Go requires / encourages declaration comments. Those are not
-// what this workflow is policing.
-//
-// Top-level comment groups are treated as declaration/package
-// documentation. Indented docs for exported fields, methods,
-// constants, etc. are recognized by the conventional:
-//
-//   // Foo ...
-//   Foo ...
-//
-// shape.
 /**
+ * Every reason this block is flagged, in reporting order.
  * @param {PendingGroup} cur
  * @param {string} nextLine
- * @returns {boolean}
+ * @returns {string[]}
  */
-function looksLikeGoDoc(cur, nextLine) {
-	if (cur.indent === 0) return true;
-	if (!nextLine) return false;
+function reasonsFor(cur, nextLine) {
+	const reasons = [];
 
-	const first = stripCommentPrefix(cur.lines[0]);
-	const next = nextLine.trim();
+	// Length measures a comment against the code beside it. A Markdown
+	// paragraph has no code beside it, so there is nothing to measure.
+	if (
+		cur.lang !== 'md'
+		&& cur.lines.length >= MIN_LINES
+		&& !isDocBlock(cur, nextLine)
+	) {
+		reasons.push(`${cur.lines.length} lines`);
+	}
 
-	const declaration = /^([A-Z][A-Za-z0-9_]*)\b/.exec(next);
-	if (!declaration) return false;
+	const text = cur.lang === 'md'
+		? cur.lines.join(' ')
+		: cur.lines.map(stripCommentPrefix).join(' ');
 
-	const name = declaration[1];
-	return (
-		first === name
-		|| first.startsWith(`${name} `)
-		|| first.startsWith(`${name}.`)
-		|| first.startsWith(`${name},`)
-	);
+	for (const [name, pattern] of TELLS) {
+		if (!pattern.test(text)) continue;
+		if (name === 'em dash' && DASH_AS_SUBJECT.test(text)) continue;
+		reasons.push(name);
+	}
+
+	return reasons;
 }
 
 /**
@@ -155,24 +247,36 @@ function groupsFromPatch(path, patch) {
 	/** @type {Group[]} */
 	const out = [];
 
+	const lang = langFor(path) ?? 'js';
+	const md = lang === 'md';
 	let newLine = 0;
+	let inFence = false;
 	/** @type {PendingGroup | null} */
 	let cur = null;
 
+	// A Markdown block is a paragraph: unblank, unfenced, unindented.
+	/** @param {string} content */
+	const inBlock = content => {
+		if (!md) return isCommentLine(content, lang);
+		if (FENCE.test(content)) {
+			inFence = !inFence;
+			return false;
+		}
+		return !inFence && content.trim() !== '' && !/^(?: {4}|\t)/.test(content);
+	};
+
 	/** @param {string} nextLine */
 	const flush = nextLine => {
-		if (cur && cur.lines.length >= MIN_LINES) {
-			const text = cur.lines.join('\n');
+		if (cur) {
+			const reasons = reasonsFor(cur, nextLine);
 
-			if (
-				!ALLOWED_MARKER.test(text)
-				&& !looksLikeGoDoc(cur, nextLine)
-			) {
+			if (reasons.length > 0) {
 				out.push({
 					path,
 					start: cur.start,
 					end: cur.end,
-					text,
+					text: cur.lines.join('\n'),
+					reasons,
 				});
 			}
 		}
@@ -184,6 +288,10 @@ function groupsFromPatch(path, patch) {
 		if (raw.startsWith('@@')) {
 			flush('');
 
+			// Hunks are discontiguous. Carrying fence state across one lets a
+			// single unclosed fence blank the rest of the file.
+			inFence = false;
+
 			const match = /\+(\d+)/.exec(raw);
 			newLine = match ? Number.parseInt(match[1], 10) : 1;
 			continue;
@@ -192,7 +300,14 @@ function groupsFromPatch(path, patch) {
 		if (raw.startsWith('+')) {
 			const content = raw.slice(1);
 
-			if (isCommentLine(content)) {
+			if (inBlock(content)) {
+				const t = content.trimStart();
+
+				// A JSDoc opener and a Markdown item start their own block.
+				if (cur && (md ? MD_ITEM.test(content) : t.startsWith('/**'))) {
+					flush(content);
+				}
+
 				if (cur) {
 					cur.end = newLine;
 					cur.lines.push(content);
@@ -200,7 +315,11 @@ function groupsFromPatch(path, patch) {
 					cur = {
 						start: newLine,
 						end: newLine,
-						indent: indentation(content),
+						lang,
+						topLevel: !/^[\t ]/.test(content),
+						doc: t.startsWith('/**'),
+						// A hunk can open mid-block, past the `/**`.
+						maybeDoc: t.startsWith('*'),
 						lines: [content],
 					};
 				}
@@ -222,10 +341,9 @@ function groupsFromPatch(path, patch) {
 			continue;
 		}
 
-		// Context line. It is useful as lookahead for detecting
-		// declaration documentation immediately following an added
-		// comment block.
+		// Context line: ends the run, and is the declaration lookahead.
 		const content = raw.startsWith(' ') ? raw.slice(1) : raw;
+		if (md && FENCE.test(content)) inFence = !inFence;
 		flush(content);
 		newLine++;
 	}
@@ -248,10 +366,9 @@ const keyFor = group => `${group.path}:${createHash('sha256').update(group.text)
  */
 const bodyFor = group =>
 	`<!-- statute-comment-cop:${keyFor(group)} -->\n`
+	+ `Flagged for: ${group.reasons.join(', ')}.\n\n`
 	+ `This comment is doing too much of the code's job. `
-	+ `Prefer making the ownership, state, or control flow explicit in code and keep only the non-obvious constraint here.\n\n`
-	+ `Paragraph-length implementation comments are reserved for genuine `
-	+ `\`SAFETY:\`, \`INVARIANT:\`, \`PROTOCOL:\`, or \`COMPAT:\` constraints.`;
+	+ `Prefer making the ownership, state, or control flow explicit in code and keep only the non-obvious constraint here.`;
 
 /**
  * @param {unknown} error
@@ -305,7 +422,7 @@ function untrackedPatch(name) {
 /** @type {(name: string) => boolean} */
 const scannable = name =>
 	name !== ''
-	&& GO_FILE.test(name)
+	&& langFor(name) !== null
 	&& !name.startsWith('vendor/')
 	&& !name.includes('/vendor/');
 
@@ -333,21 +450,20 @@ function scanLocal(base) {
 		groups.push(...groupsFromPatch(name, untrackedPatch(name)));
 	}
 
-	const scope = `${tracked.length + untracked.length} Go file(s) vs ${from.slice(0, 12)}`;
+	const scope = `${tracked.length + untracked.length} file(s) vs ${from.slice(0, 12)}`;
 	if (groups.length === 0) {
 		console.log(`comment-cop: clean (${scope}).`);
 		return 0;
 	}
 
 	for (const group of groups) {
-		console.log(`${group.path}:${group.start}-${group.end}`);
+		console.log(`${group.path}:${group.start}-${group.end}  [${group.reasons.join(', ')}]`);
 		console.log(`${group.text}\n`);
 	}
 
 	console.log(
 		`comment-cop: ${groups.length} finding(s) (${scope}).\n`
-			+ 'Keep only the non-obvious constraint, or mark a genuine '
-			+ 'SAFETY:/INVARIANT:/PROTOCOL:/COMPAT: constraint.',
+			+ 'Keep only the non-obvious constraint.',
 	);
 	return 1;
 }
@@ -386,7 +502,7 @@ export default async function run({ github, context, core, dryRun = false }) {
 
 	for (const file of files) {
 		if (file.status === 'removed') continue;
-		if (!GO_FILE.test(file.filename)) continue;
+		if (langFor(file.filename) === null) continue;
 
 		// Never police vendored code if it appears in a PR.
 		if (
@@ -684,22 +800,40 @@ usage:
 
 working tree:
   Diffs against <base-ref>, or the merge base with master when omitted.
-  Uncommitted and untracked Go files are included. No token, no network.
+  Uncommitted and untracked files are included. No token, no network.
   Exits 1 when anything is flagged, so it can gate a commit or push.
 
 pull request:
-  Needs GITHUB_TOKEN (try: GITHUB_TOKEN=$(gh auth token) ...). Dry run —
-  printing findings and the threads it would resolve — unless --apply is
-  passed, which posts review comments and resolves stale threads.
+  Needs GITHUB_TOKEN (try: GITHUB_TOKEN=$(gh auth token) ...). Dry run by
+  default: it prints findings and the threads it would resolve, and posts
+  nothing until --apply is passed.
 
 options:
   --local     force working-tree mode even when a repo and number are given
   --apply     pull-request mode only: actually post and resolve
   -h, --help  show this help
 
-A comment is flagged when it is indented, three or more lines long, and is
-neither Go declaration documentation nor a SAFETY:/INVARIANT:/PROTOCOL:/COMPAT:
-constraint.`;
+files:
+  Go, JS/TS, JSONC, YAML, Python, shell, TOML, Makefiles and Dockerfiles
+  contribute their comments; Markdown contributes its paragraphs, one per
+  list item, heading or table row. Fenced and indented code is skipped,
+  as are formats with no comment syntax, machine-owned files, key
+  material and path lists.
+
+length rule:
+  An ordinary comment of three or more lines is flagged. Go doc comments
+  and JSDoc blocks are exempt: they are read without the code at hand,
+  where line count says nothing about quality.
+
+style rule:
+  Any comment is flagged, whatever its length or position, for an em/en
+  dash, a contrast construction ("X, not Y", "X rather than Y", "X
+  instead of Y", "not just X but Y"), an emphatic cleft ("which is what",
+  "exactly the"), counterfactual justification ("so X cannot Y",
+  "without X, Y would"), stock filler, connective glue, inflated diction,
+  or a paste artifact such as a curly quote or a zero-width space. A dash
+  passes when the comment is about the character itself, shown by quoting
+  it, naming it, or giving its code point.`;
 
 /**
  * @returns {Promise<void>}

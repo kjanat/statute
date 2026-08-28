@@ -8,739 +8,151 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- The `-lint` rule set has a reference table in `README.md`: every
-  code with its severity, the resolved-config path it reports, and what
-  makes it fire. `OBS002` appeared in no documentation at all before
-  this, and eight further codes only in a changelog entry for an old
-  release. `-graph` and `-lint` join the documented CLI flags too. A
-  test reads the codes out of `lint.go` and the rows out of the README
-  and fails on any disagreement in either direction, so a new rule
-  cannot ship undocumented and a retired one cannot leave a stale row.
+- The `-lint` rule set has a reference table in `README.md`: every code with its severity, the resolved-config path it reports, and what makes it fire. `OBS002` appeared in no documentation at all before this, and eight further codes only in a changelog entry for an old release. `-graph` and `-lint` join the documented CLI flags too. A test reads the codes out of `lint.go` and the rows out of the README and fails on any disagreement in either direction, so a new rule cannot ship undocumented and a retired one cannot leave a stale row.
 
-- `make fmt-check` gates Go formatting drift, and `make lint` and the CI
-  lint job now run it. `golangci-lint run` never applies the formatters
-  configured under `formatters:`; only `golangci-lint fmt` does, so an
-  unformatted tree used to pass lint. The target runs both gates,
-  because they catch different drift: `gofmt -l` over the tracked Go
-  files, and `golangci-lint fmt --diff` for the configured `gci` and
-  `goimports` import grouping that `gofmt` has no opinion about.
-  golangci-lint vendors its own printer, so on rare map literals the two
-  disagree in both directions and no formatter run satisfies both; a
-  blank line separating short keys from long ones breaks the alignment
-  run and settles it.
+- `make fmt-check` gates Go formatting drift, and `make lint` and the CI lint job now run it. `golangci-lint run` never applies the formatters configured under `formatters:`; only `golangci-lint fmt` does, so an unformatted tree used to pass lint. The target runs both gates, because they catch different drift: `gofmt -l` over the tracked Go files, and `golangci-lint fmt --diff` for the configured `gci` and `goimports` import grouping that `gofmt` has no opinion about. golangci-lint vendors its own printer, so on rare map literals the two disagree in both directions and no formatter run satisfies both; a blank line separating short keys from long ones breaks the alignment run and settles it.
 
 ## [0.6.0] — 2026-08-26
 
 ### Added
 
-- A black-box end-to-end lane under `e2e/` runs the compiled binary in
-  Docker across all four server/client topologies with independent
-  origin and client processes, full-mesh per-edge assertions from
-  structured client reports, and provable cleanup. Three tiers:
-  `make test-e2e` (smoke matrix), the PR-gating `make test-e2e-regression`
-  (routing/rewrite-across-Retry, health failover, upstream TLS parity,
-  HTTP/3 with UDP release, streaming/upgrade, startup retry, graceful
-  drain, two-node state isolation, real Docker discovery, hermetic
-  Pebble ACME HTTP-01, observability correlation, trusted-proxy
-  identity), and `make test-e2e-soak` (scheduled stress). A depguard
-  rule makes the black-box boundary mechanical: no `httptest`, no
-  Statute internals, and only the binary under test may import the
-  `statute` package. See `docs/e2e.md`.
+- A black-box end-to-end lane under `e2e/` runs the compiled binary in Docker across all four server/client topologies with independent origin and client processes, full-mesh per-edge assertions from structured client reports, and provable cleanup. Three tiers: `make test-e2e` (smoke matrix), the PR-gating `make test-e2e-regression` (routing/rewrite-across-Retry, health failover, upstream TLS parity, HTTP/3 with UDP release, streaming/upgrade, startup retry, graceful drain, two-node state isolation, real Docker discovery, hermetic Pebble ACME HTTP-01, observability correlation, trusted-proxy identity), and `make test-e2e-soak` (scheduled stress). A depguard rule makes the black-box boundary mechanical: no `httptest`, no Statute internals, and only the binary under test may import the `statute` package. See `docs/e2e.md`.
 
-- `AutoTLS(...).Directory(url)` overrides the ACME directory URL for one
-  source: Let's Encrypt staging during rate-limit-sensitive rollouts, or
-  a private ACME CA (step-ca, Pebble). Empty stays Let's Encrypt
-  production, and the resolved/exported schema always carries the final
-  `Directory` value. The override reaches both issuance paths — the
-  shared autocert manager and the in-tree pinned HTTP-01/DNS-01
-  managers. `Resolve` rejects a directory that is not an absolute HTTPS
-  URL — plain HTTP fails closed, because ACME account and order material
-  must never travel unencrypted — and, mirroring the email rule, rejects
-  sources that share one ACME account while naming different
-  directories. New lint warnings: `TLS005` (Let's Encrypt staging),
-  `TLS006` (any other non-Let's-Encrypt directory).
+- `AutoTLS(...).Directory(url)` overrides the ACME directory URL for one source: Let's Encrypt staging during rate-limit-sensitive rollouts, or a private ACME CA (step-ca, Pebble). Empty stays Let's Encrypt production, and the resolved/exported schema always carries the final `Directory` value. The override reaches both issuance paths — the shared autocert manager and the in-tree pinned HTTP-01/DNS-01 managers. `Resolve` rejects a directory that is not an absolute HTTPS URL — plain HTTP fails closed, because ACME account and order material must never travel unencrypted — and, mirroring the email rule, rejects sources that share one ACME account while naming different directories. New lint warnings: `TLS005` (Let's Encrypt staging), `TLS006` (any other non-Let's-Encrypt directory).
 
-- `JSONLog(...).Statuses("400-499", "500-599")` restricts the access log
-  to requests whose final status falls in the given inclusive ranges
-  (a single status like `"404"` also works), independently of sampling.
-  The filter is a hard gate ahead of every other logging rule, including
-  "errors are always logged": `Statuses("200-299")` really does suppress
-  500s, while errors within the selected ranges are never sampled out
-  and in-range statuses below 400 keep the configured `Sample` rate.
-  Filtering applies to the final status — the recorder already ignores
-  1xx interim responses, so a 103 → 404 exchange filters as 404.
-  `Resolve` rejects malformed or out-of-range (`[100, 599]`) inputs and
-  normalizes the rest into canonical form — sorted ascending with
-  overlapping and adjacent ranges merged — which the exported schema
-  carries as `Statuses` on the resolved access log.
+- `JSONLog(...).Statuses("400-499", "500-599")` restricts the access log to requests whose final status falls in the given inclusive ranges (a single status like `"404"` also works), independently of sampling. The filter is a hard gate ahead of every other logging rule, including "errors are always logged": `Statuses("200-299")` really does suppress 500s, while errors within the selected ranges are never sampled out and in-range statuses below 400 keep the configured `Sample` rate. Filtering applies to the final status — the recorder already ignores 1xx interim responses, so a 103 → 404 exchange filters as 404. `Resolve` rejects malformed or out-of-range (`[100, 599]`) inputs and normalizes the rest into canonical form — sorted ascending with overlapping and adjacent ranges merged — which the exported schema carries as `Statuses` on the resolved access log.
 
-- `statute.Health(addr, path)` configures a dedicated process health
-  endpoint on its own listener that brackets application availability:
-  `Start` binds and serves it first — before certificate managers, the
-  initial Docker sync, and every other socket — and `Shutdown` closes
-  it last, after the content and metrics listeners drain. Liveness at
-  the configured path (default `/healthz`) answers `200 "ok"` for the
-  whole time the process runs; readiness at the path plus `/ready`
-  answers `503 "not ready"` throughout startup, `200 "ok"` once startup
-  commits (listeners bound, certificate managers started, initial
-  Docker sync complete), and `503 "not ready"` again for the entire
-  shutdown grace period — probes get answers, not refused connections,
-  until the drain completes. Readiness does not wait for asynchronous
-  HTTP-01 certificate warm-up. Matching is exact: only the two health
-  paths answer, everything else — trailing-slash and subtree requests
-  included — returns 404, and no metrics or pprof are mounted. The path
-  must start with `/`, must not be `/`, and must not end with `/`;
-  `Resolve` rejects other shapes. A failed `Start` fully stops the
-  health server (socket released, serve goroutine awaited) and a
-  retried `Start` constructs a fresh one and serves health again. The
-  `statutelifecycle` SLC100 analyzer now models this rollback-owned
-  early publication: a publish rooted at a start attempt whose deferred
-  rollback provably stops and awaits the server is attempt-bracketed,
-  not a leak.
+- `statute.Health(addr, path)` configures a dedicated process health endpoint on its own listener that brackets application availability: `Start` binds and serves it first — before certificate managers, the initial Docker sync, and every other socket — and `Shutdown` closes it last, after the content and metrics listeners drain. Liveness at the configured path (default `/healthz`) answers `200 "ok"` for the whole time the process runs; readiness at the path plus `/ready` answers `503 "not ready"` throughout startup, `200 "ok"` once startup commits (listeners bound, certificate managers started, initial Docker sync complete), and `503 "not ready"` again for the entire shutdown grace period — probes get answers, not refused connections, until the drain completes. Readiness does not wait for asynchronous HTTP-01 certificate warm-up. Matching is exact: only the two health paths answer, everything else — trailing-slash and subtree requests included — returns 404, and no metrics or pprof are mounted. The path must start with `/`, must not be `/`, and must not end with `/`; `Resolve` rejects other shapes. A failed `Start` fully stops the health server (socket released, serve goroutine awaited) and a retried `Start` constructs a fresh one and serves health again. The `statutelifecycle` SLC100 analyzer now models this rollback-owned early publication: a publish rooted at a start attempt whose deferred rollback provably stops and awaits the server is attempt-bracketed, not a leak.
 
-- `Transport.FlushInterval` exposes the reverse proxy's response flush
-  interval as pool policy, e.g. `"100ms"`: every route proxying to the
-  pool shares the one interval, and active health probes are unaffected
-  (they ride the pool transport, not the proxy). The default `0` keeps
-  Go's `ReverseProxy` default — no periodic flushing — and detected
-  streaming responses (unknown Content-Length, `text/event-stream`) keep
-  flushing immediately regardless. Non-negative durations only, parsed
-  like the other transport durations; there is no Traefik `-1`
-  immediate-flush sentinel, and no Docker label form.
+- `Transport.FlushInterval` exposes the reverse proxy's response flush interval as pool policy, e.g. `"100ms"`: every route proxying to the pool shares the one interval, and active health probes are unaffected (they ride the pool transport, not the proxy). The default `0` keeps Go's `ReverseProxy` default — no periodic flushing — and detected streaming responses (unknown Content-Length, `text/event-stream`) keep flushing immediately regardless. Non-negative durations only, parsed like the other transport durations; there is no Traefik `-1` immediate-flush sentinel, and no Docker label form.
 
-- Upstream health policy extensions: `HealthCheck.Host` overrides the
-  `Host` header active probes carry — one precedence rule: the override
-  when set, else the derivation from `UpstreamHost` exactly as before,
-  with proxied requests following `UpstreamHost` either way — and is
-  validated like `HostValue`. `HealthCheck.Statuses` lists the exact
-  probe statuses accepted as healthy (each within 100–599); empty keeps
-  the 200–399 default. Setting either field stops probes from following
-  redirects, so the health endpoint's own status is judged; default
-  probes keep following redirects. Setting either without a probe `Path`
-  is a resolve error rather than a silent policy drop.
+- Upstream health policy extensions: `HealthCheck.Host` overrides the `Host` header active probes carry — one precedence rule: the override when set, else the derivation from `UpstreamHost` exactly as before, with proxied requests following `UpstreamHost` either way — and is validated like `HostValue`. `HealthCheck.Statuses` lists the exact probe statuses accepted as healthy (each within 100–599); empty keeps the 200–399 default. Setting either field stops probes from following redirects, so the health endpoint's own status is judged; default probes keep following redirects. Setting either without a probe `Path` is a resolve error rather than a silent policy drop.
 
-- Passive health checks: `Pool.PassiveHealthCheck{FailureWindow,
-  MaxFailures}` demotes a backend out of selection once it accumulates
-  `MaxFailures` failed attempts — a transport error or a 5xx response —
-  inside the sliding window. A request canceled by its own client is not
-  a failure (a client abort is not a backend fault); a deadline that
-  expires waiting on the backend is. Failures are windowed, not
-  consecutive:
-  successes neither clear nor extend the window, and recovery happens
-  only as failures age out, computed lazily with no background
-  goroutine. Counting is per backend attempt, so under `Retry` each
-  attempt counts against the backend that served it even when the
-  request succeeds on another backend. Passive health is independent of
-  active probing — it works with active checks disabled, and an active
-  probe success never clears a passive window — and the lint rule
-  `HC001` no longer fires for a passive-only pool. Degraded mode is
-  unchanged: a pool whose every backend is demoted, including a
-  single-backend pool, keeps serving. Both fields must be set together;
-  window state is generation-owned — reset on restart, with a stopped
-  generation's late recordings inert. The new fields have no Docker
-  label form; they exist only in compiled configuration.
+- Passive health checks: `Pool.PassiveHealthCheck{FailureWindow, MaxFailures}` demotes a backend out of selection once it accumulates `MaxFailures` failed attempts — a transport error or a 5xx response — inside the sliding window. A request canceled by its own client is not a failure (a client abort is not a backend fault); a deadline that expires waiting on the backend is. Failures are windowed, not consecutive: successes neither clear nor extend the window, and recovery happens only as failures age out, computed lazily with no background goroutine. Counting is per backend attempt, so under `Retry` each attempt counts against the backend that served it even when the request succeeds on another backend. Passive health is independent of active probing — it works with active checks disabled, and an active probe success never clears a passive window — and the lint rule `HC001` no longer fires for a passive-only pool. Degraded mode is unchanged: a pool whose every backend is demoted, including a single-backend pool, keeps serving. Both fields must be set together; window state is generation-owned — reset on restart, with a stopped generation's late recordings inert. The new fields have no Docker label form; they exist only in compiled configuration.
 
-- In-process handler routes: `Match(...).Handle(h)` mounts any
-  `http.Handler` from the same binary as a route action — the fourth
-  mutually exclusive action beside `ProxyTo`, `Serve`, and `RedirectTo`,
-  for health endpoints, debug pages, and small APIs living beside the
-  proxy. The handler composes with route middleware, participates in
-  declaration-order matching like every static route, and drains through
-  graceful shutdown like proxied requests. It receives the request path
-  unstripped — the wildcard prefix stripping is `Serve`-specific — while
-  the hoisted header operations and path rewrites apply as usual: matching
-  observes the original path, the handler the rewritten one. Under a
-  `Retry` the handler may be re-entered once per attempt (idempotent
-  methods only, as `Retry` enforces), and it is invoked concurrently, so
-  it must be safe for concurrent use. Resolve rejects `Handle(nil)` — the
-  call declares the action, so a nil handler is its own error rather than
-  an action-less route. The resolved schema carries the handler as an
-  opaque `Handler` reference excluded from serialization plus a
-  `HandlerRoute` boolean that stands in for it in the JSON export; the DOT
-  graph renders a handler route as an edge-less route node, and Docker
-  labels cannot reference or construct handlers — they exist solely in
-  compiled configuration.
+- In-process handler routes: `Match(...).Handle(h)` mounts any `http.Handler` from the same binary as a route action — the fourth mutually exclusive action beside `ProxyTo`, `Serve`, and `RedirectTo`, for health endpoints, debug pages, and small APIs living beside the proxy. The handler composes with route middleware, participates in declaration-order matching like every static route, and drains through graceful shutdown like proxied requests. It receives the request path unstripped — the wildcard prefix stripping is `Serve`-specific — while the hoisted header operations and path rewrites apply as usual: matching observes the original path, the handler the rewritten one. Under a `Retry` the handler may be re-entered once per attempt (idempotent methods only, as `Retry` enforces), and it is invoked concurrently, so it must be safe for concurrent use. Resolve rejects `Handle(nil)` — the call declares the action, so a nil handler is its own error rather than an action-less route. The resolved schema carries the handler as an opaque `Handler` reference excluded from serialization plus a `HandlerRoute` boolean that stands in for it in the JSON export; the DOT graph renders a handler route as an edge-less route node, and Docker labels cannot reference or construct handlers — they exist solely in compiled configuration.
 
-- Docker label middleware mapping: `Docker().Middleware(name, mw...)`
-  registers a named, code-owned middleware chain that container labels may
-  reference, and `Docker().DefaultMiddleware(mw...)` declares a chain
-  applied to every Docker-discovered route, outermost. A
-  `traefik.http.routers.<r>.middlewares` label — previously warned about
-  and ignored — now resolves its comma-separated names against the
-  registry, matching the registered name verbatim (`@provider` suffix
-  included), so containers already labeled for Traefik migrate without
-  edits while labels stay unable to define middleware of their own.
-  References are router-scoped, as in Traefik: routers sharing one service
-  keep their own chains on their own routes while pooling into the same
-  backends. Per route the chain runs defaults first, then the router's
-  referenced chains in label order, then the `statute.timeout` /
-  `statute.ratelimit` / `statute.compress` hints. A router referencing an
-  unregistered name fails closed — its routes are omitted from the
-  generation with a warning naming the missing middleware, so a route that
-  asked for an auth policy is never served without it, while sibling
-  routers and services keep routing. Both chains resolve at startup
-  through the standard middleware resolver, and the resolved schema
-  carries them as `Docker.Middleware` and `Docker.DefaultMiddleware`.
+- Docker label middleware mapping: `Docker().Middleware(name, mw...)` registers a named, code-owned middleware chain that container labels may reference, and `Docker().DefaultMiddleware(mw...)` declares a chain applied to every Docker-discovered route, outermost. A `traefik.http.routers.<r>.middlewares` label — previously warned about and ignored — now resolves its comma-separated names against the registry, matching the registered name verbatim (`@provider` suffix included), so containers already labeled for Traefik migrate without edits while labels stay unable to define middleware of their own. References are router-scoped, as in Traefik: routers sharing one service keep their own chains on their own routes while pooling into the same backends. Per route the chain runs defaults first, then the router's referenced chains in label order, then the `statute.timeout` / `statute.ratelimit` / `statute.compress` hints. A router referencing an unregistered name fails closed — its routes are omitted from the generation with a warning naming the missing middleware, so a route that asked for an auth policy is never served without it, while sibling routers and services keep routing. Both chains resolve at startup through the standard middleware resolver, and the resolved schema carries them as `Docker.Middleware` and `Docker.DefaultMiddleware`.
 
-- Path rewrite middleware: four primitives transform the request path
-  before it is proxied or served. `StripPrefix(prefix)` removes a prefix,
-  `AddPrefix(prefix)` prepends one, `ReplacePath(path)` substitutes a fixed
-  path, and `RewritePath(pattern, replacement)` rewrites through an RE2
-  regexp with `$1`-style capture references, following
-  `regexp.ReplaceAllString`. Stripping the whole path leaves `/`, a path
-  the prefix does not cover passes through untouched rather than 404ing,
-  and a regexp result that loses its leading slash or empties the path is
-  normalised back to a rooted one. The query string is carried through
-  untouched except by `ReplacePath`'s explicit `?query` suffix, which
-  replaces it — a trailing `?` clears it, no `?` at all preserves it. Like
-  the header operations, the rewrites are hoisted out of the middleware
-  chain and applied at the route's edge, before every other middleware and
-  in declaration order among themselves, so where a rewrite sits in the
-  `With(...)` list does not change the result: the cache key, the remaining
-  middleware, and the upstream all see the same rewritten path, and a
-  `Retry` beneath never observes a half-rewritten one. Each rewrite works
-  on a clone of the request rather than mutating it, which keeps it
-  exactly-once when a retry re-serves the same request. Route matching and
-  the access log observe the original path. A `StripPrefix`/`AddPrefix`
-  prefix is a decoded literal, while `ReplacePath` takes an escaped target,
-  so it is the primitive for a path that must carry an escaped `%2F`;
-  `RewritePath` matches the decoded path, so a client's escaped `%2F`
-  becomes a real separator to the pattern. `StripPrefix` matches on the
-  decoded path — the form the router matched — so a request routed under
-  the prefix always has it stripped, even through an escaped boundary slash
-  (`/api%2Ffoo`) or a percent-encoded prefix (`/a%70i`); the boundary slash
-  becomes the new root and every later `%2F` stays escaped, so
-  `/api/foo%2Fbar` and `/api%2Ffoo%2Fbar` both reach the upstream as
-  `/foo%2Fbar`, never the decoded `/foo/bar`. Prefixes are normalised at
-  resolve time — every trailing slash trimmed, so `StripPrefix("/api/")`
-  and `StripPrefix("/api")` are one declaration and the resolved export
-  publishes `/api` — and resolve rejects what could not work: an empty,
-  slash-only, `?`/`#`/`%`-carrying, or doubled-leading-slash (`//`, `/\`)
-  prefix, a `ReplacePath` target that is not rooted, is protocol-relative,
-  carries a `#`, holds an invalid `%`-escape, or whose explicit query
-  carries a space or control byte, and a `RewritePath` pattern that is
-  empty or does not compile. The resolved schema gains `PathPrefix`,
-  `PathPattern`, `PathReplacement`, `PathQuery`, and `PathQuerySet`
-  carrying the normalised transform for the JSON export.
-- DNS-01 propagation controls: `AutoTLS(...).CloudflareDNS01(token)` takes
-  a `Propagation(statute.DNSPropagation{...})` policy replacing the fixed
-  15-second wait between publishing the challenge TXT record and asking
-  the CA to validate it. A `Delay` alone is that wait with a duration you
-  choose; a list of `Resolvers` (`host:port`) turns it into a check —
-  after the delay, statute polls every listed resolver and requests
-  validation only once all of them serve the expected TXT value, on a
-  `Timeout` (default `"2m"`) and `Interval` (default `"5s"`) window whose
-  first round runs immediately and which never re-queries a resolver that
-  has already answered. Lookup errors leave a resolver unsatisfied rather
-  than failing, since an unpropagated record is indistinguishable from
-  `NXDOMAIN`; the deadline does fail, naming the record and the laggards,
-  without spending one of the five validation failures Let's Encrypt
-  allows per hostname per hour. The delay plus timeout is added to the
-  five-minute per-order cap so a long policy is not cancelled mid-wait.
-  Resolve rejects the shapes that would do nothing or could not work: a
-  policy that waits for nothing (a zero delay with no resolvers),
-  `Timeout` or `Interval` without `Resolvers`, a delay or timeout above
-  10 minutes, a non-positive timeout, an explicit interval below 100ms or
-  above the timeout (the 5s default clamps down to a shorter timeout), a
-  resolver that is not `host:port` with a port in 1–65535, and a resolver
-  repeated in any spelling — addresses are canonicalised (IP literals in
-  canonical text form, hostnames lowercased, decimal ports) into the
-  resolved schema — plus `Propagation` on a source without
-  `CloudflareDNS01`. Rounds probe all pending resolvers concurrently,
-  each probe bounded by one interval, so an unreachable resolver spends
-  its own budget, not everyone's. The resolved schema gains
-  `CloudflareDNS01.Propagation` carrying the normalised policy for the
-  JSON export.
-- Configurable downstream TLS protocol policy: `statute.TLSPolicy` is a
-  listener option carrying `MinVersion`, `MaxVersion` (`statute.TLS12` or
-  `statute.TLS13`; there are deliberately no TLS 1.0/1.1 constants and
-  resolve rejects any other value, so the floor cannot be lowered) and
-  `CipherSuites`, a list of ten ECDHE `statute.TLSECDHE*` constants.
-  Suites govern TLS 1.2 handshakes only — crypto/tls accepts no TLS 1.3
-  suite override — so pinning them under `MinVersion: TLS13` is a resolve
-  error rather than a dead setting. So are an unsupported version, an
-  inverted version window, an unknown or repeated suite, a second policy
-  on one listener, a policy on a redirect-only listener, `HTTP3()` under a
-  1.2 cap (QUIC is defined over TLS 1.3), a suite list omitting both
-  AES-128-GCM suites (net/http refuses to serve TLS with such an override
-  whether or not HTTP/2 is enabled, so the listener would bind and never
-  answer a handshake), and an RSA-only suite list under a 1.2 cap on a
-  listener with a pinned HTTP-01/DNS-01 source — the in-tree manager's
-  keys are always ECDSA P-256 and the SNI router never falls back past a
-  matching source, so no static fallback rescues those domains. The same
-  policy over automatic sources is lint rule `TLS004`, a warning rather
-  than an error: autocert picks each leaf's key type from the ClientHello,
-  so only clients without ECDSA support get servable RSA certificates, and
-  an advertised TLS-ALPN-01 challenge certificate (ECDSA P-256) fails
-  validation. The policy is applied where every listener's `tls.Config` is
-  built, so the TCP and QUIC listeners share it, and the resolved schema
-  gains `Listener.TLSPolicy` carrying the normalised form (`"1.2"`/`"1.3"`
-  and IANA suite names in declaration order) for the JSON export.
-- Lint rule `TLS003` (warning): a domain issued by more than one ACME
-  certificate manager — two pinned sources with distinct storage roots or
-  challenge kinds, or a pinned source and an automatic one — orders and
-  renews that domain once per manager, spending Let's Encrypt's
-  duplicate-certificate limit (5 per week) several times over. Two
-  automatic sources are not reported: they feed the one shared autocert
-  manager, whose domain set is the union.
-- SNI-scoped TLS and ACME policies on one listener: `HTTPS(":443", ...)`
-  accepts any number of TLS sources — `AutoTLS` (HTTP-01 or DNS-01),
-  `StaticTLSFor(host, cert, key)` scoped to one SNI name or wildcard
-  pattern, and hostless `StaticTLS` as the fallback — and a per-listener
-  certificate router picks one per handshake by SNI: exact name first,
-  then wildcard (covering exactly one extra label), then the fallback.
-  `AutoTLS(...).HTTP01()` pins a source to the HTTP-01 challenge: it
-  issues through the in-tree ACME manager (the same machinery as DNS-01)
-  rather than autocert, whose hard-coded preference would attempt
-  TLS-ALPN-01 first, so a pinned source never advertises `acme-tls/1` and
-  never burns a failed validation. The default remains automatic
-  (TLS-ALPN-01 where advertisable, HTTP-01 fallback). Combining it with
-  `CloudflareDNS01` on one source, claiming one name from two sources, or
-  declaring a second hostless fallback is a resolve error, and HTTP-01
-  sources reject wildcard domains outright. Every name — AutoTLS domains,
-  static hosts, incoming SNI — is canonicalised identically (case,
-  trailing dot, IDNA A-label) before routing and duplicate detection.
-  HTTP/3 shares the router, static key pairs load at server construction,
-  and the resolved schema gains `Listener.AutoTLSSources`/
-  `StaticTLSSources` (declaration order; the singular fields mirror the
-  first source of each kind), `StaticTLS.Host`, and the per-source
-  `AutoTLS.Challenge` policy (`ChallengeAuto`/`ChallengeHTTP01`/
-  `ChallengeDNS01`).
-  Name canonicalisation is a fixed point, so no spelling of a name (any
-  number of trailing dots or surrounding spaces) can pass duplicate
-  detection as distinct and then collide in the router; ACME domains are
-  additionally held to the strict IDNA lookup form, since a name autocert's
-  host policy would drop can never be issued, while static hosts keep the
-  lenient fallback. `"*"`, `"*."`, and a `*` outside a single leading
-  `"*."` label are resolve errors rather than a catch-all no handshake can
-  select. Three checks span the whole config: an `HTTP01()` source with no
-  plain HTTP listener anywhere (nothing would serve the challenge tokens),
-  two pinned sources persisting one domain to the same
-  `<storage>/<challenge>/` path (two managers racing to rename over one
-  stored key pair — the same domain on two automatic listeners stays
-  legal, unioned into the shared autocert manager), and pinned sources
-  sharing an ACME
-  account directory but disagreeing on `Email` (the second registration
-  returns `ErrAccountAlreadyExists` and its contact is silently dropped).
-- The in-tree ACME manager (DNS-01 and pinned HTTP-01) gained the
-  robustness autocert has: a usable certificate keeps serving handshakes
-  while its replacement is issued (renewal is a separate predicate from
-  validity), orders are deduplicated per host with a one-minute cooldown
-  after a failure and run on the manager's own context rather than a
-  handshake's, certificates persist through a temp file and rename (key
-  first) so a crash cannot leave a chain without its key, authorizations
-  are polled at the authorization URL — the only place terminal states
-  appear — pending authorizations are deactivated after a failed order to
-  spare rate-limit quota, the CSR is SAN-only (RFC 8555 §7.4), and
-  start/warm-up/stop have a defined lifecycle that `Shutdown` drives before
-  the listeners close.
-- Client-IP route matching: `Match(...).ClientIPs("10.0.0.0/8", ...)` makes
-  client CIDRs part of route selection. A request from outside the ranges
-  falls through to the next route — where `AllowIPs` middleware would
-  answer 403 and stop — enabling trusted-network routes with authenticated
-  fallbacks. The matcher uses the same verified client-IP resolution as
-  rate limiting, so the listener's `TrustedProxy` policy governs it, and
-  the canonical CIDRs appear on the resolved route as `ClientIPCIDRs`.
-- Verified trusted proxies alongside direct traffic: the
-  `TrustedProxy("cidr", ...).ClientIPHeader("...")` listener option resolves
-  the client IP from a forwarded header only when the connection's direct
-  peer falls inside an explicitly trusted CIDR range; every other peer is
-  its own client and its forwarded headers are ignored. Of a multi-valued
-  header the last value counts. The policy governs the access log, rate
-  limiting, `AllowIPs`/`DenyIPs`, and `IPHash`, and takes precedence over
-  `BehindCloudflare()`'s listener-wide trust.
-- A per-pool upstream `Host` header policy: `UpstreamHost` on `Pool`
-  chooses between forwarding the client's `Host` (the default, today's
-  behavior), sending each backend its own host (`TargetHost`), or sending
-  a fixed name (`HostValue("...")`). The policy appears in the resolved
-  schema as `UpstreamHost`/`HostValue`, an explicit value is validated at
-  resolve time, and health-check probes carry an explicit value too, so
-  hostname-sensitive backends see consistent traffic.
-- Per-upstream TLS verification settings on `Transport`: `ServerName`
-  overrides the hostname verified (and sent as SNI) against the backend
-  certificate, `RootCAFiles` replaces the system roots with internal-CA PEM
-  files, and `InsecureSkipVerify` is an explicit escape hatch that the new
-  lint rule `TLS002` warns about. Reverse-proxy requests and active
-  health-check probes share the pool's transport, so both sides always
-  apply the same policy. CA files load at server construction, keeping
-  `Resolve` pure.
-- First-class redirect route actions: `Match(...).RedirectTo(target, status)`
-  answers matching requests with an HTTP redirect instead of proxying or
-  serving files, and appears in the resolved schema as an explicit
-  `Redirect` action (`Target`, `Status`). Statuses 301, 302, 303, 307, and
-  308 are allowed; the target may be fixed or preserve parts of the request
-  through the `{request_uri}`, `{path}`, `{query}`, and `{host}`
-  placeholders. Targets are validated at resolve time — unknown
-  placeholders, non-redirect statuses, and header-breaking bytes are
-  startup errors — and substituted request data is never rescanned for
-  placeholders.
-- A `statutehttp` `go/analysis` linter, integrated into the repository's
-  custom golangci-lint build, rejects attempts to mutate Go request special
-  fields (`Host`, `Content-Length`, `Transfer-Encoding`, and `Trailer`) through
-  `http.Request.Header` or Statute's generic request-header middleware.
-- Request and response header middleware: `SetRequestHeader`,
-  `AddRequestHeader`, `RemoveRequestHeader`, `SetResponseHeader`,
-  `AddResponseHeader`, and `RemoveResponseHeader`. Operations run in
-  declaration order and appear in the resolved and exported schema as
-  `HeaderName` / `HeaderValue`. Names are canonicalised and values validated
-  at resolve time, rejecting header injection and the request names Go carries
-  outside the header map (`Host`, `Content-Length`, `Transfer-Encoding`, `Trailer`).
-  Operations apply once per request at the route's edges, so a `Retry` cannot
-  repeat them per attempt; response mutations are applied when the final
-  response header is committed — not on a 1xx preview — through a wrapper that
-  preserves flushing and connection hijacking. On a proxy route, an explicit
-  `X-Forwarded-For`, `-Host`, or `-Proto` declaration is reapplied after the
-  proxy derives its own, so the route's value wins without making the fields
-  it leaves alone spoofable.
+- Path rewrite middleware: four primitives transform the request path before it is proxied or served. `StripPrefix(prefix)` removes a prefix, `AddPrefix(prefix)` prepends one, `ReplacePath(path)` substitutes a fixed path, and `RewritePath(pattern, replacement)` rewrites through an RE2 regexp with `$1`-style capture references, following `regexp.ReplaceAllString`. Stripping the whole path leaves `/`, a path the prefix does not cover passes through untouched rather than 404ing, and a regexp result that loses its leading slash or empties the path is normalised back to a rooted one. The query string is carried through untouched except by `ReplacePath`'s explicit `?query` suffix, which replaces it — a trailing `?` clears it, no `?` at all preserves it. Like the header operations, the rewrites are hoisted out of the middleware chain and applied at the route's edge, before every other middleware and in declaration order among themselves, so where a rewrite sits in the `With(...)` list does not change the result: the cache key, the remaining middleware, and the upstream all see the same rewritten path, and a `Retry` beneath never observes a half-rewritten one. Each rewrite works on a clone of the request rather than mutating it, which keeps it exactly-once when a retry re-serves the same request. Route matching and the access log observe the original path. A `StripPrefix`/`AddPrefix` prefix is a decoded literal, while `ReplacePath` takes an escaped target, so it is the primitive for a path that must carry an escaped `%2F`; `RewritePath` matches the decoded path, so a client's escaped `%2F` becomes a real separator to the pattern. `StripPrefix` matches on the decoded path — the form the router matched — so a request routed under the prefix always has it stripped, even through an escaped boundary slash (`/api%2Ffoo`) or a percent-encoded prefix (`/a%70i`); the boundary slash becomes the new root and every later `%2F` stays escaped, so `/api/foo%2Fbar` and `/api%2Ffoo%2Fbar` both reach the upstream as `/foo%2Fbar`, never the decoded `/foo/bar`. Prefixes are normalised at resolve time — every trailing slash trimmed, so `StripPrefix("/api/")` and `StripPrefix("/api")` are one declaration and the resolved export publishes `/api` — and resolve rejects what could not work: an empty, slash-only, `?`/`#`/`%`-carrying, or doubled-leading-slash (`//`, `/\`) prefix, a `ReplacePath` target that is not rooted, is protocol-relative, carries a `#`, holds an invalid `%`-escape, or whose explicit query carries a space or control byte, and a `RewritePath` pattern that is empty or does not compile. The resolved schema gains `PathPrefix`, `PathPattern`, `PathReplacement`, `PathQuery`, and `PathQuerySet` carrying the normalised transform for the JSON export.
+- DNS-01 propagation controls: `AutoTLS(...).CloudflareDNS01(token)` takes a `Propagation(statute.DNSPropagation{...})` policy replacing the fixed 15-second wait between publishing the challenge TXT record and asking the CA to validate it. A `Delay` alone is that wait with a duration you choose; a list of `Resolvers` (`host:port`) turns it into a check — after the delay, statute polls every listed resolver and requests validation only once all of them serve the expected TXT value, on a `Timeout` (default `"2m"`) and `Interval` (default `"5s"`) window whose first round runs immediately and which never re-queries a resolver that has already answered. Lookup errors leave a resolver unsatisfied rather than failing, since an unpropagated record is indistinguishable from `NXDOMAIN`; the deadline does fail, naming the record and the laggards, without spending one of the five validation failures Let's Encrypt allows per hostname per hour. The delay plus timeout is added to the five-minute per-order cap so a long policy is not cancelled mid-wait. Resolve rejects the shapes that would do nothing or could not work: a policy that waits for nothing (a zero delay with no resolvers), `Timeout` or `Interval` without `Resolvers`, a delay or timeout above 10 minutes, a non-positive timeout, an explicit interval below 100ms or above the timeout (the 5s default clamps down to a shorter timeout), a resolver that is not `host:port` with a port in 1–65535, and a resolver repeated in any spelling — addresses are canonicalised (IP literals in canonical text form, hostnames lowercased, decimal ports) into the resolved schema — plus `Propagation` on a source without `CloudflareDNS01`. Rounds probe all pending resolvers concurrently, each probe bounded by one interval, so an unreachable resolver spends its own budget, not everyone's. The resolved schema gains `CloudflareDNS01.Propagation` carrying the normalised policy for the JSON export.
+- Configurable downstream TLS protocol policy: `statute.TLSPolicy` is a listener option carrying `MinVersion`, `MaxVersion` (`statute.TLS12` or `statute.TLS13`; there are deliberately no TLS 1.0/1.1 constants and resolve rejects any other value, so the floor cannot be lowered) and `CipherSuites`, a list of ten ECDHE `statute.TLSECDHE*` constants. Suites govern TLS 1.2 handshakes only — crypto/tls accepts no TLS 1.3 suite override — so pinning them under `MinVersion: TLS13` is a resolve error rather than a dead setting. So are an unsupported version, an inverted version window, an unknown or repeated suite, a second policy on one listener, a policy on a redirect-only listener, `HTTP3()` under a 1.2 cap (QUIC is defined over TLS 1.3), a suite list omitting both AES-128-GCM suites (net/http refuses to serve TLS with such an override whether or not HTTP/2 is enabled, so the listener would bind and never answer a handshake), and an RSA-only suite list under a 1.2 cap on a listener with a pinned HTTP-01/DNS-01 source — the in-tree manager's keys are always ECDSA P-256 and the SNI router never falls back past a matching source, so no static fallback rescues those domains. The same policy over automatic sources is lint rule `TLS004`, a warning rather than an error: autocert picks each leaf's key type from the ClientHello, so only clients without ECDSA support get servable RSA certificates, and an advertised TLS-ALPN-01 challenge certificate (ECDSA P-256) fails validation. The policy is applied where every listener's `tls.Config` is built, so the TCP and QUIC listeners share it, and the resolved schema gains `Listener.TLSPolicy` carrying the normalised form (`"1.2"`/`"1.3"` and IANA suite names in declaration order) for the JSON export.
+- Lint rule `TLS003` (warning): a domain issued by more than one ACME certificate manager — two pinned sources with distinct storage roots or challenge kinds, or a pinned source and an automatic one — orders and renews that domain once per manager, spending Let's Encrypt's duplicate-certificate limit (5 per week) several times over. Two automatic sources are not reported: they feed the one shared autocert manager, whose domain set is the union.
+- SNI-scoped TLS and ACME policies on one listener: `HTTPS(":443", ...)` accepts any number of TLS sources — `AutoTLS` (HTTP-01 or DNS-01), `StaticTLSFor(host, cert, key)` scoped to one SNI name or wildcard pattern, and hostless `StaticTLS` as the fallback — and a per-listener certificate router picks one per handshake by SNI: exact name first, then wildcard (covering exactly one extra label), then the fallback. `AutoTLS(...).HTTP01()` pins a source to the HTTP-01 challenge: it issues through the in-tree ACME manager (the same machinery as DNS-01) rather than autocert, whose hard-coded preference would attempt TLS-ALPN-01 first, so a pinned source never advertises `acme-tls/1` and never burns a failed validation. The default remains automatic (TLS-ALPN-01 where advertisable, HTTP-01 fallback). Combining it with `CloudflareDNS01` on one source, claiming one name from two sources, or declaring a second hostless fallback is a resolve error, and HTTP-01 sources reject wildcard domains outright. Every name — AutoTLS domains, static hosts, incoming SNI — is canonicalised identically (case, trailing dot, IDNA A-label) before routing and duplicate detection. HTTP/3 shares the router, static key pairs load at server construction, and the resolved schema gains `Listener.AutoTLSSources`/ `StaticTLSSources` (declaration order; the singular fields mirror the first source of each kind), `StaticTLS.Host`, and the per-source `AutoTLS.Challenge` policy (`ChallengeAuto`/`ChallengeHTTP01`/ `ChallengeDNS01`). Name canonicalisation is a fixed point, so no spelling of a name (any number of trailing dots or surrounding spaces) can pass duplicate detection as distinct and then collide in the router; ACME domains are additionally held to the strict IDNA lookup form, since a name autocert's host policy would drop can never be issued, while static hosts keep the lenient fallback. `"*"`, `"*."`, and a `*` outside a single leading `"*."` label are resolve errors rather than a catch-all no handshake can select. Three checks span the whole config: an `HTTP01()` source with no plain HTTP listener anywhere (nothing would serve the challenge tokens), two pinned sources persisting one domain to the same `<storage>/<challenge>/` path (two managers racing to rename over one stored key pair — the same domain on two automatic listeners stays legal, unioned into the shared autocert manager), and pinned sources sharing an ACME account directory but disagreeing on `Email` (the second registration returns `ErrAccountAlreadyExists` and its contact is silently dropped).
+- The in-tree ACME manager (DNS-01 and pinned HTTP-01) gained the robustness autocert has: a usable certificate keeps serving handshakes while its replacement is issued (renewal is a separate predicate from validity), orders are deduplicated per host with a one-minute cooldown after a failure and run on the manager's own context rather than a handshake's, certificates persist through a temp file and rename (key first) so a crash cannot leave a chain without its key, authorizations are polled at the authorization URL — the only place terminal states appear — pending authorizations are deactivated after a failed order to spare rate-limit quota, the CSR is SAN-only (RFC 8555 §7.4), and start/warm-up/stop have a defined lifecycle that `Shutdown` drives before the listeners close.
+- Client-IP route matching: `Match(...).ClientIPs("10.0.0.0/8", ...)` makes client CIDRs part of route selection. A request from outside the ranges falls through to the next route — where `AllowIPs` middleware would answer 403 and stop — enabling trusted-network routes with authenticated fallbacks. The matcher uses the same verified client-IP resolution as rate limiting, so the listener's `TrustedProxy` policy governs it, and the canonical CIDRs appear on the resolved route as `ClientIPCIDRs`.
+- Verified trusted proxies alongside direct traffic: the `TrustedProxy("cidr", ...).ClientIPHeader("...")` listener option resolves the client IP from a forwarded header only when the connection's direct peer falls inside an explicitly trusted CIDR range; every other peer is its own client and its forwarded headers are ignored. Of a multi-valued header the last value counts. The policy governs the access log, rate limiting, `AllowIPs`/`DenyIPs`, and `IPHash`, and takes precedence over `BehindCloudflare()`'s listener-wide trust.
+- A per-pool upstream `Host` header policy: `UpstreamHost` on `Pool` chooses between forwarding the client's `Host` (the default, today's behavior), sending each backend its own host (`TargetHost`), or sending a fixed name (`HostValue("...")`). The policy appears in the resolved schema as `UpstreamHost`/`HostValue`, an explicit value is validated at resolve time, and health-check probes carry an explicit value too, so hostname-sensitive backends see consistent traffic.
+- Per-upstream TLS verification settings on `Transport`: `ServerName` overrides the hostname verified (and sent as SNI) against the backend certificate, `RootCAFiles` replaces the system roots with internal-CA PEM files, and `InsecureSkipVerify` is an explicit escape hatch that the new lint rule `TLS002` warns about. Reverse-proxy requests and active health-check probes share the pool's transport, so both sides always apply the same policy. CA files load at server construction, keeping `Resolve` pure.
+- First-class redirect route actions: `Match(...).RedirectTo(target, status)` answers matching requests with an HTTP redirect instead of proxying or serving files, and appears in the resolved schema as an explicit `Redirect` action (`Target`, `Status`). Statuses 301, 302, 303, 307, and 308 are allowed; the target may be fixed or preserve parts of the request through the `{request_uri}`, `{path}`, `{query}`, and `{host}` placeholders. Targets are validated at resolve time — unknown placeholders, non-redirect statuses, and header-breaking bytes are startup errors — and substituted request data is never rescanned for placeholders.
+- A `statutehttp` `go/analysis` linter, integrated into the repository's custom golangci-lint build, rejects attempts to mutate Go request special fields (`Host`, `Content-Length`, `Transfer-Encoding`, and `Trailer`) through `http.Request.Header` or Statute's generic request-header middleware.
+- Request and response header middleware: `SetRequestHeader`, `AddRequestHeader`, `RemoveRequestHeader`, `SetResponseHeader`, `AddResponseHeader`, and `RemoveResponseHeader`. Operations run in declaration order and appear in the resolved and exported schema as `HeaderName` / `HeaderValue`. Names are canonicalised and values validated at resolve time, rejecting header injection and the request names Go carries outside the header map (`Host`, `Content-Length`, `Transfer-Encoding`, `Trailer`). Operations apply once per request at the route's edges, so a `Retry` cannot repeat them per attempt; response mutations are applied when the final response header is committed — not on a 1xx preview — through a wrapper that preserves flushing and connection hijacking. On a proxy route, an explicit `X-Forwarded-For`, `-Host`, or `-Proto` declaration is reapplied after the proxy derives its own, so the route's value wins without making the fields it leaves alone spoofable.
 
-- Hijacked protocol upgrades are observable as 101. The status recorder
-  implements `Hijack`, delegating through `http.ResponseController` so a
-  writer whose connection cannot be hijacked fails exactly as before; a
-  successful hijack before any committed response latches 101 Switching
-  Protocols and commits the recorder, while a failed attempt latches
-  nothing and a response committed before the hijack keeps its status.
-  The access log records `status: 101` for proxied WebSocket upgrades,
-  `statute_requests_by_status_total` counts them under `101`, and
-  `Statuses("101")` matches them alongside handler-written 101s. The
-  recorded duration is unchanged and spans the tunneled connection
-  lifetime, because the proxy handler returns when the tunnel closes.
+- Hijacked protocol upgrades are observable as 101. The status recorder implements `Hijack`, delegating through `http.ResponseController` so a writer whose connection cannot be hijacked fails exactly as before; a successful hijack before any committed response latches 101 Switching Protocols and commits the recorder, while a failed attempt latches nothing and a response committed before the hijack keeps its status. The access log records `status: 101` for proxied WebSocket upgrades, `statute_requests_by_status_total` counts them under `101`, and `Statuses("101")` matches them alongside handler-written 101s. The recorded duration is unchanged and spans the tunneled connection lifetime, because the proxy handler returns when the tunnel closes.
 
 ### Changed
 
-- The `statutelifecycle` SLC103 analyzer now requires exact WaitGroup
-  provenance instead of reducing a start to one launch count and a
-  cleanup to a `Wait`-anywhere boolean. A `WaitGroup` launch owes a
-  `Wait` on the exact same group, normalized to lifecycle owner root
-  plus the complete field-selection path — `r.a.wg` and `r.b.wg` are
-  different groups even when they end in the same declared field type,
-  a wait on another owner's group or another object's identically
-  declared field proves nothing, and a `Wait` can no longer discharge
-  raw `go` work or vice versa. Normalization is storage identity, not
-  a lexical path: it resolves only through variables the body never
-  reassigns — a root assigned twice may denote two different objects,
-  so launches through it are unresolvable — only through pointer-typed
-  aliases (`run := r`, `wg := &r.wg`), because a value copy like
-  `wg := r.wg` names a different `WaitGroup` than the owner's, and a
-  write or address escape anywhere along a field path (`r.child = ...`
-  after launching on `r.child.wg`, or a pointer alias to the field
-  passed onward as a value) invalidates every path below that prefix,
-  since the storage the path names may have been replaced.
-  Launches through a group no lifecycle owner root reaches, or whose
-  provenance cannot be resolved, fail closed as undischargeable and
-  are diagnosed. Matching `Wait` evidence inside typed `sync.Once.Do`
-  callbacks still counts. The conventional `Add(1)` + `go` +
-  `defer Done()` shape spends explicit registration capacity: only a
-  plain `Add` statement with a constant positive count whose block
-  position dominates the launch, with no loop between them, registers
-  capacity — an `Add` inside a conditional branch or a `defer` is not
-  provably executed before the goroutine starts, a launch the runtime
-  repeats inside a loop spends capacity that was counted once, and a
-  `goto` anywhere in the body disables registration entirely, because
-  block ordering is dominance only for structured control flow — each
-  unit is spent by at most one launched literal whose first statement
-  is its only `Done`, deferred, with no `goto` in the literal: a defer
-  under a conditional may run zero times, one inside a loop or behind
-  a `goto` may register repeatedly, one preceded by other statements
-  may be skipped by an early return, and a second `Done` would drive
-  the counter past its registration. A counter operation the model
-  cannot
-  account for (a `Done` in the start body, a non-constant or negative
-  `Add`, any counter operation inside a function literal other than
-  the single recognized `Done` of an accepted launched literal — a
-  rejected literal's `Done` poisons too, because its raw goroutine
-  consumes registration an accepted launch might otherwise claim)
-  poisons that group's capacity entirely, and so does an
-  accepted-shape launch that finds no registration capacity to spend:
-  it stays raw, and its unattributed `Done` must never leave a
-  registration claimable by a later launch. Anything beyond that — a second
-  goroutine on one `Add(1)`, `Add(0)`, an `Add` after the `go` — stays
-  a raw obligation. Raw `go` statements remain
-  deliberately count-based: each owes one completion signal discharged
-  by visible channel receives in the cleanup by count; channel
-  identity is out of SLC103's scope per the issue's non-goals, so that
-  half is conservative join evidence, not per-channel provenance.
-  Statute's own tree audits clean before and after.
+- The `statutelifecycle` SLC103 analyzer now requires exact WaitGroup provenance instead of reducing a start to one launch count and a cleanup to a `Wait`-anywhere boolean. A `WaitGroup` launch owes a `Wait` on the exact same group, normalized to lifecycle owner root plus the complete field-selection path — `r.a.wg` and `r.b.wg` are different groups even when they end in the same declared field type, a wait on another owner's group or another object's identically declared field proves nothing, and a `Wait` can no longer discharge raw `go` work or vice versa. Normalization is storage identity, not a lexical path: it resolves only through variables the body never reassigns — a root assigned twice may denote two different objects, so launches through it are unresolvable — only through pointer-typed aliases (`run := r`, `wg := &r.wg`), because a value copy like `wg := r.wg` names a different `WaitGroup` than the owner's, and a write or address escape anywhere along a field path (`r.child = ...` after launching on `r.child.wg`, or a pointer alias to the field passed onward as a value) invalidates every path below that prefix, since the storage the path names may have been replaced. Launches through a group no lifecycle owner root reaches, or whose provenance cannot be resolved, fail closed as undischargeable and are diagnosed. Matching `Wait` evidence inside typed `sync.Once.Do` callbacks still counts. The conventional `Add(1)` + `go` + `defer Done()` shape spends explicit registration capacity: only a plain `Add` statement with a constant positive count whose block position dominates the launch, with no loop between them, registers capacity — an `Add` inside a conditional branch or a `defer` is not provably executed before the goroutine starts, a launch the runtime repeats inside a loop spends capacity that was counted once, and a `goto` anywhere in the body disables registration entirely, because block ordering is dominance only for structured control flow — each unit is spent by at most one launched literal whose first statement is its only `Done`, deferred, with no `goto` in the literal: a defer under a conditional may run zero times, one inside a loop or behind a `goto` may register repeatedly, one preceded by other statements may be skipped by an early return, and a second `Done` would drive the counter past its registration. A counter operation the model cannot account for (a `Done` in the start body, a non-constant or negative `Add`, any counter operation inside a function literal other than the single recognized `Done` of an accepted launched literal — a rejected literal's `Done` poisons too, because its raw goroutine consumes registration an accepted launch might otherwise claim) poisons that group's capacity entirely, and so does an accepted-shape launch that finds no registration capacity to spend: it stays raw, and its unattributed `Done` must never leave a registration claimable by a later launch. Anything beyond that — a second goroutine on one `Add(1)`, `Add(0)`, an `Add` after the `go` — stays a raw obligation. Raw `go` statements remain deliberately count-based: each owes one completion signal discharged by visible channel receives in the cleanup by count; channel identity is out of SLC103's scope per the issue's non-goals, so that half is conservative join evidence, not per-channel provenance. Statute's own tree audits clean before and after.
 
 ### Security
 
-- `clientIP` no longer trusts `X-Forwarded-For` without explicit trust
-  configuration. The unconditional fallback let any client pick its own
-  identity for everything keyed on the client address — rate-limit
-  buckets, `AllowIPs`/`DenyIPs`, `IPHash` affinity, the access log's
-  `remote` field, and the new client-IP route matching, where a forged
-  header could select a trusted-network route past an authenticated
-  fallback. Forwarded headers now count only under a listener's
-  `TrustedProxy` policy or `BehindCloudflare`; otherwise the connecting
-  peer is the client.
+- `clientIP` no longer trusts `X-Forwarded-For` without explicit trust configuration. The unconditional fallback let any client pick its own identity for everything keyed on the client address — rate-limit buckets, `AllowIPs`/`DenyIPs`, `IPHash` affinity, the access log's `remote` field, and the new client-IP route matching, where a forged header could select a trusted-network route past an authenticated fallback. Forwarded headers now count only under a listener's `TrustedProxy` policy or `BehindCloudflare`; otherwise the connecting peer is the client.
 
 ### Fixed
 
-- The access log's `request_id` field now appears in real deployments.
-  The RequestID middleware stored the identifier only in a derived
-  downstream request context, while the runtime composes the access log
-  at the listener level outside the route middleware chain, so the
-  logger could never see it; the existing unit test had wired the two
-  in the opposite, unrealistic order. The logger now installs a holder
-  ahead of routing that the middleware fills, and a new test pins the
-  runtime's actual composition. Found by the new black-box e2e
-  observability scenario.
+- The access log's `request_id` field now appears in real deployments. The RequestID middleware stored the identifier only in a derived downstream request context, while the runtime composes the access log at the listener level outside the route middleware chain, so the logger could never see it; the existing unit test had wired the two in the opposite, unrealistic order. The logger now installs a holder ahead of routing that the middleware fills, and a new test pins the runtime's actual composition. Found by the new black-box e2e observability scenario.
 
-- Pinned ACME issuance now completes against CAs that answer the
-  finalize request without a `Location` header while the order is still
-  processing — RFC 8555 does not require one, and Pebble omits it,
-  which made the client's internal completion poll fail on an empty
-  order URL. The manager now settles such orders through the URI it
-  already holds from order creation and fetches the issued chain; a
-  genuine CA rejection still surfaces as before.
+- Pinned ACME issuance now completes against CAs that answer the finalize request without a `Location` header while the order is still processing — RFC 8555 does not require one, and Pebble omits it, which made the client's internal completion poll fail on an empty order URL. The manager now settles such orders through the URI it already holds from order creation and fetches the issued chain; a genuine CA rejection still surfaces as before.
 
-- The access-log/metrics status recorder now reports the status actually
-  committed to the client in two edge cases where it previously drifted.
-  A `Flush` before any `WriteHeader` commits an implicit 200, so a later
-  `WriteHeader(500)` no longer records 500 for a response the client saw
-  as 200. And 101 Switching Protocols — the one 1xx net/http records as
-  final because no further response may follow it — now latches as the
-  final status instead of falling through to the default 200. Both cases
-  matter doubly with the new status filters, which key on exactly this
-  recorded status.
+- The access-log/metrics status recorder now reports the status actually committed to the client in two edge cases where it previously drifted. A `Flush` before any `WriteHeader` commits an implicit 200, so a later `WriteHeader(500)` no longer records 500 for a response the client saw as 200. And 101 Switching Protocols — the one 1xx net/http records as final because no further response may follow it — now latches as the final status instead of falling through to the default 200. Both cases matter doubly with the new status filters, which key on exactly this recorded status.
 
-- The status recorder now exposes `Unwrap`, so `http.ResponseController`
-  can reach the underlying writer's `Hijacker`. `metricsMiddleware`
-  wraps every listener with this recorder and the reverse proxy's
-  protocol-upgrade path hijacks through the controller, which can only
-  reach the connection through `Hijacker` or `Unwrap` — so no WebSocket
-  upgrade could pass through an observability-wrapped listener at all.
-  The hijacked handshake is written directly to the taken-over
-  connection, bypassing the recorder, which at first recorded a proxied
-  upgrade as the implicit 200; the recorder now implements `Hijack`
-  itself (see below), so upgrades latch 101.
+- The status recorder now exposes `Unwrap`, so `http.ResponseController` can reach the underlying writer's `Hijacker`. `metricsMiddleware` wraps every listener with this recorder and the reverse proxy's protocol-upgrade path hijacks through the controller, which can only reach the connection through `Hijacker` or `Unwrap` — so no WebSocket upgrade could pass through an observability-wrapped listener at all. The hijacked handshake is written directly to the taken-over connection, bypassing the recorder, which at first recorded a proxied upgrade as the implicit 200; the recorder now implements `Hijack` itself (see below), so upgrades latch 101.
 
-- `Start` is transactional, two-phase, and retryable. Phase one starts
-  the non-listener prerequisites — pool health checkers, ACME managers
-  with their DNS-01 warm-up, the Docker provider's initial sync — and
-  binds every socket the configuration calls for (TCP listeners, HTTP/3
-  UDP conns, the metrics listener) without serving anything; a failure
-  anywhere rolls all of it back and returns the error, joined with any
-  rollback close failure. Only once every fallible step has succeeded
-  does phase two launch the serve loops, start the HTTP-01 warm-up, and
-  commit — so no request can be accepted, routed, or proxied by a
-  `Start` that then fails, and there is no synchronous failure path left
-  once application traffic is reachable. Previously listeners began
-  serving as they bound: a later bind failure left earlier listeners
-  answering requests — connections that a socket-only rollback cannot
-  un-accept — and startup previously rolled back only the Docker
-  provider at all. The rollback closes bare sockets, never the
-  `http.Server` / `http3.Server` objects built to serve them — a closed
-  server is permanently unusable, which would let a retried Start report
-  success over dead listeners. Health checkers now start in `Start`
-  rather than at construction: a server that never starts launches no
-  probe goroutine, so there is nothing to stop, and a restarted checker
-  begins with fresh failure counters, so repeated failed Starts cannot
-  demote backends before the first real probe. The Docker provider's
-  stop now waits for its event watcher as well as its reconcile loop, so
-  a retry cannot overlap generations. HTTP/3 UDP sockets bind inside `Start` so
-  a bind failure fails startup instead of being silently discarded;
-  because quic-go never closes a caller-provided conn, `Shutdown` closes
-  that socket after the HTTP/3 drain — it previously stayed bound for
-  the life of the process — and an HTTP/3 serve loop that dies
-  unexpectedly now logs the error and closes its socket instead of
-  leaving a dead server holding an advertised port. The Alt-Svc header
-  is advertised only while that serve loop actually runs, so a dead
-  HTTP/3 endpoint is no longer offered to clients for the full ma
-  window after its loop exits. TCP and metrics
-  serve-loop exits are logged too. An ACME order cancelled by the
-  manager stopping — a rollback mid-warm-up — no longer settles into the
-  issuance failure cache: an error that is itself the manager's
-  cancellation is dropped before it becomes observable, while genuine CA
-  failures keep their one-minute cooldown even when they land during a
-  stop. This is also the foundation the upcoming process health endpoint
-  builds on, so a health listener can never outlive a failed start.
-- Redirect routes no longer emit a protocol-relative `Location`. A
-  client-controlled `{path}` or `{request_uri}` of `//evil.com` — sent
-  directly as a `//evil.com` request path, or produced by a `StripPrefix`
-  that exposes the leading segment of `/api//evil.com` — would otherwise
-  become a `Location: //evil.com` that browsers follow off-site (an open
-  redirect). A `Location` that comes out with a doubled leading slash
-  (`//` or `/\`) is now collapsed to a single leading slash, keeping the
-  redirect same-origin. The core case predates the path-rewrite work; it
-  was surfaced by CodeQL on this change.
-- HTTP/3 requests pass through the listener middleware chain — trusted-proxy
-  policy, Cloudflare tagging, access log, metrics, tracing — exactly as
-  HTTP/1.1 and HTTP/2 do. The QUIC server previously received the raw
-  router, so listener-scoped behavior silently did not apply to HTTP/3
-  traffic.
-- The access log and metrics record the final response status when an
-  upstream sends a 1xx preview. The status recorder used to latch on the
-  informational code, swallowing the final `WriteHeader` — behind those
-  middlewares, net/http then committed an implicit 200 whatever the handler
-  actually answered, and an Early Hints 404 reached the client as a success.
-- Exact-path static routes serve the file their pattern names instead of the
-  served directory's root. `Match("/robots.txt").Serve("./public")` now serves
-  `./public/robots.txt`; prefix stripping is applied only to trailing-wildcard
-  directory routes, whose behavior is unchanged.
-- DNS-01 wildcard certificates are reused for matching SNI hosts instead of
-  issuing and caching a separate certificate for each concrete hostname.
+- `Start` is transactional, two-phase, and retryable. Phase one starts the non-listener prerequisites — pool health checkers, ACME managers with their DNS-01 warm-up, the Docker provider's initial sync — and binds every socket the configuration calls for (TCP listeners, HTTP/3 UDP conns, the metrics listener) without serving anything; a failure anywhere rolls all of it back and returns the error, joined with any rollback close failure. Only once every fallible step has succeeded does phase two launch the serve loops, start the HTTP-01 warm-up, and commit — so no request can be accepted, routed, or proxied by a `Start` that then fails, and there is no synchronous failure path left once application traffic is reachable. Previously listeners began serving as they bound: a later bind failure left earlier listeners answering requests — connections that a socket-only rollback cannot un-accept — and startup previously rolled back only the Docker provider at all. The rollback closes bare sockets, never the `http.Server` / `http3.Server` objects built to serve them — a closed server is permanently unusable, which would let a retried Start report success over dead listeners. Health checkers now start in `Start` rather than at construction: a server that never starts launches no probe goroutine, so there is nothing to stop, and a restarted checker begins with fresh failure counters, so repeated failed Starts cannot demote backends before the first real probe. The Docker provider's stop now waits for its event watcher as well as its reconcile loop, so a retry cannot overlap generations. HTTP/3 UDP sockets bind inside `Start` so a bind failure fails startup instead of being silently discarded; because quic-go never closes a caller-provided conn, `Shutdown` closes that socket after the HTTP/3 drain — it previously stayed bound for the life of the process — and an HTTP/3 serve loop that dies unexpectedly now logs the error and closes its socket instead of leaving a dead server holding an advertised port. The Alt-Svc header is advertised only while that serve loop actually runs, so a dead HTTP/3 endpoint is no longer offered to clients for the full ma window after its loop exits. TCP and metrics serve-loop exits are logged too. An ACME order cancelled by the manager stopping — a rollback mid-warm-up — no longer settles into the issuance failure cache: an error that is itself the manager's cancellation is dropped before it becomes observable, while genuine CA failures keep their one-minute cooldown even when they land during a stop. This is also the foundation the upcoming process health endpoint builds on, so a health listener can never outlive a failed start.
+- Redirect routes no longer emit a protocol-relative `Location`. A client-controlled `{path}` or `{request_uri}` of `//evil.com` — sent directly as a `//evil.com` request path, or produced by a `StripPrefix` that exposes the leading segment of `/api//evil.com` — would otherwise become a `Location: //evil.com` that browsers follow off-site (an open redirect). A `Location` that comes out with a doubled leading slash (`//` or `/\`) is now collapsed to a single leading slash, keeping the redirect same-origin. The core case predates the path-rewrite work; it was surfaced by CodeQL on this change.
+- HTTP/3 requests pass through the listener middleware chain — trusted-proxy policy, Cloudflare tagging, access log, metrics, tracing — exactly as HTTP/1.1 and HTTP/2 do. The QUIC server previously received the raw router, so listener-scoped behavior silently did not apply to HTTP/3 traffic.
+- The access log and metrics record the final response status when an upstream sends a 1xx preview. The status recorder used to latch on the informational code, swallowing the final `WriteHeader` — behind those middlewares, net/http then committed an implicit 200 whatever the handler actually answered, and an Early Hints 404 reached the client as a success.
+- Exact-path static routes serve the file their pattern names instead of the served directory's root. `Match("/robots.txt").Serve("./public")` now serves `./public/robots.txt`; prefix stripping is applied only to trailing-wildcard directory routes, whose behavior is unchanged.
+- DNS-01 wildcard certificates are reused for matching SNI hosts instead of issuing and caching a separate certificate for each concrete hostname.
 
 ## [0.5.1] — 2026-08-22
 
 ### Changed
 
 - Go 1.27 or newer is now required.
-- CI now takes its Go version from `go.mod`, analyzes both Go and GitHub
-  Actions with CodeQL, validates workflows with Actionlint, and discovers
-  and runs every fuzz target independently.
-- Commit signing is provided by a reusable local action and rejects a
-  missing default branch instead of silently assuming `master`.
+- CI now takes its Go version from `go.mod`, analyzes both Go and GitHub Actions with CodeQL, validates workflows with Actionlint, and discovers and runs every fuzz target independently.
+- Commit signing is provided by a reusable local action and rejects a missing default branch instead of silently assuming `master`.
 
 ### Fixed
 
-- Middleware resolution now distinguishes fallible and infallible
-  middleware instead of manufacturing unused `nil` errors. This has no
-  public API or behavior change.
-- Formatting checks use the mutually compatible `gci`, `gofmt`, and
-  `goimports` set under Go 1.27, without the deprecated `gofumpt`
-  configuration.
+- Middleware resolution now distinguishes fallible and infallible middleware instead of manufacturing unused `nil` errors. This has no public API or behavior change.
+- Formatting checks use the mutually compatible `gci`, `gofmt`, and `goimports` set under Go 1.27, without the deprecated `gofumpt` configuration.
 
 ## [0.5.0] — 2026-08-18
 
 ### Added
 
-- Docker label discovery provider (`statute.Docker()`, new `Config.Docker`
-  field): containers register routes and upstream pools via `statute.*`
-  labels, discovered over the Docker Engine API (unix socket or TCP) with
-  event-driven reconciliation, debounced bursts, atomic route-table
-  generations, and pool-handler reuse that preserves health-check state
-  across reconciles. Label-derived routes are matched only after all
-  static routes. Includes a `TraefikLabels()` compat mode honoring the
-  common subset of Traefik's docker labels — router rules with
-  `Host`/`Path`/`PathPrefix` (`&&`, `||`, parentheses),
-  `loadbalancer.server.port`/`.scheme`, loadbalancer health checks,
-  `traefik.enable`, and `traefik.docker.network` — so fleets already
-  labeled for Traefik migrate without editing compose files. Implemented
-  in-tree with a minimal Docker API client (`internal/docker`); no new
-  module dependencies. See `docs/docker.md` and `examples/docker`.
+- Docker label discovery provider (`statute.Docker()`, new `Config.Docker` field): containers register routes and upstream pools via `statute.*` labels, discovered over the Docker Engine API (unix socket or TCP) with event-driven reconciliation, debounced bursts, atomic route-table generations, and pool-handler reuse that preserves health-check state across reconciles. Label-derived routes are matched only after all static routes. Includes a `TraefikLabels()` compat mode honoring the common subset of Traefik's docker labels — router rules with `Host`/`Path`/`PathPrefix` (`&&`, `||`, parentheses), `loadbalancer.server.port`/`.scheme`, loadbalancer health checks, `traefik.enable`, and `traefik.docker.network` — so fleets already labeled for Traefik migrate without editing compose files. Implemented in-tree with a minimal Docker API client (`internal/docker`); no new module dependencies. See `docs/docker.md` and `examples/docker`.
 
 ### Fixed
 
-- Docker-discovered services with unsupported backend schemes — including
-  `h2c`, which statute does not proxy — are now skipped with a warning
-  instead of being silently registered as plain HTTP. This applies to both
-  `statute.scheme` and Traefik's `loadbalancer.server.scheme` label.
+- Docker-discovered services with unsupported backend schemes — including `h2c`, which statute does not proxy — are now skipped with a warning instead of being silently registered as plain HTTP. This applies to both `statute.scheme` and Traefik's `loadbalancer.server.scheme` label.
 
 ## [0.4.0] — 2026-05-17
 
 ### Changed
 
-- Extracted the pure config-string parsers (`Duration`, `DurationOr`,
-  `Rate`, `Size`) out of `resolve.go` into a new internal package
-  `internal/parse`; `resolve.go` calls them via `parse.*` and no longer
-  imports `strconv`/`math`. `sizeMultiplier` reworked to a prefix-index
-  form, extending accepted byte-size units to t/p/e/z/y/r/q. No public
-  API change.
-- Extracted the Cloudflare DNS-01 API client out of `cloudflare_api.go`
-  into a new internal package `internal/cloudflare` (`cloudflare.Client`,
-  `New`, `FindZoneID`, `AddTXTRecord`, `DeleteRecord`); `dns01.go`
-  rewired accordingly. No public API change.
-- Vanity host (`statute.kjanat.dev`) now also publishes a `404.html`
-  carrying the same `go-import`/`go-source` meta, so every subpackage
-  resolves directly for `go get` instead of relying on prefix fallback;
-  browsers get a path-aware redirect to the exact pkg.go.dev page.
-- CI `lint`, `fuzz`, and `examples` jobs moved to the lighter
-  `ubuntu-slim` runner. `test` stays on `ubuntu-latest` because
-  `go test -race` needs a C toolchain (cgo) that slim does not ship.
+- Extracted the pure config-string parsers (`Duration`, `DurationOr`, `Rate`, `Size`) out of `resolve.go` into a new internal package `internal/parse`; `resolve.go` calls them via `parse.*` and no longer imports `strconv`/`math`. `sizeMultiplier` reworked to a prefix-index form, extending accepted byte-size units to t/p/e/z/y/r/q. No public API change.
+- Extracted the Cloudflare DNS-01 API client out of `cloudflare_api.go` into a new internal package `internal/cloudflare` (`cloudflare.Client`, `New`, `FindZoneID`, `AddTXTRecord`, `DeleteRecord`); `dns01.go` rewired accordingly. No public API change.
+- Vanity host (`statute.kjanat.dev`) now also publishes a `404.html` carrying the same `go-import`/`go-source` meta, so every subpackage resolves directly for `go get` instead of relying on prefix fallback; browsers get a path-aware redirect to the exact pkg.go.dev page.
+- CI `lint`, `fuzz`, and `examples` jobs moved to the lighter `ubuntu-slim` runner. `test` stays on `ubuntu-latest` because `go test -race` needs a C toolchain (cgo) that slim does not ship.
 
 ### Fixed
 
-- Added package doc comments to the `basic` and `http-only` examples;
-  pkg.go.dev rendered "There is no documentation for this package" for
-  them. Enforced going forward by `revive`'s `package-comments` rule.
-- `Rate` (rate-limit parser) now rejects non-finite counts:
-  `strconv.ParseFloat` accepts `"NaN"`/`"Inf"`, which slipped past the
-  positivity check and produced non-finite rates.
-- Cloudflare `FindZoneID` no longer swallows API/auth/network errors
-  during the zone-label walk and misreport them as "no zone found"; the
-  underlying error now propagates.
-- OpenTelemetry traces reported a hardcoded `statute.version` of
-  `0.1.0`. It is now derived from `debug.ReadBuildInfo()` — the pinned
-  module version when imported, the VCS revision for a local statute
-  checkout, else `unknown` — with no hand-maintained constant. A
-  `(devel)` statute dependency no longer borrows the host app's VCS
-  stamp. The module path is derived via `reflect.TypeFor`, so it tracks
-  module renames automatically.
+- Added package doc comments to the `basic` and `http-only` examples; pkg.go.dev rendered "There is no documentation for this package" for them. Enforced going forward by `revive`'s `package-comments` rule.
+- `Rate` (rate-limit parser) now rejects non-finite counts: `strconv.ParseFloat` accepts `"NaN"`/`"Inf"`, which slipped past the positivity check and produced non-finite rates.
+- Cloudflare `FindZoneID` no longer swallows API/auth/network errors during the zone-label walk and misreport them as "no zone found"; the underlying error now propagates.
+- OpenTelemetry traces reported a hardcoded `statute.version` of `0.1.0`. It is now derived from `debug.ReadBuildInfo()` — the pinned module version when imported, the VCS revision for a local statute checkout, else `unknown` — with no hand-maintained constant. A `(devel)` statute dependency no longer borrows the host app's VCS stamp. The module path is derived via `reflect.TypeFor`, so it tracks module renames automatically.
 
 ## [0.3.0] — 2026-05-17
 
 ### Added
 
-- `FuzzParseSize` fuzz target; loosened the `parseDuration` / `parseRate`
-  / `parseSize` fuzz invariants to cut false failures.
+- `FuzzParseSize` fuzz target; loosened the `parseDuration` / `parseRate` / `parseSize` fuzz invariants to cut false failures.
 
 ### Changed
 
 #### Breaking
 
-- Module path renamed to `statute.kjanat.dev`. Importers must update
-  their import paths. `.editorconfig` removed.
+- Module path renamed to `statute.kjanat.dev`. Importers must update their import paths. `.editorconfig` removed.
 
 #### Repository & CI
 
-- Moved `CODEOWNERS`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, and
-  `SECURITY.md` under `.github/`; `SECURITY.md` rewritten and
-  `CODE_OF_CONDUCT.md` condensed; `CONTRIBUTING.md` reframed (dropped the
-  clustering non-goal, allow L4 SNI / PROXY-protocol passthrough).
-- Pages workflow heredoc fix; CI fuzz step fixed (`-fuzz` cannot target
-  multiple packages in one invocation); formatter/linter config tidied.
+- Moved `CODEOWNERS`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, and `SECURITY.md` under `.github/`; `SECURITY.md` rewritten and `CODE_OF_CONDUCT.md` condensed; `CONTRIBUTING.md` reframed (dropped the clustering non-goal, allow L4 SNI / PROXY-protocol passthrough).
+- Pages workflow heredoc fix; CI fuzz step fixed (`-fuzz` cannot target multiple packages in one invocation); formatter/linter config tidied.
 
 #### Complexity refactor (no behaviour change)
 
-- Brought every function to cyclomatic complexity ≤ 10 (Go Report Card
-  `gocyclo > 15`, then the repo's stricter `min-complexity: 10`). Large
-  functions split into focused helpers across `server.go` (`newServer`,
-  `Start`, `Shutdown`, `buildHTTPServer`), `resolve.go` (`Resolve`,
-  `resolveListener`, `resolveRoute`, `resolveMiddleware`, `parseSize`,
-  `expandDayWeekUnits`), `cors.go` (`corsHandler`), `graph.go`
-  (`graphResolved`), `dns01.go` (`issue`), `export.go` (`Main`), and
-  `retry.go` (`retryHandler`).
-- `resolveMiddleware`'s type switch replaced by a `resolvableMiddleware`
-  interface with per-type `resolve()` methods; `applyMiddleware`'s value
-  switch replaced by a `middlewareBuilders` dispatch map.
-- `graphResolved` now uses an error-accumulating `dotWriter`, removing
-  the repeated `if err != nil` ladder.
+- Brought every function to cyclomatic complexity ≤ 10 (Go Report Card `gocyclo > 15`, then the repo's stricter `min-complexity: 10`). Large functions split into focused helpers across `server.go` (`newServer`, `Start`, `Shutdown`, `buildHTTPServer`), `resolve.go` (`Resolve`, `resolveListener`, `resolveRoute`, `resolveMiddleware`, `parseSize`, `expandDayWeekUnits`), `cors.go` (`corsHandler`), `graph.go` (`graphResolved`), `dns01.go` (`issue`), `export.go` (`Main`), and `retry.go` (`retryHandler`).
+- `resolveMiddleware`'s type switch replaced by a `resolvableMiddleware` interface with per-type `resolve()` methods; `applyMiddleware`'s value switch replaced by a `middlewareBuilders` dispatch map.
+- `graphResolved` now uses an error-accumulating `dotWriter`, removing the repeated `if err != nil` ladder.
 
 #### Modernization
 
-- Adopted stdlib helpers via the `modernize` analyzer: `maps.Copy`,
-  `slices.Backward`, `strings.CutSuffix`, `sync.WaitGroup.Go`, removed
-  redundant Go 1.22+ loop-variable copies.
+- Adopted stdlib helpers via the `modernize` analyzer: `maps.Copy`, `slices.Backward`, `strings.CutSuffix`, `sync.WaitGroup.Go`, removed redundant Go 1.22+ loop-variable copies.
 
 #### Tooling
 
-- Expanded the `golangci-lint` set: added `modernize`, `gosec`, `noctx`,
-  `contextcheck`, `fatcontext`, `errchkjson`, `exhaustive`,
-  `predeclared`, `usestdlibvars`, `usetesting`, `copyloopvar`,
-  `reassign`, `wastedassign`, `gocheckcompilerdirectives`. Set
-  `exhaustive.default-signifies-exhaustive: true`; extended the
-  documented `_test.go` relaxation to `noctx`/`errchkjson`/
-  `usestdlibvars` (httptest noise).
-- Hardening surfaced by the new linters: clamp negative durations before
-  the `uint64` Prometheus conversion (gosec G115); switch `net.Listen`
-  to `net.ListenConfig.Listen(ctx)` (noctx); rename the `max`-shadowing
-  identifiers to `maxAttempts` (predeclared). Verified-intentional
-  findings (best-effort cleanup context, log sampling RNG,
-  allowlist-gated cert paths, same-host HTTP→HTTPS redirect) are
-  suppressed with rationale.
+- Expanded the `golangci-lint` set: added `modernize`, `gosec`, `noctx`, `contextcheck`, `fatcontext`, `errchkjson`, `exhaustive`, `predeclared`, `usestdlibvars`, `usetesting`, `copyloopvar`, `reassign`, `wastedassign`, `gocheckcompilerdirectives`. Set `exhaustive.default-signifies-exhaustive: true`; extended the documented `_test.go` relaxation to `noctx`/`errchkjson`/ `usestdlibvars` (httptest noise).
+- Hardening surfaced by the new linters: clamp negative durations before the `uint64` Prometheus conversion (gosec G115); switch `net.Listen` to `net.ListenConfig.Listen(ctx)` (noctx); rename the `max`-shadowing identifiers to `maxAttempts` (predeclared). Verified-intentional findings (best-effort cleanup context, log sampling RNG, allowlist-gated cert paths, same-host HTTP→HTTPS redirect) are suppressed with rationale.
 - CI uploads coverage to Codecov from the existing `cover.out` profile.
 
 ### Fixed
 
 - `parseSize` no longer overflows `int64` on very large inputs.
-- Retry middleware: the large-body single-shot pass-through built its
-  fallback `io.MultiReader` from `r.Body` _after_ closing it, so reads
-  past the buffered prefix failed with `ErrBodyReadAfterClose`. The body
-  is now closed only once the stream is drained or has errored.
-- Latent `staticcheck` SA5011 (possible nil dereference) in
-  `TestBuildAutocertManager_SingleListener`.
-- `unparam` finding: `resolveCompressMW` no longer returns an
-  always-nil error.
+- Retry middleware: the large-body single-shot pass-through built its fallback `io.MultiReader` from `r.Body` _after_ closing it, so reads past the buffered prefix failed with `ErrBodyReadAfterClose`. The body is now closed only once the stream is drained or has errored.
+- Latent `staticcheck` SA5011 (possible nil dereference) in `TestBuildAutocertManager_SingleListener`.
+- `unparam` finding: `resolveCompressMW` no longer returns an always-nil error.
 
 ## [0.2.0] — 2026-05-17
 
