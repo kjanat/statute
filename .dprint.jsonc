@@ -4,7 +4,9 @@
   "svg": { "associations": ["**/*.svg"] },
   "exec": {
     "cwd": "${configDir}",
-    "commands": [{ "command": "golangci-lint fmt --stdin", "exts": ["go"], "cacheKeyFiles": [".golangci.yml"] }],
+    "commands": [
+      { "command": "go tool goimports -local statute.kjanat.dev", "exts": ["go"], "cacheKeyFiles": ["go.mod"] }
+    ],
   },
   "gofumpt": {
     "langVersion": "go1.27",

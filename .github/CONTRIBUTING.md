@@ -26,6 +26,7 @@ That should work on any platform with Go 1.27+. The Makefile is the canonical in
 ```sh
 make test            # all unit tests
 make test-race       # tests with -race (Linux/macOS x86_64 only — see below)
+make fmt-check       # Go source form and import grouping
 make lint            # golangci-lint
 make cover           # write coverage report + HTML
 make bench           # microbenchmarks
@@ -48,7 +49,7 @@ Go's race detector (and TSAN underneath) does not work on Raspberry Pi or older 
 2. Fork and branch from `master`.
 3. Make the change. Every PR must:
    - Add tests where applicable. Coverage should not decrease meaningfully.
-   - Pass `make lint`. The CI fails closed on lint.
+   - Pass `make fmt-check` and `make lint`. CI fails closed on both.
    - Update `CHANGELOG.md` under the `## [Unreleased]` heading with a brief entry.
    - Update godoc on any exported symbol you add or change.
 4. Open a PR. Fill in the template; mark the new-middleware checklist if applicable.
@@ -99,8 +100,8 @@ If the middleware changes the access-log shape, the change must be **additive** 
 
 ## Style
 
-- `gofmt` formatted (the linter enforces this). Run `gofmt -w .` if your editor doesn't.
-- Imports grouped: stdlib, then external deps with a blank line, then `statute.kjanat.dev` last. The linter's `goimports` config enforces the `statute.kjanat.dev` local-prefix.
+- Run `make fmt-check` before committing. It checks Go source form with toolchain `gofmt` and import grouping with the pinned `go tool goimports`.
+- Imports are grouped as stdlib, then external deps with a blank line, then `statute.kjanat.dev` last.
 - No comments stating _what_ code does — names should be self-explanatory. Comments should answer _why_: non-obvious constraints, hidden invariants, historical context.
 - No `// TODO` or `// FIXME` comments in committed code. If something is genuinely deferred, open an issue and reference it from a code comment.
 - Errors include a path-style context: `fmt.Errorf("upstream %q: %w", name, err)`.

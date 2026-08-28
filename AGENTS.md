@@ -105,14 +105,12 @@ This table is a floor, not an exhaustive list.
 - Lifecycle changes run `make lint-lifecycle` in addition to `make lint`. Treat
   `SLC100`–`SLC104` diagnostics as architecture findings, not style warnings; do
   not suppress one merely to make the branch green.
-- Go formatting is already gated in CI, through dprint. `.dprint.jsonc` routes
-  `*.go` to an `exec` command, and the `dprint-check` step runs it in the `lint`
-  job. Do not conclude from a green `golangci-lint run` that formatting is
-  unchecked: `run` never applies the formatters configured under `formatters:`,
-  only `golangci-lint fmt` does. One formatter implementation is authoritative
-  for Go files, and it is whichever one dprint invokes. Do not add a second one:
-  two printers can reject each other's output, leaving a file that no formatter
-  run can make acceptable to both gates.
+- Go formatting must pass `make fmt-check`. It runs toolchain `gofmt` and the
+  `goimports` tool pinned by `go.mod`, while dprint invokes that same tool for
+  `*.go`; both therefore use the active Go toolchain's `go/printer`. Keep
+  formatter tools in `go.mod` `tool` directives and run them with `go tool`.
+  Do not reintroduce golangci-lint formatters: they use a vendored printer that
+  can reject the toolchain printer's output and make the gates unsatisfiable.
 - The e2e lane (`e2e/`, [`docs/e2e.md`](docs/e2e.md)) is black-box by contract
   and the depguard rules in `.golangci.yml` are normative: no `httptest`, no
   Statute internals, and only `e2e/cmd/statute` imports the `statute` package.

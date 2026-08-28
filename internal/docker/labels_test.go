@@ -409,11 +409,8 @@ func TestExtractTraefikDefaults(t *testing.T) {
 	// No server.port label: port from the single exposed port, router
 	// bound to the sole defined service, healthcheck carried.
 	c := webContainer(map[string]string{
-		"traefik.enable":                "true",
-		"traefik.http.routers.app.rule": "Host(`app.example.com`)",
-
-		// COMPAT: the blank line splits the alignment run. Without it gofmt
-		// and golangci-lint's vendored printer each reject the other's form.
+		"traefik.enable":                                              "true",
+		"traefik.http.routers.app.rule":                               "Host(`app.example.com`)",
 		"traefik.http.services.app.loadbalancer.healthcheck.path":     "/ping",
 		"traefik.http.services.app.loadbalancer.healthcheck.interval": "10s",
 	})
