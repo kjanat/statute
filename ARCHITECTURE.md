@@ -115,14 +115,18 @@ and discarding either has the same consequence.
 The obligation is an envelope: for every rejected registration R and its
 tombstone set T, every request Traefik would have matched must be matched by
 some element of T. Refusing more than R claimed is allowed; refusing less is
-not. Traefik `PathPrefix` is a byte prefix (`strings.HasPrefix`):
-`PathPrefix(`/admin`)` matches `/admin-secret`, and both a serving Docker
-route and its tombstone use that matcher. Statute `Match("/admin/*")` stays
-segment-aware. Traefik-derived serving routes and tombstones fold one trailing
-FQDN dot on both configured and request hosts; static routes and native
-`statute.*` label routes keep statute's exact host spelling. `Path()`/`PathPrefix()` arguments
-with placeholders or regexp syntax are rejected and tombstoned: accepting
-them as literals would under-match and reach `Config.Fallback`.
+not. Traefik and native statute labels compile to one matcher IR
+(`HostKind` / `PathKind`); one dispatcher compares it. Traefik `PathPrefix`
+is a byte prefix (`strings.HasPrefix`): `PathPrefix(`/admin`)` matches
+`/admin-secret`, and both a serving Docker route and its tombstone use that
+matcher. Statute `Match("/admin/*")` stays segment-aware. Traefik `Host()`
+keeps the configured spelling and folds one trailing FQDN dot on the rule or
+the request, so ``Host(`example.com.`)`` matches `example.com..`. Static
+routes and native `statute.*` label routes keep statute's exact host
+spelling. `Host("*")` / `Host("*.example.com")` and `Path()`/`PathPrefix()`
+arguments with `%`, placeholders, or regexp syntax are rejected and
+tombstoned: accepting them as literals would under-match and reach
+`Config.Fallback`.
 Derivation therefore widens: an unrepresentable conjunct is dropped, a disjunction
 is a branch-aware union so one unreadable branch widens the whole rule, a negation
 node becomes unconstrained in place, and a rule that cannot be bounded at all
@@ -131,7 +135,9 @@ refuses nothing.
 
 This needs a second, tolerant reading of the rule beside `ParseRule`: the strict
 lexer and parser abandon the sibling constraints that were the only thing
-bounding the rule. The two readers are held together by a differential fuzz
+bounding the rule. The separate test-only `traefikoracle` module drives
+Traefik's own parser and HTTP muxer across accepted and rejected boundary cases.
+Inside statute, the two readers are held together by a differential fuzz
 property: over every rule `ParseRule` accepts, the envelope must contain every
 request its matchers match.
 

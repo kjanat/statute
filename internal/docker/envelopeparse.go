@@ -246,7 +246,7 @@ func (e envFnExpr) envelope() ([]conj, bool) {
 // leaf unconstrained.
 func hostLeaf(args []string) []conj {
 	for _, a := range args {
-		if a == "" || !literalArg(a) {
+		if a == "" || !literalArg(a) || traefikHostForbidden(a) || !isASCII(a) {
 			return envTop()
 		}
 	}
@@ -261,7 +261,7 @@ func hostLeaf(args []string) []conj {
 func pathLeaf(args []string, prefix bool) []conj {
 	out := make([]conj, 0, len(args))
 	for _, a := range args {
-		if !literalArg(a) || !strings.HasPrefix(a, "/") {
+		if !literalArg(a) || !strings.HasPrefix(a, "/") || pathHasPercent(a) {
 			return envTop()
 		}
 		out = append(out, conj{path: a, prefix: prefix, pathSet: true})

@@ -103,7 +103,7 @@ func describeEnvelope(env []Matcher) string {
 			host = "any-host"
 		}
 		p := m.Path
-		if m.BytePrefix {
+		if m.PathKind == PathByte {
 			p += "*"
 		}
 		parts = append(parts, host+p)
@@ -115,7 +115,7 @@ func describeEnvelope(env []Matcher) string {
 // envelope is called out by name: it disables the operator's fallback for
 // every request in the generation, which is an operational event.
 func RefusalWarning(subject string, env []Matcher) string {
-	if len(env) == 1 && env[0].Host == "" && env[0].Path == "/*" && !env[0].BytePrefix {
+	if len(env) == 1 && env[0].HostKind == HostAny && env[0].PathKind == PathAny {
 		return fmt.Sprintf("%s: routes dropped and could not be bounded to a host or path, so every unmatched request is now refused with 404 and Fallback is not consulted", subject)
 	}
 	return fmt.Sprintf("%s: routes dropped, refusing %s (fail-closed; these requests do not reach the fallback)", subject, describeEnvelope(env))
@@ -445,11 +445,16 @@ func nativeRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 	var routes []Matcher
 	for h := range strings.SplitSeq(labels["statute.host"], ",") {
 		if h = strings.TrimSpace(h); h != "" {
-			routes = append(routes, Matcher{Host: strings.ToLower(h), Path: path})
+			routes = append(routes, Matcher{
+				Host:     strings.ToLower(h),
+				HostKind: HostExact,
+				Path:     path,
+				PathKind: statutePathKind(path),
+			})
 		}
 	}
 	if len(routes) == 0 {
-		routes = append(routes, Matcher{Path: path})
+		routes = append(routes, Matcher{Path: path, PathKind: statutePathKind(path)})
 	}
 
 	named, warns := namedRoutes(c, labels)
@@ -473,14 +478,20 @@ func namedRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 		}
 		m := extra[name]
 		if m == nil {
-			m = &Matcher{Path: "/*"}
+			m = &Matcher{Path: "/*", PathKind: PathAny}
 			extra[name] = m
 		}
 		switch field {
 		case "host":
 			m.Host = strings.ToLower(strings.TrimSpace(v))
+			if m.Host == "" {
+				m.HostKind = HostAny
+			} else {
+				m.HostKind = HostExact
+			}
 		case "path":
 			m.Path = v
+			m.PathKind = statutePathKind(v)
 		default:
 			warns = append(warns, fmt.Sprintf("container %s: unknown route field in label %q", c.Name, k))
 		}

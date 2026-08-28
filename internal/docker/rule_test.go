@@ -16,89 +16,89 @@ func TestParseRule(t *testing.T) {
 		{
 			name: "host only",
 			rule: "Host(`app.example.com`)",
-			want: []Matcher{{Host: "app.example.com", FoldHostDot: true, Path: "/*"}},
+			want: []Matcher{m("app.example.com", "/*")},
 		},
 		{
 			name: "host and pathprefix",
 			rule: "Host(`app.example.com`) && PathPrefix(`/api`)",
-			want: []Matcher{{Host: "app.example.com", FoldHostDot: true, Path: "/api", BytePrefix: true}},
+			want: []Matcher{px("app.example.com", "/api")},
 		},
 		{
 			name: "exact path",
 			rule: "Path(`/login`)",
-			want: []Matcher{{Path: "/login"}},
+			want: []Matcher{m("", "/login")},
 		},
 		{
 			name: "multi-arg host is a disjunction",
 			rule: "Host(`a.example.com`, `b.example.com`)",
 			want: []Matcher{
-				{Host: "a.example.com", FoldHostDot: true, Path: "/*"},
-				{Host: "b.example.com", FoldHostDot: true, Path: "/*"},
+				m("a.example.com", "/*"),
+				m("b.example.com", "/*"),
 			},
 		},
 		{
 			name: "or of hosts",
 			rule: "Host(`a.example.com`) || Host(`b.example.com`)",
 			want: []Matcher{
-				{Host: "a.example.com", FoldHostDot: true, Path: "/*"},
-				{Host: "b.example.com", FoldHostDot: true, Path: "/*"},
+				m("a.example.com", "/*"),
+				m("b.example.com", "/*"),
 			},
 		},
 		{
 			name: "and distributes over or",
 			rule: "(Host(`a.example.com`) || Host(`b.example.com`)) && PathPrefix(`/api`)",
 			want: []Matcher{
-				{Host: "a.example.com", FoldHostDot: true, Path: "/api", BytePrefix: true},
-				{Host: "b.example.com", FoldHostDot: true, Path: "/api", BytePrefix: true},
+				px("a.example.com", "/api"),
+				px("b.example.com", "/api"),
 			},
 		},
 		{
 			name: "double quotes",
 			rule: `Host("app.example.com")`,
-			want: []Matcher{{Host: "app.example.com", FoldHostDot: true, Path: "/*"}},
+			want: []Matcher{m("app.example.com", "/*")},
 		},
 		{
 			name: "pathprefix with trailing slash is a byte prefix of that slash",
 			rule: "PathPrefix(`/api/`)",
-			want: []Matcher{{Path: "/api/", BytePrefix: true}},
+			want: []Matcher{px("", "/api/")},
 		},
 		{
 			name: "root pathprefix",
 			rule: "PathPrefix(`/`)",
-			want: []Matcher{{Path: "/*"}},
+			want: []Matcher{m("", "/*")},
 		},
 		{
 			name: "same host conjunction intersects",
 			rule: "Host(`a.example.com`) && Host(`a.example.com`)",
-			want: []Matcher{{Host: "a.example.com", FoldHostDot: true, Path: "/*"}},
+			want: []Matcher{m("a.example.com", "/*")},
 		},
 		{
 			name: "single quotes",
 			rule: "Host('a.example.com')",
-			want: []Matcher{{Host: "a.example.com", FoldHostDot: true, Path: "/*"}},
+			want: []Matcher{m("a.example.com", "/*")},
 		},
 		{
 			name: "and binds tighter than or",
 			rule: "Host(`a.example.com`) && PathPrefix(`/x`) || Host(`b.example.com`)",
 			want: []Matcher{
-				{Host: "a.example.com", FoldHostDot: true, Path: "/x", BytePrefix: true},
-				{Host: "b.example.com", FoldHostDot: true, Path: "/*"},
+				px("a.example.com", "/x"),
+				m("b.example.com", "/*"),
 			},
 		},
 		{
 			name: "hosts are lowercased",
 			rule: "Host(`APP.Example.COM`)",
-			want: []Matcher{{Host: "app.example.com", FoldHostDot: true, Path: "/*"}},
+			want: []Matcher{m("app.example.com", "/*")},
 		},
 		{
-			name: "trailing host dot is canonicalized",
+			name: "trailing host dot is preserved",
 			rule: "Host(`app.example.com.`)",
-			want: []Matcher{{Host: "app.example.com", FoldHostDot: true, Path: "/*"}},
+			want: []Matcher{m("app.example.com.", "/*")},
 		},
 		{
-			name: "only one trailing host dot is canonicalized",
+			name: "multiple trailing host dots stay",
 			rule: "Host(`app.example.com...`)",
-			want: []Matcher{{Host: "app.example.com..", FoldHostDot: true, Path: "/*"}},
+			want: []Matcher{m("app.example.com...", "/*")},
 		},
 	}
 	for _, tt := range tests {
@@ -133,6 +133,11 @@ func TestParseRuleErrors(t *testing.T) {
 		{"header matcher", "Header(`X-Foo`, `bar`)", "not supported"},
 		{"trailing garbage", "Host(`a`) Host(`b`)", "unexpected"},
 		{"empty rule", "", "end of rule"},
+		{"missing comma between args", "Host(`a``b`)", "comma"},
+		{"wildcard host", "Host(`*`)", "not a literal host"},
+		{"wildcard host suffix", "Host(`*.example.com`)", "not a literal host"},
+		{"percent path", "Path(`/a%20b`)", "not a literal path"},
+		{"percent pathprefix", "PathPrefix(`/a%20b`)", "not a literal path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -184,20 +189,20 @@ func TestParseRuleExpansionCap(t *testing.T) {
 }
 
 func TestMatcherEqual(t *testing.T) {
-	base := Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"auth", "strip"}}
+	base := Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth", "strip"}}
 	cases := []struct {
 		name string
 		m    Matcher
 		want bool
 	}{
-		{"identical", Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"auth", "strip"}}, true},
-		{"different host", Matcher{Host: "b.example.com", Path: "/api/*", Middlewares: []string{"auth", "strip"}}, false},
-		{"different path", Matcher{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth", "strip"}}, false},
-		{"different host semantics", Matcher{Host: "a.example.com", FoldHostDot: true, Path: "/api/*", Middlewares: []string{"auth", "strip"}}, false},
-		{"different middlewares", Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"auth"}}, false},
+		{"identical", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth", "strip"}}, true},
+		{"different host", Matcher{Host: "b.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth", "strip"}}, false},
+		{"different path", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/*", PathKind: PathAny, Middlewares: []string{"auth", "strip"}}, false},
+		{"different host semantics", Matcher{Host: "a.example.com", HostKind: HostTraefik, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth", "strip"}}, false},
+		{"different middlewares", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth"}}, false},
 		// Middleware order is semantic: order-only differences are
 		// different routes, never silently collapsed.
-		{"reordered middlewares", Matcher{Host: "a.example.com", Path: "/api/*", Middlewares: []string{"strip", "auth"}}, false},
+		{"reordered middlewares", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"strip", "auth"}}, false},
 	}
 	for _, tc := range cases {
 		if got := base.Equal(tc.m); got != tc.want {

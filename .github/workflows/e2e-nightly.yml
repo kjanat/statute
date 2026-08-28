@@ -36,7 +36,7 @@ jobs:
         if: always()
         run: |
           leaked="$(docker ps -aq --filter label=statute.e2e=1)"
-          if [ -n "${leaked}" ]; then
+          if [[ -n "${leaked}" ]]; then
             echo "leaked containers: ${leaked}"
             printf '%s\n' "${leaked}" | xargs -r docker rm -f
             exit 1
@@ -88,7 +88,7 @@ jobs:
         if: always()
         run: |
           leaked="$(docker ps -aq --filter label=statute.e2e=1)"
-          if [ -n "${leaked}" ]; then
+          if [[ -n "${leaked}" ]]; then
             echo "leaked containers: ${leaked}"
             printf '%s\n' "${leaked}" | xargs -r docker rm -f
             exit 1

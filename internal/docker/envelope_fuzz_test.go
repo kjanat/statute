@@ -5,25 +5,10 @@ import (
 	"testing"
 )
 
-// matchesRequest mirrors the dispatcher: an empty host matches any host
-// and is otherwise compared case-insensitively after a trailing FQDN dot
-// is stripped. A BytePrefix matcher is Traefik PathPrefix (HasPrefix);
-// a trailing "/*" is statute's segment-aware prefix. Duplicated because
-// internal/docker cannot import the server package.
+// matchesRequest uses the same Matcher.Match the dispatcher compiles onto
+// compiledRoute. Duplicated here only as a name the fuzz target already uses.
 func matchesRequest(mt Matcher, host, path string) bool {
-	if mt.FoldHostDot {
-		host = strings.TrimSuffix(host, ".")
-	}
-	if mt.Host != "" && !strings.EqualFold(mt.Host, host) {
-		return false
-	}
-	if mt.BytePrefix {
-		return strings.HasPrefix(path, mt.Path)
-	}
-	if before, ok := strings.CutSuffix(mt.Path, "/*"); ok {
-		return before == "" || path == before || strings.HasPrefix(path, before+"/")
-	}
-	return mt.Path == path
+	return mt.Match(host, path)
 }
 
 // matchesAny reports whether any matcher in the set matches the request.
@@ -37,19 +22,18 @@ func matchesAny(ms []Matcher, host, path string) bool {
 }
 
 // probeRequests builds requests that exercise a matcher's own boundaries:
-// its host in several spellings the dispatcher folds together, and the
-// paths at and below its pattern.
+// its host in the spellings Traefik folds together, and the paths at and
+// below its pattern, including the byte-prefix hole past a segment boundary.
 func probeRequests(mt Matcher) [][2]string {
-	hosts := []string{"", "other.example.com", "a.example.com"}
-	if mt.Host != "" {
-		hosts = append(hosts, mt.Host, strings.ToUpper(mt.Host), mt.Host+".")
-	}
+	hosts := hostWitnesses(mt)
 	paths := []string{"/", "/x", "/api", "/api/v1/keys", "/login"}
-	if mt.BytePrefix {
+	switch mt.PathKind {
+	case PathByte:
 		paths = append(paths, mt.Path, mt.Path+"/", mt.Path+"/deep/leaf", mt.Path+"foo")
-	} else if before, ok := strings.CutSuffix(mt.Path, "/*"); ok {
+	case PathSegment:
+		before, _ := strings.CutSuffix(mt.Path, "/*")
 		paths = append(paths, before, before+"/", before+"/deep/leaf", before+"foo")
-	} else {
+	default:
 		paths = append(paths, mt.Path, mt.Path+"/x")
 	}
 	out := make([][2]string, 0, len(hosts)*len(paths))
@@ -84,7 +68,11 @@ func FuzzRuleEnvelope(f *testing.F) {
 		"Path(`/a`) && Path(`/b`)",
 		"HostRegexp(`^a.*`) && PathPrefix(`/api`)",
 		"Host(`a.example.com.`)",
-		"Host(`0...``0`)",
+		"Host(`0.`, `0`)",
+		"Host(`0..`, `0`)",
+		"Host(`0..``0`)",
+		"Host(`*`)",
+		"Host(`*.example.com`)",
 		"Path(`/a%20b`)",
 		"Host(`a` && Path(`/x`)",
 		"Host()",

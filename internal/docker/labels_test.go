@@ -60,8 +60,8 @@ func TestExtractNativeFull(t *testing.T) {
 	want := []Service{{
 		Name: "api",
 		Routes: []Matcher{
-			{Host: "api.example.com", Path: "/v1/*"},
-			{Host: "alt.example.com", Path: "/v1/*"},
+			native("api.example.com", "/v1/*"),
+			native("alt.example.com", "/v1/*"),
 		},
 		Backend:             Backend{Address: "https://172.17.0.2:9000", Weight: 3},
 		Strategy:            "least_connections",
@@ -88,8 +88,8 @@ func TestExtractNativeNamedRoutes(t *testing.T) {
 		t.Fatalf("got %d services", len(svcs))
 	}
 	want := []Matcher{
-		{Host: "app.example.com", Path: "/*"},
-		{Host: "admin.example.com", Path: "/admin/*"},
+		native("app.example.com", "/*"),
+		native("admin.example.com", "/admin/*"),
 	}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
@@ -156,7 +156,7 @@ func TestExtractHostFragments(t *testing.T) {
 		"statute.host":   "API.example.com,",
 	})
 	svcs, _, _ := Extract(c, ExtractOptions{})
-	want := []Matcher{{Host: "api.example.com", Path: "/*"}}
+	want := []Matcher{native("api.example.com", "/*")}
 	if len(svcs) != 1 || !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
@@ -389,7 +389,7 @@ func TestExtractTraefik(t *testing.T) {
 	if svc.Backend.Address != "172.17.0.2:9000" {
 		t.Errorf("Address = %q", svc.Backend.Address)
 	}
-	want := []Matcher{{Host: "app.example.com", FoldHostDot: true, Path: "/api", BytePrefix: true}}
+	want := []Matcher{px("app.example.com", "/api")}
 	if !reflect.DeepEqual(svc.Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svc.Routes, want)
 	}
@@ -486,7 +486,7 @@ func TestExtractTraefikMiddlewares(t *testing.T) {
 	if len(svcs) != 1 {
 		t.Fatalf("router with middlewares label was dropped: %+v", svcs)
 	}
-	want := []Matcher{{Host: "a.example.com", FoldHostDot: true, Path: "/*", Middlewares: []string{"auth@docker"}}}
+	want := []Matcher{withMW(m("a.example.com", "/*"), "auth@docker")}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
@@ -533,8 +533,8 @@ func TestExtractTraefikRouterScopedMiddlewares(t *testing.T) {
 		t.Fatalf("got %d services: %+v", len(svcs), svcs)
 	}
 	want := []Matcher{
-		{Host: "a.example.com", FoldHostDot: true, Path: "/*", Middlewares: []string{"auth@file"}},
-		{Host: "b.example.com", FoldHostDot: true, Path: "/*"},
+		withMW(m("a.example.com", "/*"), "auth@file"),
+		m("b.example.com", "/*"),
 	}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)

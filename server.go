@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/crypto/acme/autocert"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -808,15 +809,11 @@ func joinErrors(ch <-chan error) error {
 type compiledRoute struct {
 	route   *resolved.Route
 	handler http.Handler
+	// matcher is the compiled host/path IR used directly by the dispatcher.
+	matcher docker.Matcher
 	// clientPrefixes is the parsed form of the route's ClientIPCIDRs; empty
 	// means the route matches any client.
 	clientPrefixes []netip.Prefix
-	// bytePrefix reports that route.Pattern is a Traefik PathPrefix and
-	// matches with strings.HasPrefix. Statute Match("/x/*") stays segment-aware.
-	bytePrefix bool
-	// foldHostDot is Traefik-only: dotted and undotted FQDN spellings match.
-	// Static and native statute hosts stay exact.
-	foldHostDot bool
 }
 
 // findHandler returns the first route matching host, path, and — for routes
@@ -848,16 +845,7 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 }
 
 func routeMatchesRequest(c compiledRoute, host, path string) bool {
-	if c.foldHostDot {
-		host = strings.TrimSuffix(host, ".")
-	}
-	if c.route.Host != "" && !strings.EqualFold(c.route.Host, host) {
-		return false
-	}
-	if c.bytePrefix {
-		return strings.HasPrefix(path, c.route.Pattern)
-	}
-	return matchPattern(c.route.Pattern, path)
+	return c.matcher.Match(host, path)
 }
 
 // tombstoneHandler is the one fixed refusal every tombstone serves: the
@@ -903,6 +891,7 @@ func (s *server) buildRouter() http.Handler {
 		static = append(static, compiledRoute{
 			route:          r,
 			handler:        h,
+			matcher:        docker.CompileNative(r.Host, r.Pattern),
 			clientPrefixes: mustParsePrefixes(r.ClientIPCIDRs),
 		})
 	}

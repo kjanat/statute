@@ -2,19 +2,10 @@ package docker
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
-
-// m is shorthand for one Traefik envelope element; an empty host means any
-// host and therefore needs no host-normalization marker.
-func m(host, path string) Matcher {
-	return Matcher{Host: host, FoldHostDot: host != "", Path: path}
-}
-
-func px(host, path string) Matcher {
-	return Matcher{Host: host, FoldHostDot: host != "", Path: path, BytePrefix: true}
-}
 
 func global() []Matcher { return []Matcher{m("", "/*")} }
 
@@ -275,6 +266,18 @@ func TestRuleEnvelope(t *testing.T) {
 			want: global(),
 			why:  "req.URL.Path is percent-decoded, so the literal under-refuses in both directions",
 		}, {
+			rule: "Host(`*`)",
+			want: global(),
+			why:  "Host star is Traefik's any-host matcher; a literal star would under-refuse",
+		}, {
+			rule: "Host(`*.example.com`)",
+			want: global(),
+			why:  "statute has no wildcard-host matcher, so the envelope cannot mine a suffix",
+		}, {
+			rule: "Host(`*`) && PathPrefix(`/api`)",
+			want: []Matcher{px("", "/api")},
+			why:  "the unreadable host drops, the PathPrefix conjunct still bounds the rule",
+		}, {
 			rule: hostsRule(65),
 			want: global(),
 			why:  "no proper subset of 65 hosts is a superset of their union, and splitting reintroduces route-table inflation",
@@ -333,8 +336,8 @@ func TestEnvelopeOfNormalizesLiterals(t *testing.T) {
 		{"percent escape", []Matcher{m("a.example.com", "/a%20b")}, []Matcher{m("a.example.com", "/*")}},
 		{"absorption", []Matcher{m("a.example.com", "/x/*"), m("", "/x/*")}, []Matcher{m("", "/x/*")}},
 		{"global absorbs", []Matcher{m("a.example.com", "/x"), m("", "/*")}, global()},
-		{"middleware stripped", []Matcher{{Host: "a", Path: "/*", Middlewares: []string{"auth"}}}, []Matcher{{Host: "a", Path: "/*"}}},
-		{"native host spelling preserved", []Matcher{{Host: "a.example.com.", Path: "/*"}}, []Matcher{{Host: "a.example.com.", Path: "/*"}}},
+		{"middleware stripped", []Matcher{{Host: "a", HostKind: HostExact, Path: "/*", PathKind: PathAny, Middlewares: []string{"auth"}}}, []Matcher{native("a", "/*")}},
+		{"native host spelling preserved", []Matcher{native("a.example.com.", "/*")}, []Matcher{native("a.example.com.", "/*")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -348,9 +351,9 @@ func TestEnvelopeOfNormalizesLiterals(t *testing.T) {
 
 func TestEnvelopeOfMixedPathSemantics(t *testing.T) {
 	t.Parallel()
-	segment := Matcher{Path: "/api/*"}
-	bytePrefix := Matcher{Path: "/api", BytePrefix: true}
-	bytePrefixSlash := Matcher{Path: "/api/", BytePrefix: true}
+	segment := Matcher{Path: "/api/*", PathKind: PathSegment}
+	bytePrefix := Matcher{Path: "/api", PathKind: PathByte}
+	bytePrefixSlash := Matcher{Path: "/api/", PathKind: PathByte}
 
 	tests := []struct {
 		name string
@@ -360,6 +363,9 @@ func TestEnvelopeOfMixedPathSemantics(t *testing.T) {
 		{"byte prefix covers equal-base segment prefix", []Matcher{segment, bytePrefix}, []Matcher{bytePrefix}},
 		{"absorption is order independent", []Matcher{bytePrefix, segment}, []Matcher{bytePrefix}},
 		{"segment prefix covers byte prefix below boundary", []Matcher{segment, bytePrefixSlash}, []Matcher{segment}},
+		{"native exact host is absorbed by Traefik host", []Matcher{native("a.example.com", "/*"), m("a.example.com", "/*")}, []Matcher{m("a.example.com", "/*")}},
+		{"native extra-dot host is absorbed by Traefik undotted host", []Matcher{native("a.example.com.", "/*"), m("a.example.com", "/*")}, []Matcher{m("a.example.com", "/*")}},
+		{"native double-dot host is not absorbed by Traefik undotted host", []Matcher{native("a.example.com..", "/*"), m("a.example.com", "/*")}, []Matcher{m("a.example.com", "/*"), native("a.example.com..", "/*")}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -373,11 +379,9 @@ func TestEnvelopeOfMixedPathSemantics(t *testing.T) {
 
 func TestRuleEnvelopeKeepsDistinctSingleDotHosts(t *testing.T) {
 	t.Parallel()
-	rule := "Host(`0..``0`)"
-	want := []Matcher{
-		{Host: "0", FoldHostDot: true, Path: "/*"},
-		{Host: "0.", FoldHostDot: true, Path: "/*"},
-	}
+	// Host("0.") matches 0, 0., and 0..; Host("0") is a subset and absorbs.
+	rule := "Host(`0.`, `0`)"
+	want := []Matcher{m("0.", "/*")}
 	if got := RuleEnvelope(rule); !matchersEqual(got, want) {
 		t.Fatalf("RuleEnvelope(%q) = %+v, want %+v", rule, got, want)
 	}
@@ -385,22 +389,23 @@ func TestRuleEnvelopeKeepsDistinctSingleDotHosts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRule(%q): %v", rule, err)
 	}
+	env := RuleEnvelope(rule)
 	for _, mt := range routes {
 		for _, req := range probeRequests(mt) {
 			host, path := req[0], req[1]
-			if matchesRequest(mt, host, path) && !matchesAny(RuleEnvelope(rule), host, path) {
+			if matchesRequest(mt, host, path) && !matchesAny(env, host, path) {
 				t.Fatalf("request %q %q matches %+v but misses the envelope", host, path, mt)
 			}
 		}
 	}
 }
 
-func TestRuleEnvelopeCanonicalizesTraefikHostOnce(t *testing.T) {
+func TestRuleEnvelopeKeepsExactDoubleDotAndZeroRegression(t *testing.T) {
 	t.Parallel()
-	rule := "Host(`0...``0`)"
+	rule := "Host(`0..`, `0`)"
 	want := []Matcher{
-		{Host: "0", FoldHostDot: true, Path: "/*"},
-		{Host: "0..", FoldHostDot: true, Path: "/*"},
+		m("0", "/*"),
+		m("0..", "/*"),
 	}
 	if got := RuleEnvelope(rule); !matchersEqual(got, want) {
 		t.Fatalf("RuleEnvelope(%q) = %+v, want %+v", rule, got, want)
@@ -408,13 +413,5 @@ func TestRuleEnvelopeCanonicalizesTraefikHostOnce(t *testing.T) {
 }
 
 func matchersEqual(a, b []Matcher) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !a[i].Equal(b[i]) {
-			return false
-		}
-	}
-	return true
+	return slices.EqualFunc(a, b, Matcher.Equal)
 }

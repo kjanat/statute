@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -207,8 +208,8 @@ func TestDockerSyncTraefikLabels(t *testing.T) {
 		t.Fatalf("routes = %+v", tab.routes)
 	}
 	r := tab.routes[0].route
-	if r.Host != "legacy.example.com" || r.Pattern != "/api" || !tab.routes[0].bytePrefix {
-		t.Fatalf("route = %+v bytePrefix=%v", r, tab.routes[0].bytePrefix)
+	if r.Host != "legacy.example.com" || r.Pattern != "/api" || tab.routes[0].matcher.PathKind != docker.PathByte {
+		t.Fatalf("route = %+v matcher=%+v", r, tab.routes[0].matcher)
 	}
 	if r.Upstream.Name != "app@traefik" || r.Upstream.Backends[0].Address != "10.0.0.9:3000" {
 		t.Fatalf("upstream = %+v", r.Upstream)
@@ -323,7 +324,8 @@ func TestDockerTraefikRuleTruthMatrix(t *testing.T) {
 		hits   [][2]string
 		misses [][2]string
 	}{
-		{"host", "Host(`a.example.com`)", [][2]string{{"a.example.com", "/x"}, {"a.example.com.", "/x"}}, [][2]string{{"b.example.com", "/x"}}},
+		{"host", "Host(`a.example.com`)", [][2]string{{"a.example.com", "/x"}, {"a.example.com.", "/x"}}, [][2]string{{"b.example.com", "/x"}, {"a.example.com..", "/x"}}},
+		{"host trailing dot", "Host(`a.example.com.`)", [][2]string{{"a.example.com", "/x"}, {"a.example.com.", "/x"}, {"a.example.com..", "/x"}}, [][2]string{{"b.example.com", "/x"}, {"a.example.com...", "/x"}}},
 		{"path", "Path(`/only`)", [][2]string{{"any.example.com", "/only"}}, [][2]string{{"any.example.com", "/only/x"}}},
 		{"path prefix", "PathPrefix(`/api`)", [][2]string{{"any.example.com", "/api"}, {"any.example.com", "/api-secret"}}, [][2]string{{"any.example.com", "/ap"}}},
 		{"multi argument host", "Host(`a.example.com`, `b.example.com`)", [][2]string{{"a.example.com", "/"}, {"b.example.com", "/"}}, [][2]string{{"c.example.com", "/"}}},

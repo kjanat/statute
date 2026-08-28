@@ -386,9 +386,8 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 				Upstream:   rp,
 				Middleware: rc.mws,
 			},
-			handler:     wrapMiddleware(rc.mws, running.handler),
-			bytePrefix:  rc.m.BytePrefix,
-			foldHostDot: rc.m.FoldHostDot,
+			handler: wrapMiddleware(rc.mws, running.handler),
+			matcher: rc.m,
 		})
 	}
 	return tombs
@@ -416,10 +415,9 @@ func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute 
 	out := make([]compiledRoute, 0, len(env))
 	for _, m := range env {
 		out = append(out, compiledRoute{
-			route:       &resolved.Route{Pattern: m.Path, Host: m.Host},
-			handler:     tombstoneHandler,
-			bytePrefix:  m.BytePrefix,
-			foldHostDot: m.FoldHostDot,
+			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
+			handler: tombstoneHandler,
+			matcher: m,
 		})
 	}
 	return out
@@ -597,12 +595,12 @@ func poolFingerprint(rp *resolved.Pool) string {
 // then lexicographic as the tiebreak.
 func sortDynamicRoutes(routes []compiledRoute) {
 	sort.SliceStable(routes, func(i, j int) bool {
-		a, b := routes[i].route, routes[j].route
+		a, b := routes[i].matcher, routes[j].matcher
 		if (a.Host != "") != (b.Host != "") {
 			return a.Host != ""
 		}
-		aExact, aLen, aKind := dynamicPatternSpecificity(routes[i])
-		bExact, bLen, bKind := dynamicPatternSpecificity(routes[j])
+		aExact, aLen, aKind := dynamicPatternSpecificity(a)
+		bExact, bLen, bKind := dynamicPatternSpecificity(b)
 		if aExact != bExact {
 			return aExact
 		}
@@ -615,10 +613,10 @@ func sortDynamicRoutes(routes []compiledRoute) {
 		if a.Host != b.Host {
 			return a.Host < b.Host
 		}
-		if a.Pattern != b.Pattern {
-			return a.Pattern < b.Pattern
+		if a.Path != b.Path {
+			return a.Path < b.Path
 		}
-		return a.Upstream.Name < b.Upstream.Name
+		return routes[i].route.Upstream.Name < routes[j].route.Upstream.Name
 	})
 }
 
@@ -626,12 +624,14 @@ func sortDynamicRoutes(routes []compiledRoute) {
 // dynamic route. Exact paths outrank prefixes. Among prefixes, a longer
 // constrained byte sequence is narrower; at an equal base, statute's
 // segment prefix is narrower than Traefik's byte prefix.
-func dynamicPatternSpecificity(route compiledRoute) (exact bool, prefixLen, kind int) {
-	if route.bytePrefix {
-		return false, len(route.route.Pattern), 0
-	}
-	if prefix, ok := strings.CutSuffix(route.route.Pattern, "/*"); ok {
+func dynamicPatternSpecificity(m docker.Matcher) (exact bool, prefixLen, kind int) {
+	switch m.PathKind {
+	case docker.PathByte:
+		return false, len(m.Path), 0
+	case docker.PathSegment, docker.PathAny:
+		prefix, _ := strings.CutSuffix(m.Path, "/*")
 		return false, len(prefix), 1
+	default:
+		return true, len(m.Path), 2
 	}
-	return true, len(route.route.Pattern), 2
 }

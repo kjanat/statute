@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -28,11 +29,11 @@ func tombstoneSet(t *testing.T, srv *server) []string {
 		if c.route.Upstream != nil || len(c.route.Middleware) > 0 || len(c.clientPrefixes) > 0 {
 			t.Errorf("tombstone carries routing state: %+v", c.route)
 		}
-		pat := c.route.Pattern
-		if c.bytePrefix {
+		pat := c.matcher.Path
+		if c.matcher.PathKind == docker.PathByte {
 			pat += "*"
 		}
-		out = append(out, fmt.Sprintf("%s %s", c.route.Host, pat))
+		out = append(out, fmt.Sprintf("%s %s", c.matcher.Host, pat))
 	}
 	sort.Strings(out)
 	return out
@@ -310,7 +311,43 @@ func TestDockerTombstoneEnvelopes(t *testing.T) {
 				},
 			},
 			want: []string{"ph.example.com /*"},
-			why:  "ParseRule keeps the placeholder verbatim and the dispatcher compares it byte for byte, so a tombstone carrying it would refuse nothing",
+			why:  "a placeholder path is rejected, so only the host bounds the tombstone",
+		}, {
+			name: "wildcard host is global",
+			cfg:  resolved.Docker{TraefikLabels: true},
+			container: fakeDaemonContainer{
+				name: "star-1", ip: "10.0.0.9", port: 3000,
+				labels: map[string]string{
+					"traefik.enable":                 "true",
+					"traefik.http.routers.star.rule": "Host(`*`)",
+				},
+			},
+			want: []string{" /*"},
+			why:  "Host star is Traefik any-host; a literal star would miss every real hostname into Fallback",
+		}, {
+			name: "wildcard host keeps a sibling path",
+			cfg:  resolved.Docker{TraefikLabels: true},
+			container: fakeDaemonContainer{
+				name: "starpath-1", ip: "10.0.0.9", port: 3000,
+				labels: map[string]string{
+					"traefik.enable":                     "true",
+					"traefik.http.routers.starpath.rule": "Host(`*`) && PathPrefix(`/private`)",
+				},
+			},
+			want: []string{" /private*"},
+			why:  "the host is unreadable, the PathPrefix still bounds every host",
+		}, {
+			name: "percent path widens to its host",
+			cfg:  resolved.Docker{TraefikLabels: true},
+			container: fakeDaemonContainer{
+				name: "pct-1", ip: "10.0.0.9", port: 3000,
+				labels: map[string]string{
+					"traefik.enable":                "true",
+					"traefik.http.routers.pct.rule": "Host(`pct.example.com`) && Path(`/a%20b`)",
+				},
+			},
+			want: []string{"pct.example.com /*"},
+			why:  "req.URL.Path is percent-decoded, so the encoded literal would refuse nothing a client can send",
 		},
 	}
 	for _, tc := range cases {
@@ -347,7 +384,7 @@ func TestDockerTombstoneRefusesBeforeFallback(t *testing.T) {
 	if rec.Code != http.StatusNotFound || calls.Load() != 0 {
 		t.Errorf("refused request: code=%d calls=%d, want 404 with the fallback untouched", rec.Code, calls.Load())
 	}
-	// The trailing FQDN dot is stripped before the tombstone tier compares.
+	// Traefik Host() folds one trailing FQDN dot on the request.
 	rec = runRequest(t, router, httptest.NewRequest("GET", "http://vault.example.com./secret", nil))
 	if rec.Code != http.StatusNotFound || calls.Load() != 0 {
 		t.Errorf("absolute host: code=%d calls=%d, want 404 with the fallback untouched", rec.Code, calls.Load())
@@ -620,7 +657,7 @@ func TestDockerTraefikPathPrefixAndHostDotServe(t *testing.T) {
 	mustSync(t, p)
 	router := srv.buildRouter()
 
-	for _, reqHost := range []string{"admin.example.com", "admin.example.com."} {
+	for _, reqHost := range []string{"admin.example.com", "admin.example.com.", "admin.example.com.."} {
 		rec := runRequest(t, router, httptest.NewRequest("GET", "http://"+reqHost+"/admin-secret", nil))
 		if rec.Code != http.StatusOK || rec.Body.String() != "served" {
 			t.Errorf("host %q /admin-secret: code=%d body=%q, want the backend", reqHost, rec.Code, rec.Body.String())

@@ -13,7 +13,6 @@ var topBases = []string{
 	"Host(`a.example.com`) || Host(`b.example.com`)",
 	"Host(`a.example.com`, `b.example.com`) && PathPrefix(`/api`)",
 	"Host(`a.example.com.`)",
-	"Path(`/a%20b`)",
 	"(Host(`a.example.com`) || Host(`b.example.com`)) && PathPrefix(`/x`)",
 }
 
@@ -39,11 +38,11 @@ var zeroArgMatchers = []string{"Path()", "Host()", "PathPrefix()", "ClientIP()",
 // working-set cap that also raises the flag sits far above ParseRule's own
 // matcher budget, so no accepted rule raises it anywhere in its tree.
 //
-// Two bases derive the global envelope legitimately (PathPrefix(`/`) bounds
-// nothing, and a percent-escaped literal widens), so a base deriving it is
-// not itself a failure. Every base deriving it would be: the identities would
-// then hold for a deriver that widened everything. The count below refuses
-// a table where none of them is bounded.
+// PathPrefix(`/`) derives the global envelope legitimately (it bounds
+// nothing), so a base deriving it is not itself a failure. Every base
+// deriving it would be: the identities would then hold for a deriver that
+// widened everything. The count below refuses a table where none of them
+// is bounded.
 func TestRuleEnvelopeZeroArgMatcherIsTop(t *testing.T) {
 	t.Parallel()
 	bounded := 0

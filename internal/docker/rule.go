@@ -6,20 +6,13 @@ import (
 	"strings"
 )
 
-// Matcher is one flattened route matcher produced from a Traefik router
-// rule: an optional host plus a path constraint. A rule expands to one or
-// more matchers (disjunctions become separate matchers).
+// Matcher is one compiled route matcher: a host kind plus a path kind.
+// After compile the kinds are the comparison the dispatcher runs.
 type Matcher struct {
-	Host string
-	// FoldHostDot reports a Traefik Host matcher: dotted and undotted FQDN
-	// spellings are equivalent. Native statute labels stay exact-host.
-	FoldHostDot bool
-	// Path is exact ("/login"), statute "/api/*", or a Traefik PathPrefix
-	// ("/api") when BytePrefix is set. Host-only rules default to "/*".
-	Path string
-	// BytePrefix reports that Path is a Traefik PathPrefix and matches
-	// with strings.HasPrefix. Statute Match("/x/*") stays segment-aware.
-	BytePrefix bool
+	Host     string
+	HostKind HostKind
+	Path     string
+	PathKind PathKind
 	// Middlewares are names of code-registered middleware chains the
 	// originating router referenced, in label order. They are
 	// router-scoped, as in Traefik: matchers derived from different
@@ -32,7 +25,7 @@ type Matcher struct {
 // Equal reports whether two matchers match the same traffic and carry the
 // same middleware references.
 func (m Matcher) Equal(o Matcher) bool {
-	return m.Host == o.Host && m.FoldHostDot == o.FoldHostDot && m.Path == o.Path && m.BytePrefix == o.BytePrefix && slices.Equal(m.Middlewares, o.Middlewares)
+	return m.Host == o.Host && m.HostKind == o.HostKind && m.Path == o.Path && m.PathKind == o.PathKind && slices.Equal(m.Middlewares, o.Middlewares)
 }
 
 // maxRuleMatchers caps the disjunctive expansion of a single rule so a
@@ -74,19 +67,19 @@ func conjsToMatchers(conjs []conj) ([]Matcher, error) {
 	var out []Matcher
 	for _, c := range conjs {
 		path := "/*"
-		bytePrefix := false
+		pathKind := PathAny
 		if c.pathSet {
 			if c.prefix {
-				// PathPrefix(`/`) is every HTTP path; keep the statute
-				// catch-all so absorption and logs stay one form.
 				if c.path == "/" {
 					path = "/*"
+					pathKind = PathAny
 				} else {
 					path = c.path
-					bytePrefix = true
+					pathKind = PathByte
 				}
 			} else {
 				path = c.path
+				pathKind = PathExact
 			}
 		}
 		hosts := c.hosts
@@ -94,11 +87,13 @@ func conjsToMatchers(conjs []conj) ([]Matcher, error) {
 			hosts = []string{""}
 		}
 		for _, h := range hosts {
-			// HTTP hosts are case-insensitive; store the canonical
-			// lowercase, undotted Traefik form so matching and dedupe
-			// are consistent. Host-less rules need no host semantics.
-			h = strings.ToLower(strings.TrimSuffix(h, "."))
-			out = append(out, Matcher{Host: h, FoldHostDot: h != "", Path: path, BytePrefix: bytePrefix})
+			h = strings.ToLower(h)
+			m := Matcher{Path: path, PathKind: pathKind}
+			if h != "" {
+				m.Host = h
+				m.HostKind = HostTraefik
+			}
+			out = append(out, m)
 			if len(out) > maxRuleMatchers {
 				return nil, fmt.Errorf("rule expands to more than %d matchers", maxRuleMatchers)
 			}
@@ -224,8 +219,15 @@ func isRuleIdentChar(c byte) bool {
 // Traefik compatibility: accepting them as byte-for-byte patterns would
 // under-match and leak into Config.Fallback.
 func rulePathArg(name, a string) error {
-	if !literalArg(a) || !strings.HasPrefix(a, "/") {
+	if !literalArg(a) || !strings.HasPrefix(a, "/") || pathHasPercent(a) {
 		return fmt.Errorf("rule: %s() argument %q is not a literal path", name, a)
+	}
+	return nil
+}
+
+func ruleHostArg(a string) error {
+	if a == "" || traefikHostForbidden(a) || !isASCII(a) {
+		return fmt.Errorf("rule: Host() argument %q is not a literal host", a)
 	}
 	return nil
 }
@@ -331,6 +333,11 @@ func (e fnExpr) expand() ([]conj, error) {
 	}
 	switch e.name {
 	case "Host":
+		for _, a := range e.args {
+			if err := ruleHostArg(a); err != nil {
+				return nil, err
+			}
+		}
 		return []conj{{hosts: e.args}}, nil
 	case "Path", pathPrefixMatcher:
 		return expandPathMatcher(e.name, e.args, e.name == pathPrefixMatcher)
@@ -448,8 +455,20 @@ func (p *ruleParser) parseArgs(fn string) ([]string, error) {
 		case tokString:
 			args = append(args, at.val)
 			p.pos++
-			if ct, ok := p.peek(); ok && ct.kind == tokComma {
+			nt, ok := p.peek()
+			if !ok {
+				return nil, fmt.Errorf("rule: unterminated %s(", fn)
+			}
+			switch nt.kind {
+			case tokComma:
 				p.pos++
+				n2, ok := p.peek()
+				if !ok || n2.kind != tokString {
+					return nil, fmt.Errorf("rule: expected argument after comma in %s(", fn)
+				}
+			case tokRParen:
+			default:
+				return nil, fmt.Errorf("rule: expected comma or ) after %s() argument", fn)
 			}
 		case tokRParen:
 			p.pos++

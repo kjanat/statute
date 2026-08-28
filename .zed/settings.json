@@ -5,5 +5,5 @@
 {
   "formatter": [{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } }],
   "prettier": { "allowed": false },
-  "languages": { "Go": { "language_servers": ["gopls", "golangci-lint"] } },
+  "languages": { "Go": { "language_servers": ["gopls", "!golangci-lint"] } },
 }

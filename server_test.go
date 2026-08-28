@@ -19,6 +19,7 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -38,6 +39,25 @@ type testNetAddr string
 
 func (a testNetAddr) Network() string { return "tcp" }
 func (a testNetAddr) String() string  { return string(a) }
+
+func TestCompiledRouteDispatchesItsMatcherIR(t *testing.T) {
+	t.Parallel()
+	c := compiledRoute{
+		route: &resolved.Route{Host: "stale.example.com", Pattern: "/stale"},
+		matcher: docker.Matcher{
+			Host:     "live.example.com",
+			HostKind: docker.HostTraefik,
+			Path:     "/api",
+			PathKind: docker.PathByte,
+		},
+	}
+	if !routeMatchesRequest(c, "live.example.com.", "/api-secret") {
+		t.Fatal("compiled matcher did not drive dispatch")
+	}
+	if routeMatchesRequest(c, "stale.example.com", "/stale") {
+		t.Fatal("resolved route strings leaked back into dispatch")
+	}
+}
 
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
 // matches in declaration order; the first hit wins.

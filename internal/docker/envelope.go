@@ -111,15 +111,14 @@ func coarsenConjs(conjs []conj) []conj {
 	return out
 }
 
-// normalizeEnvelope widens the literals statute's dispatcher cannot compare
-// faithfully. Traefik-derived hosts were canonicalized once while rendering
-// the matcher; this stage only widens a non-ASCII host it cannot compare
-// faithfully. Native statute hosts remain exact. Patterns are matched against
-// the percent-decoded path, so a
+// normalizeEnvelope widens literals the dispatcher cannot compare
+// faithfully. Traefik hosts keep their configured spelling; a non-ASCII
+// Traefik host is dropped because the dispatcher compares ASCII. Native
+// hosts stay exact. Patterns match the percent-decoded path, so a
 // literal carrying an escape matches nothing a client can send while the
 // client's decoded path misses the tombstone. A placeholder or regexp
-// literal is the same failure by another route: matchPattern compares
-// "/api/{id:[0-9]+}" byte for byte, so it refuses nothing.
+// literal is the same hole: the dispatcher would compare it byte for byte
+// and refuse nothing.
 //
 // The widening has to happen here and not only in the deriver, because
 // which entry point reads a rule is decided by the stage the rejection
@@ -129,17 +128,18 @@ func coarsenConjs(conjs []conj) []conj {
 func normalizeEnvelope(ms []Matcher) []Matcher {
 	out := make([]Matcher, 0, len(ms))
 	for _, m := range ms {
-		if m.FoldHostDot && !isASCII(m.Host) {
+		if m.HostKind == HostTraefik && !isASCII(m.Host) {
 			m.Host = ""
+			m.HostKind = HostAny
 		}
 		if m.Host == "" {
-			m.FoldHostDot = false
+			m.HostKind = HostAny
 		}
 		// The trailing "/*" is the dispatcher's wildcard, cut before
 		// the literal is tested.
 		if lit, _ := strings.CutSuffix(m.Path, "/*"); strings.ContainsAny(lit, envMetaChars) || strings.Contains(lit, "%") {
 			m.Path = "/*"
-			m.BytePrefix = false
+			m.PathKind = PathAny
 		}
 		m.Middlewares = nil
 		out = append(out, m)
@@ -191,92 +191,12 @@ func sortMatchers(ms []Matcher) {
 		if a.Host != b.Host {
 			return strings.Compare(a.Host, b.Host)
 		}
-		if a.FoldHostDot != b.FoldHostDot {
-			if a.FoldHostDot {
-				return 1
-			}
-			return -1
+		if a.HostKind != b.HostKind {
+			return int(a.HostKind) - int(b.HostKind)
 		}
-		if a.BytePrefix != b.BytePrefix {
-			if a.BytePrefix {
-				return 1
-			}
-			return -1
+		if a.Path != b.Path {
+			return strings.Compare(a.Path, b.Path)
 		}
-		return strings.Compare(a.Path, b.Path)
+		return int(a.PathKind) - int(b.PathKind)
 	})
-}
-
-// matcherLE reports whether every request a matches is also matched by b.
-// An empty host is any host. PathPrefix is Traefik HasPrefix; a trailing
-// "/*" is statute's segment-aware prefix.
-func matcherLE(a, b Matcher) bool {
-	if !hostMatcherLE(a, b) {
-		return false
-	}
-	if b.BytePrefix {
-		return bytePrefixCovers(a, b.Path)
-	}
-	return statutePatternCovers(a, b.Path)
-}
-
-// hostMatcherLE reports whether every host accepted by a is accepted by b.
-// A Traefik host covers both its dotted and undotted FQDN spellings. A
-// native host is one exact spelling, so containment is directional when
-// the two matcher kinds are mixed.
-func hostMatcherLE(a, b Matcher) bool {
-	if b.Host == "" {
-		return true
-	}
-	if a.Host == "" {
-		return false
-	}
-	if !b.FoldHostDot {
-		return !a.FoldHostDot && strings.EqualFold(a.Host, b.Host)
-	}
-	if a.FoldHostDot {
-		// Each Traefik host matches stored and stored+"." after one
-		// request-side strip. Distinct stored forms are incomparable.
-		return strings.EqualFold(a.Host, b.Host)
-	}
-	return strings.EqualFold(strings.TrimSuffix(a.Host, "."), b.Host)
-}
-
-// bytePrefixCovers reports that every path a matches starts with prefix.
-func bytePrefixCovers(a Matcher, prefix string) bool {
-	if prefix == "/" {
-		return true
-	}
-	if a.BytePrefix {
-		return strings.HasPrefix(a.Path, prefix)
-	}
-	if before, ok := strings.CutSuffix(a.Path, "/*"); ok {
-		if before == "" {
-			return false
-		}
-		return strings.HasPrefix(before, prefix)
-	}
-	return strings.HasPrefix(a.Path, prefix)
-}
-
-// statutePatternCovers reports that every path a matches is matched by
-// statute pattern b (exact or trailing "/*").
-func statutePatternCovers(a Matcher, b string) bool {
-	bp, wildcard := strings.CutSuffix(b, "/*")
-	if !wildcard {
-		if a.BytePrefix {
-			return false
-		}
-		return a.Path == b
-	}
-	if bp == "" {
-		return true
-	}
-	if a.BytePrefix {
-		// PathPrefix(`/api`) also matches `/api-secret`. Equality with the
-		// segment base leaves that path uncovered.
-		return strings.HasPrefix(a.Path, bp+"/")
-	}
-	ap, _ := strings.CutSuffix(a.Path, "/*")
-	return ap == bp || strings.HasPrefix(ap, bp+"/")
 }
