@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+---
+name: wiki
+on:
+  push: { branches: [master], paths: ["docs/**", "scripts/wiki-sync.mjs", "mise.toml", ".github/workflows/wiki.yml"] }
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Overwrite Docs/ even when it was last changed by hand
+        type: boolean
+        default: false
+permissions: { contents: write }
+concurrency: { group: wiki, cancel-in-progress: false }
+jobs:
+  sync:
+    name: sync docs to wiki
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { repository: "${{ github.repository }}.wiki", path: wiki }
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with: { bootstrap: true, bootstrap_args: --yes, bootstrap_skip: repos }
+      # Docs/ belongs to this job, so any commit there it did not make is a
+      # hand edit that rendering would silently drop.
+      - name: refuse to overwrite a hand-edited page
+        if: ${{ !inputs.force }}
+        working-directory: wiki
+        run: |
+          set -euo pipefail
+          author="$(git log -1 --format='%an' -- Docs)"
+          if [[ -n "${author}" && "${author}" != 'github-actions[bot]' ]]; then
+            git log -1 --stat -- Docs
+            echo "::error::Docs/ was last changed by ${author}. Move that edit into docs/ in the repository, or re-run this workflow with force to discard it."
+            exit 1
+          fi
+      - { name: render docs into the wiki, run: node scripts/wiki-sync.mjs docs wiki }
+      - name: push
+        working-directory: wiki
+        env: { SHA: "${{ github.sha }}" }
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A Docs
+          if git diff --cached --quiet; then
+            echo 'wiki already matches docs/'
+            exit 0
+          fi
+          git commit -m "docs: sync from ${SHA}"
+          git push

@@ -116,10 +116,7 @@ jobs:
           rows="${RUNNER_TEMP}/pkgsite-rows.md"
           : > "${rows}"
           failed=0
-          fetch() {
-            curl --fail --silent --show-error --location --max-time 30 \
-              --retry 3 --retry-delay 5 --retry-connrefused "$1" -o "$2"
-          }
+          curl_opts=(-fsSL --max-time 30 --retry 3 --retry-delay 5 --retry-connrefused)
           record() { # name result detail
             if [[ "$2" == "fail" ]]; then
               failed=1
@@ -138,22 +135,28 @@ jobs:
           }
           jq --arg tag "${TAG}" 'first(.items[] | select(.version == $tag))' "${versions}" > "${item}"
           record "listed on pkg.go.dev" pass "${INDEX_WAIT:-indexed}"
-          assert_eq "hasGoMod" true "$(jq -r '.hasGoMod // false' "${item}")"
-          assert_eq "isRedistributable" true "$(jq -r '.isRedistributable // false' "${item}")"
-          assert_eq "retracted" false "$(jq -r '.retracted // false' "${item}")"
-          assert_eq "deprecated" false "$(jq -r '.deprecated // false' "${item}")"
-          if fetch "https://pkg.go.dev/v1/module/${CNAME}" "${module}"; then
+          has_go_mod="$(jq -r '.hasGoMod // false' "${item}")"
+          redistributable="$(jq -r '.isRedistributable // false' "${item}")"
+          retracted="$(jq -r '.retracted // false' "${item}")"
+          deprecated="$(jq -r '.deprecated // false' "${item}")"
+          assert_eq "hasGoMod" true "${has_go_mod}"
+          assert_eq "isRedistributable" true "${redistributable}"
+          assert_eq "retracted" false "${retracted}"
+          assert_eq "deprecated" false "${deprecated}"
+          if curl "${curl_opts[@]}" "https://pkg.go.dev/v1/module/${CNAME}" -o "${module}"; then
             module_version="$(jq -r '.version // ""' "${module}")"
             if [[ "${module_version}" == "${TAG}" ]]; then
-              assert_eq "latest version is ${TAG}" true "$(jq -r '.isLatest // false' "${module}")"
+              is_latest="$(jq -r '.isLatest // false' "${module}")"
+              assert_eq "latest version is ${TAG}" true "${is_latest}"
             else
               record "latest version is ${TAG}" skip "pkg.go.dev reports ${module_version} as latest; a newer tag was likely published while polling"
             fi
           else
             record "latest version is ${TAG}" fail "could not read /v1/module/${CNAME}"
           fi
-          if fetch "https://pkg.go.dev/v1/vulns/${CNAME}" "${vulns}"; then
-            assert_eq "known vulnerabilities" 0 "$(jq -r '.total // 0' "${vulns}")"
+          if curl "${curl_opts[@]}" "https://pkg.go.dev/v1/vulns/${CNAME}" -o "${vulns}"; then
+            total_vulns="$(jq -r '.total // 0' "${vulns}")"
+            assert_eq "known vulnerabilities" 0 "${total_vulns}"
           else
             record "known vulnerabilities" fail "could not read /v1/vulns/${CNAME}"
           fi

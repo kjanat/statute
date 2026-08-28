@@ -1,2 +1,5 @@
+[tools]
+node = "26"
+
 [bootstrap.repos]
 wiki = { url = "https://github.com/kjanat/statute.wiki.git" }
