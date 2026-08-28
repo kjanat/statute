@@ -517,8 +517,8 @@ func resolveDockerMiddleware(d *DockerConfig) (map[string][]resolved.Middleware,
 }
 
 // resolveDockerPoolPolicy validates and normalizes the code-owned policy map.
-// Service names are runtime discovery state, so exact-name matching happens
-// during reconciliation rather than here.
+// Service names exist only in runtime discovery state. Exact-name matching
+// therefore happens during reconciliation.
 func resolveDockerPoolPolicy(d *DockerConfig) (map[string]resolved.PoolPolicy, error) {
 	var out map[string]resolved.PoolPolicy
 	for _, name := range slices.Sorted(maps.Keys(d.poolPolicy)) {

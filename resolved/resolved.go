@@ -57,9 +57,8 @@ type Docker struct {
 	// DefaultMiddleware is applied to every Docker-discovered route,
 	// outermost — before label-referenced chains and label hints.
 	DefaultMiddleware []Middleware
-	// PoolPolicy is immutable, code-owned pool policy keyed by exact
-	// discovered-service identity. Docker still supplies the service's
-	// backends, strategy, and routes at runtime.
+	// PoolPolicy is immutable code-owned policy keyed by exact service identity;
+	// Docker supplies backends, strategy, and routes at runtime.
 	PoolPolicy map[string]PoolPolicy
 }
 

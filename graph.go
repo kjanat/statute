@@ -19,7 +19,7 @@ import (
 //   - Routes (rectangle, light yellow) — one per declared route.
 //   - Upstream pools (ellipse, green) — one per named pool.
 //   - Backends (circle, gray) — one per backend in each pool, dashed if Backup.
-//   - Docker pool policies (ellipse, dashed green) — one per code-owned policy.
+//   - Docker pool policies (ellipse, dashed green): one per code-owned policy.
 //   - The fallback (rectangle, light red): one, when Config.Fallback is set.
 //
 // Edges:
@@ -81,13 +81,13 @@ func graphDockerPoolPolicies(d *dotWriter, r *resolved.Config) {
 	sort.Strings(names)
 
 	d.printf("\n  // docker pool policies\n")
-	for _, name := range names {
+	for i, name := range names {
 		policy := r.Docker.PoolPolicy[name]
 		label := fmt.Sprintf("%s\\nDocker pool policy\\nhost=%s\\nhealth=%s\\ntransport=%s",
 			name, resolvedHostPolicyString(policy.UpstreamHost, policy.HostValue),
 			healthPolicyString(policy.HealthCheck, policy.PassiveHealthCheck),
 			transportPolicyString(policy.Transport))
-		d.printf("  DP_%s [shape=ellipse, style=\"filled,dashed\", fillcolor=\"#d1e7dd\", label=%q];\n", sanitize(name), label)
+		d.printf("  DP_%d [shape=ellipse, style=\"filled,dashed\", fillcolor=\"#d1e7dd\", label=%q];\n", i, label)
 	}
 }
 
@@ -105,36 +105,37 @@ func resolvedHostPolicyString(policy resolved.HostPolicy, value string) string {
 }
 
 func healthPolicyString(active resolved.HealthCheck, passive resolved.PassiveHealthCheck) string {
-	switch {
-	case active.Enabled && passive.Enabled:
-		return "active+passive"
-	case active.Enabled:
-		return "active"
-	case passive.Enabled:
-		return "passive"
-	default:
+	var parts []string
+	if active.Enabled {
+		parts = append(parts, fmt.Sprintf("active(path=%s,interval=%s,timeout=%s,healthy=%d,unhealthy=%d,host=%s,statuses=%v)",
+			active.Path, active.Interval, active.Timeout, active.Healthy, active.Unhealthy, active.Host, active.Statuses))
+	}
+	if passive.Enabled {
+		parts = append(parts, fmt.Sprintf("passive(window=%s,max=%d)", passive.FailureWindow, passive.MaxFailures))
+	}
+	if len(parts) == 0 {
 		return "none"
 	}
+	return strings.Join(parts, "+")
 }
 
 func transportPolicyString(transport resolved.Transport) string {
-	parts := []string{"system-tls"}
+	tlsPolicy := "system-tls"
 	if transport.InsecureSkipVerify {
-		parts[0] = "insecure-tls"
+		tlsPolicy = "insecure-tls"
 	} else if transport.ServerName != "" || len(transport.RootCAFiles) > 0 {
-		parts[0] = "custom-tls"
+		tlsPolicy = "custom-tls"
 	}
-	if transport.ServerName != "" {
-		parts = append(parts, "sni="+transport.ServerName)
-	}
-	if len(transport.RootCAFiles) > 0 {
-		parts = append(parts, fmt.Sprintf("roots=%d", len(transport.RootCAFiles)))
-	}
-	if transport.ResponseHeaderTimeout > 0 {
-		parts = append(parts, "header="+transport.ResponseHeaderTimeout.String())
-	}
-	if transport.FlushInterval > 0 {
-		parts = append(parts, "flush="+transport.FlushInterval.String())
+	parts := []string{
+		tlsPolicy,
+		"sni=" + transport.ServerName,
+		fmt.Sprintf("roots=%v", transport.RootCAFiles),
+		fmt.Sprintf("max-idle=%d", transport.MaxIdleConnsPerHost),
+		"idle=" + transport.IdleConnTimeout.String(),
+		"dial=" + transport.DialTimeout.String(),
+		"handshake=" + transport.TLSHandshakeTimeout.String(),
+		"header=" + transport.ResponseHeaderTimeout.String(),
+		"flush=" + transport.FlushInterval.String(),
 	}
 	return strings.Join(parts, ",")
 }

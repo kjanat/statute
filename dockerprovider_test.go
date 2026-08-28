@@ -438,9 +438,9 @@ func TestDockerReconcileReusesUnchangedPools(t *testing.T) {
 	}
 }
 
-// TestPoolFingerprintChangesWithPoolPolicy — generation reuse covers every
-// code-owned policy field, so a changed effective policy cannot adopt the
-// previous handler, connection pool, or health state.
+// TestPoolFingerprintChangesWithPoolPolicy verifies that generation reuse
+// covers every code-owned policy field. A changed effective policy cannot adopt
+// the previous handler, connection pool, or health state.
 func TestPoolFingerprintChangesWithPoolPolicy(t *testing.T) {
 	t.Parallel()
 	base := func() *resolved.Pool {

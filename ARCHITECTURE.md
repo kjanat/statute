@@ -111,8 +111,8 @@ configuration, and passive-health policy. A registered policy is authoritative f
 all four fields, including their zero values. It is applied before the generation
 fingerprint is computed, so an effective policy change replaces the pool handler
 while an identical one preserves its connections and health state. A key matching
-no discovered service produces a deduplicated provider warning rather than being
-silently ignored. Policy never crosses service identities or becomes router
+no discovered service produces a deduplicated provider warning. Policy never
+crosses service identities or becomes router
 middleware.
 
 A discarded registration leaves a **tombstone**: a matcher carrying no upstream,
