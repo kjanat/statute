@@ -389,7 +389,7 @@ func TestExtractTraefik(t *testing.T) {
 	if svc.Backend.Address != "172.17.0.2:9000" {
 		t.Errorf("Address = %q", svc.Backend.Address)
 	}
-	want := []Matcher{{Host: "app.example.com", Path: "/api/*"}}
+	want := []Matcher{{Host: "app.example.com", FoldHostDot: true, Path: "/api", BytePrefix: true}}
 	if !reflect.DeepEqual(svc.Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svc.Routes, want)
 	}
@@ -486,7 +486,7 @@ func TestExtractTraefikMiddlewares(t *testing.T) {
 	if len(svcs) != 1 {
 		t.Fatalf("router with middlewares label was dropped: %+v", svcs)
 	}
-	want := []Matcher{{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@docker"}}}
+	want := []Matcher{{Host: "a.example.com", FoldHostDot: true, Path: "/*", Middlewares: []string{"auth@docker"}}}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
@@ -533,8 +533,8 @@ func TestExtractTraefikRouterScopedMiddlewares(t *testing.T) {
 		t.Fatalf("got %d services: %+v", len(svcs), svcs)
 	}
 	want := []Matcher{
-		{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@file"}},
-		{Host: "b.example.com", Path: "/*"},
+		{Host: "a.example.com", FoldHostDot: true, Path: "/*", Middlewares: []string{"auth@file"}},
+		{Host: "b.example.com", FoldHostDot: true, Path: "/*"},
 	}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)

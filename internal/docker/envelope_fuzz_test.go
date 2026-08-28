@@ -5,14 +5,20 @@ import (
 	"testing"
 )
 
-// matchesRequest mirrors statute's dispatcher: an empty host matches any
-// host and is otherwise compared case-insensitively, and a trailing "/*" is
-// a segment-aware prefix over the percent-decoded path. It is duplicated
-// here because internal/docker cannot import the server package; the
-// duplication is what makes the property testable at all.
+// matchesRequest mirrors the dispatcher: an empty host matches any host
+// and is otherwise compared case-insensitively after a trailing FQDN dot
+// is stripped. A BytePrefix matcher is Traefik PathPrefix (HasPrefix);
+// a trailing "/*" is statute's segment-aware prefix. Duplicated because
+// internal/docker cannot import the server package.
 func matchesRequest(mt Matcher, host, path string) bool {
+	if mt.FoldHostDot {
+		host = strings.TrimSuffix(host, ".")
+	}
 	if mt.Host != "" && !strings.EqualFold(mt.Host, host) {
 		return false
+	}
+	if mt.BytePrefix {
+		return strings.HasPrefix(path, mt.Path)
 	}
 	if before, ok := strings.CutSuffix(mt.Path, "/*"); ok {
 		return before == "" || path == before || strings.HasPrefix(path, before+"/")
@@ -39,7 +45,9 @@ func probeRequests(mt Matcher) [][2]string {
 		hosts = append(hosts, mt.Host, strings.ToUpper(mt.Host), mt.Host+".")
 	}
 	paths := []string{"/", "/x", "/api", "/api/v1/keys", "/login"}
-	if before, ok := strings.CutSuffix(mt.Path, "/*"); ok {
+	if mt.BytePrefix {
+		paths = append(paths, mt.Path, mt.Path+"/", mt.Path+"/deep/leaf", mt.Path+"foo")
+	} else if before, ok := strings.CutSuffix(mt.Path, "/*"); ok {
 		paths = append(paths, before, before+"/", before+"/deep/leaf", before+"foo")
 	} else {
 		paths = append(paths, mt.Path, mt.Path+"/x")
@@ -76,6 +84,7 @@ func FuzzRuleEnvelope(f *testing.F) {
 		"Path(`/a`) && Path(`/b`)",
 		"HostRegexp(`^a.*`) && PathPrefix(`/api`)",
 		"Host(`a.example.com.`)",
+		"Host(`0...``0`)",
 		"Path(`/a%20b`)",
 		"Host(`a` && Path(`/x`)",
 		"Host()",
@@ -106,7 +115,7 @@ func FuzzRuleEnvelope(f *testing.F) {
 				if !matchesRequest(mt, host, path) {
 					continue
 				}
-				if !matchesAny(env, strings.TrimSuffix(host, "."), path) {
+				if !matchesAny(env, host, path) {
 					t.Fatalf("rule %q: request %q %q matches route %+v but no envelope element in %v", rule, host, path, mt, env)
 				}
 			}

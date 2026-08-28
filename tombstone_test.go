@@ -28,7 +28,11 @@ func tombstoneSet(t *testing.T, srv *server) []string {
 		if c.route.Upstream != nil || len(c.route.Middleware) > 0 || len(c.clientPrefixes) > 0 {
 			t.Errorf("tombstone carries routing state: %+v", c.route)
 		}
-		out = append(out, fmt.Sprintf("%s %s", c.route.Host, c.route.Pattern))
+		pat := c.route.Pattern
+		if c.bytePrefix {
+			pat += "*"
+		}
+		out = append(out, fmt.Sprintf("%s %s", c.route.Host, pat))
 	}
 	sort.Strings(out)
 	return out
@@ -106,7 +110,7 @@ func TestDockerTombstoneEnvelopes(t *testing.T) {
 					"traefik.http.routers.api.rule": "Host(`a.example.com`) && PathPrefix(`/api`)",
 				},
 			},
-			want: []string{"a.example.com /api/*"},
+			want: []string{"a.example.com /api*"},
 			why:  "a container-level failure must not degrade a perfectly parseable rule into a global refusal",
 		}, {
 			name: "unsupported matcher keeps its sibling",
@@ -277,7 +281,7 @@ func TestDockerTombstoneEnvelopes(t *testing.T) {
 					"traefik.http.routers.badaddr.rule": "Host(`badaddr.example.com`) && PathPrefix(`/api`)",
 				},
 			},
-			want: []string{"badaddr.example.com /api/*"},
+			want: []string{"badaddr.example.com /api*"},
 			why:  "the pool handler is the last thing that can fail, and its failure discards routes that were otherwise ready to serve",
 		}, {
 			name: "sibling router keeps serving through a per-route refusal",
@@ -564,5 +568,101 @@ func TestDockerTombstoneDedupesAcrossContainers(t *testing.T) {
 	mustSync(t, p2)
 	if got := tombstoneSet(t, srv2); len(got) != 1 || got[0] != " /*" {
 		t.Fatalf("tombstones = %v, want the global refusal to absorb the host-scoped one", got)
+	}
+}
+
+// A rejected PathPrefix(`/admin`) refuses Traefik's byte prefix, including
+// /admin-secret. Statute Match("/admin/*") would miss that path.
+func TestDockerTombstonePathPrefixIsBytePrefix(t *testing.T) {
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
+		name: "app-1", ip: "10.0.0.9", port: 3000,
+		labels: map[string]string{
+			"traefik.enable":                       "true",
+			"traefik.http.routers.app.rule":        "Host(`admin.example.com`) && PathPrefix(`/admin`)",
+			"traefik.http.routers.app.middlewares": "ghost@file",
+		},
+	}})
+	calls := fallbackServer(t, srv, nil)
+	mustSync(t, p)
+	if got := tombstoneSet(t, srv); len(got) != 1 || got[0] != "admin.example.com /admin*" {
+		t.Fatalf("tombstones = %v, want admin.example.com /admin*", got)
+	}
+	router := srv.buildRouter()
+	for _, path := range []string{"/admin", "/admin/", "/admin/users", "/admin-secret"} {
+		rec := runRequest(t, router, httptest.NewRequest("GET", "http://admin.example.com"+path, nil))
+		if rec.Code != http.StatusNotFound || calls.Load() != 0 {
+			t.Errorf("%s: code=%d calls=%d, want 404 with the fallback untouched", path, rec.Code, calls.Load())
+		}
+	}
+	rec := runRequest(t, router, httptest.NewRequest("GET", "http://other.example.com/admin-secret", nil))
+	if rec.Code != http.StatusTeapot || calls.Load() != 1 {
+		t.Errorf("unclaimed: code=%d calls=%d, want 418 from the fallback", rec.Code, calls.Load())
+	}
+}
+
+// A valid PathPrefix(`/admin`) serves /admin-secret. A trailing FQDN dot
+// on the request host does not miss the route into the fallback.
+func TestDockerTraefikPathPrefixAndHostDotServe(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("served"))
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendHostPort(t, backend)
+
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
+		name: "app-1", ip: host, port: port,
+		labels: map[string]string{
+			"traefik.enable":                "true",
+			"traefik.http.routers.app.rule": "Host(`admin.example.com.`) && PathPrefix(`/admin`)",
+		},
+	}})
+	calls := fallbackServer(t, srv, nil)
+	mustSync(t, p)
+	router := srv.buildRouter()
+
+	for _, reqHost := range []string{"admin.example.com", "admin.example.com."} {
+		rec := runRequest(t, router, httptest.NewRequest("GET", "http://"+reqHost+"/admin-secret", nil))
+		if rec.Code != http.StatusOK || rec.Body.String() != "served" {
+			t.Errorf("host %q /admin-secret: code=%d body=%q, want the backend", reqHost, rec.Code, rec.Body.String())
+		}
+	}
+	rec := runRequest(t, router, httptest.NewRequest("GET", "http://admin.example.com/other", nil))
+	if rec.Code != http.StatusTeapot || calls.Load() != 1 {
+		t.Errorf("outside prefix: code=%d calls=%d, want 418 from the fallback", rec.Code, calls.Load())
+	}
+}
+
+// A native /api/* tombstone and a Traefik PathPrefix(`/api`) tombstone in
+// one generation keep the byte prefix: /api-secret must not reach Fallback.
+func TestDockerTombstoneMixedNativeAndTraefikAbsorbsBytePrefix(t *testing.T) {
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{
+		{
+			name: "native-1", ip: "10.0.0.8",
+			labels: map[string]string{
+				"statute.enable": "true",
+				"statute.host":   "mix.example.com",
+				"statute.path":   "/api/*",
+			},
+		},
+		{
+			name: "tfk-1", ip: "10.0.0.9", port: 3000,
+			labels: map[string]string{
+				"traefik.enable":                       "true",
+				"traefik.http.routers.api.rule":        "Host(`mix.example.com`) && PathPrefix(`/api`)",
+				"traefik.http.routers.api.middlewares": "ghost@file",
+			},
+		},
+	})
+	calls := fallbackServer(t, srv, nil)
+	mustSync(t, p)
+	if got := tombstoneSet(t, srv); len(got) != 1 || got[0] != "mix.example.com /api*" {
+		t.Fatalf("tombstones = %v, want mix.example.com /api*", got)
+	}
+	router := srv.buildRouter()
+	for _, path := range []string{"/api", "/api/users", "/api-secret"} {
+		rec := runRequest(t, router, httptest.NewRequest("GET", "http://mix.example.com"+path, nil))
+		if rec.Code != http.StatusNotFound || calls.Load() != 0 {
+			t.Errorf("%s: code=%d calls=%d, want 404 with the fallback untouched", path, rec.Code, calls.Load())
+		}
 	}
 }

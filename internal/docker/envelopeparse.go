@@ -209,15 +209,10 @@ func conjPathLE(a, b conj) bool {
 	if !b.prefix {
 		return !a.prefix && a.path == b.path
 	}
-	bp := strings.TrimSuffix(b.path, "/")
-	if bp == "" {
+	if b.path == "/" {
 		return true
 	}
-	ap := a.path
-	if a.prefix {
-		ap = strings.TrimSuffix(ap, "/")
-	}
-	return ap == bp || strings.HasPrefix(ap, bp+"/")
+	return strings.HasPrefix(a.path, b.path)
 }
 
 // envelope reduces one matcher call. Host, Path, and PathPrefix contribute
@@ -239,7 +234,7 @@ func (e envFnExpr) envelope() ([]conj, bool) {
 		return hostLeaf(e.args), false
 	case "Path":
 		return pathLeaf(e.args, false), false
-	case "PathPrefix":
+	case pathPrefixMatcher:
 		return pathLeaf(e.args, true), false
 	default:
 		return envTop(), false

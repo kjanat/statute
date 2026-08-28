@@ -102,7 +102,11 @@ func describeEnvelope(env []Matcher) string {
 		if host == "" {
 			host = "any-host"
 		}
-		parts = append(parts, host+m.Path)
+		p := m.Path
+		if m.BytePrefix {
+			p += "*"
+		}
+		parts = append(parts, host+p)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -111,7 +115,7 @@ func describeEnvelope(env []Matcher) string {
 // envelope is called out by name: it disables the operator's fallback for
 // every request in the generation, which is an operational event.
 func RefusalWarning(subject string, env []Matcher) string {
-	if len(env) == 1 && env[0].Host == "" && env[0].Path == "/*" {
+	if len(env) == 1 && env[0].Host == "" && env[0].Path == "/*" && !env[0].BytePrefix {
 		return fmt.Sprintf("%s: routes dropped and could not be bounded to a host or path, so every unmatched request is now refused with 404 and Fallback is not consulted", subject)
 	}
 	return fmt.Sprintf("%s: routes dropped, refusing %s (fail-closed; these requests do not reach the fallback)", subject, describeEnvelope(env))

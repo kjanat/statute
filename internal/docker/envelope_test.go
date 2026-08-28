@@ -6,8 +6,15 @@ import (
 	"testing"
 )
 
-// m is shorthand for one envelope element; an empty host means any host.
-func m(host, path string) Matcher { return Matcher{Host: host, Path: path} }
+// m is shorthand for one Traefik envelope element; an empty host means any
+// host and therefore needs no host-normalization marker.
+func m(host, path string) Matcher {
+	return Matcher{Host: host, FoldHostDot: host != "", Path: path}
+}
+
+func px(host, path string) Matcher {
+	return Matcher{Host: host, FoldHostDot: host != "", Path: path, BytePrefix: true}
+}
 
 func global() []Matcher { return []Matcher{m("", "/*")} }
 
@@ -42,9 +49,7 @@ func TestRuleEnvelopeAcceptedRules(t *testing.T) {
 		"Host(`app.example.com`) && PathPrefix(`/api`)",
 		"Host(`a.example.com`) || Host(`b.example.com`)",
 		"Host(`a.example.com`, `b.example.com`) && PathPrefix(`/api`)",
-		// A placeholder argument lexes as a literal, so this is accepted
-		// as an exact pattern: a hole in ParseRule.
-		"Path(`/foo/{id:[0-9]+}`)",
+		"Path(`/foo/bar`)",
 	}
 	for _, rule := range accepted {
 		t.Run(rule, func(t *testing.T) {
@@ -91,11 +96,11 @@ func TestRuleEnvelope(t *testing.T) {
 			why:  "ClientIP contributes nothing, so the Host conjunct survives; the CIDR is never rebuilt onto the tombstone",
 		}, {
 			rule: "Host(`admin.example.com`) && PathPrefix(`/api`) && Header(`X-Token`, `t`)",
-			want: []Matcher{m("admin.example.com", "/api/*")},
+			want: []Matcher{px("admin.example.com", "/api")},
 			why:  "both representable conjuncts survive; the header was the whole authorization story",
 		}, {
 			rule: "PathPrefix(`/private`) && ClientIP(`10.0.0.0/8`)",
-			want: []Matcher{m("", "/private/*")},
+			want: []Matcher{px("", "/private")},
 			why:  "no Host conjunct exists, so the envelope must stay host-less",
 		}, {
 			rule: "Path(`/login`) && Method(`POST`)",
@@ -119,7 +124,7 @@ func TestRuleEnvelope(t *testing.T) {
 			why:  "HostSNI names the TLS handshake, not the HTTP Host the route matcher inspects",
 		}, {
 			rule: "HostRegexp(`^a.*`) && PathPrefix(`/api`)",
-			want: []Matcher{m("", "/api/*")},
+			want: []Matcher{px("", "/api")},
 			why:  "an unconstrained host and a real path coexist in one envelope",
 		}, {
 			rule: "Host(`a.example.com`) && FooBar(`x`)",
@@ -139,7 +144,7 @@ func TestRuleEnvelope(t *testing.T) {
 			why:  "branch-aware union: keeping only the understood branch is the headline subset bug",
 		}, {
 			rule: "(Host(`a.example.com`) && PathPrefix(`/x`)) || (Host(`b.example.com`) && Query(`z=1`))",
-			want: []Matcher{m("a.example.com", "/x/*"), m("b.example.com", "/*")},
+			want: []Matcher{px("a.example.com", "/x"), m("b.example.com", "/*")},
 			why:  "one branch is exact and the other widens only its own path",
 		}, {
 			rule: "Host(`a.example.com`) && Header(`X`, `y`) || Host(`b.example.com`) && ClientIP(`10.0.0.0/8`)",
@@ -147,11 +152,11 @@ func TestRuleEnvelope(t *testing.T) {
 			why:  "'&&' binds tighter than '||', so neither branch is unconstrained",
 		}, {
 			rule: "(Host(`a.example.com`) || PathPrefix(`/x`)) && ClientIP(`10.0.0.0/8`)",
-			want: []Matcher{m("", "/x/*"), m("a.example.com", "/*")},
+			want: []Matcher{px("", "/x"), m("a.example.com", "/*")},
 			why:  "the disjuncts constrain different dimensions, so neither subsumes the other",
 		}, {
 			rule: "(Host(`a.example.com`) || Header(`X-K`, `v`)) && PathPrefix(`/x`)",
-			want: []Matcher{m("", "/x/*")},
+			want: []Matcher{px("", "/x")},
 			why:  "the inner union unconstrains the host, then the outer meet re-narrows the path",
 		}, {
 			rule: "Host(`a.example.com`) && (PathPrefix(`/x`) || ClientIP(`10.0.0.0/8`))",
@@ -175,11 +180,11 @@ func TestRuleEnvelope(t *testing.T) {
 			why:  "a negated whole disjunct is always global",
 		}, {
 			rule: "PathPrefix(`/a`) && PathPrefix(`/a/b`)",
-			want: []Matcher{m("", "/a/*")},
+			want: []Matcher{px("", "/a")},
 			why:  "two path constraints keep the enclosing operand, never the narrower one",
 		}, {
 			rule: "Host(`x.example.com`) && PathPrefix(`/api`) && Path(`/api/health`)",
-			want: []Matcher{m("x.example.com", "/api/*")},
+			want: []Matcher{px("x.example.com", "/api")},
 			why:  "the exact path is inside the prefix, so the prefix is the wider sound choice",
 		}, {
 			rule: "Path(`/a`) && Path(`/b`)",
@@ -239,7 +244,7 @@ func TestRuleEnvelope(t *testing.T) {
 			why:  "the meet is symmetric; reading only the right operand's flag would widen this one back to global",
 		}, {
 			rule: "Host(`a.example.com`) && Path() && PathPrefix(`/api`)",
-			want: []Matcher{m("a.example.com", "/api/*")},
+			want: []Matcher{px("a.example.com", "/api")},
 			why:  "the unbounded conjunct leaves the other two to meet as they always would",
 		}, {
 			rule: "Host() && Path()",
@@ -323,12 +328,13 @@ func TestEnvelopeOfNormalizesLiterals(t *testing.T) {
 		in   []Matcher
 		want []Matcher
 	}{
-		{"trailing FQDN dot", []Matcher{m("a.example.com.", "/*")}, []Matcher{m("a.example.com", "/*")}},
+		{"canonical Traefik host is unchanged", []Matcher{m("a.example.com", "/*")}, []Matcher{m("a.example.com", "/*")}},
 		{"non-ASCII host", []Matcher{m("café.example.com", "/x")}, []Matcher{m("", "/x")}},
 		{"percent escape", []Matcher{m("a.example.com", "/a%20b")}, []Matcher{m("a.example.com", "/*")}},
 		{"absorption", []Matcher{m("a.example.com", "/x/*"), m("", "/x/*")}, []Matcher{m("", "/x/*")}},
 		{"global absorbs", []Matcher{m("a.example.com", "/x"), m("", "/*")}, global()},
-		{"middleware stripped", []Matcher{{Host: "a", Path: "/*", Middlewares: []string{"auth"}}}, []Matcher{m("a", "/*")}},
+		{"middleware stripped", []Matcher{{Host: "a", Path: "/*", Middlewares: []string{"auth"}}}, []Matcher{{Host: "a", Path: "/*"}}},
+		{"native host spelling preserved", []Matcher{{Host: "a.example.com.", Path: "/*"}}, []Matcher{{Host: "a.example.com.", Path: "/*"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -337,6 +343,43 @@ func TestEnvelopeOfNormalizesLiterals(t *testing.T) {
 				t.Errorf("EnvelopeOf(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEnvelopeOfMixedPathSemantics(t *testing.T) {
+	t.Parallel()
+	segment := Matcher{Path: "/api/*"}
+	bytePrefix := Matcher{Path: "/api", BytePrefix: true}
+	bytePrefixSlash := Matcher{Path: "/api/", BytePrefix: true}
+
+	tests := []struct {
+		name string
+		in   []Matcher
+		want []Matcher
+	}{
+		{"byte prefix covers equal-base segment prefix", []Matcher{segment, bytePrefix}, []Matcher{bytePrefix}},
+		{"absorption is order independent", []Matcher{bytePrefix, segment}, []Matcher{bytePrefix}},
+		{"segment prefix covers byte prefix below boundary", []Matcher{segment, bytePrefixSlash}, []Matcher{segment}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := EnvelopeOf(tc.in); !matchersEqual(got, tc.want) {
+				t.Fatalf("EnvelopeOf(%+v) = %+v, want %+v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRuleEnvelopeCanonicalizesTraefikHostOnce(t *testing.T) {
+	t.Parallel()
+	rule := "Host(`0...``0`)"
+	want := []Matcher{
+		{Host: "0", FoldHostDot: true, Path: "/*"},
+		{Host: "0..", FoldHostDot: true, Path: "/*"},
+	}
+	if got := RuleEnvelope(rule); !matchersEqual(got, want) {
+		t.Fatalf("RuleEnvelope(%q) = %+v, want %+v", rule, got, want)
 	}
 }
 

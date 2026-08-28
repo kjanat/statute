@@ -386,7 +386,9 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 				Upstream:   rp,
 				Middleware: rc.mws,
 			},
-			handler: wrapMiddleware(rc.mws, running.handler),
+			handler:     wrapMiddleware(rc.mws, running.handler),
+			bytePrefix:  rc.m.BytePrefix,
+			foldHostDot: rc.m.FoldHostDot,
 		})
 	}
 	return tombs
@@ -414,8 +416,10 @@ func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute 
 	out := make([]compiledRoute, 0, len(env))
 	for _, m := range env {
 		out = append(out, compiledRoute{
-			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
-			handler: tombstoneHandler,
+			route:       &resolved.Route{Pattern: m.Path, Host: m.Host},
+			handler:     tombstoneHandler,
+			bytePrefix:  m.BytePrefix,
+			foldHostDot: m.FoldHostDot,
 		})
 	}
 	return out
@@ -597,9 +601,16 @@ func sortDynamicRoutes(routes []compiledRoute) {
 		if (a.Host != "") != (b.Host != "") {
 			return a.Host != ""
 		}
-		al, bl := patternSpecificity(a.Pattern), patternSpecificity(b.Pattern)
-		if al != bl {
-			return al > bl
+		aExact, aLen, aKind := dynamicPatternSpecificity(routes[i])
+		bExact, bLen, bKind := dynamicPatternSpecificity(routes[j])
+		if aExact != bExact {
+			return aExact
+		}
+		if aLen != bLen {
+			return aLen > bLen
+		}
+		if aKind != bKind {
+			return aKind > bKind
 		}
 		if a.Host != b.Host {
 			return a.Host < b.Host
@@ -611,12 +622,16 @@ func sortDynamicRoutes(routes []compiledRoute) {
 	})
 }
 
-// patternSpecificity ranks patterns: exact matches above prefixes, longer
-// prefixes above shorter ones.
-func patternSpecificity(pattern string) int {
-	if prefix, ok := strings.CutSuffix(pattern, "/*"); ok {
-		return len(prefix)
+// dynamicPatternSpecificity returns the precedence dimensions for one
+// dynamic route. Exact paths outrank prefixes. Among prefixes, a longer
+// constrained byte sequence is narrower; at an equal base, statute's
+// segment prefix is narrower than Traefik's byte prefix.
+func dynamicPatternSpecificity(route compiledRoute) (exact bool, prefixLen, kind int) {
+	if route.bytePrefix {
+		return false, len(route.route.Pattern), 0
 	}
-	// Exact patterns outrank any prefix.
-	return len(pattern) + 1<<16
+	if prefix, ok := strings.CutSuffix(route.route.Pattern, "/*"); ok {
+		return false, len(prefix), 1
+	}
+	return true, len(route.route.Pattern), 2
 }

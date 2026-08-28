@@ -113,8 +113,16 @@ a Traefik router or a container's native `statute.*` labels: both declare routes
 and discarding either has the same consequence.
 
 The obligation is an envelope: for every rejected registration R and its
-tombstone set T, every request R would have matched must be matched by some
-element of T. Refusing more than R claimed is allowed; refusing less is not.
+tombstone set T, every request Traefik would have matched must be matched by
+some element of T. Refusing more than R claimed is allowed; refusing less is
+not. Traefik `PathPrefix` is a byte prefix (`strings.HasPrefix`):
+`PathPrefix(`/admin`)` matches `/admin-secret`, and both a serving Docker
+route and its tombstone use that matcher. Statute `Match("/admin/*")` stays
+segment-aware. Traefik-derived serving routes and tombstones fold one trailing
+FQDN dot on both configured and request hosts; static routes and native
+`statute.*` label routes keep statute's exact host spelling. `Path()`/`PathPrefix()` arguments
+with placeholders or regexp syntax are rejected and tombstoned: accepting
+them as literals would under-match and reach `Config.Fallback`.
 Derivation therefore widens: an unrepresentable conjunct is dropped, a disjunction
 is a branch-aware union so one unreadable branch widens the whole rule, a negation
 node becomes unconstrained in place, and a rule that cannot be bounded at all

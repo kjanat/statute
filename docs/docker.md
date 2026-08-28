@@ -137,16 +137,16 @@ Docker-discovered pool runs with default transport settings.
 The goal is that a fleet labeled for Traefik's docker provider migrates
 without editing compose files. Supported:
 
-| Label                                                                                | Notes                                                                                                                                                                                                    |
-| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `traefik.enable`                                                                     | Exactly Traefik's semantics: without `ExposedByDefault()`, a container is exposed only with an explicit `traefik.enable=true` — router labels alone do not expose it.                                    |
-| `traefik.http.routers.<r>.rule`                                                      | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`.                                                                                                 |
-| `traefik.http.routers.<r>.service`                                                   | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container — so several label-less routers share one backend pool. |
-| `traefik.http.services.<s>.loadbalancer.server.port`                                 | Container-side port. Default: the lowest exposed port, as in Traefik.                                                                                                                                    |
-| `traefik.http.services.<s>.loadbalancer.server.scheme`                               | `https` for TLS backends. `h2c` is not supported — such services are skipped with a warning instead of being proxied over the wrong protocol.                                                            |
-| `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks.                                                                                                                                                                  |
-| `traefik.docker.network`                                                             | Same as `statute.network`.                                                                                                                                                                               |
-| `traefik.http.routers.<r>.middlewares`                                               | Comma-separated names resolved against the code-owned registry declared with `Middleware(name, ...)`, scoped to that router's routes — see below.                                                        |
+| Label                                                                                | Notes                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `traefik.enable`                                                                     | Exactly Traefik's semantics: without `ExposedByDefault()`, a container is exposed only with an explicit `traefik.enable=true`; router labels alone do not expose it.                                                                                                                                                        |
+| `traefik.http.routers.<r>.rule`                                                      | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`. `PathPrefix` is Traefik's byte prefix (`/api` matches `/api-secret`); statute `Match("/api/*")` stays segment-aware. `Path`/`PathPrefix` arguments with placeholders or regexp syntax are rejected and tombstoned. |
+| `traefik.http.routers.<r>.service`                                                   | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container, so several label-less routers share one backend pool.                                                                                                                     |
+| `traefik.http.services.<s>.loadbalancer.server.port`                                 | Container-side port. Default: the lowest exposed port, as in Traefik.                                                                                                                                                                                                                                                       |
+| `traefik.http.services.<s>.loadbalancer.server.scheme`                               | `https` for TLS backends. `h2c` is not supported: such services are skipped with a warning, never proxied over the wrong protocol.                                                                                                                                                                                          |
+| `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks.                                                                                                                                                                                                                                                                                     |
+| `traefik.docker.network`                                                             | Same as `statute.network`.                                                                                                                                                                                                                                                                                                  |
+| `traefik.http.routers.<r>.middlewares`                                               | Comma-separated names resolved against the code-owned registry declared with `Middleware(name, ...)`, scoped to that router's routes; see below.                                                                                                                                                                            |
 
 Deliberately ignored (harmless, handled at the listener level in statute):
 `entrypoints`, `tls`, `tls.certresolver`, `priority`.
@@ -177,14 +177,14 @@ fallback. Without a fallback configured nothing changes.
 A tombstone covers everything the dropped registration could have matched,
 never less. Constraints statute cannot represent are dropped:
 
-| Rule                                                         | Refuses                        |
-| ------------------------------------------------------------ | ------------------------------ |
-| ``Host(`admin.example.com`) && ClientIP(`10.0.0.0/8`)``      | `admin.example.com`, all paths |
-| ``Host(`a.example.com`) && PathPrefix(`/api`) && Header(…)`` | `a.example.com/api/*`          |
-| ``PathPrefix(`/private`) && ClientIP(…)``                    | `/private/*` on every host     |
-| ``Host(`a.example.com`) && Path()``                          | `a.example.com`, all paths     |
-| ``Host(`a.example.com`) \|\| ClientIP(…)``                   | everything                     |
-| `ClientIP(…)`, `HostRegexp(…)`, `Path()`, a typo             | everything                     |
+| Rule                                                         | Refuses                                                     |
+| ------------------------------------------------------------ | ----------------------------------------------------------- |
+| ``Host(`admin.example.com`) && ClientIP(`10.0.0.0/8`)``      | `admin.example.com`, all paths                              |
+| ``Host(`a.example.com`) && PathPrefix(`/api`) && Header(…)`` | `a.example.com` PathPrefix `/api` (including `/api-secret`) |
+| ``PathPrefix(`/private`) && ClientIP(…)``                    | PathPrefix `/private` on every host                         |
+| ``Host(`a.example.com`) && Path()``                          | `a.example.com`, all paths                                  |
+| ``Host(`a.example.com`) \|\| ClientIP(…)``                   | everything                                                  |
+| `ClientIP(…)`, `HostRegexp(…)`, `Path()`, a typo             | everything                                                  |
 
 Dropping a conjunct only adds requests. An unreadable matcher, such as
 zero-argument `Path()`, standing beside a readable conjunct, costs no more

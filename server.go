@@ -811,11 +811,18 @@ type compiledRoute struct {
 	// clientPrefixes is the parsed form of the route's ClientIPCIDRs; empty
 	// means the route matches any client.
 	clientPrefixes []netip.Prefix
+	// bytePrefix reports that route.Pattern is a Traefik PathPrefix and
+	// matches with strings.HasPrefix. Statute Match("/x/*") stays segment-aware.
+	bytePrefix bool
+	// foldHostDot is Traefik-only: dotted and undotted FQDN spellings match.
+	// Static and native statute hosts stay exact.
+	foldHostDot bool
 }
 
 // findHandler returns the first route matching host, path, and — for routes
 // constrained with ClientIPs — the verified client address, in slice order,
-// or nil. Host comparison is case-insensitive per RFC 9110. The client
+// or nil. Host comparison is case-insensitive per RFC 9110; only a
+// Traefik-derived matcher additionally folds a trailing FQDN dot. The client
 // address resolves lazily, once, and only when a candidate route needs it;
 // a client that cannot be parsed never matches a constrained route and
 // falls through like any other mismatch.
@@ -823,10 +830,7 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 	var clientAddr netip.Addr
 	var clientResolved, clientOK bool
 	for _, c := range routes {
-		if c.route.Host != "" && !strings.EqualFold(c.route.Host, host) {
-			continue
-		}
-		if !matchPattern(c.route.Pattern, req.URL.Path) {
+		if !routeMatchesRequest(c, host, req.URL.Path) {
 			continue
 		}
 		if len(c.clientPrefixes) > 0 {
@@ -843,20 +847,24 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 	return nil
 }
 
+func routeMatchesRequest(c compiledRoute, host, path string) bool {
+	if c.foldHostDot {
+		host = strings.TrimSuffix(host, ".")
+	}
+	if c.route.Host != "" && !strings.EqualFold(c.route.Host, host) {
+		return false
+	}
+	if c.bytePrefix {
+		return strings.HasPrefix(path, c.route.Pattern)
+	}
+	return matchPattern(c.route.Pattern, path)
+}
+
 // tombstoneHandler is the one fixed refusal every tombstone serves: the
 // same 404 a dropped router produced before Config.Fallback existed. It
 // does not vary with the rule that produced it, and no other status is
 // invented, so a deployment without a fallback sees no change at all.
 var tombstoneHandler http.Handler = http.NotFoundHandler()
-
-// tombstoneHost normalizes a request host for the tombstone tier. The
-// routed tiers compare with EqualFold alone, which leaves the trailing FQDN
-// dot Traefik's own host matcher strips; without this a request to
-// "admin.example.com." would slip past an admin.example.com tombstone and
-// reach the fallback.
-func tombstoneHost(host string) string {
-	return strings.TrimSuffix(host, ".")
-}
 
 // fallbackHandler returns the router's terminal stage: the configured
 // fallback handler, or net/http's 404 when none is configured.
@@ -912,7 +920,7 @@ func (s *server) buildRouter() http.Handler {
 				h.ServeHTTP(w, req)
 				return
 			}
-			if h := findHandler(t.tombstones, tombstoneHost(host), req); h != nil {
+			if h := findHandler(t.tombstones, host, req); h != nil {
 				h.ServeHTTP(w, req)
 				return
 			}

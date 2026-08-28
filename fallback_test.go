@@ -137,6 +137,28 @@ func TestFallbackWithoutDockerTable(t *testing.T) {
 	}
 }
 
+func TestStaticHostDoesNotUseTraefikDotFolding(t *testing.T) {
+	var calls atomic.Int64
+	router := fallbackRouter(t, Config{
+		Listeners: Listeners{HTTP(":0")},
+		Routes: Routes{
+			Match("/*").Host("static.example.com.").Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, "static")
+			})),
+		},
+		Fallback: countingFallback(&calls),
+	})
+
+	dotted := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://static.example.com./", nil))
+	if dotted.Code != http.StatusOK || dotted.Body.String() != "static" {
+		t.Fatalf("dotted static host: code=%d body=%q", dotted.Code, dotted.Body.String())
+	}
+	undotted := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://static.example.com/", nil))
+	if undotted.Code != http.StatusTeapot || calls.Load() != 1 {
+		t.Fatalf("undotted static host: code=%d calls=%d, want fallback", undotted.Code, calls.Load())
+	}
+}
+
 // A matched route's own 404 is not rewritten into the fallback.
 func TestFallbackDoesNotReplaceMatchedRoute404(t *testing.T) {
 	t.Parallel()
