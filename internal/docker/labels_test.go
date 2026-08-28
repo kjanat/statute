@@ -196,7 +196,7 @@ func TestExtractBackupAndWeight(t *testing.T) {
 
 func TestExtractInvalidBackup(t *testing.T) {
 	// Invalid backup value: warn and treat as false. The registration is
-	// still built, so that sentence is the whole consequence.
+	// still built.
 	c := webContainer(map[string]string{"statute.enable": "true", "statute.backup": "yep"})
 	svcs, tombs, warns := Extract(c, ExtractOptions{})
 	if len(svcs) != 1 || svcs[0].Backend.Backup {
@@ -245,10 +245,8 @@ func assertEnableRejectionWarning(t *testing.T, warns []string) {
 	}
 }
 
-// TestExtractUnreadableEnableRejects — an unparseable statute.enable is a
-// rejection, not an opt-out: nothing registers, a refusal stands in the way
-// of Config.Fallback, and the warning says so. tombstone_test.go covers
-// what the refusal covers.
+// An unparseable statute.enable is a rejection. Nothing registers, a
+// refusal stands, and the warning says so.
 func TestExtractUnreadableEnableRejects(t *testing.T) {
 	c := webContainer(map[string]string{"statute.enable": "banana"})
 	svcs, tombs, warns := Extract(c, ExtractOptions{})
@@ -261,9 +259,8 @@ func TestExtractUnreadableEnableRejects(t *testing.T) {
 	assertEnableRejectionWarning(t, warns)
 }
 
-// TestTraefikUnreadableEnableRejects — the Traefik enable label reaches the
-// same reader, so it owes the same consequence. A split that fixed only the
-// native caller would leave this one lying.
+// The Traefik enable label reaches the same reader and owes the same
+// consequence.
 func TestTraefikUnreadableEnableRejects(t *testing.T) {
 	c := webContainer(map[string]string{
 		"traefik.enable":                       "banana",

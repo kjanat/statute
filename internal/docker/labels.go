@@ -63,18 +63,17 @@ type ExtractOptions struct {
 	TraefikLabels bool
 }
 
-// Extract derives the services a single container registers. A container
-// with no relevant labels (and ExposedByDefault off) yields no services.
+// Extract derives the services one container registers. No relevant labels
+// (and ExposedByDefault off) yields no services.
 //
-// The second result is the container's refusal envelope: matchers covering
-// the traffic of every registration whose routes were declared but had to
-// be discarded. They exist because a discarded router used to end in the
-// terminal 404 and now would fall through to Config.Fallback instead, which
-// turns a fail-closed drop into arbitrary operator code. A container that
+// The second result is the refusal envelope: matchers covering traffic of
+// every registration whose routes were declared and then discarded. A
+// discarded router used to end in the terminal 404; those requests now
+// reach Config.Fallback unless the envelope stops them. A container that
 // declared no routing at all contributes none.
 //
-// Warnings describe labels that were understood but could not be applied;
-// they are stable strings suitable for deduplicated logging.
+// Warnings describe labels that were understood but could not be applied.
+// They are stable strings suitable for deduplicated logging.
 func Extract(c Container, opts ExtractOptions) ([]Service, []Matcher, []string) {
 	var svcs []Service
 	var tombs []Matcher
@@ -108,10 +107,9 @@ func describeEnvelope(env []Matcher) string {
 	return strings.Join(parts, ", ")
 }
 
-// RefusalWarning announces that dropped routes now refuse rather than fall
-// through. A global envelope is called out by name: it disables the
-// operator's fallback for every request in the generation, which is an
-// operational event and not a per-container detail.
+// RefusalWarning announces that dropped routes now refuse. A global
+// envelope is called out by name: it disables the operator's fallback for
+// every request in the generation, which is an operational event.
 func RefusalWarning(subject string, env []Matcher) string {
 	if len(env) == 1 && env[0].Host == "" && env[0].Path == "/*" {
 		return fmt.Sprintf("%s: routes dropped and could not be bounded to a host or path, so every unmatched request is now refused with 404 and Fallback is not consulted", subject)
@@ -135,12 +133,11 @@ func hasPrefixedLabels(labels map[string]string, prefix string) bool {
 // present-and-false with a non-empty warn, and that warn is the only thing
 // separating it from a value that really says false.
 //
-// consequence completes the warning, because what an unreadable value costs
-// is not the same at every call site and one shared sentence would be wrong
-// at half of them: an optional flag carries on with the flag off, while an
-// unreadable enable rejects the whole registration and refuses its declared
-// routes. Callers go through optionBoolLabel or enableBoolLabel rather than
-// spelling the clause out, so each consequence has exactly one wording.
+// consequence completes the warning: what an unreadable value costs is
+// not the same at every call site. An optional flag carries on with the
+// flag off; an unreadable enable rejects the whole registration and
+// refuses its declared routes. Callers go through optionBoolLabel or
+// enableBoolLabel, so each consequence has one wording.
 func parseBoolLabel(c Container, labels map[string]string, key, consequence string) (value, present bool, warn string) {
 	v, ok := labels[key]
 	if !ok {
@@ -163,9 +160,9 @@ func optionBoolLabel(c Container, labels map[string]string, key string) (value b
 
 // enableBoolLabel reads an enable label. An unreadable value here is not an
 // opt-out: the intent could not be read, so the registration is rejected
-// and the routes it declared are refused rather than served. The refusal
-// line that follows names the traffic; this one must not promise the
-// registration continues with the label off.
+// and the routes it declared are refused. The refusal line that follows
+// names the traffic; this one must not promise the registration continues
+// with the label off.
 func enableBoolLabel(c Container, key string) (value, present bool, warn string) {
 	return parseBoolLabel(c, c.Labels, key, "which is not an opt-out: the registration is rejected and its declared routes are refused")
 }
@@ -292,12 +289,8 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []st
 	labels := c.Labels
 	on, enableWarn := nativeEnabled(c, opts)
 	if !on {
-		// INVARIANT: an explicit opt-out declares no routing and must
-		// never delete the operator's fallback, but an unreadable value
-		// is not an opt-out — enableBoolLabel warns only when ParseBool
-		// failed, so the routes are discarded with the intent unread and
-		// the envelope is all that stands between them and
-		// Config.Fallback.
+		// An unreadable enable is not an opt-out: enableBoolLabel warns
+		// only when ParseBool failed, and the envelope covers the routes.
 		if enableWarn == "" {
 			return nil, nil, nil
 		}
@@ -350,14 +343,13 @@ func refuseNative(c Container, labels map[string]string, warns []string) ([]Matc
 //
 // The one exclusion is a container carrying no statute.* label at all:
 // ExposedByDefault registered it, so its any-host "/*" matcher is
-// statute's own inference rather than a routing decision, and refusing on
-// it would disable the fallback for every request in the generation.
-// The test is the label prefix and not the absence of statute.host /
-// statute.path, because a container that opted in with statute.enable and
-// named neither still compiles to that same catch-all: it terminates every
-// request it is given, so dropping it silently hands all of that traffic
-// to Config.Fallback. That is the widest under-refusal the tier can have,
-// and the envelope for it is the exact matcher the route would have had.
+// statute's own inference, and refusing on it would disable the fallback
+// for every request in the generation.
+// The test is the label prefix, because a container that opted in with
+// statute.enable and named neither still compiles to that same catch-all:
+// it terminates every request it is given, and dropping it silently hands
+// all of that traffic to Config.Fallback. That is the widest under-refusal
+// the tier can have, and the envelope for it is the matcher the route had.
 func nativeTombstones(c Container, labels map[string]string) []Matcher {
 	if !hasPrefixedLabels(labels, statutePrefix) {
 		return nil
@@ -572,12 +564,12 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []Matcher, []s
 }
 
 // traefikTombstones is the refusal envelope for a container whose
-// traefik.enable value could not be read. Nothing here may serve — the
-// routers are never bound to a service — but every rule still names
-// traffic that would otherwise fall through to Config.Fallback, so each
-// router leaves the envelope of its own rule. RuleEnvelope reads it even
-// where ParseRule would have succeeded: no matcher was ever built, and the
-// envelope is a superset of the rule's request set by construction.
+// traefik.enable value could not be read. Nothing here may serve: the
+// routers are never bound to a service. Every rule still names traffic
+// that reaches Config.Fallback unless refused, so each router leaves the
+// envelope of its own rule. RuleEnvelope reads it even where ParseRule
+// would have succeeded: no matcher was ever built, and the envelope is a
+// superset of the rule's request set by construction.
 func traefikTombstones(c Container) ([]Matcher, []string) {
 	routers, _, _ := collectTraefikLabels(c)
 	var tombs []Matcher
@@ -697,11 +689,8 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 	refuse := func(env []Matcher) (*Service, []Matcher, []string) {
 		return nil, env, append(warns, RefusalWarning(fmt.Sprintf("container %s: router %q", c.Name, r.name), env))
 	}
-	// INVARIANT: a router with no rule declares no match condition, so its
-	// request set is empty and no envelope can under-refuse. The trim is
-	// this function's own: Traefik's check is on the raw value, so a
-	// whitespace-only rule would otherwise reach the parser and turn a
-	// blank label into a global refusal.
+	// A router with no rule declares no match condition. Trim here:
+	// Traefik's check is on the raw value.
 	if strings.TrimSpace(r.rule) == "" {
 		warns = append(warns, fmt.Sprintf("container %s: router %q has no rule, skipping", c.Name, r.name))
 		return nil, nil, warns

@@ -20,32 +20,30 @@ var topBases = []string{
 // zeroArgMatchers bound nothing whatever the name in front of them is.
 var zeroArgMatchers = []string{"Path()", "Host()", "PathPrefix()", "ClientIP()", "Foo()"}
 
-// TestRuleEnvelopeZeroArgMatcherIsTop — a zero-argument matcher is the top
-// envelope, and the two operators must read that one fact in opposite
-// directions. Over every base B in the table, with T a zero-argument call:
+// A zero-argument matcher is the top envelope, and the two operators must
+// read that one fact in opposite directions. Over every base B in the table,
+// with T a zero-argument call:
 //
 //	B && T == B      T && B == B
 //	B || T == top    T || B == top
 //
-// Equality, not containment, is the whole point. Containment is what the
-// tier's invariant demands and what FuzzRuleEnvelope checks, but it cannot
-// see this distinction at all: collapsing the meet back to the global
-// envelope still covers every request B covers, so a containment assertion
-// passes exactly as happily for the widened answer as for the narrowed one.
-// Only comparing against B's own envelope separates "kept the bounded
-// operand" from "refused every request in the generation".
+// Equality is the claim. Containment is what the tier's invariant demands
+// and what FuzzRuleEnvelope checks, but collapsing the meet back to the
+// global envelope still covers every request B covers, so a containment
+// assertion passes for the widened answer and for the narrowed one.
+// Comparing against B's own envelope separates "kept the bounded operand"
+// from "refused every request in the generation".
 //
 // FuzzRuleEnvelope cannot reach these shapes either. It only compares rules
 // ParseRule accepts, ParseRule rejects every zero-argument call, and the
 // working-set cap that also raises the flag sits far above ParseRule's own
-// matcher budget — so no accepted rule raises it anywhere in its tree. This
-// is the guard for the pair, over more shapes than one fixed table.
+// matcher budget, so no accepted rule raises it anywhere in its tree.
 //
-// Two bases derive the global envelope legitimately — PathPrefix(`/`) bounds
-// nothing, and a percent-escaped literal widens — so a base deriving it is
+// Two bases derive the global envelope legitimately (PathPrefix(`/`) bounds
+// nothing, and a percent-escaped literal widens), so a base deriving it is
 // not itself a failure. Every base deriving it would be: the identities would
-// then hold for a deriver that widened everything, which is why the count
-// below refuses a table where none of them is bounded.
+// then hold for a deriver that widened everything. The count below refuses
+// a table where none of them is bounded.
 func TestRuleEnvelopeZeroArgMatcherIsTop(t *testing.T) {
 	t.Parallel()
 	bounded := 0
@@ -75,11 +73,10 @@ func TestRuleEnvelopeZeroArgMatcherIsTop(t *testing.T) {
 }
 
 // assertMeetIsBase checks that the readable operand survives a meet with a
-// top operand unchanged. want is the base's own envelope rather than a
-// literal, so the table states the identity and not a second copy of the
-// expectations TestRuleEnvelope already pins. Comparison is elementwise
-// because EnvelopeOf sorts and absorbs, so one request set has exactly one
-// representation here.
+// top operand unchanged. want is the base's own envelope, so the table
+// states the identity without a second copy of TestRuleEnvelope's pins.
+// Comparison is elementwise because EnvelopeOf sorts and absorbs, so one
+// request set has one representation here.
 func assertMeetIsBase(t *testing.T, rule, base string, want []Matcher) {
 	t.Helper()
 	if got := RuleEnvelope(rule); !matchersEqual(got, want) {

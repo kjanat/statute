@@ -393,10 +393,8 @@ func assertTLS004(t *testing.T, findings []Finding, wantPath string, wantALPN bo
 	}
 }
 
-// TestLint_FB001CatchAllShadowsFallback — a hostless catch-all is declared
-// before the tiers it hides, so the rule fires once per such route and
-// names it by index. The constrained routes in the same config are
-// reachable-after shapes and must stay silent.
+// A hostless catch-all declared before the tiers it hides fires once per
+// such route and names it by index.
 func TestLint_FB001CatchAllShadowsFallback(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
@@ -426,8 +424,7 @@ func TestLint_FB001CatchAllShadowsFallback(t *testing.T) {
 			got = append(got, f)
 		}
 	}
-	// Every catch-all is reported, not only the first: each one is a
-	// separate declaration an operator has to fix.
+	// Each catch-all is a separate declaration and is reported on its own.
 	if len(got) != 2 {
 		t.Fatalf("FB001 fired %d times, want once per catch-all route: %v", len(got), got)
 	}
@@ -446,10 +443,8 @@ func TestLint_FB001CatchAllShadowsFallback(t *testing.T) {
 	}
 }
 
-// TestLint_FB001SilentWithoutShadowedTiers — with neither Docker nor a
-// fallback configured, the only thing a catch-all hides is the terminal
-// 404, which is not a finding. The rule must not warn about every
-// single-route config in the wild.
+// With neither Docker nor a fallback, a catch-all hides only the terminal
+// 404. That is not a finding.
 func TestLint_FB001SilentWithoutShadowedTiers(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
@@ -470,12 +465,11 @@ func TestLint_FB001SilentWithoutShadowedTiers(t *testing.T) {
 	}
 }
 
-// TestLint_FB001EachShadowedTierAlone — Docker without a fallback and a
-// fallback without Docker each lose something to the catch-all, so both
-// fire, and the "can never be reached" clause claims only the tier that
-// config actually has. The dispatch order in the message's preamble names
-// both tiers either way; that sentence describes the router, not the
-// finding.
+// Docker without a fallback and a fallback without Docker each lose
+// something to the catch-all, and both fire. The "can never be reached"
+// clause claims only the tier that config actually has. The dispatch
+// order in the message's preamble names both tiers either way; that
+// sentence describes the router.
 func TestLint_FB001EachShadowedTierAlone(t *testing.T) {
 	t.Parallel()
 	base := func() Config {

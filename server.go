@@ -873,10 +873,9 @@ func (s *server) fallbackHandler() http.Handler {
 // to the fallback handler.
 //
 // INVARIANT: the tombstone tier sits between discovered routes and the
-// fallback because a Docker registration whose routes were discarded must
-// not reach operator code that no longer knows it asked for a policy
-// statute could not supply. Its envelopes cover every request such a router
-// would have matched, so the refusal is never narrower than the drop.
+// fallback. A Docker registration whose routes were discarded must not
+// reach operator code that no longer knows it asked for a policy statute
+// could not supply. Envelopes cover every request such a router matched.
 func (s *server) buildRouter() http.Handler {
 	static := make([]compiledRoute, 0, len(s.cfg.Routes))
 	for _, r := range s.cfg.Routes {

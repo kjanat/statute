@@ -19,16 +19,15 @@ import (
 //   - Routes (rectangle, light yellow) — one per declared route.
 //   - Upstream pools (ellipse, green) — one per named pool.
 //   - Backends (circle, gray) — one per backend in each pool, dashed if Backup.
-//   - The fallback (rectangle, light red) — one, when Config.Fallback is set.
+//   - The fallback (rectangle, light red): one, when Config.Fallback is set.
 //
 // Edges:
 //
 //   - Listener → Listener for redirect-to-https arrows.
 //   - Listener → Route for the matching relation (every content listener
 //     reaches every route; the host filter is on the route node).
-//   - Listener → Fallback, dashed, from the same content listeners: the
-//     terminal stage they reach when no route and no Docker tombstone
-//     matches.
+//   - Listener → Fallback, dashed, from the same content listeners
+//     (terminal stage after routes and Docker tombstones miss).
 //   - Route → Pool for ProxyTo.
 //   - Pool → Backend for membership; weighted edges show Weight.
 //

@@ -48,8 +48,8 @@ configuration.
 
 A configured `Fallback` handler is the router's terminal stage, reached only
 after both tables and the current generation's Docker tombstones miss; unset, the
-terminal behavior stays `http.NotFound`. It is not a route — no matcher, no route
-middleware — and it lives inside the content router, so everything wrapping the router keeps its precedence over it:
+terminal behavior stays `http.NotFound`. It is not a route: it has no matcher and
+no route middleware. It lives inside the content router, so everything wrapping the router keeps its precedence over it:
 pending HTTP-01 challenge responses on a plain HTTP listener, Alt-Svc, and
 listener observability all sit outside it, and a redirect-only listener never
 reaches it. What each ACME source claims differs: an automatic source absorbs
@@ -112,42 +112,39 @@ the registration asked for a policy statute could not supply. A registration is
 a Traefik router or a container's native `statute.*` labels: both declare routes,
 and discarding either has the same consequence.
 
-The obligation is an envelope, not a best effort: for every rejected
-registration R and its tombstone set T, every request R would have matched must
-be matched by some element of T. Refusing more than R claimed is allowed;
-refusing less is not. Derivation therefore widens rather than fails — an
-unrepresentable conjunct is dropped, a disjunction is a branch-aware union so
-one unreadable branch widens the whole rule, a negation node becomes
-unconstrained in place, and a rule that cannot be bounded at all becomes the
-global any-host `/*` tombstone. There is no unbounded drop that refuses
-nothing.
+The obligation is an envelope: for every rejected registration R and its
+tombstone set T, every request R would have matched must be matched by some
+element of T. Refusing more than R claimed is allowed; refusing less is not.
+Derivation therefore widens: an unrepresentable conjunct is dropped, a disjunction
+is a branch-aware union so one unreadable branch widens the whole rule, a negation
+node becomes unconstrained in place, and a rule that cannot be bounded at all
+becomes the global any-host `/*` tombstone. There is no unbounded drop that
+refuses nothing.
 
 This needs a second, tolerant reading of the rule beside `ParseRule`: the strict
 lexer and parser abandon the sibling constraints that were the only thing
 bounding the rule. The two readers are held together by a differential fuzz
-property — over every rule `ParseRule` accepts, the envelope must contain every
+property: over every rule `ParseRule` accepts, the envelope must contain every
 request its matchers match.
 
 A router with no rule declares no match condition, so its request set is empty
 and it leaves no tombstone; neither does a container that opted out explicitly,
 nor one registered only by `ExposedByDefault` and carrying no `statute.*` label
-of its own, whose any-host `/*` route is statute's inference rather than a
-routing decision. An `enable` label that cannot be parsed is not an opt-out: the
-intent could not be read, the routes vanish exactly as a rejection discards
-them, and the registration leaves the envelope its other labels declared. A
-container that opted in with `statute.enable` and named neither host nor path
-does leave one: it compiles to that same any-host `/*` route, so it terminates
-every request it is given, and dropping it in silence would be the widest
-under-refusal the tier can have. TCP/UDP routers are out of the tier's domain:
-it expresses HTTP refusals only.
+of its own, whose any-host `/*` route is statute's inference. An `enable` label
+that cannot be parsed is not an opt-out: the intent could not be read, the
+routes vanish exactly as a rejection discards them, and the registration leaves
+the envelope its other labels declared. A container that opted in with
+`statute.enable` and named neither host nor path does leave one: it compiles to
+that same any-host `/*` route, so it terminates every request it is given, and
+dropping it in silence would be the widest under-refusal the tier can have.
+TCP/UDP routers are out of the tier's domain: it expresses HTTP refusals only.
 
 Tombstones belong to the generation that derived them and are replaced with it
 atomically, so a router that becomes valid loses its tombstone in the same swap.
 Absorption runs across the whole generation, so a global envelope leaves exactly
-one tombstone — an operational event the provider logs as such, since it
-disables the fallback for every request in that generation. That announcement is
-keyed to the previous generation's refusal rather than deduplicated for the
-provider's lifetime: a rule that is repaired and later regresses must not
+one tombstone: an operational event the provider logs, disabling the fallback
+for every request in that generation. That announcement is keyed to the previous
+generation's refusal: a rule that is repaired and later regresses must not
 disable the fallback in silence.
 
 Dynamic generations are replaced atomically. A generation owns the dynamic pool

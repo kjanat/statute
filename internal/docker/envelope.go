@@ -12,21 +12,20 @@ import (
 //
 // INVARIANT: for every request q, matches(rule, q) implies that some
 // returned matcher matches q. Refusing more than the rule claimed is
-// allowed; refusing less is not, because the traffic that escapes reaches
-// the operator's Config.Fallback instead of the 404 a dropped router used
-// to produce.
+// allowed; refusing less is not. Traffic that escapes reaches
+// Config.Fallback; a dropped router used to produce 404.
 //
 // It is a second, deliberately tolerant entry point beside ParseRule.
 // ParseRule stops at the first construct it cannot represent, and every
 // such stop destroys the sibling constraints that were the only thing
-// bounding the rule. RuleEnvelope instead widens: an unrepresentable
-// conjunct is dropped, which can only add requests, and a conjunct that
-// bounds nothing at all is dropped the same way, since a conjunction is
-// contained in each of its operands; a disjunction is a branch-aware
-// union, so one unreadable branch widens the whole rule; and only a rule
-// nothing bounds — it does not lex or parse, or every operand widened away
-// — collapses to the global "any host, /*" envelope. It never returns a
-// subset.
+// bounding the rule. RuleEnvelope widens: an unrepresentable conjunct
+// is dropped, which can only add requests, and a conjunct that bounds
+// nothing at all is dropped the same way, since a conjunction is
+// contained in each of its operands. A disjunction is a branch-aware
+// union, so one unreadable branch widens the whole rule. Only a rule
+// nothing bounds (it does not lex or parse, or every operand widened
+// away) collapses to the global "any host, /*" envelope. It never
+// returns a subset.
 //
 // A blank rule is the one empty answer. Traefik matches nothing without a
 // rule, so the request set is empty and any envelope, including none,
@@ -45,22 +44,22 @@ func RuleEnvelope(rule string) []Matcher {
 
 // GlobalEnvelope is the envelope for a rule whose traffic cannot be
 // identified at all: any host, every path. Inability to name the affected
-// requests is precisely when the envelope must widen rather than disappear.
+// requests is when the envelope must widen.
 func GlobalEnvelope() []Matcher {
 	return []Matcher{{Path: "/*"}}
 }
 
 // EnvelopeOf widens matchers that were parsed successfully into a sound
-// tombstone set. The constraints are kept as they are — the router claimed
-// exactly this traffic — but the literals statute's dispatcher cannot
-// compare faithfully still widen, and redundant elements are absorbed.
+// tombstone set. The router claimed this traffic, but the literals
+// statute's dispatcher cannot compare faithfully still widen, and
+// redundant elements are absorbed.
 func EnvelopeOf(ms []Matcher) []Matcher {
 	return absorbMatchers(normalizeEnvelope(ms))
 }
 
 // envWorkingCap bounds the disjunctive expansion the deriver holds in
-// memory. It is far above maxRuleMatchers so the coarsening ladder, not
-// this cap, decides the shape of an oversized envelope.
+// memory. It is far above maxRuleMatchers so the coarsening ladder
+// decides the shape of an oversized envelope.
 const envWorkingCap = 4096
 
 // deriveEnvelope lexes, parses, and expands a rule with the tolerant
@@ -85,7 +84,7 @@ func deriveEnvelope(rule string) ([]conj, bool) {
 
 // renderEnvelope turns derived conjunctions into matchers, coarsening when
 // the expansion does not fit the matcher budget. Every rung of the ladder
-// is a widening: the paths go first so a host-scoped envelope survives, and
+// is a widening: the paths go first, a host-scoped envelope survives, and
 // only a host set that cannot be reduced reaches the global tombstone.
 func renderEnvelope(conjs []conj) []Matcher {
 	for _, cs := range [][]conj{conjs, coarsenConjs(conjs)} {
@@ -99,8 +98,8 @@ func renderEnvelope(conjs []conj) []Matcher {
 }
 
 // coarsenConjs widens every conjunction to its host constraint alone.
-// Dropping a path can only add requests, and it is the step that keeps a
-// host-scoped envelope when the full expansion does not fit.
+// Dropping a path can only add requests. This step preserves a host-scoped
+// envelope when the full expansion does not fit.
 func coarsenConjs(conjs []conj) []conj {
 	var out []conj
 	for _, c := range conjs {
@@ -130,8 +129,8 @@ func normalizeEnvelope(ms []Matcher) []Matcher {
 	out := make([]Matcher, 0, len(ms))
 	for _, m := range ms {
 		m.Host = envelopeHost(m.Host)
-		// The trailing "/*" is the dispatcher's own wildcard rather than
-		// a literal, so it is cut before the literal is tested.
+		// The trailing "/*" is the dispatcher's wildcard, cut before
+		// the literal is tested.
 		if lit, _ := strings.CutSuffix(m.Path, "/*"); strings.ContainsAny(lit, envMetaChars) || strings.Contains(lit, "%") {
 			m.Path = "/*"
 		}

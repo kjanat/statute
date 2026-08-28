@@ -1368,18 +1368,17 @@ func waitForListen(t *testing.T, addr string) {
 // waitForRefused is the inverse of waitForListen: it polls addr until the
 // connection is refused, which is the externally observable onset of the
 // drain. http.Server.Shutdown closes every open listener before it waits
-// for in-flight requests to finish, so a refused connection proves shutdown
-// has passed the close step and is now inside the wait — the phase a test
+// for in-flight requests to finish. A refused connection proves shutdown
+// has passed the close step and is now inside the wait, the phase a test
 // holding a request open means to exercise. The readiness flag proves far
-// less: Shutdown stores it before it touches serverRun at all, so a caller
+// less: Shutdown stores it before it touches serverRun at all, and a caller
 // synchronising on it can still act while the listener is wide open.
 //
 // Nothing in the server is instrumented for this. The observation is a TCP
-// connect from outside, so it tests the socket the client uses rather than
-// a hook that exists only for the test.
+// connect from outside, against the socket the client uses.
 //
-// drainDone is whatever ends when the drain does, so a caller that means to
-// act mid-drain cannot act after it instead.
+// drainDone is whatever ends when the drain does. A caller that means to
+// act mid-drain must not act after it.
 func waitForRefused(t *testing.T, addr string, drainDone <-chan error) {
 	t.Helper()
 	const deadline = 5 * time.Second
@@ -1676,9 +1675,8 @@ func TestFailedStartServesHealthThenReleases(t *testing.T) {
 }
 
 // waitReadyFalse polls the ready flag until it drops, failing if the drain
-// completes first or the flag never flips. drainDone is whatever ends when
-// the drain does — the in-flight request, or Shutdown itself — so a caller
-// that means to act while the drain is held cannot act after it instead.
+// completes first or the flag never flips. drainDone ends when the drain
+// does (the in-flight request, or Shutdown itself).
 func waitReadyFalse(t *testing.T, srv *server, drainDone <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

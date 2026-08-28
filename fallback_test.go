@@ -56,8 +56,7 @@ func backendHostPort(t *testing.T, ts *httptest.Server) (string, int) {
 	return host, port
 }
 
-// TestResolveFallback — the handler is carried through with its marker set,
-// and an unset fallback leaves both fields zero.
+// An unset fallback leaves Fallback and HasFallback zero.
 func TestResolveFallback(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -78,9 +77,7 @@ func TestResolveFallback(t *testing.T) {
 	}
 }
 
-// TestResolveFallbackTypedNil — an interface wrapping a nil concrete value
-// would panic on the first unmatched request, so it fails at resolve like
-// Handle's does rather than silently becoming the terminal 404.
+// A typed-nil Fallback fails at resolve. Handle treats a typed-nil the same.
 func TestResolveFallbackTypedNil(t *testing.T) {
 	t.Parallel()
 	cases := map[string]http.Handler{
@@ -104,8 +101,7 @@ func TestResolveFallbackTypedNil(t *testing.T) {
 	}
 }
 
-// TestFallbackUnsetKeeps404 — with no fallback configured the terminal
-// branch is still net/http's 404.
+// With no fallback configured the terminal branch is still net/http's 404.
 func TestFallbackUnsetKeeps404(t *testing.T) {
 	t.Parallel()
 	router := fallbackRouter(t, Config{
@@ -118,9 +114,7 @@ func TestFallbackUnsetKeeps404(t *testing.T) {
 	}
 }
 
-// TestFallbackWithoutDockerTable — with no Docker provider at all, a request
-// no static route matched reaches the fallback, and one a route matches
-// does not.
+// With no Docker provider, an unmatched request reaches the fallback.
 func TestFallbackWithoutDockerTable(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -143,10 +137,7 @@ func TestFallbackWithoutDockerTable(t *testing.T) {
 	}
 }
 
-// TestFallbackDoesNotReplaceMatchedRoute404 — the fallback answers misses,
-// not 404s. A route that matched and answered 404 itself keeps its own status
-// and body: an implementation that wrapped the router and rewrote every 404
-// into the fallback would pass every other test here.
+// A matched route's own 404 is not rewritten into the fallback.
 func TestFallbackDoesNotReplaceMatchedRoute404(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -178,9 +169,7 @@ func TestFallbackDoesNotReplaceMatchedRoute404(t *testing.T) {
 	}
 }
 
-// TestFallbackCarriesNoRouteMiddleware — route middleware is route-scoped:
-// the response a route's SetResponseHeader decorates must not decorate the
-// fallback's.
+// Route middleware does not decorate the fallback response.
 func TestFallbackCarriesNoRouteMiddleware(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -202,10 +191,7 @@ func TestFallbackCarriesNoRouteMiddleware(t *testing.T) {
 	assertNoHeader(t, rec.Header(), "X-Route")
 }
 
-// TestFallbackAfterStaticAndDockerRoutes — the whole precedence chain in one
-// config: the static route wins its path even though the discovered route's
-// wildcard also covers it, the discovered route wins the paths beneath it,
-// and only a request neither table matched reaches the fallback.
+// Static wins its path, Docker wins the paths beneath, unmatched hits Fallback.
 func TestFallbackAfterStaticAndDockerRoutes(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("from docker"))
@@ -243,9 +229,7 @@ func TestFallbackAfterStaticAndDockerRoutes(t *testing.T) {
 	}
 }
 
-// TestFallbackAfterDockerGenerationSwap — the fallback is consulted against
-// the current generation: a host the replacement generation dropped reaches
-// it, and the host the replacement serves does not.
+// The fallback is consulted against the current generation.
 func TestFallbackAfterDockerGenerationSwap(t *testing.T) {
 	p, srv, swap := newFakeProvider(t, &resolved.Docker{}, []fakeDaemonContainer{{
 		name: "web-1", ip: "127.0.0.1", port: 1,
@@ -259,8 +243,7 @@ func TestFallbackAfterDockerGenerationSwap(t *testing.T) {
 	mustSync(t, p)
 	router := srv.buildRouter()
 
-	// The refused backend answers 502; that is still the discovered route
-	// serving the request rather than the fallback.
+	// A 502 from the refused backend is still the discovered route.
 	rec := runRequest(t, router, httptest.NewRequest("GET", "http://old.example.com/x", nil))
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("first generation: got %d, want 502 from the discovered pool", rec.Code)
@@ -285,10 +268,7 @@ func TestFallbackAfterDockerGenerationSwap(t *testing.T) {
 	}
 }
 
-// TestFallbackAndHTTP01ChallengePaths — the pinned HTTP-01 responder wraps
-// the router, so a pending challenge is answered before the fallback can see
-// it. Its claim stops there: an unknown path under the challenge prefix is
-// passed through, so it reaches the fallback like any other unmatched path.
+// A pending HTTP-01 token is answered before the fallback sees the path.
 func TestFallbackAndHTTP01ChallengePaths(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -337,10 +317,8 @@ func TestFallbackAndHTTP01ChallengePaths(t *testing.T) {
 	}
 }
 
-// TestFallbackNotConsultedForAutocertChallenge — an automatic source absorbs
-// the whole challenge namespace, unlike the pinned solver above: autocert
-// answers unknown tokens with its own 404, and that 404 must reach the client
-// unchanged. The fallback sits under the router, not over the listener chain.
+// Autocert answers unknown tokens with its own 404. The fallback sits under
+// the router.
 func TestFallbackNotConsultedForAutocertChallenge(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -371,8 +349,7 @@ func TestFallbackNotConsultedForAutocertChallenge(t *testing.T) {
 	}
 }
 
-// TestFallbackNotReachedOnRedirectListener — a redirect-only listener never
-// reaches the content router, so it never reaches the fallback.
+// A redirect-only listener never reaches the content router.
 func TestFallbackNotReachedOnRedirectListener(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -398,9 +375,7 @@ func TestFallbackNotReachedOnRedirectListener(t *testing.T) {
 	}
 }
 
-// TestFallbackObservedByListenerObservability — the access log and the
-// metrics store record the fallback's own final status, because listener
-// observability wraps the whole router.
+// Listener observability records the fallback's own final status.
 func TestFallbackObservedByListenerObservability(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -440,8 +415,7 @@ func TestFallbackObservedByListenerObservability(t *testing.T) {
 	}
 }
 
-// TestExport_Fallback — the JSON export carries the HasFallback marker and
-// never the handler itself; without a fallback the marker is false.
+// JSON export carries HasFallback and omits the handler.
 func TestExport_Fallback(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -477,8 +451,7 @@ func TestExport_Fallback(t *testing.T) {
 	}
 }
 
-// TestGraphDOT_Fallback — the graph renders the fallback as its own node,
-// reached from content listeners only, and omits it when none is set.
+// The graph renders the fallback from content listeners only.
 func TestGraphDOT_Fallback(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
@@ -514,15 +487,8 @@ func TestGraphDOT_Fallback(t *testing.T) {
 	}
 }
 
-// TestFallbackNotReachedByFailClosedDockerRoute — a router whose label
-// references an unregistered middleware drops its routes, and those requests
-// must not reach the fallback. An earlier revision of this test asserted the
-// opposite, on the reasoning that the protected backend stays unreachable
-// either way; what it missed is that the operator's fallback is typically a
-// catch-all proxy to the very same container, so handing it the traffic the
-// router asked to protect serves it unauthenticated. The generation's
-// tombstone answers instead, with the 404 the drop produced before Fallback
-// existed. TestDockerTombstoneEnvelopes covers the envelope shapes.
+// A fail-closed Docker router is refused with 404. The operator's fallback
+// is often a catch-all proxy to the same container.
 func TestFallbackNotReachedByFailClosedDockerRoute(t *testing.T) {
 	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
 		name: "app-1", ip: "10.0.0.9", port: 3000,
@@ -552,23 +518,11 @@ func TestFallbackNotReachedByFailClosedDockerRoute(t *testing.T) {
 	}
 }
 
-// fallbackDrainBody is long enough that a truncated write is visible in the
-// comparison rather than passing as an empty-but-successful response.
+// fallbackDrainBody is long enough that a truncated write is visible.
 const fallbackDrainBody = "fallback finished after shutdown began"
 
-// TestFallbackDrainsThroughShutdown — the Config.Fallback godoc promises
-// requests in the fallback drain through normal graceful shutdown. The
-// fallback is not a route, so the route drain test does not cover it: it
-// hangs off the router's terminal stage, reached only after both tables and
-// the tombstones miss, and it is the configured handler rather than one
-// statute compiled. The request parks inside it, Shutdown starts draining,
-// and the response must still arrive whole inside the grace period.
-//
-// The release is gated on the content listener actually closing rather than
-// on the readiness flag. Shutdown stores that flag as its first statement,
-// before it reaches serverRun at all, so a test synchronising on it can
-// release the request and collect a whole response while the listener is
-// still accepting — proving the fallback answered, but nothing about draining.
+// The request parks in Config.Fallback; Shutdown must still deliver the
+// whole body. Release is gated on the content listener closing.
 func TestFallbackDrainsThroughShutdown(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})

@@ -29,12 +29,9 @@ func prefixArgs(n int) string {
 	return strings.Join(args, ", ")
 }
 
-// TestRuleEnvelopeAcceptedRules — a rule ParseRule accepts and a container
-// that can serve it leave routes and no refusal. This is the tier's
-// negative control, so it drives the label layer rather than ParseRule
-// alone: a tombstone that fires alongside a healthy route would refuse
-// traffic the router is serving, and asserting only that ParseRule returns
-// no error cannot see that.
+// A rule ParseRule accepts and a container that can serve it leave routes
+// and no refusal. This drives Extract, because a tombstone beside a healthy
+// route would refuse traffic the router is serving.
 func TestRuleEnvelopeAcceptedRules(t *testing.T) {
 	t.Parallel()
 	accepted := []string{
@@ -46,7 +43,7 @@ func TestRuleEnvelopeAcceptedRules(t *testing.T) {
 		"Host(`a.example.com`) || Host(`b.example.com`)",
 		"Host(`a.example.com`, `b.example.com`) && PathPrefix(`/api`)",
 		// A placeholder argument lexes as a literal, so this is accepted
-		// as an exact pattern: a hole in ParseRule, not a rejection.
+		// as an exact pattern: a hole in ParseRule.
 		"Path(`/foo/{id:[0-9]+}`)",
 	}
 	for _, rule := range accepted {
@@ -71,9 +68,7 @@ func TestRuleEnvelopeAcceptedRules(t *testing.T) {
 	}
 }
 
-// TestRuleEnvelopeBlankRule — a router with no rule declares no match
-// condition, so its request set is empty and no envelope is needed. The trim
-// is the deriver's own: the label layer tests the raw string.
+// A router with no rule declares no match condition, so no envelope is needed.
 func TestRuleEnvelopeBlankRule(t *testing.T) {
 	t.Parallel()
 	for _, rule := range []string{"", "   ", "\t\n"} {
@@ -298,9 +293,8 @@ func TestRuleEnvelope(t *testing.T) {
 	}
 }
 
-// TestRuleEnvelopeCapLadderKeepsHosts — 9 hosts crossed with 8 prefixes trip
-// the matcher cap. Collapsing paths rather than hosts is what keeps the
-// fallback alive for every other host on the listener.
+// 9 hosts crossed with 8 prefixes trip the matcher cap. Collapsing paths
+// keeps the fallback alive for every other host on the listener.
 func TestRuleEnvelopeCapLadderKeepsHosts(t *testing.T) {
 	t.Parallel()
 	branches := make([]string, 0, 9)
@@ -320,8 +314,8 @@ func TestRuleEnvelopeCapLadderKeepsHosts(t *testing.T) {
 	}
 }
 
-// TestEnvelopeOfNormalizesLiterals — matchers that parsed successfully still
-// widen where statute's dispatcher cannot compare the literal faithfully.
+// Matchers that parsed successfully still widen where the dispatcher cannot
+// compare the literal faithfully.
 func TestEnvelopeOfNormalizesLiterals(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

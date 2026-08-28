@@ -392,10 +392,8 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	return tombs
 }
 
-// refuse turns dropped matchers into a refusal envelope and logs it. The
-// matchers were parsed successfully, so the envelope is exactly what the
-// routes claimed: widening it here would shadow the fallback for traffic
-// the service never asked for.
+// refuse turns dropped matchers into a refusal envelope and logs it.
+// Widening here would shadow the fallback for traffic the service never asked for.
 func (p *dockerProvider) refuse(service string, ms []docker.Matcher) []docker.Matcher {
 	env := docker.EnvelopeOf(ms)
 	if len(env) == 0 {
@@ -406,9 +404,7 @@ func (p *dockerProvider) refuse(service string, ms []docker.Matcher) []docker.Ma
 }
 
 // compileTombstones turns a generation's refusal envelopes into routes that
-// can only refuse. Absorption runs across the whole generation, so a global
-// envelope leaves exactly one tombstone and the fallback is disabled once,
-// loudly, rather than by a crowd of redundant entries.
+// can only refuse. A global envelope leaves one tombstone after absorption.
 func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute {
 	env := docker.EnvelopeOf(ms)
 	p.announceRefusal(env)
@@ -426,20 +422,12 @@ func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute 
 }
 
 // announceRefusal logs what this generation refuses when that differs from
-// what the last one refused. It bypasses warn deliberately: warn dedupes for
-// the provider's lifetime, which is right for a label typo an operator fixes
-// once and wrong for the fail-closed tier, where a rule that is repaired and
-// later regresses would disable the fallback again in silence. Keying on the
-// previous generation repeats the announcement without logging once per poll,
-// and makes the clearing edge audible: an operator told which requests are
-// being refused is also told when that refusal is lifted, since the repair is
-// as much an operational event as the refusal was.
+// the previous generation. warn dedupes for the provider's lifetime; this
+// path keys on the previous generation so a repaired-then-regressed rule
+// is audible again, and so is the clearing edge.
 //
-// That clearing line names what the tier stopped doing rather than what
-// happens next. Config.Fallback is optional and this tier does not know
-// whether one is configured; with none the terminal handler is the same 404
-// http.NotFoundHandler the tombstones served, so promising that the fallback
-// is reached again would be false for exactly those deployments.
+// The clearing line names the refusals that stopped. Config.Fallback is
+// optional and this tier does not know whether one is configured.
 func (p *dockerProvider) announceRefusal(env []docker.Matcher) {
 	msg := ""
 	if len(env) > 0 {

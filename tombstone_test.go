@@ -47,9 +47,7 @@ func fallbackServer(t *testing.T, srv *server, routes Routes) *atomic.Int64 {
 	return calls
 }
 
-// TestDockerTombstoneEnvelopes — every drop path that discards a routing
-// decision the labels declared leaves an envelope behind, and each envelope
-// covers exactly the traffic that drop stopped serving.
+// Every drop path that discards a declared routing decision leaves an envelope.
 func TestDockerTombstoneEnvelopes(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -327,9 +325,7 @@ func TestDockerTombstoneEnvelopes(t *testing.T) {
 	}
 }
 
-// TestDockerTombstoneRefusesBeforeFallback — the refusal is the same 404 a
-// dropped router produced before Config.Fallback existed, and the fallback
-// still answers everything the envelope does not claim.
+// A dropped router is refused with 404; the fallback answers unclaimed traffic.
 func TestDockerTombstoneRefusesBeforeFallback(t *testing.T) {
 	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
 		name: "app-1", ip: "10.0.0.9", port: 3000,
@@ -347,8 +343,7 @@ func TestDockerTombstoneRefusesBeforeFallback(t *testing.T) {
 	if rec.Code != http.StatusNotFound || calls.Load() != 0 {
 		t.Errorf("refused request: code=%d calls=%d, want 404 with the fallback untouched", rec.Code, calls.Load())
 	}
-	// The trailing FQDN dot is stripped before the tombstone tier compares,
-	// so the same host in its absolute form cannot slip past.
+	// The trailing FQDN dot is stripped before the tombstone tier compares.
 	rec = runRequest(t, router, httptest.NewRequest("GET", "http://vault.example.com./secret", nil))
 	if rec.Code != http.StatusNotFound || calls.Load() != 0 {
 		t.Errorf("absolute host: code=%d calls=%d, want 404 with the fallback untouched", rec.Code, calls.Load())
@@ -359,9 +354,7 @@ func TestDockerTombstoneRefusesBeforeFallback(t *testing.T) {
 	}
 }
 
-// TestDockerTombstoneKeepsSiblingsServing — a rejected router's envelope is
-// consulted after the generation's real routes, so a sibling router sharing
-// the container keeps serving even when the envelope is global.
+// A rejected router's envelope is consulted after the generation's real routes.
 func TestDockerTombstoneKeepsSiblingsServing(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("served"))
@@ -388,8 +381,7 @@ func TestDockerTombstoneKeepsSiblingsServing(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Body.String() != "served" {
 		t.Errorf("sibling router: code=%d body=%q, want the backend's response", rec.Code, rec.Body.String())
 	}
-	// Static routes are compiled ahead of the whole dynamic table, so a
-	// global envelope cannot shadow them either.
+	// Static routes are compiled ahead of the whole dynamic table.
 	if rec := runRequest(t, router, httptest.NewRequest("GET", "http://any.example.com/healthz", nil)); rec.Code != http.StatusNoContent {
 		t.Errorf("static route: code=%d, want 204", rec.Code)
 	}
@@ -401,9 +393,7 @@ func TestDockerTombstoneKeepsSiblingsServing(t *testing.T) {
 	}
 }
 
-// TestDockerTombstoneGenerationReplacement — a tombstone belongs to the
-// generation that derived it. When the router becomes valid, the refusal
-// disappears in the same atomic swap and the fallback is reachable again.
+// A tombstone belongs to the generation that derived it and is swapped with it.
 func TestDockerTombstoneGenerationReplacement(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("served"))
@@ -463,14 +453,8 @@ func appRouter(rule string) fakeDaemonContainer {
 	}
 }
 
-// TestDockerTombstoneReannouncesAfterRepair — the standing refusal is a
-// fact about the current generation, not a one-off remark about a label, so
-// a rule that is repaired and later regresses is announced again. The
-// provider's warning dedupe lasts for its whole lifetime, which is right
-// for a typo fixed once and wrong here: the second regression would
-// disable the fallback with nothing in the log to trace it to. It is not
-// announced once per generation either, since a generation is rebuilt on
-// every poll.
+// The standing refusal is a fact about the current generation. A rule that
+// is repaired and later regresses is announced again.
 func TestDockerTombstoneReannouncesAfterRepair(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
@@ -499,12 +483,7 @@ func TestDockerTombstoneReannouncesAfterRepair(t *testing.T) {
 	}
 }
 
-// TestDockerTombstoneAnnouncesRepair — the tier switches the operator's
-// fallback off for a whole generation, so it must say when it is switched
-// back on; a refusal that is only ever announced on its onset leaves the
-// operator reading a stale log line. The clearing edge is announced on the
-// transition and only there: a generation refusing nothing after one that
-// also refused nothing is silent, or the line would repeat every poll.
+// The clearing edge is announced on the transition and only there.
 func TestDockerTombstoneAnnouncesRepair(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
@@ -548,9 +527,8 @@ func TestDockerTombstoneAnnouncesRepair(t *testing.T) {
 	}
 }
 
-// TestDockerTombstoneDedupesAcrossContainers — two containers rejected the
-// same way leave one refusal, and a global envelope absorbs the rest so the
-// fallback is disabled once rather than by a crowd of redundant entries.
+// Two containers rejected the same way leave one refusal. A global envelope
+// absorbs the rest.
 func TestDockerTombstoneDedupesAcrossContainers(t *testing.T) {
 	p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{
 		{

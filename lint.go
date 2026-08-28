@@ -390,17 +390,17 @@ func ruleACMEDirectory(c *resolved.Config) []Finding {
 const catchAllPattern = "/*"
 
 // ruleCatchAllShadowsFallback reports a static route that matches every
-// request — no host, the catch-all pattern, no client constraint — declared
+// request (no host, the catch-all pattern, no client constraint) declared
 // in a config that also configures Docker discovery or a fallback. Static
 // routes are consulted before the Docker generation, before that
 // generation's tombstones, and before Config.Fallback, so such a route
 // answers first for every request and nothing behind it is ever reached.
 //
-// It stays a warning rather than an error because the route is legal and
-// still serves: what a declaration cannot distinguish is a deliberate
-// single-route deployment from an operator who expected the tiers behind it
-// to keep working. Nothing fires without Docker or a fallback — with
-// neither, the only thing a catch-all shadows is the terminal 404.
+// The finding is a warning: the route is legal and still serves. A
+// declaration cannot distinguish a deliberate single-route deployment from
+// an operator who expected the tiers behind it to keep working. Nothing
+// fires without Docker or a fallback. With neither, the only thing a
+// catch-all shadows is the terminal 404.
 func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 	shadowed := shadowedTiers(c)
 	if shadowed == "" {
@@ -425,15 +425,13 @@ func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 }
 
 // shadowedTiers names the dispatch tiers a hostless catch-all would hide,
-// or "" when the config declares neither, in which case there is nothing
-// behind the route to lose. The tiers are named rather than assumed, so the
-// finding never cites Docker to a config that has none.
+// or "" when the config declares neither. The tiers are named from the
+// config: the finding cites Docker only when the config has it.
 //
-// With Docker configured the generation's tombstones are shadowed too, and
-// that is the consequence worth spelling out: a router whose auth chain
-// statute could not supply is refused by a tombstone, and a catch-all ahead
-// of it does not merely hide the refusal, it serves the request the
-// refusal existed to stop.
+// With Docker configured the generation's tombstones are shadowed too: a
+// router whose auth chain statute could not supply is refused by a
+// tombstone, and a catch-all ahead of it serves the request the refusal
+// existed to stop.
 func shadowedTiers(c *resolved.Config) string {
 	const dockerTiers = "every Docker-discovered route, and the refusals standing in for the routers statute had to drop"
 	switch {

@@ -25,11 +25,9 @@ type envToken struct {
 }
 
 // lexEnvelope tokenizes a rule for the deriver. It differs from lexRule in
-// exactly one place: '!' lexes as a token instead of aborting the scan,
-// because a negation's siblings still bound the rule and lexRule throws
-// them away. Any other byte it cannot read ends the derivation, and the
-// caller widens to the global envelope: a rule the operator wrote and
-// statute cannot read is evidence of routing intent it cannot bound.
+// one place: '!' lexes as a token. A negation's siblings still bound the
+// rule and lexRule throws them away. Any other unread byte ends the
+// derivation; the caller widens to the global envelope.
 func lexEnvelope(s string) ([]envToken, error) {
 	var toks []envToken
 	for i := 0; i < len(s); {
@@ -105,8 +103,7 @@ func lexEnvString(s string, i int) (*envToken, int, error) {
 
 // envExpr is a node in the tolerantly parsed rule tree. Its envelope method
 // returns the node's disjunctive normal form, plus a bool reporting that the
-// node is the top envelope — every request — rather than a set the normal
-// form can carry. The flag names a set, not a derivation failure, and the
+// node is the top envelope (every request). The flag names a set, and the
 // two operators read it differently: a union with top is top, so it
 // propagates through envOrExpr, while a meet is a subset of each operand,
 // so envAndExpr keeps the bounded operand and only reports top when both
@@ -127,8 +124,8 @@ type (
 )
 
 // envTop is the unconstrained envelope: one conjunction with no host and no
-// path constraint. It is the identity of the conjunction merge, which is
-// why dropping an unrepresentable conjunct is not a special case.
+// path constraint. It is the identity of the conjunction merge, so dropping
+// an unrepresentable conjunct is not a special case.
 func envTop() []conj { return []conj{{}} }
 
 // envelope replaces a negation node with the unconstrained envelope. The
@@ -152,9 +149,9 @@ func (e envOrExpr) envelope() ([]conj, bool) {
 
 // envelope intersects the two operands. A top operand is not a reason to
 // widen the meet: [[A && B]] is contained in [[B]], so when only one side
-// is top the other side alone is already a sound superset, and collapsing
-// there would refuse every unmatched request in the generation — disabling
-// Config.Fallback outright — on the strength of one unreadable conjunct.
+// is top the other side alone is already a sound superset. Collapsing
+// there would refuse every unmatched request in the generation and disable
+// Config.Fallback on the strength of one unreadable conjunct.
 // The narrowing does not depend on why the flag was raised. Both sources,
 // a zero-argument matcher and the working-set cap below, mean the same
 // thing: that side bounds nothing.
@@ -189,7 +186,7 @@ func (e envAndExpr) envelope() ([]conj, bool) {
 // each conjunct and the parser's "disjoint hosts can never match" verdict
 // is not a proof that the request set is empty: it compares hosts raw while
 // the dispatcher compares them case-insensitively. Two path constraints
-// keep the enclosing one, or the leftmost when they are incomparable — the
+// keep the enclosing one, or the leftmost when they are incomparable. The
 // intersection is a subset of either, so either alone is sound.
 func mergeEnvConj(a, b conj) conj {
 	out := a
@@ -224,8 +221,8 @@ func conjPathLE(a, b conj) bool {
 }
 
 // envelope reduces one matcher call. Host, Path, and PathPrefix contribute
-// their constraint; every other name — ClientIP, Header, Query, Method, the
-// regexp matchers, and anything Traefik adds later — contributes nothing
+// their constraint; every other name (ClientIP, Header, Query, Method, the
+// regexp matchers, and anything Traefik adds later) contributes nothing
 // and reduces to the top envelope. Names are never special-cased and a
 // literal is never mined out of a regexp: statute has no wildcard-host
 // matcher, and alternation defeats prefix mining even in principle.
@@ -250,8 +247,8 @@ func (e envFnExpr) envelope() ([]conj, bool) {
 }
 
 // hostLeaf turns Host() arguments into one host set. A multi-argument
-// matcher is a disjunction, so a single argument statute would not read
-// literally leaves the whole leaf unconstrained.
+// matcher is a disjunction, so a single unread argument leaves the whole
+// leaf unconstrained.
 func hostLeaf(args []string) []conj {
 	for _, a := range args {
 		if a == "" || !literalArg(a) {
@@ -264,9 +261,8 @@ func hostLeaf(args []string) []conj {
 // pathLeaf turns Path()/PathPrefix() arguments into one conjunction each,
 // the same disjunction reading, with the same all-or-nothing literal test.
 // An argument that is empty or does not begin with "/" is not a pattern the
-// dispatcher can match — req.URL.Path always starts with "/" — so it widens
-// like any other unreadable argument rather than becoming a tombstone that
-// refuses nothing.
+// dispatcher can match (req.URL.Path always starts with "/"), so it widens
+// like any other unread argument.
 func pathLeaf(args []string, prefix bool) []conj {
 	out := make([]conj, 0, len(args))
 	for _, a := range args {
@@ -280,7 +276,7 @@ func pathLeaf(args []string, prefix bool) []conj {
 
 // envMetaChars are the characters that make an argument something other
 // than the literal the dispatcher compares against: Traefik placeholders
-// and regexp syntax. '.' is deliberately absent — it is a literal byte in
+// and regexp syntax. '.' is deliberately absent: it is a literal byte in
 // both a host and a path, and every host literal contains one.
 const envMetaChars = "{}^$*+?()[]|\\"
 

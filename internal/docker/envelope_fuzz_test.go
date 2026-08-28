@@ -54,15 +54,13 @@ func probeRequests(mt Matcher) [][2]string {
 }
 
 // FuzzRuleEnvelope invariants: RuleEnvelope never panics; it returns an
-// envelope for every rule that is not blank; and — the one that matters —
-// for every rule ParseRule accepts, every request one of its matchers would
-// have matched is also matched by some envelope element. That containment
-// property catches the disjunction, negation and nested-conjunction subset
-// bugs mechanically, which a fixed table cannot, and it is the only
+// envelope for every rule that is not blank; and for every rule ParseRule
+// accepts, every request one of its matchers would have matched is also
+// matched by some envelope element. That containment property is the
 // mechanical guard against the strict and tolerant readers drifting apart.
 //
 // Rules ParseRule rejects have no output to compare against, so their
-// shapes are pinned by the table in TestRuleEnvelope instead.
+// shapes are pinned by the table in TestRuleEnvelope.
 func FuzzRuleEnvelope(f *testing.F) {
 	seeds := []string{
 		"Host(`app.example.com`)",
