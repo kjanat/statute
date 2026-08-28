@@ -139,7 +139,7 @@ const TELLS = [
 		/\bso\b[^.]{0,60}\b(?:cannot|can't|could not|never|would)\b|\bwithout\b[^.]{0,70}\bwould\b|\bwould otherwise\b|\botherwise\b[^.]{0,70}\bwould\b|\bso that\b|\b(?:which|that) (?:prevents|keeps|stops)\b/i,
 	],
 	// Not typed by hand. These arrive by paste.
-	['paste artifact', /[“”‘’]|[ ­​-‍﻿]/],
+	['paste artifact', /[“”‘’]|[\u00A0\u00AD\u200B-\u200D\uFEFF]/],
 ];
 
 // A comment about the character has to be able to print it.
@@ -280,6 +280,10 @@ function groupsFromPatch(path, patch) {
 	for (const raw of patch.split('\n')) {
 		if (raw.startsWith('@@')) {
 			flush('');
+
+			// Hunks are discontiguous. Carrying fence state across one lets a
+			// single unclosed fence blank the rest of the file.
+			inFence = false;
 
 			const match = /\+(\d+)/.exec(raw);
 			newLine = match ? Number.parseInt(match[1], 10) : 1;
@@ -788,32 +792,40 @@ usage:
 
 working tree:
   Diffs against <base-ref>, or the merge base with master when omitted.
-  Uncommitted and untracked Go files are included. No token, no network.
+  Uncommitted and untracked files are included. No token, no network.
   Exits 1 when anything is flagged, so it can gate a commit or push.
 
 pull request:
-  Needs GITHUB_TOKEN (try: GITHUB_TOKEN=$(gh auth token) ...). Dry run —
-  printing findings and the threads it would resolve — unless --apply is
-  passed, which posts review comments and resolves stale threads.
+  Needs GITHUB_TOKEN (try: GITHUB_TOKEN=$(gh auth token) ...). Dry run by
+  default: it prints findings and the threads it would resolve, and posts
+  nothing until --apply is passed.
 
 options:
   --local     force working-tree mode even when a repo and number are given
   --apply     pull-request mode only: actually post and resolve
   -h, --help  show this help
 
-Two independent rules.
+files:
+  Go, JS/TS, JSONC, YAML, Python, shell, TOML, Makefiles and Dockerfiles
+  contribute their comments; Markdown contributes its paragraphs, one per
+  list item, heading or table row. Fenced and indented code is skipped,
+  as are formats with no comment syntax, machine-owned files, key
+  material and path lists.
 
-Length: an ordinary comment of three or more lines is flagged, with no
-exemptions. Doc comments (those immediately above a top-level package,
-const, func, type, or var declaration) are not measured, because their
-length carries no signal about their quality.
+length rule:
+  An ordinary comment of three or more lines is flagged. Go doc comments
+  and JSDoc blocks are exempt: they are read without the code at hand,
+  where line count says nothing about quality.
 
-Style: any comment carrying an em/en dash, a contrast construction ("X,
-not Y" / "X rather than Y" / "X instead of Y" / "not just X but Y"), an
-emphatic cleft ("which is what ..." / "exactly the ..."), stock filler,
-or inflated diction is flagged whatever its length or position. A dash
-is allowed when the comment is about the character itself, shown by
-quoting it, naming it, or giving its code point.`;
+style rule:
+  Any comment is flagged, whatever its length or position, for an em/en
+  dash, a contrast construction ("X, not Y", "X rather than Y", "X
+  instead of Y", "not just X but Y"), an emphatic cleft ("which is what",
+  "exactly the"), counterfactual justification ("so X cannot Y",
+  "without X, Y would"), stock filler, connective glue, inflated diction,
+  or a paste artifact such as a curly quote or a zero-width space. A dash
+  passes when the comment is about the character itself, shown by quoting
+  it, naming it, or giving its code point.`;
 
 /**
  * @returns {Promise<void>}
