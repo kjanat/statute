@@ -175,8 +175,9 @@ Upstreams: statute.Upstreams{
             FailureWindow: "30s", MaxFailures: 5,
         },
         Transport: statute.Transport{
-            MaxIdleConnsPerHost: 32,
-            IdleConnTimeout:     "90s",
+            MaxIdleConnsPerHost:   32,
+            IdleConnTimeout:       "90s",
+            ResponseHeaderTimeout: "5s",
         },
     },
 }
@@ -200,6 +201,8 @@ The picker filters to healthy primary backends; when no primary is healthy, it f
 `PassiveHealthCheck` demotes backends from real traffic instead of probes: a backend that accumulates `MaxFailures` failed attempts — a transport error or a 5xx response — inside the sliding `FailureWindow` is excluded from selection. A request canceled by its own client does not count — a client abort is not a backend fault, and counting it would let any client demote backends pool-wide — while a deadline that expires waiting on the backend does. Failures are windowed, not consecutive: a success in between neither clears nor extends the window, and the backend is re-admitted only as failures age out. Counting is per backend attempt, so under a `Retry` middleware every attempt counts against the backend that served it even when the client-visible request succeeds elsewhere. Passive and active health are independent — either works alone, and an active probe success never clears a passive window. Degraded mode is unchanged: when every backend in a pool is demoted — in particular, a single-backend pool whose only backend is passively demoted — the pool keeps sending traffic to its primaries rather than manufacturing 503s, so passive demotion never stops traffic on its own. Both fields must be set together; the zero value disables passive health.
 
 `Transport` carries pool-wide upstream transport and proxy-response policy, reused across all backends in the pool. The default `MaxIdleConnsPerHost` (32) is a much better default for a proxy than Go's stdlib value (2); leave it alone unless you know why you're changing it.
+
+`Transport.ResponseHeaderTimeout` (e.g. `"5s"`) bounds how long each proxy attempt waits for an upstream to begin responding after the request has been written. It does not limit response-body transfer, so downloads and streams may continue for as long as their route permits. Empty keeps Go's default of no response-header timeout. Active probes still carry their explicit `HealthCheck.Timeout`; because they share the pool transport, a shorter response-header timeout can end a probe's header wait first.
 
 `Transport.FlushInterval` (e.g. `"100ms"`) makes the reverse proxy flush buffered response bytes to the client at that interval. It is pool policy: every route proxying to the pool shares the one interval. The default `0` keeps Go's `httputil.ReverseProxy` default — no periodic flushing — and responses the proxy detects as streaming (unknown Content-Length, `text/event-stream`) are flushed immediately regardless of this setting, so SSE works out of the box either way. Only non-negative durations are accepted; there is no equivalent of Traefik's `-1` immediate-flush sentinel, so a response the proxy does not detect as streaming (for example long polling with a known Content-Length) needs a small positive interval instead.
 

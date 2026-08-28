@@ -138,6 +138,18 @@ func TestLint_CleanConfigHasNoErrors(t *testing.T) {
 	}
 }
 
+// Lint must surface malformed pool transport policy from Resolve.
+func TestLintRejectsInvalidResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
+	_, err := Lint(poolConfig(Pool{
+		Backends:  []Backend{{Address: "127.0.0.1:9001"}},
+		Transport: Transport{ResponseHeaderTimeout: "later"},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "response_header_timeout:") {
+		t.Fatalf("Lint error: got %v, want response_header_timeout error", err)
+	}
+}
+
 func TestLint_TLS001OnTmpStorage(t *testing.T) {
 	t.Parallel()
 	cfg := Config{

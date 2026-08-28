@@ -430,6 +430,10 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 	if err != nil {
 		return resolved.Transport{}, fmt.Errorf("tls_handshake_timeout: %w", err)
 	}
+	responseHeader, err := parse.DurationOr(t.ResponseHeaderTimeout, 0)
+	if err != nil {
+		return resolved.Transport{}, fmt.Errorf("response_header_timeout: %w", err)
+	}
 	flush, err := parse.DurationOr(t.FlushInterval, 0)
 	if err != nil {
 		return resolved.Transport{}, fmt.Errorf("flush_interval: %w", err)
@@ -440,14 +444,15 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 		}
 	}
 	return resolved.Transport{
-		MaxIdleConnsPerHost: maxIdle,
-		IdleConnTimeout:     idle,
-		DialTimeout:         dial,
-		TLSHandshakeTimeout: tlsHs,
-		FlushInterval:       flush,
-		ServerName:          t.ServerName,
-		RootCAFiles:         append([]string(nil), t.RootCAFiles...),
-		InsecureSkipVerify:  t.InsecureSkipVerify,
+		MaxIdleConnsPerHost:   maxIdle,
+		IdleConnTimeout:       idle,
+		DialTimeout:           dial,
+		TLSHandshakeTimeout:   tlsHs,
+		ResponseHeaderTimeout: responseHeader,
+		FlushInterval:         flush,
+		ServerName:            t.ServerName,
+		RootCAFiles:           append([]string(nil), t.RootCAFiles...),
+		InsecureSkipVerify:    t.InsecureSkipVerify,
 	}, nil
 }
 

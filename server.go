@@ -1020,10 +1020,11 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 		return nil, err
 	}
 	transport := &http.Transport{
-		MaxIdleConnsPerHost: p.Transport.MaxIdleConnsPerHost,
-		IdleConnTimeout:     p.Transport.IdleConnTimeout,
-		TLSHandshakeTimeout: p.Transport.TLSHandshakeTimeout,
-		TLSClientConfig:     tlsCfg,
+		MaxIdleConnsPerHost:   p.Transport.MaxIdleConnsPerHost,
+		IdleConnTimeout:       p.Transport.IdleConnTimeout,
+		TLSHandshakeTimeout:   p.Transport.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: p.Transport.ResponseHeaderTimeout,
+		TLSClientConfig:       tlsCfg,
 		DialContext: (&net.Dialer{
 			Timeout:   p.Transport.DialTimeout,
 			KeepAlive: 30 * time.Second,

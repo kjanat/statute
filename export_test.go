@@ -101,16 +101,15 @@ func TestExport_CarriesHealthPolicy(t *testing.T) {
 	}
 }
 
-// TestExport_CarriesTransportFlushInterval — the resolved flush interval is
-// part of the exported transport schema.
-func TestExport_CarriesTransportFlushInterval(t *testing.T) {
+// TestExport_CarriesTransportResponsePolicy covers normalized response timing.
+func TestExport_CarriesTransportResponsePolicy(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
 		Listeners: Listeners{HTTP(":8080")},
 		Upstreams: Upstreams{
 			"api": Pool{
 				Backends:  []Backend{{Address: "127.0.0.1:1"}},
-				Transport: Transport{FlushInterval: "100ms"},
+				Transport: Transport{ResponseHeaderTimeout: "5s", FlushInterval: "100ms"},
 			},
 		},
 		Routes: Routes{Match("/*").ProxyTo("api")},
@@ -122,14 +121,19 @@ func TestExport_CarriesTransportFlushInterval(t *testing.T) {
 	var out struct {
 		Upstreams map[string]struct {
 			Transport struct {
-				FlushInterval int64
+				ResponseHeaderTimeout int64
+				FlushInterval         int64
 			}
 		}
 	}
 	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
 	}
-	if got := out.Upstreams["api"].Transport.FlushInterval; got != int64(100*time.Millisecond) {
+	transport := out.Upstreams["api"].Transport
+	if got := transport.ResponseHeaderTimeout; got != int64(5*time.Second) {
+		t.Errorf("exported ResponseHeaderTimeout: got %d, want %d", got, int64(5*time.Second))
+	}
+	if got := transport.FlushInterval; got != int64(100*time.Millisecond) {
 		t.Errorf("exported FlushInterval: got %d, want %d", got, int64(100*time.Millisecond))
 	}
 }
