@@ -26,9 +26,12 @@ An invocation authorizes carrying one selected issue through implementation in
 an issue branch and isolated worktree, validation, one or more focused signed
 commits, one branch push, and creation of one linked pull request carrying the
 labels and milestone derived below. It also authorizes retiring the worktrees
-and branches of pull requests GitHub reports as merged. It does not authorize
-merging, auto-merging, manually closing issues, changing repository settings,
-editing unrelated issue content, or rewriting another contributor's branch.
+and branches of pull requests GitHub reports as merged, and adding a `blockedBy`
+relationship between tracked implementation issues when their current scopes
+establish a genuine technical prerequisite. It does not authorize merging,
+auto-merging, manually closing issues, changing repository settings, editing
+unrelated issue content, removing existing dependency relationships, or
+rewriting another contributor's branch.
 
 Use only the `gh` CLI for GitHub reads and mutations.
 
@@ -54,15 +57,15 @@ For `/next` without an argument, or `/next 37`:
    result. If it already has a different parent, stop and ask before reparenting.
 4. Consider only open children of #37 with no open `blockedBy` issues and no
    open linked pull request.
-5. Walk GitHub's open milestones in ascending milestone `.number`. Within each
-   milestone, sort its children by issue number and select the first actionable
-   issue. Advance to the next milestone only when the lower-numbered milestone
-   has no actionable child because its open children are blocked or already
-   linked to open pull requests. Consider children without a milestone only
-   after all numbered open milestones. Do not use due-date order, title order,
-   the tracking-body list, or `gh mb` display order for selection.
-6. Milestone order is prioritization, not a blocking relationship. Do not add
-   `blockedBy` metadata merely to encode milestone sequence.
+5. Choose the best actionable issue using engineering judgment. Consider the
+   issue's impact, readiness, milestone context, dependency-unblocking value,
+   scope, risk, and fit with the current architecture and repository state.
+   Milestone and issue numbers are context, not a required ordering. Explain
+   the concrete selection rationale before implementation.
+6. When the current issue scopes establish a genuine technical prerequisite,
+   you may add the corresponding `blockedBy` relationship and verify it. State
+   the technical reason. Never use dependency metadata merely to encode a
+   preferred work order.
 7. If no child is actionable, report whether the remaining children are
    blocked or already have pull requests and stop.
 
@@ -218,8 +221,8 @@ After creation, re-query GitHub and verify all of the following:
 - The PR targets the default branch and is open.
 - The selected issue lists the PR in linked/closing PR metadata.
 - The selected issue remains a child of #37.
-- Its blocking relationships are unchanged unless the user separately requested
-  a graph mutation.
+- Its blocking relationships match the initial state plus any genuine technical
+  prerequisite added during this run; report and justify every graph mutation.
 - The pull request carries the derived labels and the selected issue's
   milestone, and no repository label or milestone was created or edited.
 

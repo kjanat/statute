@@ -1,8 +1,8 @@
 # GitHub milestone commands
 
 Use these commands when inspecting Statute's milestone queue. They are display
-and navigation helpers; `/next` selection must still sort live open milestones
-by numeric `.number`, not by due date or display order.
+and navigation helpers. Their display order does not constrain `/next` issue
+selection; use the decision criteria in the skill.
 
 Do not install or overwrite aliases unless the user explicitly asks. If the
 aliases already exist, they may be called directly. Quote endpoints containing
@@ -25,7 +25,7 @@ EOF
 ```
 
 The title is a terminal hyperlink. This alias intentionally sorts by due date
-for display; do not use its row order as `/next` priority.
+for display; treat its row order as context, not a required priority.
 
 ## Milestone detail view
 
@@ -118,7 +118,7 @@ EOF
 The nested `tablerender` resets alignment for each milestone. This query is
 bounded at 20 milestones and 50 issues per milestone; add cursor pagination for
 larger repositories. It includes issues only, not pull requests. Its milestone
-order is due date, so `/next` must independently sort by `.number`.
+order is due date and is only one input to `/next` selection judgment.
 
 Use `autocolor`, not `color`, so piped output has no unwanted ANSI sequences.
 The REST milestone state is lowercase, while `gh issue list --json state` uses
