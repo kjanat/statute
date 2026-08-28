@@ -266,7 +266,7 @@ func applyClientAuth(cfg *tls.Config, policy *resolved.ClientAuth, clientCAs *x5
 	default:
 		// A hand-built resolved schema must not widen an unknown policy.
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-		cfg.ClientCAs = nil
+		cfg.ClientCAs = x509.NewCertPool()
 	}
 }
 

@@ -301,7 +301,7 @@ func TestApplyClientAuthUnknownModeFailsClosed(t *testing.T) {
 	t.Parallel()
 	cfg := &tls.Config{}
 	applyClientAuth(cfg, &resolved.ClientAuth{Mode: "unknown"}, x509.NewCertPool())
-	if cfg.ClientAuth != tls.RequireAndVerifyClientCert || cfg.ClientCAs != nil {
+	if cfg.ClientAuth != tls.RequireAndVerifyClientCert || cfg.ClientCAs == nil || !cfg.ClientCAs.Equal(x509.NewCertPool()) {
 		t.Errorf("unknown mode widened to ClientAuth=%v ClientCAs=%v", cfg.ClientAuth, cfg.ClientCAs)
 	}
 }
