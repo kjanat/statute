@@ -26,7 +26,7 @@ func meshConfig(string) statute.Config {
 				},
 				Strategy: statute.RoundRobin,
 				HealthCheck: statute.HealthCheck{
-					Path:      "/health",
+					Path:      healthPath,
 					Interval:  "2s",
 					Timeout:   "1s",
 					Healthy:   1,

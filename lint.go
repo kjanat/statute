@@ -2,6 +2,7 @@ package statute
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -104,6 +105,20 @@ func ruleHealthCheck(c *resolved.Config) []Finding {
 			Path:     fmt.Sprintf("upstreams[%q]", name),
 		})
 	}
+	if c.Docker != nil {
+		for _, name := range slices.Sorted(maps.Keys(c.Docker.PoolPolicy)) {
+			policy := c.Docker.PoolPolicy[name]
+			if policy.HealthCheck.Enabled || policy.PassiveHealthCheck.Enabled {
+				continue
+			}
+			out = append(out, Finding{
+				Severity: SeverityWarning,
+				Code:     "HC001",
+				Message:  "Docker pool policy has no active or passive health check; discovered dead backends will keep receiving traffic.",
+				Path:     fmt.Sprintf("docker.pool_policy[%q]", name),
+			})
+		}
+	}
 	return out
 }
 
@@ -177,6 +192,19 @@ func ruleInsecureUpstreamTLS(c *resolved.Config) []Finding {
 				Message:  "Backend certificate verification is disabled; anyone on the path to this pool can impersonate it. Prefer RootCAFiles with ServerName.",
 				Path:     fmt.Sprintf("upstreams[%q].transport.insecure_skip_verify", name),
 			})
+		}
+	}
+	if c.Docker != nil {
+		for _, name := range slices.Sorted(maps.Keys(c.Docker.PoolPolicy)) {
+			policy := c.Docker.PoolPolicy[name]
+			if policy.Transport.InsecureSkipVerify {
+				out = append(out, Finding{
+					Severity: SeverityWarning,
+					Code:     "TLS002",
+					Message:  "Backend certificate verification is disabled; anyone on the path to this Docker-discovered pool can impersonate it. Prefer RootCAFiles with ServerName.",
+					Path:     fmt.Sprintf("docker.pool_policy[%q].transport.insecure_skip_verify", name),
+				})
+			}
 		}
 	}
 	return out

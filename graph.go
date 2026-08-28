@@ -13,12 +13,13 @@ import (
 // Render with `dot -Tsvg < input.dot > topology.svg` (or any DOT-capable
 // renderer).
 //
-// The graph has five kinds of nodes:
+// The graph has six kinds of nodes:
 //
 //   - Listeners (Mrecord, blue) — one per HTTP/HTTPS listener.
 //   - Routes (rectangle, light yellow) — one per declared route.
 //   - Upstream pools (ellipse, green) — one per named pool.
 //   - Backends (circle, gray) — one per backend in each pool, dashed if Backup.
+//   - Docker pool policies (ellipse, dashed green) — one per code-owned policy.
 //   - The fallback (rectangle, light red): one, when Config.Fallback is set.
 //
 // Edges:
@@ -64,8 +65,78 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 	graphRoutes(d, r)
 	graphFallback(d, r)
 	graphUpstreams(d, r)
+	graphDockerPoolPolicies(d, r)
 	d.printf("}\n")
 	return d.err
+}
+
+func graphDockerPoolPolicies(d *dotWriter, r *resolved.Config) {
+	if r.Docker == nil || len(r.Docker.PoolPolicy) == 0 {
+		return
+	}
+	names := make([]string, 0, len(r.Docker.PoolPolicy))
+	for name := range r.Docker.PoolPolicy {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	d.printf("\n  // docker pool policies\n")
+	for _, name := range names {
+		policy := r.Docker.PoolPolicy[name]
+		label := fmt.Sprintf("%s\\nDocker pool policy\\nhost=%s\\nhealth=%s\\ntransport=%s",
+			name, resolvedHostPolicyString(policy.UpstreamHost, policy.HostValue),
+			healthPolicyString(policy.HealthCheck, policy.PassiveHealthCheck),
+			transportPolicyString(policy.Transport))
+		d.printf("  DP_%s [shape=ellipse, style=\"filled,dashed\", fillcolor=\"#d1e7dd\", label=%q];\n", sanitize(name), label)
+	}
+}
+
+func resolvedHostPolicyString(policy resolved.HostPolicy, value string) string {
+	switch policy {
+	case resolved.HostClient:
+		return "client"
+	case resolved.HostTarget:
+		return "target"
+	case resolved.HostExplicit:
+		return value
+	default:
+		return enumUnknown
+	}
+}
+
+func healthPolicyString(active resolved.HealthCheck, passive resolved.PassiveHealthCheck) string {
+	switch {
+	case active.Enabled && passive.Enabled:
+		return "active+passive"
+	case active.Enabled:
+		return "active"
+	case passive.Enabled:
+		return "passive"
+	default:
+		return "none"
+	}
+}
+
+func transportPolicyString(transport resolved.Transport) string {
+	parts := []string{"system-tls"}
+	if transport.InsecureSkipVerify {
+		parts[0] = "insecure-tls"
+	} else if transport.ServerName != "" || len(transport.RootCAFiles) > 0 {
+		parts[0] = "custom-tls"
+	}
+	if transport.ServerName != "" {
+		parts = append(parts, "sni="+transport.ServerName)
+	}
+	if len(transport.RootCAFiles) > 0 {
+		parts = append(parts, fmt.Sprintf("roots=%d", len(transport.RootCAFiles)))
+	}
+	if transport.ResponseHeaderTimeout > 0 {
+		parts = append(parts, "header="+transport.ResponseHeaderTimeout.String())
+	}
+	if transport.FlushInterval > 0 {
+		parts = append(parts, "flush="+transport.FlushInterval.String())
+	}
+	return strings.Join(parts, ",")
 }
 
 func graphListeners(d *dotWriter, r *resolved.Config) {

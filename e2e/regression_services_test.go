@@ -27,9 +27,10 @@ func dockerCLI(ctx context.Context, t *testing.T, args ...string) {
 }
 
 // TestRegression_DockerDiscovery proves label discovery against a real
-// Docker Engine: a labeled container becomes a route, replacing it
-// swaps the dynamic generation, removal withdraws it, and the compiled
-// static route shadows the label-derived catch-all throughout.
+// Docker Engine: a labeled container becomes a route with its exact-key
+// code-owned pool policy, replacing it swaps the dynamic generation,
+// removal withdraws it, and the compiled static route shadows the
+// label-derived catch-all throughout.
 func TestRegression_DockerDiscovery(t *testing.T) {
 	t.Parallel()
 	topo := harness.MustTopology(t, "1s1c")
@@ -82,7 +83,7 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	launch(dyn1, "origin-dyn1")
 	pollUntil(t, 30*time.Second, "labeled container becomes a route", func() (bool, string) {
 		b := dynBody()
-		return strings.Contains(b, `"origin":"origin-dyn1"`), b
+		return strings.Contains(b, `"origin":"origin-dyn1"`) && strings.Contains(b, `"host":"policy.internal"`), b
 	})
 	assertStatic()
 
@@ -93,7 +94,7 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	dockerCLI(ctx, t, "rm", "-f", dyn1)
 	pollUntil(t, 30*time.Second, "replacement generation serves", func() (bool, string) {
 		b := dynBody()
-		return strings.Contains(b, `"origin":"origin-dyn2"`), b
+		return strings.Contains(b, `"origin":"origin-dyn2"`) && strings.Contains(b, `"host":"policy.internal"`), b
 	})
 	assertStatic()
 

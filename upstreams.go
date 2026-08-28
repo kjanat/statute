@@ -18,6 +18,17 @@ type Pool struct {
 	UpstreamHost UpstreamHost
 }
 
+// PoolPolicy is code-owned policy for one Docker-discovered service. Docker
+// continues to supply the service's changing backends, strategy, and routes;
+// this policy supplies only the transport, Host, and health behavior shared by
+// every route using that service's pool.
+type PoolPolicy struct {
+	HealthCheck        HealthCheck
+	PassiveHealthCheck PassiveHealthCheck
+	Transport          Transport
+	UpstreamHost       UpstreamHost
+}
+
 // Backend is a single upstream target.
 type Backend struct {
 	// Address is the host:port of the backend.

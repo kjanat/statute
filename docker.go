@@ -46,7 +46,9 @@ package statute
 // mis-routed. Traefik middleware references resolve against the code-owned
 // registry declared with Middleware, scoped to their router; a router
 // referencing an unregistered name is omitted with a warning rather than
-// served without the middleware it asked for.
+// served without the middleware it asked for. PoolPolicy attaches code-owned
+// transport, Host, and health policy to one exact discovered-service identity;
+// labels cannot define or widen that policy.
 type DockerConfig struct {
 	endpoint          string
 	network           string
@@ -55,6 +57,7 @@ type DockerConfig struct {
 	refresh           string
 	middleware        map[string][]Middleware
 	defaultMiddleware []Middleware
+	poolPolicy        map[string]PoolPolicy
 }
 
 // Docker begins a Docker provider declaration with the default endpoint
@@ -124,5 +127,19 @@ func (d *DockerConfig) Middleware(name string, mws ...Middleware) *DockerConfig 
 // statute.timeout / statute.ratelimit / statute.compress hints.
 func (d *DockerConfig) DefaultMiddleware(mws ...Middleware) *DockerConfig {
 	d.defaultMiddleware = append(d.defaultMiddleware, mws...)
+	return d
+}
+
+// PoolPolicy registers code-owned pool policy for one discovered-service
+// identity, such as "foo@traefik". Docker continues to own the service's
+// backends, strategy, and routes. The exact-name mapping prevents policy from
+// leaking to another service or into router-scoped middleware; an unmatched
+// name produces a Docker provider diagnostic. Registering the same name again
+// replaces the earlier policy.
+func (d *DockerConfig) PoolPolicy(name string, policy PoolPolicy) *DockerConfig {
+	if d.poolPolicy == nil {
+		d.poolPolicy = map[string]PoolPolicy{}
+	}
+	d.poolPolicy[name] = policy
 	return d
 }

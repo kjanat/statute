@@ -438,11 +438,10 @@ func TestDockerReconcileReusesUnchangedPools(t *testing.T) {
 	}
 }
 
-// TestPoolFingerprintChangesWithHealthPolicy — the generation-reuse
-// fingerprint covers the new health fields: a pool whose probe Host,
-// accepted statuses, or passive policy changed must not adopt the previous
-// generation's handler and health state; an identical config still matches.
-func TestPoolFingerprintChangesWithHealthPolicy(t *testing.T) {
+// TestPoolFingerprintChangesWithPoolPolicy — generation reuse covers every
+// code-owned policy field, so a changed effective policy cannot adopt the
+// previous handler, connection pool, or health state.
+func TestPoolFingerprintChangesWithPoolPolicy(t *testing.T) {
 	t.Parallel()
 	base := func() *resolved.Pool {
 		return &resolved.Pool{
@@ -465,6 +464,11 @@ func TestPoolFingerprintChangesWithHealthPolicy(t *testing.T) {
 		"statuses":   func(p *resolved.Pool) { p.HealthCheck.Statuses = []int{200, 204} },
 		"passive": func(p *resolved.Pool) {
 			p.PassiveHealthCheck = resolved.PassiveHealthCheck{Enabled: true, FailureWindow: 30 * time.Second, MaxFailures: 3}
+		},
+		"transport": func(p *resolved.Pool) { p.Transport.ServerName = "api.internal" },
+		"host": func(p *resolved.Pool) {
+			p.UpstreamHost = resolved.HostExplicit
+			p.HostValue = "api.internal"
 		},
 	}
 	baseline := poolFingerprint(base())
@@ -870,6 +874,280 @@ func TestResolveDockerMiddlewareErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "default middleware") {
 		t.Errorf("default-chain error = %v", err)
 	}
+}
+
+func TestResolveDockerPoolPolicy(t *testing.T) {
+	cfg, err := resolveDocker(Docker().PoolPolicy("app@traefik", PoolPolicy{
+		HealthCheck: HealthCheck{
+			Path: "/ready", Interval: "20s", Timeout: "3s", Host: "probe.internal", Statuses: []int{200, 204},
+		},
+		PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+		Transport: Transport{
+			ServerName: "app.internal", RootCAFiles: []string{"/run/certs/root.pem"}, ResponseHeaderTimeout: "5s",
+		},
+		UpstreamHost: HostValue("app.internal"),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := resolved.PoolPolicy{
+		HealthCheck: resolved.HealthCheck{
+			Enabled: true, Path: "/ready", Interval: 20 * time.Second, Timeout: 3 * time.Second,
+			Healthy: 2, Unhealthy: 3, Host: "probe.internal", Statuses: []int{200, 204},
+		},
+		PassiveHealthCheck: resolved.PassiveHealthCheck{Enabled: true, FailureWindow: 30 * time.Second, MaxFailures: 3},
+		Transport: resolved.Transport{
+			MaxIdleConnsPerHost: 32, IdleConnTimeout: 90 * time.Second, DialTimeout: 5 * time.Second,
+			TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second,
+			ServerName: "app.internal", RootCAFiles: []string{"/run/certs/root.pem"},
+		},
+		UpstreamHost: resolved.HostExplicit,
+		HostValue:    "app.internal",
+	}
+	if got := cfg.PoolPolicy["app@traefik"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("resolved policy = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveDockerPoolPolicyReregisterReplaces(t *testing.T) {
+	cfg, err := resolveDocker(Docker().
+		PoolPolicy("app", PoolPolicy{UpstreamHost: TargetHost}).
+		PoolPolicy("app", PoolPolicy{UpstreamHost: HostValue("replacement.internal")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := cfg.PoolPolicy["app"]
+	if len(cfg.PoolPolicy) != 1 || policy.UpstreamHost != resolved.HostExplicit || policy.HostValue != "replacement.internal" {
+		t.Errorf("re-registered policy = %+v", cfg.PoolPolicy)
+	}
+}
+
+func TestResolveDockerPoolPolicyErrors(t *testing.T) {
+	tests := map[string]PoolPolicy{
+		"health":    {HealthCheck: HealthCheck{Path: "/ready", Interval: "later"}},
+		"passive":   {PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s"}},
+		"transport": {Transport: Transport{DialTimeout: "later"}},
+		"host":      {UpstreamHost: HostValue("bad\nvalue")},
+	}
+	for name, policy := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveDocker(Docker().PoolPolicy("app", policy))
+			if err == nil || !strings.Contains(err.Error(), `pool policy "app"`) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDockerPoolPolicyIsServiceScopedAndShared(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Seen-Host", r.Host)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := resolveDocker(Docker().TraefikLabels().PoolPolicy("app@traefik", PoolPolicy{
+		HealthCheck:        HealthCheck{Path: "/code-ready", Interval: "1h", Host: "probe.internal", Statuses: []int{204}},
+		PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+		Transport:          Transport{ServerName: "tls.internal"},
+		UpstreamHost:       HostValue("code.internal"),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
+		{
+			name: "app-1", ip: host, port: port,
+			labels: map[string]string{
+				"traefik.enable":                                              "true",
+				"traefik.http.routers.public.rule":                            "Host(`public.example.com`)",
+				"traefik.http.routers.public.service":                         "app",
+				"traefik.http.routers.admin.rule":                             "Host(`admin.example.com`)",
+				"traefik.http.routers.admin.service":                          "app",
+				"traefik.http.services.app.loadbalancer.server.port":          fmt.Sprint(port),
+				"traefik.http.services.app.loadbalancer.healthcheck.path":     "/label-ready",
+				"traefik.http.services.app.loadbalancer.healthcheck.interval": "not-a-duration",
+			},
+		},
+		{
+			name: "other-1", ip: host, port: port,
+			labels: map[string]string{
+				"traefik.enable":                                       "true",
+				"traefik.http.routers.other.rule":                      "Host(`other.example.com`)",
+				"traefik.http.routers.other.service":                   "other",
+				"traefik.http.services.other.loadbalancer.server.port": fmt.Sprint(port),
+			},
+		},
+	})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	assertDockerPoolPolicyScope(t, tab, cfg.PoolPolicy["app@traefik"])
+	assertDockerPoolPolicyRuntime(t, tab)
+	assertDockerPoolPolicyProxy(t, tab)
+}
+
+func assertDockerPoolPolicyScope(t *testing.T, tab *dynamicTable, want resolved.PoolPolicy) {
+	t.Helper()
+	byHost := map[string]*resolved.Route{}
+	for _, route := range tab.routes {
+		byHost[route.route.Host] = route.route
+	}
+	for _, host := range []string{"public.example.com", "admin.example.com", "other.example.com"} {
+		if byHost[host] == nil {
+			t.Fatalf("route %q missing: %+v", host, byHost)
+		}
+	}
+	public, admin, other := byHost["public.example.com"], byHost["admin.example.com"], byHost["other.example.com"]
+	if public.Upstream != admin.Upstream {
+		t.Fatalf("same-service routers do not share a pool: %p vs %p", public.Upstream, admin.Upstream)
+	}
+	if public.Upstream == other.Upstream {
+		t.Fatal("pool policy leaked across services")
+	}
+	got := resolved.PoolPolicy{
+		HealthCheck:        public.Upstream.HealthCheck,
+		PassiveHealthCheck: public.Upstream.PassiveHealthCheck,
+		Transport:          public.Upstream.Transport,
+		UpstreamHost:       public.Upstream.UpstreamHost,
+		HostValue:          public.Upstream.HostValue,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("effective pool policy = %+v, want %+v", got, want)
+	}
+	if other.Upstream.HealthCheck.Enabled {
+		t.Errorf("health policy leaked into other service: %+v", other.Upstream)
+	}
+	if other.Upstream.Transport.ServerName != "" {
+		t.Errorf("transport policy leaked into other service: %+v", other.Upstream)
+	}
+	if other.Upstream.UpstreamHost != resolved.HostClient {
+		t.Errorf("Host policy leaked into other service: %+v", other.Upstream)
+	}
+}
+
+func assertDockerPoolPolicyRuntime(t *testing.T, tab *dynamicTable) {
+	t.Helper()
+	running := tab.pools["app@traefik"]
+	if running == nil {
+		t.Fatal("app pool is not running")
+	}
+	if running.handler.hc.client.Transport != running.handler.transport {
+		t.Error("proxy and health checker do not share the policy transport")
+	}
+	if running.handler.hc.host != "probe.internal" {
+		t.Errorf("probe Host = %q", running.handler.hc.host)
+	}
+	tlsConfig := running.handler.transport.TLSClientConfig
+	if tlsConfig == nil {
+		t.Fatal("runtime TLS policy is absent")
+	}
+	if tlsConfig.ServerName != "tls.internal" {
+		t.Errorf("runtime TLS ServerName = %q", tlsConfig.ServerName)
+	}
+}
+
+func assertDockerPoolPolicyProxy(t *testing.T, tab *dynamicTable) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
+	req.Host = "client.example.com"
+	rec := httptest.NewRecorder()
+	handler := findHandler(tab.routes, "public.example.com", req)
+	if handler == nil {
+		t.Fatal("public route did not match")
+	}
+	handler.ServeHTTP(rec, req)
+	if got := rec.Header().Get("X-Seen-Host"); got != "code.internal" {
+		t.Errorf("proxied Host = %q, want code.internal", got)
+	}
+}
+
+func TestDockerUnmatchedPoolPolicyWarnsOnce(t *testing.T) {
+	cfg, err := resolveDocker(Docker().PoolPolicy("missing", PoolPolicy{Transport: Transport{ServerName: "missing.internal"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _, _ := newFakeProvider(t, cfg, nil)
+	mustSync(t, p)
+	mustSync(t, p)
+	want := `pool policy "missing" matches no discovered service; policy is not applied`
+	count := 0
+	for warning := range p.warned {
+		if warning == want {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("warning count = %d, warnings = %v", count, p.warned)
+	}
+}
+
+func TestDockerPoolPolicyTLSFailureRefusesOnlyMatchedService(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("healthy sibling"))
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendHostPort(t, backend)
+
+	cfg, err := resolveDocker(Docker().PoolPolicy("bad", PoolPolicy{
+		Transport: Transport{RootCAFiles: []string{"/definitely/missing/statute-pool-policy-ca.pem"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
+		{
+			name: "bad", ip: "127.0.0.1", port: 1,
+			labels: map[string]string{"statute.enable": "true", "statute.host": "bad.example.com"},
+		},
+		{
+			name: "good", ip: host, port: port,
+			labels: map[string]string{"statute.enable": "true", "statute.host": "good.example.com"},
+		},
+	})
+	fallbackCalls := fallbackServer(t, srv, nil)
+	mustSync(t, p)
+
+	tab := srv.dynamic.Load()
+	if tab.pools["bad"] != nil || tab.pools["good"] == nil {
+		t.Fatalf("pools after policy failure = %+v", tab.pools)
+	}
+	router := srv.buildRouter()
+	bad := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://bad.example.com/", nil))
+	if bad.Code != http.StatusNotFound || fallbackCalls.Load() != 0 {
+		t.Fatalf("failed-policy route: code=%d fallback calls=%d, want tombstone 404", bad.Code, fallbackCalls.Load())
+	}
+	good := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://good.example.com/", nil))
+	if good.Code != http.StatusOK || good.Body.String() != "healthy sibling" {
+		t.Fatalf("sibling route: code=%d body=%q", good.Code, good.Body.String())
+	}
+
+	if !dockerWarningContains(p, `service "bad"`, "root CA file") {
+		t.Errorf("missing service-scoped TLS policy warning: %v", p.warned)
+	}
+}
+
+func dockerWarningContains(p *dockerProvider, parts ...string) bool {
+	for warning := range p.warned {
+		matched := true
+		for _, part := range parts {
+			if !strings.Contains(warning, part) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func TestResolveConfigCarriesDocker(t *testing.T) {

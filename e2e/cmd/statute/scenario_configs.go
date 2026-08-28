@@ -14,6 +14,7 @@ const (
 	origin2Addr = "origin-2:7000"
 	poolOrigin  = "origin"
 	poolOrigins = "origins"
+	healthPath  = "/health"
 )
 
 func e2eDefaults() statute.Defaults {
@@ -75,7 +76,7 @@ func upstreamTLSConfig(string) statute.Config {
 			"tls-good": statute.Pool{
 				Backends: []statute.Backend{{Address: "https://" + origin1Addr}},
 				HealthCheck: statute.HealthCheck{
-					Path:      "/health",
+					Path:      healthPath,
 					Interval:  "2s",
 					Timeout:   "1s",
 					Healthy:   1,

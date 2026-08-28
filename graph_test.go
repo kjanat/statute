@@ -63,3 +63,26 @@ func TestGraphDOT_BadConfigReturnsError(t *testing.T) {
 		t.Fatal("want error for bad config")
 	}
 }
+
+func TestGraphDOT_ShowsDockerPoolPolicy(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":80")},
+		Docker: Docker().PoolPolicy("app@traefik", PoolPolicy{
+			HealthCheck:        HealthCheck{Path: "/ready"},
+			PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+			Transport:          Transport{ServerName: "app.internal", RootCAFiles: []string{"/run/certs/root.pem"}},
+			UpstreamHost:       HostValue("app.internal"),
+		}),
+	}
+	var buf bytes.Buffer
+	if err := GraphDOT(cfg, &buf); err != nil {
+		t.Fatalf("GraphDOT: %v", err)
+	}
+	graph := buf.String()
+	for _, want := range []string{"app@traefik", "Docker pool policy", "host=app.internal", "health=active+passive", "transport=custom-tls,sni=app.internal,roots=1"} {
+		if !strings.Contains(graph, want) {
+			t.Errorf("graph missing %q:\n%s", want, graph)
+		}
+	}
+}

@@ -319,6 +319,10 @@ Like the header operations, path rewrites apply at the route's edge — before e
 Docker: statute.Docker().
     Network("proxy").    // docker network to take container IPs from
     TraefikLabels().     // also honor existing traefik.* labels
+    PoolPolicy("api@traefik", statute.PoolPolicy{
+        Transport:    statute.Transport{ServerName: "api.internal"},
+        UpstreamHost: statute.HostValue("api.internal"),
+    }).
     Refresh("30s"),      // optional periodic resync on top of the event stream
 ```
 
@@ -335,7 +339,7 @@ services:
       statute.healthcheck.path: /healthz
 ```
 
-Replicas sharing a `statute.service` name pool together. With `TraefikLabels()`, containers already labeled for Traefik (`traefik.http.routers.<r>.rule` with `Host`/`Path`/`PathPrefix`, `loadbalancer.server.port`, …) work unmodified — the intended migration path for fleets moving off Traefik. Label-derived routes are matched only after every static route, and the discovery settings themselves are validated at startup like all other config. Full label reference and semantics in [docs/docker.md](docs/docker.md).
+Replicas sharing a `statute.service` name pool together. `PoolPolicy` attaches code-owned transport, Host, active-health, and passive-health settings to one exact service identity while Docker keeps supplying its backends, strategy, and routes; Traefik service identities carry an `@traefik` suffix. With `TraefikLabels()`, containers already labeled for Traefik (`traefik.http.routers.<r>.rule` with `Host`/`Path`/`PathPrefix`, `loadbalancer.server.port`, …) work unmodified — the intended migration path for fleets moving off Traefik. Label-derived routes are matched only after every static route, and the discovery settings themselves are validated at startup like all other config. Full label reference and semantics in [docs/docker.md](docs/docker.md).
 
 ### Observability
 
@@ -477,23 +481,23 @@ The table is the index. The paragraph beside each feature above stays the explan
 
 <!-- lint-rules:start -->
 
-| Code      | Severity | Config path                                      | Fires when                                                                                                                       |
-| --------- | -------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `AUTH001` | error    | `routes[i].middleware[j]`                        | A route uses `BasicAuth` and no HTTPS listener serves content: credentials travel in clear-text.                                 |
-| `FB001`   | warning  | `routes[i]`                                      | A hostless catch-all route (`/*`, no host, no `ClientIPs`) is declared alongside Docker discovery or a fallback, shadowing both. |
-| `HC001`   | warning  | `upstreams[name]`                                | A pool has neither active nor passive health checks, so dead backends keep receiving traffic.                                    |
-| `LB001`   | warning  | `upstreams[name]`                                | A pool has exactly one primary (non-backup) backend, so it has no failover and no load distribution.                             |
-| `OBS001`  | warning  | `observability.metrics`                          | The metrics endpoint is disabled, leaving no Prometheus visibility.                                                              |
-| `OBS002`  | warning  | `observability.access_log`                       | The access log is disabled, leaving no per-request audit trail.                                                                  |
-| `RHT001`  | error    | `defaults.read_header_timeout`                   | `ReadHeaderTimeout` resolves to zero, which is the Slowloris exposure.                                                           |
-| `RL001`   | warning  | `routes[i].middleware[j]`                        | A `RateLimit` resolves below 1 request per second, low enough to block legitimate clients.                                       |
-| `SHUT001` | warning  | `shutdown.grace_period`                          | `Shutdown.GracePeriod` is under 5s, so deploys may cut off in-flight requests.                                                   |
-| `TLS001`  | error    | `listeners[i].auto_tls[j].storage`               | AutoTLS storage is under `/tmp`: wiped on reboot, then re-issued until the account hits the rate limit.                          |
-| `TLS002`  | warning  | `upstreams[name].transport.insecure_skip_verify` | Backend certificate verification is off, so anyone on the path to the pool can impersonate it.                                   |
-| `TLS003`  | warning  | `listeners[i].auto_tls[j]`                       | One domain is issued by more than one ACME manager, each spending the duplicate-certificate limit on its own renewals.           |
-| `TLS004`  | warning  | `listeners[i].tls_policy`                        | A TLS 1.2 cap with RSA-only suites governs a listener with an automatic ACME source, whose leaves are ECDSA.                     |
-| `TLS005`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is Let's Encrypt staging, which issues certificates no public trust store accepts.                            |
-| `TLS006`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is some other non-Let's-Encrypt endpoint, named in the message so a private CA surfaces before deploy.        |
+| Code      | Severity | Config path                                     | Fires when                                                                                                                       |
+| --------- | -------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH001` | error    | `routes[i].middleware[j]`                       | A route uses `BasicAuth` and no HTTPS listener serves content: credentials travel in clear-text.                                 |
+| `FB001`   | warning  | `routes[i]`                                     | A hostless catch-all route (`/*`, no host, no `ClientIPs`) is declared alongside Docker discovery or a fallback, shadowing both. |
+| `HC001`   | warning  | `upstreams[name]` or `docker.pool_policy[name]` | A pool has neither active nor passive health checks, so dead backends keep receiving traffic.                                    |
+| `LB001`   | warning  | `upstreams[name]`                               | A pool has exactly one primary (non-backup) backend, so it has no failover and no load distribution.                             |
+| `OBS001`  | warning  | `observability.metrics`                         | The metrics endpoint is disabled, leaving no Prometheus visibility.                                                              |
+| `OBS002`  | warning  | `observability.access_log`                      | The access log is disabled, leaving no per-request audit trail.                                                                  |
+| `RHT001`  | error    | `defaults.read_header_timeout`                  | `ReadHeaderTimeout` resolves to zero, which is the Slowloris exposure.                                                           |
+| `RL001`   | warning  | `routes[i].middleware[j]`                       | A `RateLimit` resolves below 1 request per second, low enough to block legitimate clients.                                       |
+| `SHUT001` | warning  | `shutdown.grace_period`                         | `Shutdown.GracePeriod` is under 5s, so deploys may cut off in-flight requests.                                                   |
+| `TLS001`  | error    | `listeners[i].auto_tls[j].storage`              | AutoTLS storage is under `/tmp`: wiped on reboot, then re-issued until the account hits the rate limit.                          |
+| `TLS002`  | warning  | `upstreams[name]` or `docker.pool_policy[name]` | Backend certificate verification is off, so anyone on the path to the pool can impersonate it.                                   |
+| `TLS003`  | warning  | `listeners[i].auto_tls[j]`                      | One domain is issued by more than one ACME manager, each spending the duplicate-certificate limit on its own renewals.           |
+| `TLS004`  | warning  | `listeners[i].tls_policy`                       | A TLS 1.2 cap with RSA-only suites governs a listener with an automatic ACME source, whose leaves are ECDSA.                     |
+| `TLS005`  | warning  | `listeners[i].auto_tls[j].directory`            | The ACME directory is Let's Encrypt staging, which issues certificates no public trust store accepts.                            |
+| `TLS006`  | warning  | `listeners[i].auto_tls[j].directory`            | The ACME directory is some other non-Let's-Encrypt endpoint, named in the message so a private CA surfaces before deploy.        |
 
 <!-- lint-rules:end -->
 

@@ -36,6 +36,7 @@ statute.Main(statute.Config{
 | `Refresh(string)`          | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
 | `Middleware(name, mw...)`  | Register a named, code-owned middleware chain that container labels may reference (see below). Re-registering a name replaces it.     |
 | `DefaultMiddleware(mw...)` | Middleware applied to every Docker-discovered route, outermost — before label-referenced chains and label hints.                      |
+| `PoolPolicy(name, policy)` | Attach code-owned transport, Host, and health policy to one exact discovered-service identity. Re-registering a name replaces it.     |
 
 > **Warning — TCP endpoints are unauthenticated.** The client speaks plain
 > HTTP with no TLS or client certificates, and whoever can answer on that
@@ -123,14 +124,34 @@ the fallback alone.
 
 The health-check labels stop at path/interval/timeout — deliberately. The
 probe `Host` override (`HealthCheck.Host`), accepted probe statuses
-(`HealthCheck.Statuses`), and passive health (`PassiveHealthCheck`) have no
-label form, in either the native or the Traefik schema: they exist only in
-compiled configuration. A Docker-discovered pool therefore always runs with
-the default 200–399 probe acceptance, the derived probe host, and no
-passive demotion. Transport tuning (`Transport`, including
-`ResponseHeaderTimeout` and `FlushInterval`) likewise has no label form. Traefik's
-`loadbalancer.responseforwarding.flushinterval` is not supported — so a
-Docker-discovered pool runs with default transport settings.
+(`HealthCheck.Statuses`), passive health (`PassiveHealthCheck`), transport
+tuning, and upstream Host policy have no label form. Attach those code-owned
+settings to one exact service identity with `PoolPolicy`:
+
+```go
+Docker: statute.Docker().TraefikLabels().
+    PoolPolicy("api@traefik", statute.PoolPolicy{
+        HealthCheck: statute.HealthCheck{
+            Path: "/ready", Host: "api.internal", Statuses: []int{200, 204},
+        },
+        PassiveHealthCheck: statute.PassiveHealthCheck{
+            FailureWindow: "30s", MaxFailures: 3,
+        },
+        Transport: statute.Transport{
+            ServerName: "api.internal",
+            RootCAFiles: []string{"/run/certs/api-root.pem"},
+        },
+        UpstreamHost: statute.HostValue("api.internal"),
+    }),
+```
+
+Native service keys are their resolved `statute.service` names; Traefik keys
+carry the `@traefik` suffix. The policy is authoritative for its four fields,
+including zero values, while Docker continues to own backends, strategy, and
+routes. It cannot leak to another service or into router middleware. A key that
+matches no discovered service produces a deduplicated provider warning. Traefik's
+`loadbalancer.responseforwarding.flushinterval` remains unsupported; use
+`PoolPolicy.Transport.FlushInterval` instead.
 
 ## Traefik compatibility (`TraefikLabels()`)
 
