@@ -33,7 +33,7 @@ complete when only the surface or runtime understands it.
 | Upstream pool  | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                 | router-specific middleware or matchers            |
 | Listener       | ingress protocol, downstream TLS policy/material selection, trusted-proxy policy, listener wrapping/observability | route-specific policy                             |
 | Docker router  | router rule expansion and router-scoped middleware references                                                     | service-wide backend state                        |
-| Docker service | discovered backend/service attributes used to construct a pool                                                    | unioned router policy                             |
+| Docker service | discovered backends, strategy, and routes; exact-key code-owned pool policy                                       | router policy or another service's pool policy    |
 | Resolved model | normalized immutable configuration contract                                                                       | runtime-only mutable state                        |
 
 A single pool may be shared by many static or Docker-derived routes. That sharing is
@@ -103,6 +103,18 @@ A referenced code-owned middleware name that is unavailable fails closed for the
 affected router's routes. Sibling routers/services continue. Do not degrade a
 requested auth/security policy into an unprotected route.
 
+`Docker().PoolPolicy(name, ...)` is the pool-scoped counterpart. Its exact key is
+the resolved discovered-service identity (`foo` for native labels,
+`foo@traefik` for a Traefik service). Docker owns the changing backends, strategy,
+and routes; code owns the matched service's transport, upstream Host, active-health
+configuration, and passive-health policy. A registered policy is authoritative for
+all four fields, including their zero values. It is applied before the generation
+fingerprint is computed, so an effective policy change replaces the pool handler
+while an identical one preserves its connections and health state. A key matching
+no discovered service produces a deduplicated provider warning. Policy never
+crosses service identities or becomes router
+middleware.
+
 A discarded registration leaves a **tombstone**: a matcher carrying no upstream,
 no middleware, and one fixed 404 refusal. Dispatch is static routes, then valid
 Docker routes, then tombstones, then `Config.Fallback`. Tombstones exist because
@@ -171,6 +183,11 @@ match.
 A pool owns backend selection and the transport shared by proxy traffic to its
 backends. Active health probes use that same transport so backend TLS verification
 cannot drift between health traffic and real traffic.
+
+For Docker-discovered pools, Docker supplies backends and strategy while an
+exact-key `PoolPolicy` supplies the code-owned transport and health settings. The
+policy reaches the same pool construction path as static configuration; it does not
+create a second transport or health implementation.
 
 `UpstreamHost` is pool policy and applies consistently to proxied requests and,
 where meaningful, active probes. Any future probe-specific Host override must

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -314,8 +315,17 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 		fingerprints: make(map[string]string, len(services)),
 	}
 	tombs := slices.Clone(tombstones)
+	matchedPolicy := make(map[string]bool, len(p.cfg.PoolPolicy))
 	for i := range services {
+		if _, ok := p.cfg.PoolPolicy[services[i].Name]; ok {
+			matchedPolicy[services[i].Name] = true
+		}
 		tombs = append(tombs, p.addService(&services[i], prev, next)...)
+	}
+	for _, name := range slices.Sorted(maps.Keys(p.cfg.PoolPolicy)) {
+		if !matchedPolicy[name] {
+			p.warn([]string{fmt.Sprintf("pool policy %q matches no discovered service; policy is not applied", name)})
+		}
 	}
 	sortDynamicRoutes(next.routes)
 	next.tombstones = p.compileTombstones(tombs)
@@ -341,10 +351,14 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	if warn != "" {
 		p.warn([]string{warn})
 	}
+	policy, hasPolicy := preparePoolPolicy(&pool, p.cfg.PoolPolicy, svc.Name)
 	rp, err := resolvePool(svc.Name, pool)
 	if err != nil {
 		p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", svc.Name, err)})
 		return p.refuse(svc.Name, svc.Routes)
+	}
+	if hasPolicy {
+		applyPoolPolicy(rp, policy)
 	}
 
 	hints, warns := serviceHints(svc)
@@ -391,6 +405,28 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		})
 	}
 	return tombs
+}
+
+// preparePoolPolicy removes discovered values for fields that code owns before
+// resolution. Otherwise an invalid label value could reject the service even
+// though the authoritative policy would replace it immediately afterwards.
+func preparePoolPolicy(pool *Pool, policies map[string]resolved.PoolPolicy, service string) (resolved.PoolPolicy, bool) {
+	policy, ok := policies[service]
+	if ok {
+		pool.HealthCheck = HealthCheck{}
+	}
+	return policy, ok
+}
+
+// applyPoolPolicy overlays the code-owned fields on a discovered pool. The
+// backend set, strategy, and routes are deliberately absent from PoolPolicy and
+// therefore remain Docker-owned.
+func applyPoolPolicy(pool *resolved.Pool, policy resolved.PoolPolicy) {
+	pool.HealthCheck = policy.HealthCheck
+	pool.PassiveHealthCheck = policy.PassiveHealthCheck
+	pool.Transport = policy.Transport
+	pool.UpstreamHost = policy.UpstreamHost
+	pool.HostValue = policy.HostValue
 }
 
 // refuse turns dropped matchers into a refusal envelope and logs it.

@@ -40,8 +40,9 @@ func acmeHTTP01Config(string) statute.Config {
 // dockerDiscoveryConfig discovers labeled containers from a real Docker
 // Engine (the daemon socket is mounted by the scenario override;
 // discovery is opt-in per container label, so the lane's own
-// infrastructure never surfaces as routes). The static route must keep
-// shadowing any label-derived catch-all.
+// infrastructure never surfaces as routes). Code-owned pool policy must
+// reach the native service named dyn, and the static route must keep
+// shadowing its label-derived catch-all.
 func dockerDiscoveryConfig(string) statute.Config {
 	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
@@ -54,7 +55,12 @@ func dockerDiscoveryConfig(string) statute.Config {
 			statute.Match("/static/*").ProxyTo("static-origin").
 				With(statute.StripPrefix("/static"), statute.RequestID().From("X-Request-Id")),
 		},
-		Docker:        statute.Docker().Refresh("1s"),
+		Docker: statute.Docker().Refresh("1s").PoolPolicy("dyn", statute.PoolPolicy{
+			HealthCheck:        statute.HealthCheck{Path: healthPath, Interval: "2s", Healthy: 1},
+			PassiveHealthCheck: statute.PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+			Transport:          statute.Transport{ResponseHeaderTimeout: "5s"},
+			UpstreamHost:       statute.HostValue("policy.internal"),
+		}),
 		Defaults:      e2eDefaults(),
 		Observability: e2eObservability(),
 		Shutdown:      e2eShutdown(),

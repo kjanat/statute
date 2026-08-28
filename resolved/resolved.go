@@ -38,7 +38,8 @@ type Config struct {
 // Docker is the resolved Docker label-discovery provider configuration.
 // The provider's output (label-derived routes and pools, and the refusal
 // tombstones standing in for the registrations it had to drop) is runtime
-// state. Only the discovery settings belong in the resolved schema.
+// state. Discovery settings and immutable code-owned policy registries belong
+// in the resolved schema; discovered backends and routes do not.
 // Tombstones belong to one generation, are replaced with it, and describe
 // containers.
 type Docker struct {
@@ -56,6 +57,9 @@ type Docker struct {
 	// DefaultMiddleware is applied to every Docker-discovered route,
 	// outermost — before label-referenced chains and label hints.
 	DefaultMiddleware []Middleware
+	// PoolPolicy is immutable code-owned policy keyed by exact service identity;
+	// Docker supplies backends, strategy, and routes at runtime.
+	PoolPolicy map[string]PoolPolicy
 }
 
 // Listener is a resolved listener.
@@ -209,6 +213,16 @@ type Pool struct {
 	// carries the fixed name when the policy is HostExplicit.
 	UpstreamHost HostPolicy
 	HostValue    string
+}
+
+// PoolPolicy is normalized code-owned policy for a Docker-discovered pool.
+// Its service backends, strategy, and routes remain dynamic runtime state.
+type PoolPolicy struct {
+	HealthCheck        HealthCheck
+	PassiveHealthCheck PassiveHealthCheck
+	Transport          Transport
+	UpstreamHost       HostPolicy
+	HostValue          string
 }
 
 // HostPolicy selects the Host header backends receive.

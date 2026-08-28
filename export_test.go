@@ -138,6 +138,43 @@ func TestExport_CarriesTransportResponsePolicy(t *testing.T) {
 	}
 }
 
+func TestExport_CarriesDockerPoolPolicy(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":8080")},
+		Docker: Docker().PoolPolicy("app@traefik", PoolPolicy{
+			HealthCheck:        HealthCheck{Path: "/ready", Host: "probe.internal", Statuses: []int{200, 204}},
+			PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
+			Transport:          Transport{ServerName: "app.internal", ResponseHeaderTimeout: "5s"},
+			UpstreamHost:       HostValue("app.internal"),
+		}),
+	}
+	var buf bytes.Buffer
+	if err := Export(cfg, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	var out struct {
+		Docker struct {
+			PoolPolicy map[string]struct {
+				HealthCheck        struct{ Enabled bool }
+				PassiveHealthCheck struct{ Enabled bool }
+				Transport          struct {
+					ServerName            string
+					ResponseHeaderTimeout int64
+				}
+				HostValue string
+			}
+		}
+	}
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	policy := out.Docker.PoolPolicy["app@traefik"]
+	if !policy.HealthCheck.Enabled || !policy.PassiveHealthCheck.Enabled || policy.Transport.ServerName != "app.internal" || policy.Transport.ResponseHeaderTimeout != int64(5*time.Second) || policy.HostValue != "app.internal" {
+		t.Errorf("exported PoolPolicy = %+v", policy)
+	}
+}
+
 // TestExport_CarriesTLSPolicy — the resolved downstream TLS policy is part
 // of the exported schema, in its normalised form.
 func TestExport_CarriesTLSPolicy(t *testing.T) {

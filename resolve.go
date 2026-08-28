@@ -478,6 +478,10 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 	if err != nil {
 		return nil, err
 	}
+	poolPolicy, err := resolveDockerPoolPolicy(d)
+	if err != nil {
+		return nil, err
+	}
 	return &resolved.Docker{
 		Endpoint:          endpoint,
 		Network:           d.network,
@@ -486,6 +490,7 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 		Refresh:           refresh,
 		Middleware:        registry,
 		DefaultMiddleware: defaults,
+		PoolPolicy:        poolPolicy,
 	}, nil
 }
 
@@ -509,6 +514,43 @@ func resolveDockerMiddleware(d *DockerConfig) (map[string][]resolved.Middleware,
 		return nil, nil, fmt.Errorf("default middleware: %w", err)
 	}
 	return registry, defaults, nil
+}
+
+// resolveDockerPoolPolicy validates and normalizes the code-owned policy map.
+// Service names exist only in runtime discovery state. Exact-name matching
+// therefore happens during reconciliation.
+func resolveDockerPoolPolicy(d *DockerConfig) (map[string]resolved.PoolPolicy, error) {
+	var out map[string]resolved.PoolPolicy
+	for _, name := range slices.Sorted(maps.Keys(d.poolPolicy)) {
+		policy := d.poolPolicy[name]
+		hc, err := resolveHealthCheck(policy.HealthCheck)
+		if err != nil {
+			return nil, fmt.Errorf("pool policy %q: health_check: %w", name, err)
+		}
+		phc, err := resolvePassiveHealthCheck(policy.PassiveHealthCheck)
+		if err != nil {
+			return nil, fmt.Errorf("pool policy %q: passive_health_check: %w", name, err)
+		}
+		transport, err := resolveTransport(policy.Transport)
+		if err != nil {
+			return nil, fmt.Errorf("pool policy %q: transport: %w", name, err)
+		}
+		host := &resolved.Pool{}
+		if err := resolveUpstreamHost(policy.UpstreamHost, host); err != nil {
+			return nil, fmt.Errorf("pool policy %q: upstream_host: %w", name, err)
+		}
+		if out == nil {
+			out = make(map[string]resolved.PoolPolicy, len(d.poolPolicy))
+		}
+		out[name] = resolved.PoolPolicy{
+			HealthCheck:        hc,
+			PassiveHealthCheck: phc,
+			Transport:          transport,
+			UpstreamHost:       host.UpstreamHost,
+			HostValue:          host.HostValue,
+		}
+	}
+	return out, nil
 }
 
 func resolveListener(l *Listener) (*resolved.Listener, error) {

@@ -2,6 +2,7 @@ package statute
 
 import (
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -92,6 +93,39 @@ func TestLint_HC001SkippedWhenPassiveEnabled(t *testing.T) {
 	}
 	if len(hc001Paths) != 1 || hc001Paths[0] != `upstreams["bare"]` {
 		t.Errorf("HC001 paths: got %v, want only the bare pool", hc001Paths)
+	}
+}
+
+func TestLint_DockerPoolPolicyHealthAndTLS(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":80")},
+		Docker: Docker().
+			PoolPolicy("bare", PoolPolicy{}).
+			PoolPolicy("passive", PoolPolicy{PassiveHealthCheck: PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3}}).
+			PoolPolicy("insecure", PoolPolicy{
+				HealthCheck: HealthCheck{Path: "/ready"},
+				Transport:   Transport{InsecureSkipVerify: true},
+			}),
+	}
+	findings, err := Lint(cfg)
+	if err != nil {
+		t.Fatalf("Lint: %v", err)
+	}
+	var hcPaths, tlsPaths []string
+	for _, finding := range findings {
+		switch finding.Code {
+		case "HC001":
+			hcPaths = append(hcPaths, finding.Path)
+		case "TLS002":
+			tlsPaths = append(tlsPaths, finding.Path)
+		}
+	}
+	if !reflect.DeepEqual(hcPaths, []string{`docker.pool_policy["bare"]`}) {
+		t.Errorf("HC001 paths = %v", hcPaths)
+	}
+	if !reflect.DeepEqual(tlsPaths, []string{`docker.pool_policy["insecure"].transport.insecure_skip_verify`}) {
+		t.Errorf("TLS002 paths = %v", tlsPaths)
 	}
 }
 

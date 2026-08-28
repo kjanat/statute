@@ -23,7 +23,6 @@
 //	      statute.enable: "true"
 //	      statute.host: api.example.com
 //	      statute.port: "8080"
-//	      statute.healthcheck.path: /healthz
 package main
 
 import (
@@ -59,7 +58,13 @@ func main() {
 		Docker: statute.Docker().
 			Network("proxy"). // take container IPs from this network
 			TraefikLabels().  // honor traefik.* labels too
-			Refresh("30s"),   // periodic resync on top of the event stream
+			PoolPolicy("api", statute.PoolPolicy{
+				HealthCheck:        statute.HealthCheck{Path: "/healthz", Host: "api.internal"},
+				PassiveHealthCheck: statute.PassiveHealthCheck{FailureWindow: "45s", MaxFailures: 3},
+				Transport:          statute.Transport{ServerName: "api.internal", RootCAFiles: []string{"/run/certs/api-root.pem"}},
+				UpstreamHost:       statute.HostValue("api.internal"),
+			}).
+			Refresh("30s"), // periodic resync on top of the event stream
 
 		Defaults: statute.Defaults{
 			ReadHeaderTimeout: "5s",
