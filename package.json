@@ -9,6 +9,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "docs:generate": "node scripts/wiki-sync.mjs docs wiki",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
