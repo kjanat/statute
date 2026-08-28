@@ -371,6 +371,30 @@ func TestEnvelopeOfMixedPathSemantics(t *testing.T) {
 	}
 }
 
+func TestRuleEnvelopeKeepsDistinctSingleDotHosts(t *testing.T) {
+	t.Parallel()
+	rule := "Host(`0..``0`)"
+	want := []Matcher{
+		{Host: "0", FoldHostDot: true, Path: "/*"},
+		{Host: "0.", FoldHostDot: true, Path: "/*"},
+	}
+	if got := RuleEnvelope(rule); !matchersEqual(got, want) {
+		t.Fatalf("RuleEnvelope(%q) = %+v, want %+v", rule, got, want)
+	}
+	routes, err := ParseRule(rule)
+	if err != nil {
+		t.Fatalf("ParseRule(%q): %v", rule, err)
+	}
+	for _, mt := range routes {
+		for _, req := range probeRequests(mt) {
+			host, path := req[0], req[1]
+			if matchesRequest(mt, host, path) && !matchesAny(RuleEnvelope(rule), host, path) {
+				t.Fatalf("request %q %q matches %+v but misses the envelope", host, path, mt)
+			}
+		}
+	}
+}
+
 func TestRuleEnvelopeCanonicalizesTraefikHostOnce(t *testing.T) {
 	t.Parallel()
 	rule := "Host(`0...``0`)"

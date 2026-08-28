@@ -231,10 +231,15 @@ func hostMatcherLE(a, b Matcher) bool {
 	if a.Host == "" {
 		return false
 	}
-	if b.FoldHostDot {
-		return strings.EqualFold(strings.TrimSuffix(a.Host, "."), b.Host)
+	if !b.FoldHostDot {
+		return !a.FoldHostDot && strings.EqualFold(a.Host, b.Host)
 	}
-	return !a.FoldHostDot && strings.EqualFold(a.Host, b.Host)
+	if a.FoldHostDot {
+		// Each Traefik host matches stored and stored+"." after one
+		// request-side strip. Distinct stored forms are incomparable.
+		return strings.EqualFold(a.Host, b.Host)
+	}
+	return strings.EqualFold(strings.TrimSuffix(a.Host, "."), b.Host)
 }
 
 // bytePrefixCovers reports that every path a matches starts with prefix.
