@@ -43,6 +43,7 @@ import { createHash } from 'node:crypto';
  * @property {Lang} lang
  * @property {boolean} topLevel
  * @property {boolean} doc
+ * @property {boolean} maybeDoc
  * @property {string[]} lines
  */
 
@@ -151,6 +152,8 @@ const FENCE = /^\s*(?:```|~~~)/;
 // between items, and a whole list reported as one finding is unreadable.
 const MD_ITEM = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\||>\s)/;
 
+const JSDOC_TAG = /^\s*\*\s*@\w+/;
+
 /**
  * @param {string} line
  * @param {Lang} lang
@@ -180,6 +183,10 @@ function isCommentLine(line, lang) {
  */
 function isDocBlock(cur, nextLine) {
 	if (cur.doc) return true;
+
+	// A `*` fragment is either JSDoc past its `/**` or an ordinary block
+	// comment past its `/*`. A tag tells the two apart.
+	if (cur.maybeDoc && cur.lines.some(line => JSDOC_TAG.test(line))) return true;
 
 	// TOP_LEVEL_DECL matches JavaScript's const and var too, hence the guard.
 	return cur.lang === 'go' && cur.topLevel && TOP_LEVEL_DECL.test(nextLine);
@@ -310,8 +317,9 @@ function groupsFromPatch(path, patch) {
 						end: newLine,
 						lang,
 						topLevel: !/^[\t ]/.test(content),
+						doc: t.startsWith('/**'),
 						// A hunk can open mid-block, past the `/**`.
-						doc: t.startsWith('/**') || t.startsWith('*'),
+						maybeDoc: t.startsWith('*'),
 						lines: [content],
 					};
 				}
