@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -207,8 +208,8 @@ func TestDockerSyncTraefikLabels(t *testing.T) {
 		t.Fatalf("routes = %+v", tab.routes)
 	}
 	r := tab.routes[0].route
-	if r.Host != "legacy.example.com" || r.Pattern != "/api/*" {
-		t.Fatalf("route = %+v", r)
+	if r.Host != "legacy.example.com" || r.Pattern != "/api" || tab.routes[0].matcher.PathKind != docker.PathByte {
+		t.Fatalf("route = %+v matcher=%+v", r, tab.routes[0].matcher)
 	}
 	if r.Upstream.Name != "app@traefik" || r.Upstream.Backends[0].Address != "10.0.0.9:3000" {
 		t.Fatalf("upstream = %+v", r.Upstream)
@@ -216,8 +217,152 @@ func TestDockerSyncTraefikLabels(t *testing.T) {
 	if h := findHandler(tab.routes, "legacy.example.com", httptest.NewRequest("GET", "http://x/api/users", nil)); h == nil {
 		t.Fatal("PathPrefix route did not match subpath")
 	}
+	if h := findHandler(tab.routes, "legacy.example.com", httptest.NewRequest("GET", "http://x/api-secret", nil)); h == nil {
+		t.Fatal("PathPrefix route did not match Traefik byte prefix /api-secret")
+	}
 	if h := findHandler(tab.routes, "legacy.example.com", httptest.NewRequest("GET", "http://x/other", nil)); h != nil {
 		t.Fatal("route matched outside prefix")
+	}
+}
+
+func TestDockerDynamicSpecificityAcrossMatcherKinds(t *testing.T) {
+	newBackend := func(body string) (string, int) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(ts.Close)
+		return backendHostPort(t, ts)
+	}
+	broadHost, broadPort := newBackend("byte")
+	segmentHost, segmentPort := newBackend("segment")
+	exactHost, exactPort := newBackend("exact")
+	longHost, longPort := newBackend("long-byte")
+
+	cfg, err := resolveDocker(Docker().TraefikLabels().
+		Middleware("byte@file", SetResponseHeader("X-Route", "byte")).
+		Middleware("exact@file", SetResponseHeader("X-Route", "exact")).
+		Middleware("long@file", SetResponseHeader("X-Route", "long-byte")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
+		{name: "broad", ip: broadHost, port: broadPort, labels: map[string]string{
+			"traefik.enable":                         "true",
+			"traefik.http.routers.broad.rule":        "Host(`routes.example.com`) && PathPrefix(`/a`)",
+			"traefik.http.routers.broad.middlewares": "byte@file",
+		}},
+		{name: "segment", ip: segmentHost, port: segmentPort, labels: map[string]string{
+			"statute.enable": "true",
+			"statute.host":   "routes.example.com",
+			"statute.path":   "/api/*",
+		}},
+		{name: "exact", ip: exactHost, port: exactPort, labels: map[string]string{
+			"traefik.enable":                         "true",
+			"traefik.http.routers.exact.rule":        "Host(`routes.example.com`) && Path(`/api/exact`)",
+			"traefik.http.routers.exact.middlewares": "exact@file",
+		}},
+		{name: "long", ip: longHost, port: longPort, labels: map[string]string{
+			"traefik.enable":                        "true",
+			"traefik.http.routers.long.rule":        "Host(`routes.example.com`) && PathPrefix(`/api/long`)",
+			"traefik.http.routers.long.middlewares": "long@file",
+		}},
+	})
+	fallbackServer(t, srv, nil)
+	mustSync(t, p)
+	router := srv.buildRouter()
+
+	tests := []struct {
+		path, body, marker string
+	}{
+		{"/api/segment", "segment", ""},
+		{"/api-secret", "byte", "byte"},
+		{"/api/exact", "exact", "exact"},
+		{"/api/long/x", "long-byte", "long-byte"},
+	}
+	for _, tc := range tests {
+		rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://routes.example.com"+tc.path, nil))
+		if rec.Code != http.StatusOK || rec.Body.String() != tc.body || rec.Header().Get("X-Route") != tc.marker {
+			t.Errorf("%s: code=%d body=%q X-Route=%q, want 200 %q %q", tc.path, rec.Code, rec.Body.String(), rec.Header().Get("X-Route"), tc.body, tc.marker)
+		}
+	}
+}
+
+func TestDockerNativeHostDoesNotInheritTraefikDotFolding(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("native"))
+	}))
+	t.Cleanup(backend.Close)
+	host, port := backendHostPort(t, backend)
+	p, srv, _ := newFakeProvider(t, &resolved.Docker{}, []fakeDaemonContainer{{
+		name: "native", ip: host, port: port,
+		labels: map[string]string{
+			"statute.enable": "true",
+			"statute.host":   "native.example.com.",
+		},
+	}})
+	calls := fallbackServer(t, srv, nil)
+	mustSync(t, p)
+	router := srv.buildRouter()
+
+	dotted := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://native.example.com./", nil))
+	if dotted.Code != http.StatusOK || dotted.Body.String() != "native" {
+		t.Fatalf("dotted native host: code=%d body=%q", dotted.Code, dotted.Body.String())
+	}
+	undotted := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://native.example.com/", nil))
+	if undotted.Code != http.StatusTeapot || calls.Load() != 1 {
+		t.Fatalf("undotted native host: code=%d calls=%d, want fallback", undotted.Code, calls.Load())
+	}
+}
+
+// TestDockerTraefikRuleTruthMatrix keeps its expected traffic independent
+// of statute's parser and matcher helpers. Each row states the requests a
+// supported Traefik rule should serve and checks the complete router outcome.
+func TestDockerTraefikRuleTruthMatrix(t *testing.T) {
+	tests := []struct {
+		name   string
+		rule   string
+		hits   [][2]string
+		misses [][2]string
+	}{
+		{"host", "Host(`a.example.com`)", [][2]string{{"a.example.com", "/x"}, {"a.example.com.", "/x"}}, [][2]string{{"b.example.com", "/x"}, {"a.example.com..", "/x"}}},
+		{"host trailing dot", "Host(`a.example.com.`)", [][2]string{{"a.example.com", "/x"}, {"a.example.com.", "/x"}, {"a.example.com..", "/x"}}, [][2]string{{"b.example.com", "/x"}, {"a.example.com...", "/x"}}},
+		{"path", "Path(`/only`)", [][2]string{{"any.example.com", "/only"}}, [][2]string{{"any.example.com", "/only/x"}}},
+		{"path prefix", "PathPrefix(`/api`)", [][2]string{{"any.example.com", "/api"}, {"any.example.com", "/api-secret"}}, [][2]string{{"any.example.com", "/ap"}}},
+		{"multi argument host", "Host(`a.example.com`, `b.example.com`)", [][2]string{{"a.example.com", "/"}, {"b.example.com", "/"}}, [][2]string{{"c.example.com", "/"}}},
+		{"and", "Host(`a.example.com`) && Path(`/x`)", [][2]string{{"a.example.com", "/x"}}, [][2]string{{"a.example.com", "/y"}, {"b.example.com", "/x"}}},
+		{"or", "Host(`a.example.com`) || Path(`/shared`)", [][2]string{{"a.example.com", "/x"}, {"b.example.com", "/shared"}}, [][2]string{{"b.example.com", "/x"}}},
+		{"parentheses", "(Host(`a.example.com`) || Host(`b.example.com`)) && (Path(`/x`) || PathPrefix(`/api`))", [][2]string{{"a.example.com", "/x"}, {"b.example.com", "/api-secret"}}, [][2]string{{"c.example.com", "/x"}, {"a.example.com", "/y"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("matched"))
+			}))
+			defer backend.Close()
+			host, port := backendHostPort(t, backend)
+			p, srv, _ := newFakeProvider(t, &resolved.Docker{TraefikLabels: true}, []fakeDaemonContainer{{
+				name: "matrix", ip: host, port: port,
+				labels: map[string]string{
+					"traefik.enable":                   "true",
+					"traefik.http.routers.matrix.rule": tc.rule,
+				},
+			}})
+			fallbackServer(t, srv, nil)
+			mustSync(t, p)
+			router := srv.buildRouter()
+			for _, request := range tc.hits {
+				rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://"+request[0]+request[1], nil))
+				if rec.Code != http.StatusOK || rec.Body.String() != "matched" {
+					t.Errorf("expected hit for host=%q path=%q: code=%d body=%q", request[0], request[1], rec.Code, rec.Body.String())
+				}
+			}
+			for _, request := range tc.misses {
+				rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://"+request[0]+request[1], nil))
+				if rec.Code != http.StatusTeapot {
+					t.Errorf("expected fallback for host=%q path=%q: code=%d", request[0], request[1], rec.Code)
+				}
+			}
+		})
 	}
 }
 

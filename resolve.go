@@ -52,6 +52,10 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 	}
 	out.Docker = docker
 
+	if err := resolveFallback(cfg.Fallback, out); err != nil {
+		return nil, err
+	}
+
 	obs, err := resolveObservability(cfg.Observability)
 	if err != nil {
 		return nil, fmt.Errorf("observability: %w", err)
@@ -1059,6 +1063,22 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 		rr.Handler = r.handler
 		rr.HandlerRoute = true
 	}
+	return nil
+}
+
+// resolveFallback carries the surface fallback handler into out and marks
+// it. An absent handler is simply no fallback and leaves the terminal 404 in
+// place; a typed nil would panic on the first unmatched request, so it fails
+// exactly as Handle's does.
+func resolveFallback(h http.Handler, out *resolved.Config) error {
+	switch {
+	case h == nil:
+		return nil
+	case isNilHandler(h):
+		return errors.New("fallback: handler is nil")
+	}
+	out.Fallback = h
+	out.HasFallback = true
 	return nil
 }
 

@@ -20,7 +20,10 @@ import (
 // the generation they started with.
 type dynamicTable struct {
 	routes []compiledRoute
-	pools  map[string]*runningPool
+	// tombstones are the refusal envelopes of the registrations this
+	// generation discarded; see compileTombstones.
+	tombstones []compiledRoute
+	pools      map[string]*runningPool
 	// fingerprints allow the next generation to reuse a pool handler —
 	// keeping its health state and connection pool — when its resolved
 	// config is unchanged.
@@ -40,6 +43,9 @@ type dockerProvider struct {
 	// container logs once, not once per event. Touched only by the sync
 	// goroutine (and start, which precedes it).
 	warned map[string]bool
+	// refusal is the previous generation's refusal announcement, or "" when
+	// it refused nothing; see announceRefusal.
+	refusal string
 }
 
 // dockerRun owns one provider generation's watcher, reconcile loop, and
@@ -222,12 +228,12 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	services := p.deriveServices(containers)
+	services, tombstones := p.deriveServices(containers)
 
 	prev := p.srv.dynamic.Load()
 	// Pool health checkers deliberately outlive this sync call; they derive
 	// their own lifetime and stop on generation retirement or shutdown.
-	next, retired := p.buildTable(services, prev) //nolint:contextcheck
+	next, retired := p.buildTable(services, tombstones, prev) //nolint:contextcheck
 	p.srv.dynamic.Store(next)
 	for _, pool := range retired {
 		pool.shutdown()
@@ -237,8 +243,9 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 
 // deriveServices extracts label registrations from every container and
 // merges same-named services into one pool. Containers are processed in
-// name order so "first container wins" conflict resolution is stable.
-func (p *dockerProvider) deriveServices(containers []docker.Container) []docker.Service {
+// name order so "first container wins" conflict resolution is stable. The
+// second result collects the refusal envelopes extraction produced.
+func (p *dockerProvider) deriveServices(containers []docker.Container) ([]docker.Service, []docker.Matcher) {
 	sort.Slice(containers, func(i, j int) bool { return containers[i].Name < containers[j].Name })
 
 	opts := docker.ExtractOptions{
@@ -248,9 +255,11 @@ func (p *dockerProvider) deriveServices(containers []docker.Container) []docker.
 	}
 	merged := map[string]*docker.Service{}
 	var order []string
+	var tombs []docker.Matcher
 	for _, c := range containers {
-		svcs, warns := docker.Extract(c, opts)
+		svcs, envelopes, warns := docker.Extract(c, opts)
 		p.warn(warns)
+		tombs = append(tombs, envelopes...)
 		for _, svc := range svcs {
 			existing, ok := merged[svc.Name]
 			if !ok {
@@ -267,7 +276,7 @@ func (p *dockerProvider) deriveServices(containers []docker.Container) []docker.
 	for _, name := range order {
 		out = append(out, *merged[name])
 	}
-	return out
+	return out, tombs
 }
 
 // warn logs each warning once for the provider's lifetime.
@@ -299,15 +308,17 @@ func mergeService(base *docker.Service, add docker.Service) {
 // reusing pool handlers whose resolved config is unchanged. It returns the
 // handlers from prev that were replaced or dropped and must be shut down
 // after the swap.
-func (p *dockerProvider) buildTable(services []docker.Service, prev *dynamicTable) (*dynamicTable, []*runningPool) {
+func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
 		pools:        make(map[string]*runningPool, len(services)),
 		fingerprints: make(map[string]string, len(services)),
 	}
+	tombs := slices.Clone(tombstones)
 	for i := range services {
-		p.addService(&services[i], prev, next)
+		tombs = append(tombs, p.addService(&services[i], prev, next)...)
 	}
 	sortDynamicRoutes(next.routes)
+	next.tombstones = p.compileTombstones(tombs)
 
 	var retired []*runningPool
 	if prev != nil {
@@ -325,15 +336,15 @@ func (p *dockerProvider) buildTable(services []docker.Service, prev *dynamicTabl
 // warning rather than poisoning the whole generation; a route whose
 // router references an unregistered middleware name is omitted the same
 // way, so the rest of the service keeps routing.
-func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTable) {
+func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTable) []docker.Matcher {
 	pool, warn := servicePool(svc)
 	if warn != "" {
 		p.warn([]string{warn})
 	}
 	rp, err := resolvePool(svc.Name, pool)
 	if err != nil {
-		p.warn([]string{fmt.Sprintf("service %q: %v, skipping", svc.Name, err)})
-		return
+		p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", svc.Name, err)})
+		return p.refuse(svc.Name, svc.Routes)
 	}
 
 	hints, warns := serviceHints(svc)
@@ -343,21 +354,29 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		mws []resolved.Middleware
 	}
 	var kept []routeChain
+	var tombs []docker.Matcher
 	for _, m := range svc.Routes {
 		mws, warn := p.routeMiddleware(svc, m, hints)
 		if warn != "" {
 			p.warn([]string{warn})
+			// Fails closed per matcher, so this one refuses on its own
+			// while its siblings keep routing.
+			tombs = append(tombs, p.refuse(svc.Name, []docker.Matcher{m})...)
 			continue
 		}
 		kept = append(kept, routeChain{m: m, mws: mws})
 	}
 	if len(kept) == 0 {
-		return
+		return tombs
 	}
 
 	running := p.servicePoolHandler(svc.Name, rp, prev, next)
 	if running == nil {
-		return
+		keptMatchers := make([]docker.Matcher, 0, len(kept))
+		for _, rc := range kept {
+			keptMatchers = append(keptMatchers, rc.m)
+		}
+		return append(tombs, p.refuse(svc.Name, keptMatchers)...)
 	}
 	for _, rc := range kept {
 		next.routes = append(next.routes, compiledRoute{
@@ -368,8 +387,65 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 				Middleware: rc.mws,
 			},
 			handler: wrapMiddleware(rc.mws, running.handler),
+			matcher: rc.m,
 		})
 	}
+	return tombs
+}
+
+// refuse turns dropped matchers into a refusal envelope and logs it.
+// Widening here would shadow the fallback for traffic the service never asked for.
+func (p *dockerProvider) refuse(service string, ms []docker.Matcher) []docker.Matcher {
+	env := docker.EnvelopeOf(ms)
+	if len(env) == 0 {
+		return nil
+	}
+	p.warn([]string{docker.RefusalWarning(fmt.Sprintf("service %q", service), env)})
+	return env
+}
+
+// compileTombstones turns a generation's refusal envelopes into routes that
+// can only refuse. A global envelope leaves one tombstone after absorption.
+func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute {
+	env := docker.EnvelopeOf(ms)
+	p.announceRefusal(env)
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]compiledRoute, 0, len(env))
+	for _, m := range env {
+		out = append(out, compiledRoute{
+			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
+			handler: tombstoneHandler,
+			matcher: m,
+		})
+	}
+	return out
+}
+
+// announceRefusal logs what this generation refuses when that differs from
+// the previous generation. warn dedupes for the provider's lifetime; this
+// path keys on the previous generation so a repaired-then-regressed rule
+// is audible again, and so is the clearing edge.
+//
+// The clearing line names the refusals that stopped. Config.Fallback is
+// optional and this tier does not know whether one is configured.
+func (p *dockerProvider) announceRefusal(env []docker.Matcher) {
+	msg := ""
+	if len(env) > 0 {
+		msg = docker.RefusalWarning("generation", env)
+	}
+	if msg == p.refusal {
+		return
+	}
+	p.refusal = msg
+	if msg != "" {
+		log.Printf("statute: docker: %s", msg)
+		return
+	}
+	// Reached only from a non-empty refusal: when the previous generation
+	// also refused nothing, the dedupe above has already returned.
+	log.Printf("statute: docker: generation: refusals cleared; unmatched requests are no longer blocked by Docker tombstones")
 }
 
 // servicePoolHandler returns the pool handler for the named service,
@@ -385,7 +461,7 @@ func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, prev
 		} else {
 			ph, err := newPoolHandler(rp)
 			if err != nil {
-				p.warn([]string{fmt.Sprintf("service %q: %v, skipping", name, err)})
+				p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", name, err)})
 				return nil
 			}
 			pool = ph.start()
@@ -519,30 +595,43 @@ func poolFingerprint(rp *resolved.Pool) string {
 // then lexicographic as the tiebreak.
 func sortDynamicRoutes(routes []compiledRoute) {
 	sort.SliceStable(routes, func(i, j int) bool {
-		a, b := routes[i].route, routes[j].route
+		a, b := routes[i].matcher, routes[j].matcher
 		if (a.Host != "") != (b.Host != "") {
 			return a.Host != ""
 		}
-		al, bl := patternSpecificity(a.Pattern), patternSpecificity(b.Pattern)
-		if al != bl {
-			return al > bl
+		aExact, aLen, aKind := dynamicPatternSpecificity(a)
+		bExact, bLen, bKind := dynamicPatternSpecificity(b)
+		if aExact != bExact {
+			return aExact
+		}
+		if aLen != bLen {
+			return aLen > bLen
+		}
+		if aKind != bKind {
+			return aKind > bKind
 		}
 		if a.Host != b.Host {
 			return a.Host < b.Host
 		}
-		if a.Pattern != b.Pattern {
-			return a.Pattern < b.Pattern
+		if a.Path != b.Path {
+			return a.Path < b.Path
 		}
-		return a.Upstream.Name < b.Upstream.Name
+		return routes[i].route.Upstream.Name < routes[j].route.Upstream.Name
 	})
 }
 
-// patternSpecificity ranks patterns: exact matches above prefixes, longer
-// prefixes above shorter ones.
-func patternSpecificity(pattern string) int {
-	if prefix, ok := strings.CutSuffix(pattern, "/*"); ok {
-		return len(prefix)
+// dynamicPatternSpecificity returns the precedence dimensions for one
+// dynamic route. Exact paths outrank prefixes. Among prefixes, a longer
+// constrained byte sequence is narrower; at an equal base, statute's
+// segment prefix is narrower than Traefik's byte prefix.
+func dynamicPatternSpecificity(m docker.Matcher) (exact bool, prefixLen, kind int) {
+	switch m.PathKind {
+	case docker.PathByte:
+		return false, len(m.Path), 0
+	case docker.PathSegment, docker.PathAny:
+		prefix, _ := strings.CutSuffix(m.Path, "/*")
+		return false, len(prefix), 1
+	default:
+		return true, len(m.Path), 2
 	}
-	// Exact patterns outrank any prefix.
-	return len(pattern) + 1<<16
 }

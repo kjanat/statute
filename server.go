@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/crypto/acme/autocert"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -808,6 +809,8 @@ func joinErrors(ch <-chan error) error {
 type compiledRoute struct {
 	route   *resolved.Route
 	handler http.Handler
+	// matcher is the compiled host/path IR used directly by the dispatcher.
+	matcher docker.Matcher
 	// clientPrefixes is the parsed form of the route's ClientIPCIDRs; empty
 	// means the route matches any client.
 	clientPrefixes []netip.Prefix
@@ -815,7 +818,8 @@ type compiledRoute struct {
 
 // findHandler returns the first route matching host, path, and — for routes
 // constrained with ClientIPs — the verified client address, in slice order,
-// or nil. Host comparison is case-insensitive per RFC 9110. The client
+// or nil. Host comparison is case-insensitive per RFC 9110; only a
+// Traefik-derived matcher additionally folds a trailing FQDN dot. The client
 // address resolves lazily, once, and only when a candidate route needs it;
 // a client that cannot be parsed never matches a constrained route and
 // falls through like any other mismatch.
@@ -823,10 +827,7 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 	var clientAddr netip.Addr
 	var clientResolved, clientOK bool
 	for _, c := range routes {
-		if c.route.Host != "" && !strings.EqualFold(c.route.Host, host) {
-			continue
-		}
-		if !matchPattern(c.route.Pattern, req.URL.Path) {
+		if !routeMatchesRequest(c, host, req.URL.Path) {
 			continue
 		}
 		if len(c.clientPrefixes) > 0 {
@@ -843,9 +844,34 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 	return nil
 }
 
+func routeMatchesRequest(c compiledRoute, host, path string) bool {
+	return c.matcher.Match(host, path)
+}
+
+// tombstoneHandler is the one fixed refusal every tombstone serves: the
+// same 404 a dropped router produced before Config.Fallback existed. It
+// does not vary with the rule that produced it, and no other status is
+// invented, so a deployment without a fallback sees no change at all.
+var tombstoneHandler http.Handler = http.NotFoundHandler()
+
+// fallbackHandler returns the router's terminal stage: the configured
+// fallback handler, or net/http's 404 when none is configured.
+func (s *server) fallbackHandler() http.Handler {
+	if s.cfg.Fallback != nil {
+		return s.cfg.Fallback
+	}
+	return http.NotFoundHandler()
+}
+
 // buildRouter returns an http.Handler that dispatches to the matching
 // static route in declaration order, then to the docker provider's dynamic
-// routes when one is configured.
+// routes when one is configured, then to that generation's tombstones, then
+// to the fallback handler.
+//
+// INVARIANT: the tombstone tier sits between discovered routes and the
+// fallback. A Docker registration whose routes were discarded must not
+// reach operator code that no longer knows it asked for a policy statute
+// could not supply. Envelopes cover every request such a router matched.
 func (s *server) buildRouter() http.Handler {
 	static := make([]compiledRoute, 0, len(s.cfg.Routes))
 	for _, r := range s.cfg.Routes {
@@ -865,9 +891,12 @@ func (s *server) buildRouter() http.Handler {
 		static = append(static, compiledRoute{
 			route:          r,
 			handler:        h,
+			matcher:        docker.CompileNative(r.Host, r.Pattern),
 			clientPrefixes: mustParsePrefixes(r.ClientIPCIDRs),
 		})
 	}
+
+	fallback := s.fallbackHandler()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host := stripPort(req.Host)
@@ -880,8 +909,12 @@ func (s *server) buildRouter() http.Handler {
 				h.ServeHTTP(w, req)
 				return
 			}
+			if h := findHandler(t.tombstones, host, req); h != nil {
+				h.ServeHTTP(w, req)
+				return
+			}
 		}
-		http.NotFound(w, req)
+		fallback.ServeHTTP(w, req)
 	})
 }
 

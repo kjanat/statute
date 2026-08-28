@@ -91,23 +91,35 @@ services:
 With one exposed port, the container is routed on every host at `/*` under
 a pool named after the compose service. The full schema:
 
-| Label                                                 | Meaning                                                                                                                                                                                                                                     |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `statute.enable`                                      | Boolean (parsed like Traefik: `1`/`t`/`true`/`True`, …). Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. An explicit false always wins; an unparseable value counts as false with a warning. |
-| `statute.service`                                     | Pool name. Containers sharing it pool together (replicas). Default: compose service name, else container name.                                                                                                                              |
-| `statute.host`                                        | Comma-separated hosts; each becomes a route (matched case-insensitively). Empty fragments are skipped. Empty or unset: any host.                                                                                                            |
-| `statute.path`                                        | statute pattern: `/exact` or `/prefix/*`. Default `/*`.                                                                                                                                                                                     |
-| `statute.routes.<name>.host` / `.path`                | Additional named routes for the same service.                                                                                                                                                                                               |
-| `statute.port`                                        | Container-side port. Default: the lowest exposed TCP port (Traefik's rule), with a warning when several were exposed; a container exposing no port is skipped with a warning.                                                               |
-| `statute.scheme`                                      | `http` (default) or `https` for the backend connection (case-insensitive). Anything else — including `h2c`, which statute's proxy does not speak — skips the service with a warning rather than registering it with the wrong protocol.     |
-| `statute.network`                                     | Docker network to take the IP from, overriding `Network()`.                                                                                                                                                                                 |
-| `statute.weight`                                      | Backend weight for the `weighted` strategy. Default 1.                                                                                                                                                                                      |
-| `statute.backup`                                      | `"true"` marks a failover-only backend.                                                                                                                                                                                                     |
-| `statute.strategy`                                    | `round_robin`, `least_connections`, `ip_hash`, `weighted`. First container in the pool (by name) wins.                                                                                                                                      |
-| `statute.healthcheck.path` / `.interval` / `.timeout` | Active health checks, same semantics as `statute.HealthCheck`.                                                                                                                                                                              |
-| `statute.timeout`                                     | Per-route timeout middleware, e.g. `30s`.                                                                                                                                                                                                   |
-| `statute.ratelimit`                                   | Per-route rate limit, e.g. `100/min`.                                                                                                                                                                                                       |
-| `statute.compress`                                    | `gzip`, `br`, a comma list, or `true` for both.                                                                                                                                                                                             |
+| Label                                                 | Meaning                                                                                                                                                                                                                                               |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `statute.enable`                                      | Boolean (parsed like Traefik: `1`/`t`/`true`/`True`, …). Required unless the container carries other `statute.*` labels or `ExposedByDefault()` is set. An explicit false always wins; an unparseable value is not an opt-out: it leaves a tombstone. |
+| `statute.service`                                     | Pool name. Containers sharing it pool together (replicas). Default: compose service name, else container name.                                                                                                                                        |
+| `statute.host`                                        | Comma-separated hosts; each becomes a route (matched case-insensitively). Empty fragments are skipped. Empty or unset: any host.                                                                                                                      |
+| `statute.path`                                        | statute pattern: `/exact` or `/prefix/*`. Default `/*`.                                                                                                                                                                                               |
+| `statute.routes.<name>.host` / `.path`                | Additional named routes for the same service.                                                                                                                                                                                                         |
+| `statute.port`                                        | Container-side port. Default: the lowest exposed TCP port (Traefik's rule), with a warning when several were exposed; a container exposing no port is dropped with a warning and a tombstone.                                                         |
+| `statute.scheme`                                      | `http` (default) or `https` for the backend connection (case-insensitive). Anything else, including `h2c` which statute's proxy does not speak, drops the service with a warning and a tombstone.                                                     |
+| `statute.network`                                     | Docker network to take the IP from, overriding `Network()`.                                                                                                                                                                                           |
+| `statute.weight`                                      | Backend weight for the `weighted` strategy. Default 1.                                                                                                                                                                                                |
+| `statute.backup`                                      | `"true"` marks a failover-only backend.                                                                                                                                                                                                               |
+| `statute.strategy`                                    | `round_robin`, `least_connections`, `ip_hash`, `weighted`. First container in the pool (by name) wins.                                                                                                                                                |
+| `statute.healthcheck.path` / `.interval` / `.timeout` | Active health checks, same semantics as `statute.HealthCheck`.                                                                                                                                                                                        |
+| `statute.timeout`                                     | Per-route timeout middleware, e.g. `30s`.                                                                                                                                                                                                             |
+| `statute.ratelimit`                                   | Per-route rate limit, e.g. `100/min`.                                                                                                                                                                                                                 |
+| `statute.compress`                                    | `gzip`, `br`, a comma list, or `true` for both.                                                                                                                                                                                                       |
+
+A container these labels select but statute cannot route (no exposed port,
+an unsupported scheme, no reachable address, an `enable` value that is
+neither true nor false) leaves a **tombstone**
+covering the routes its labels declared, as a dropped Traefik router
+does; see [Tombstones](#tombstones-what-a-dropped-registration-leaves-behind)
+below, which applies to both label schemas. A container carrying
+`statute.enable` but naming neither host nor path is routed on every host at
+`/*`, so its tombstone is the global one. The single exception is a
+container `ExposedByDefault()` registered that carries no `statute.*` label
+at all: its catch-all is statute's own inference, and dropping it leaves
+the fallback alone.
 
 The health-check labels stop at path/interval/timeout — deliberately. The
 probe `Host` override (`HealthCheck.Host`), accepted probe statuses
@@ -125,16 +137,16 @@ Docker-discovered pool runs with default transport settings.
 The goal is that a fleet labeled for Traefik's docker provider migrates
 without editing compose files. Supported:
 
-| Label                                                                                | Notes                                                                                                                                                                                                    |
-| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `traefik.enable`                                                                     | Exactly Traefik's semantics: without `ExposedByDefault()`, a container is exposed only with an explicit `traefik.enable=true` — router labels alone do not expose it.                                    |
-| `traefik.http.routers.<r>.rule`                                                      | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`.                                                                                                 |
-| `traefik.http.routers.<r>.service`                                                   | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container — so several label-less routers share one backend pool. |
-| `traefik.http.services.<s>.loadbalancer.server.port`                                 | Container-side port. Default: the lowest exposed port, as in Traefik.                                                                                                                                    |
-| `traefik.http.services.<s>.loadbalancer.server.scheme`                               | `https` for TLS backends. `h2c` is not supported — such services are skipped with a warning instead of being proxied over the wrong protocol.                                                            |
-| `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks.                                                                                                                                                                  |
-| `traefik.docker.network`                                                             | Same as `statute.network`.                                                                                                                                                                               |
-| `traefik.http.routers.<r>.middlewares`                                               | Comma-separated names resolved against the code-owned registry declared with `Middleware(name, ...)`, scoped to that router's routes — see below.                                                        |
+| Label                                                                                | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `traefik.enable`                                                                     | Exactly Traefik's semantics: without `ExposedByDefault()`, a container is exposed only with an explicit `traefik.enable=true`; router labels alone do not expose it.                                                                                                                                                                                                                                                                                                                   |
+| `traefik.http.routers.<r>.rule`                                                      | `Host()`, `Path()`, `PathPrefix()` combined with `&&`, `\|\|`, parentheses, and multi-argument `Host()`. `PathPrefix` is Traefik's byte prefix (`/api` matches `/api-secret`); statute `Match("/api/*")` stays segment-aware. Traefik `Host()` keeps the configured spelling and folds one trailing FQDN dot on the rule or the request. `Host("*")` / `Host("*.example.com")` and `Path`/`PathPrefix` arguments with `%`, placeholders, or regexp syntax are rejected and tombstoned. |
+| `traefik.http.routers.<r>.service`                                                   | Router→service binding, with Traefik's defaulting: the sole service defined on the container, else an implicit service named after the container, so several label-less routers share one backend pool.                                                                                                                                                                                                                                                                                |
+| `traefik.http.services.<s>.loadbalancer.server.port`                                 | Container-side port. Default: the lowest exposed port, as in Traefik.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `traefik.http.services.<s>.loadbalancer.server.scheme`                               | `https` for TLS backends. `h2c` is not supported: such services are skipped with a warning, never proxied over the wrong protocol.                                                                                                                                                                                                                                                                                                                                                     |
+| `traefik.http.services.<s>.loadbalancer.healthcheck.path` / `.interval` / `.timeout` | Mapped to statute active health checks.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `traefik.docker.network`                                                             | Same as `statute.network`.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `traefik.http.routers.<r>.middlewares`                                               | Comma-separated names resolved against the code-owned registry declared with `Middleware(name, ...)`, scoped to that router's routes; see below.                                                                                                                                                                                                                                                                                                                                       |
 
 Deliberately ignored (harmless, handled at the listener level in statute):
 `entrypoints`, `tls`, `tls.certresolver`, `priority`.
@@ -142,11 +154,65 @@ Deliberately ignored (harmless, handled at the listener level in statute):
 Skipped **with a logged warning** rather than silently mis-routed:
 
 - routers whose rule uses unsupported matchers (`HostRegexp`, `Header`,
-  `Query`, `ClientIP`, negation, …),
+  `Query`, `ClientIP`, `Host("*")`, percent-encoded `Path`/`PathPrefix`,
+  negation, …),
 - routers whose `middlewares` label names a chain no
   `Middleware(name, ...)` registration covers — the router's routes are
   omitted (fail closed) while sibling routers and services keep routing,
 - `traefik.tcp.*` / `traefik.udp.*` routers.
+
+### Tombstones: what a dropped registration leaves behind
+
+This section describes both label schemas. A **registration** is a Traefik
+router or a container's native `statute.*` labels; both declare routes, and
+dropping either has the same consequence.
+
+A dropped registration does not simply vanish. Its traffic used to end in
+the terminal 404, and with a `Config.Fallback` configured it would instead
+fall through into operator code that does not know the registration asked
+for a policy statute could not supply. So the generation keeps a
+**tombstone** for it: a matcher with no upstream and no middleware that
+answers the same 404, consulted after the discovered routes and before the
+fallback. Without a fallback configured nothing changes.
+
+A tombstone covers everything the dropped registration could have matched,
+never less. Constraints statute cannot represent are dropped:
+
+| Rule                                                         | Refuses                                                     |
+| ------------------------------------------------------------ | ----------------------------------------------------------- |
+| ``Host(`admin.example.com`) && ClientIP(`10.0.0.0/8`)``      | `admin.example.com`, all paths                              |
+| ``Host(`a.example.com`) && PathPrefix(`/api`) && Header(…)`` | `a.example.com` PathPrefix `/api` (including `/api-secret`) |
+| ``PathPrefix(`/private`) && ClientIP(…)``                    | PathPrefix `/private` on every host                         |
+| ``Host(`a.example.com`) && Path()``                          | `a.example.com`, all paths                                  |
+| ``Host(`a.example.com`) \|\| ClientIP(…)``                   | everything                                                  |
+| `ClientIP(…)`, `HostRegexp(…)`, `Path()`, a typo             | everything                                                  |
+
+Dropping a conjunct only adds requests. An unreadable matcher, such as
+zero-argument `Path()`, standing beside a readable conjunct, costs no more
+than one statute reads but cannot represent, because a rule matches every one
+of its conjuncts, so any single conjunct already covers it. A disjunction is the opposite: it is a union of its branches, so
+one unreadable branch widens the whole rule. The last row is the **global
+tombstone**, reached when nothing in the rule bounds it because it does not
+parse or every matcher in it widened away. It refuses every unmatched
+request in that generation, which disables the fallback until the labels
+are fixed.
+
+Every tombstone is logged with the traffic it now refuses, and the global
+one says so in as many words. What else the line names is whatever the stage
+that dropped the routes knew: a drop at the label stage names the container
+and the router, while a drop at the pool stage (an unresolvable pool, a
+pool handler that cannot be built) names the service, since one service's
+pool can be assembled from several containers. On top of the per-drop lines,
+the generation's standing refusal is announced whenever it changes, so a
+rule that is repaired and later regresses does not disable the fallback in
+silence.
+
+`traefik.tcp.*` / `traefik.udp.*` routers leave no tombstone. The tier
+expresses HTTP refusals only. Neither does a router with no rule (it
+matches nothing in Traefik either) or a container that opted out with
+`traefik.enable=false`. An `enable` value that is neither true nor false is
+not an opt-out: it cannot be read, so the routes are dropped and the
+envelope stands.
 
 ### Label-referenced middleware
 
@@ -173,11 +239,12 @@ router's referenced chains in label order, then the `statute.timeout` /
 `statute.ratelimit` / `statute.compress` hints.
 
 A reference to an unregistered name **fails closed**: that router's routes
-are omitted from the generation, with a warning naming the missing
-middleware. A route that asked for an auth policy must never be served
-without it, so a broken middleware dependency means a broken router — as
-in Traefik — not a middleware-free one. Other routers on the same service,
-and every other service, are unaffected.
+are omitted from the generation and replaced by a tombstone refusing the
+traffic they matched, with a warning naming the missing middleware. A route
+that asked for an auth policy must never be served without it, so a broken
+middleware dependency means a broken router, as in Traefik: the traffic
+does not reach `Config.Fallback`.
+Other routers on the same service, and every other service, are unaffected.
 
 Traefik-derived pools are namespaced (`api` becomes `api@traefik`), so they
 can't collide with pools from native labels or static `Upstreams`.

@@ -18,18 +18,29 @@ import (
 
 // Config is the resolved top-level configuration.
 type Config struct {
-	Listeners     []*Listener
-	Upstreams     map[string]*Pool
-	Routes        []*Route
-	Docker        *Docker // nil unless Docker label discovery is enabled
+	Listeners []*Listener
+	Upstreams map[string]*Pool
+	Routes    []*Route
+	Docker    *Docker // nil unless Docker label discovery is enabled
+
+	// Fallback is the handler after static routes, the current Docker
+	// generation, and that generation's refusal envelopes; nil is 404.
+	Fallback http.Handler `json:"-"`
+	// HasFallback is true when Fallback is non-nil. The JSON export uses
+	// this marker; the handler itself does not serialize.
+	HasFallback bool
+
 	Defaults      Defaults
 	Observability Observability
 	Shutdown      Shutdown
 }
 
 // Docker is the resolved Docker label-discovery provider configuration.
-// The provider's output (label-derived routes and pools) is runtime state,
-// not part of the resolved schema; only the discovery settings are.
+// The provider's output (label-derived routes and pools, and the refusal
+// tombstones standing in for the registrations it had to drop) is runtime
+// state. Only the discovery settings belong in the resolved schema.
+// Tombstones belong to one generation, are replaced with it, and describe
+// containers.
 type Docker struct {
 	Endpoint         string
 	Network          string

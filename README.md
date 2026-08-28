@@ -268,6 +268,25 @@ statute.Match("/healthz").Host("foo.example.com").Handle(http.HandlerFunc(
 
 The handler composes with route middleware like any other action and drains through graceful shutdown like proxied requests. It receives the request path unstripped — the wildcard prefix stripping above is `Serve`-specific — though the hoisted header operations and path rewrites apply to it as usual. Under a `Retry` the handler may run once per attempt (idempotent methods only, as `Retry` enforces), and it is invoked concurrently, so it must be safe for concurrent use. Because a handler is opaque code, the JSON export carries only a `HandlerRoute` marker for it, the DOT graph renders the route as an edge-less route node, and Docker labels cannot reference or construct one — handlers exist solely in your compiled configuration.
 
+A `Fallback` handler answers the requests no route matched at all:
+
+```go
+statute.Config{
+    Docker: statute.Docker().TraefikLabels(),
+    Fallback: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        http.Error(w, "not found", http.StatusNotFound)
+    }),
+}
+```
+
+It is the router's terminal stage, so the precedence chain is static routes (declaration order) → the current Docker generation → that generation's tombstones → the fallback. A hostless `Match("/*")` route cannot express that precedence. Static routes are consulted before Docker's dynamic routes. Declaring one anyway makes the fallback and every Docker-discovered route permanently unreachable, which `-lint` reports as `FB001`. Nil leaves the terminal 404 in place; a non-nil interface wrapping a nil handler is a startup error.
+
+The fallback is not a route: it has no matcher, and it carries no route middleware, which is route-scoped. Listener wrapping still covers it. Access log, metrics, tracing, and the `TrustedProxy` policy wrap the whole router, so a fallback response is logged and counted like any other. Everything wrapping the router answers ahead of it: a pending ACME HTTP-01 challenge response always does, and an automatic (autocert) source absorbs the whole `/.well-known/acme-challenge/` namespace, answering unknown tokens with its own 404. A pinned `HTTP01()` source only answers its pending tokens, so unknown paths under that prefix pass through to the content router and are routed normally: a static route or a Docker-discovered one may still match them, and they reach the fallback only if those tables and the tombstones miss too. The whole prefix passes through the same way when no ACME source is configured. A redirect-only listener never reaches the router at all. Like a handler route it is opaque code, so the JSON export carries only a `HasFallback` marker, the DOT graph renders it as one node reached from the content listeners, and Docker labels cannot name one.
+
+A Docker registration whose routes were dropped does not reach the fallback. A Traefik router and a container's native `statute.*` labels are both registrations. An unreadable rule, a reference to a middleware chain that was never registered, a pool that cannot be built, a container with no reachable address: each discards a routing decision the labels declared, and that traffic used to end in the terminal 404. With a fallback configured that traffic would fall through into operator code that does not know the router asked for a policy statute could not supply. Typically that is a catch-all proxy to the very same container, serving unauthenticated the resource the dropped auth middleware was protecting. The generation keeps a **tombstone** for it: a matcher with no upstream and no middleware that answers the same 404, consulted after the discovered routes and before the fallback. A deployment with no fallback configured sees no change at all.
+
+The tombstone covers everything the dropped router could have matched, never less. Constraints statute cannot represent are dropped, which only widens the refusal: ``Host(`admin.example.com`) && ClientIP(`10.0.0.0/8`)`` refuses all of `admin.example.com`, and ``PathPrefix(`/private`) && ClientIP(…)`` refuses every path Traefik `PathPrefix` would match, including `/private-secret`. A matcher statute cannot read at all is dropped the same way, since a rule matches every one of its conjuncts: ``Host(`a.example.com`) && Path()`` still refuses only `a.example.com`. A disjunction is a union of its branches: ``Host(`a.example.com`) || ClientIP(…)`` cannot be narrowed at all. A rule with nothing left bounding it (a bare `ClientIP`, a `HostRegexp`, a lone `Path()`, a typo) leaves the global tombstone, which refuses every unmatched request in that generation and disables the fallback until the labels are fixed. Every one of these is logged with the envelope now refusing, alongside whatever the stage that dropped the routes knew: the container and router for a label-stage drop, the service for a pool-stage one. A 404 traces back to the labels that caused it, and the generation's standing refusal is announced again whenever it changes. A router with no rule matches nothing in Traefik either, so it leaves no tombstone, and neither does a container that opted out with `traefik.enable=false`, nor one `ExposedByDefault()` registered that carries no `statute.*` label of its own. An `enable` value that is neither true nor false is not an opt-out: it cannot be read, so the routes are dropped and the envelope stands.
+
 Middleware:
 
 - **`Timeout(dur)`** — wraps the handler in `http.TimeoutHandler`. Returns 503 when exceeded.
@@ -455,22 +474,23 @@ The table is the index. The paragraph beside each feature above stays the explan
 
 <!-- lint-rules:start -->
 
-| Code      | Severity | Config path                                      | Fires when                                                                                                                |
-| --------- | -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `AUTH001` | error    | `routes[i].middleware[j]`                        | A route uses `BasicAuth` and no HTTPS listener serves content, so credentials would travel in clear-text.                 |
-| `HC001`   | warning  | `upstreams[name]`                                | A pool has neither active nor passive health checks, so dead backends keep receiving traffic.                             |
-| `LB001`   | warning  | `upstreams[name]`                                | A pool has exactly one primary (non-backup) backend, so it has no failover and no load distribution.                      |
-| `OBS001`  | warning  | `observability.metrics`                          | The metrics endpoint is disabled, leaving no Prometheus visibility.                                                       |
-| `OBS002`  | warning  | `observability.access_log`                       | The access log is disabled, leaving no per-request audit trail.                                                           |
-| `RHT001`  | error    | `defaults.read_header_timeout`                   | `ReadHeaderTimeout` resolves to zero, which is the Slowloris exposure.                                                    |
-| `RL001`   | warning  | `routes[i].middleware[j]`                        | A `RateLimit` resolves below 1 request per second, low enough to block legitimate clients.                                |
-| `SHUT001` | warning  | `shutdown.grace_period`                          | `Shutdown.GracePeriod` is under 5s, so deploys may cut off in-flight requests.                                            |
-| `TLS001`  | error    | `listeners[i].auto_tls[j].storage`               | AutoTLS storage is under `/tmp`: wiped on reboot, then re-issued until the account hits the rate limit.                   |
-| `TLS002`  | warning  | `upstreams[name].transport.insecure_skip_verify` | Backend certificate verification is off, so anyone on the path to the pool can impersonate it.                            |
-| `TLS003`  | warning  | `listeners[i].auto_tls[j]`                       | One domain is issued by more than one ACME manager, each spending the duplicate-certificate limit on its own renewals.    |
-| `TLS004`  | warning  | `listeners[i].tls_policy`                        | A TLS 1.2 cap with RSA-only suites governs a listener with an automatic ACME source, whose leaves are ECDSA.              |
-| `TLS005`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is Let's Encrypt staging, which issues certificates no public trust store accepts.                     |
-| `TLS006`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is some other non-Let's-Encrypt endpoint, named in the message so a private CA surfaces before deploy. |
+| Code      | Severity | Config path                                      | Fires when                                                                                                                       |
+| --------- | -------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH001` | error    | `routes[i].middleware[j]`                        | A route uses `BasicAuth` and no HTTPS listener serves content: credentials travel in clear-text.                                 |
+| `FB001`   | warning  | `routes[i]`                                      | A hostless catch-all route (`/*`, no host, no `ClientIPs`) is declared alongside Docker discovery or a fallback, shadowing both. |
+| `HC001`   | warning  | `upstreams[name]`                                | A pool has neither active nor passive health checks, so dead backends keep receiving traffic.                                    |
+| `LB001`   | warning  | `upstreams[name]`                                | A pool has exactly one primary (non-backup) backend, so it has no failover and no load distribution.                             |
+| `OBS001`  | warning  | `observability.metrics`                          | The metrics endpoint is disabled, leaving no Prometheus visibility.                                                              |
+| `OBS002`  | warning  | `observability.access_log`                       | The access log is disabled, leaving no per-request audit trail.                                                                  |
+| `RHT001`  | error    | `defaults.read_header_timeout`                   | `ReadHeaderTimeout` resolves to zero, which is the Slowloris exposure.                                                           |
+| `RL001`   | warning  | `routes[i].middleware[j]`                        | A `RateLimit` resolves below 1 request per second, low enough to block legitimate clients.                                       |
+| `SHUT001` | warning  | `shutdown.grace_period`                          | `Shutdown.GracePeriod` is under 5s, so deploys may cut off in-flight requests.                                                   |
+| `TLS001`  | error    | `listeners[i].auto_tls[j].storage`               | AutoTLS storage is under `/tmp`: wiped on reboot, then re-issued until the account hits the rate limit.                          |
+| `TLS002`  | warning  | `upstreams[name].transport.insecure_skip_verify` | Backend certificate verification is off, so anyone on the path to the pool can impersonate it.                                   |
+| `TLS003`  | warning  | `listeners[i].auto_tls[j]`                       | One domain is issued by more than one ACME manager, each spending the duplicate-certificate limit on its own renewals.           |
+| `TLS004`  | warning  | `listeners[i].tls_policy`                        | A TLS 1.2 cap with RSA-only suites governs a listener with an automatic ACME source, whose leaves are ECDSA.                     |
+| `TLS005`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is Let's Encrypt staging, which issues certificates no public trust store accepts.                            |
+| `TLS006`  | warning  | `listeners[i].auto_tls[j].directory`             | The ACME directory is some other non-Let's-Encrypt endpoint, named in the message so a private CA surfaces before deploy.        |
 
 <!-- lint-rules:end -->
 

@@ -46,6 +46,18 @@ Static routes compile in declaration order and are consulted before Docker's
 current dynamic generation. Dynamic discovery must not shadow compiled static
 configuration.
 
+A configured `Fallback` handler is the router's terminal stage, reached only
+after both tables and the current generation's Docker tombstones miss; unset, the
+terminal behavior stays `http.NotFound`. It is not a route: it has no matcher and
+no route middleware. It lives inside the content router, so everything wrapping the router keeps its precedence over it:
+pending HTTP-01 challenge responses on a plain HTTP listener, Alt-Svc, and
+listener observability all sit outside it, and a redirect-only listener never
+reaches it. What each ACME source claims differs: an automatic source absorbs
+the whole challenge namespace, while a pinned HTTP-01 source answers only its
+pending tokens and passes other paths through to the router, where they are
+routed normally: a static or Docker route may match one, and the fallback is
+reached only when both tables and the tombstones miss.
+
 A compiled route combines:
 
 - the resolved matcher/action,
@@ -90,6 +102,64 @@ while sharing the service's pool.
 A referenced code-owned middleware name that is unavailable fails closed for the
 affected router's routes. Sibling routers/services continue. Do not degrade a
 requested auth/security policy into an unprotected route.
+
+A discarded registration leaves a **tombstone**: a matcher carrying no upstream,
+no middleware, and one fixed 404 refusal. Dispatch is static routes, then valid
+Docker routes, then tombstones, then `Config.Fallback`. Tombstones exist because
+a dropped registration used to end in the terminal 404; with a fallback
+configured it would instead fall through into operator code that does not know
+the registration asked for a policy statute could not supply. A registration is
+a Traefik router or a container's native `statute.*` labels: both declare routes,
+and discarding either has the same consequence.
+
+The obligation is an envelope: for every rejected registration R and its
+tombstone set T, every request Traefik would have matched must be matched by
+some element of T. Refusing more than R claimed is allowed; refusing less is
+not. Traefik and native statute labels compile to one matcher IR
+(`HostKind` / `PathKind`); one dispatcher compares it. Traefik `PathPrefix`
+is a byte prefix (`strings.HasPrefix`): `PathPrefix(`/admin`)` matches
+`/admin-secret`, and both a serving Docker route and its tombstone use that
+matcher. Statute `Match("/admin/*")` stays segment-aware. Traefik `Host()`
+keeps the configured spelling and folds one trailing FQDN dot on the rule or
+the request, so ``Host(`example.com.`)`` matches `example.com..`. Static
+routes and native `statute.*` label routes keep statute's exact host
+spelling. `Host("*")` / `Host("*.example.com")` and `Path()`/`PathPrefix()`
+arguments with `%`, placeholders, or regexp syntax are rejected and
+tombstoned: accepting them as literals would under-match and reach
+`Config.Fallback`.
+Derivation therefore widens: an unrepresentable conjunct is dropped, a disjunction
+is a branch-aware union so one unreadable branch widens the whole rule, a negation
+node becomes unconstrained in place, and a rule that cannot be bounded at all
+becomes the global any-host `/*` tombstone. There is no unbounded drop that
+refuses nothing.
+
+This needs a second, tolerant reading of the rule beside `ParseRule`: the strict
+lexer and parser abandon the sibling constraints that were the only thing
+bounding the rule. The separate test-only `traefikoracle` module drives
+Traefik's own parser and HTTP muxer across accepted and rejected boundary cases.
+Inside statute, the two readers are held together by a differential fuzz
+property: over every rule `ParseRule` accepts, the envelope must contain every
+request its matchers match.
+
+A router with no rule declares no match condition, so its request set is empty
+and it leaves no tombstone; neither does a container that opted out explicitly,
+nor one registered only by `ExposedByDefault` and carrying no `statute.*` label
+of its own, whose any-host `/*` route is statute's inference. An `enable` label
+that cannot be parsed is not an opt-out: the intent could not be read, the
+routes vanish exactly as a rejection discards them, and the registration leaves
+the envelope its other labels declared. A container that opted in with
+`statute.enable` and named neither host nor path does leave one: it compiles to
+that same any-host `/*` route, so it terminates every request it is given, and
+dropping it in silence would be the widest under-refusal the tier can have.
+TCP/UDP routers are out of the tier's domain: it expresses HTTP refusals only.
+
+Tombstones belong to the generation that derived them and are replaced with it
+atomically, so a router that becomes valid loses its tombstone in the same swap.
+Absorption runs across the whole generation, so a global envelope leaves exactly
+one tombstone: an operational event the provider logs, disabling the fallback
+for every request in that generation. That announcement is keyed to the previous
+generation's refusal: a rule that is repaired and later regresses must not
+disable the fallback in silence.
 
 Dynamic generations are replaced atomically. A generation owns the dynamic pool
 handlers it constructed; retiring a generation must not let a later generation

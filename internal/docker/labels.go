@@ -63,24 +63,62 @@ type ExtractOptions struct {
 	TraefikLabels bool
 }
 
-// Extract derives the services a single container registers. A container
-// with no relevant labels (and ExposedByDefault off) yields no services.
-// Warnings describe labels that were understood but could not be applied;
-// they are stable strings suitable for deduplicated logging.
-func Extract(c Container, opts ExtractOptions) ([]Service, []string) {
+// Extract derives the services one container registers. No relevant labels
+// (and ExposedByDefault off) yields no services.
+//
+// The second result is the refusal envelope: matchers covering traffic of
+// every registration whose routes were declared and then discarded. A
+// discarded router used to end in the terminal 404; those requests now
+// reach Config.Fallback unless the envelope stops them. A container that
+// declared no routing at all contributes none.
+//
+// Warnings describe labels that were understood but could not be applied.
+// They are stable strings suitable for deduplicated logging.
+func Extract(c Container, opts ExtractOptions) ([]Service, []Matcher, []string) {
 	var svcs []Service
+	var tombs []Matcher
 	var warns []string
 
-	native, nw := extractNative(c, opts)
+	native, nt, nw := extractNative(c, opts)
 	svcs = append(svcs, native...)
+	tombs = append(tombs, nt...)
 	warns = append(warns, nw...)
 
 	if opts.TraefikLabels {
-		tfk, tw := extractTraefik(c, opts)
+		tfk, tt, tw := extractTraefik(c, opts)
 		svcs = append(svcs, tfk...)
+		tombs = append(tombs, tt...)
 		warns = append(warns, tw...)
 	}
-	return svcs, warns
+	return svcs, tombs, warns
+}
+
+// describeEnvelope renders a refusal envelope for a log line, so an
+// operator can trace a 404 back to the label that caused it.
+func describeEnvelope(env []Matcher) string {
+	parts := make([]string, 0, len(env))
+	for _, m := range env {
+		host := m.Host
+		if host == "" {
+			host = "any-host"
+		}
+		p := m.Path
+		if m.PathKind == PathByte {
+			p += "*"
+		}
+		parts = append(parts, host+p)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// RefusalWarning announces that dropped routes now refuse. A global
+// envelope is called out by name: it disables the operator's fallback for
+// every request in the generation, which is an operational event.
+func RefusalWarning(subject string, env []Matcher) string {
+	if len(env) == 1 && env[0].HostKind == HostAny && env[0].PathKind == PathAny {
+		return fmt.Sprintf("%s: routes dropped and could not be bounded to a host or path, so every unmatched request is now refused with 404 and Fallback is not consulted", subject)
+	}
+	return fmt.Sprintf("%s: routes dropped, refusing %s (fail-closed; these requests do not reach the fallback)", subject, describeEnvelope(env))
 }
 
 // hasPrefixedLabels reports whether any label carries the given prefix.
@@ -93,26 +131,51 @@ func hasPrefixedLabels(labels map[string]string, prefix string) bool {
 	return false
 }
 
-// boolLabel parses a boolean label the way Traefik does (strconv.ParseBool:
-// 1/t/true/True/TRUE and friends). present is false when the label is
-// absent; an unparseable value counts as present-and-false with a warning.
-func boolLabel(c Container, labels map[string]string, key string) (value, present bool, warn string) {
+// parseBoolLabel parses a boolean label the way Traefik does
+// (strconv.ParseBool: 1/t/true/True/TRUE and friends). present is false
+// when the label is absent; an unparseable value reads as
+// present-and-false with a non-empty warn, and that warn is the only thing
+// separating it from a value that really says false.
+//
+// consequence completes the warning: what an unreadable value costs is
+// not the same at every call site. An optional flag carries on with the
+// flag off; an unreadable enable rejects the whole registration and
+// refuses its declared routes. Callers go through optionBoolLabel or
+// enableBoolLabel, so each consequence has one wording.
+func parseBoolLabel(c Container, labels map[string]string, key, consequence string) (value, present bool, warn string) {
 	v, ok := labels[key]
 	if !ok {
 		return false, false, ""
 	}
 	b, err := strconv.ParseBool(strings.TrimSpace(v))
 	if err != nil {
-		return false, true, fmt.Sprintf("container %s: invalid boolean %q for label %s, treating as false", c.Name, v, key)
+		return false, true, fmt.Sprintf("container %s: invalid boolean %q for label %s, %s", c.Name, v, key, consequence)
 	}
 	return b, true, ""
+}
+
+// optionBoolLabel reads an optional boolean that only tunes a registration
+// statute still builds, so an unreadable value costs the option and nothing
+// else.
+func optionBoolLabel(c Container, labels map[string]string, key string) (value bool, warn string) {
+	v, _, warn := parseBoolLabel(c, labels, key, "treating as false")
+	return v, warn
+}
+
+// enableBoolLabel reads an enable label. An unreadable value here is not an
+// opt-out: the intent could not be read, so the registration is rejected
+// and the routes it declared are refused. The refusal line that follows
+// names the traffic; this one must not promise the registration continues
+// with the label off.
+func enableBoolLabel(c Container, key string) (value, present bool, warn string) {
+	return parseBoolLabel(c, c.Labels, key, "which is not an opt-out: the registration is rejected and its declared routes are refused")
 }
 
 // nativeEnabled decides whether the statute.* schema applies: an explicit
 // statute.enable wins; otherwise ExposedByDefault or the presence of any
 // statute.* label opts the container in.
 func nativeEnabled(c Container, opts ExtractOptions) (bool, string) {
-	b, present, warn := boolLabel(c, c.Labels, "statute.enable")
+	b, present, warn := enableBoolLabel(c, "statute.enable")
 	if present {
 		return b, warn
 	}
@@ -123,7 +186,7 @@ func nativeEnabled(c Container, opts ExtractOptions) (bool, string) {
 // off, only an explicit traefik.enable=true exposes the container — router
 // labels alone do not.
 func traefikEnabled(c Container, opts ExtractOptions) (bool, string) {
-	b, present, warn := boolLabel(c, c.Labels, "traefik.enable")
+	b, present, warn := enableBoolLabel(c, "traefik.enable")
 	if present {
 		return b, warn
 	}
@@ -226,27 +289,26 @@ func backendAddress(c Container, scheme, ip string, port int) (string, string) {
 //	statute.strategy=round_robin|least_connections|ip_hash|weighted
 //	statute.healthcheck.path/.interval/.timeout
 //	statute.timeout=30s  statute.ratelimit=100/min  statute.compress=gzip,br
-func extractNative(c Container, opts ExtractOptions) ([]Service, []string) {
+func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []string) {
 	labels := c.Labels
 	on, enableWarn := nativeEnabled(c, opts)
 	if !on {
-		if enableWarn != "" {
-			return nil, []string{enableWarn}
+		// An unreadable enable is not an opt-out: enableBoolLabel warns
+		// only when ParseBool failed, and the envelope covers the routes.
+		if enableWarn == "" {
+			return nil, nil, nil
 		}
-		return nil, nil
+		tombs, warns := refuseNative(c, labels, []string{enableWarn})
+		return nil, tombs, warns
 	}
-	if !hasPrefixedLabels(labels, statutePrefix) && !opts.ExposedByDefault {
-		return nil, nil
-	}
-	// When traefik compat is on and the container has traefik labels but no
-	// statute ones, let the traefik extractor handle it exclusively.
-	if !hasPrefixedLabels(labels, statutePrefix) && opts.TraefikLabels && hasPrefixedLabels(labels, traefikPrefix) {
-		return nil, nil
+	if !nativeApplies(labels, opts) {
+		return nil, nil, nil
 	}
 
 	backend, warns := nativeBackend(c, labels, opts)
 	if backend == nil {
-		return nil, warns
+		tombs, refused := refuseNative(c, labels, warns)
+		return nil, tombs, refused
 	}
 
 	routes, rw := nativeRoutes(c, labels)
@@ -267,7 +329,51 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []string) {
 	if s := labels["statute.service"]; s != "" {
 		svc.Name = s
 	}
-	return []Service{svc}, warns
+	return []Service{svc}, nil, warns
+}
+
+// refuseNative drops a container's native registration, returning its
+// refusal envelope and the warnings that explain it.
+func refuseNative(c Container, labels map[string]string, warns []string) ([]Matcher, []string) {
+	tombs := nativeTombstones(c, labels)
+	if len(tombs) > 0 {
+		warns = append(warns, RefusalWarning("container "+c.Name, tombs))
+	}
+	return tombs, warns
+}
+
+// nativeTombstones is the refusal envelope for a container whose statute
+// labels declared routes that cannot be served.
+//
+// The one exclusion is a container carrying no statute.* label at all:
+// ExposedByDefault registered it, so its any-host "/*" matcher is
+// statute's own inference, and refusing on it would disable the fallback
+// for every request in the generation.
+// The test is the label prefix, because a container that opted in with
+// statute.enable and named neither still compiles to that same catch-all:
+// it terminates every request it is given, and dropping it silently hands
+// all of that traffic to Config.Fallback. That is the widest under-refusal
+// the tier can have, and the envelope for it is the matcher the route had.
+func nativeTombstones(c Container, labels map[string]string) []Matcher {
+	if !hasPrefixedLabels(labels, statutePrefix) {
+		return nil
+	}
+	routes, _ := nativeRoutes(c, labels)
+	return EnvelopeOf(routes)
+}
+
+// nativeApplies reports whether the statute.* schema reads this container.
+// Without statute labels only ExposedByDefault registers it, and never when
+// traefik compat is on and traefik labels are present: that extractor
+// handles those containers exclusively.
+func nativeApplies(labels map[string]string, opts ExtractOptions) bool {
+	if hasPrefixedLabels(labels, statutePrefix) {
+		return true
+	}
+	if !opts.ExposedByDefault {
+		return false
+	}
+	return !opts.TraefikLabels || !hasPrefixedLabels(labels, traefikPrefix)
 }
 
 // nativeBackend resolves the container's address, weight, and backup flag
@@ -294,7 +400,7 @@ func nativeBackend(c Container, labels map[string]string, opts ExtractOptions) (
 	if weightWarn != "" {
 		warns = append(warns, weightWarn)
 	}
-	backup, _, backupWarn := boolLabel(c, labels, "statute.backup")
+	backup, backupWarn := optionBoolLabel(c, labels, "statute.backup")
 	if backupWarn != "" {
 		warns = append(warns, backupWarn)
 	}
@@ -339,11 +445,16 @@ func nativeRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 	var routes []Matcher
 	for h := range strings.SplitSeq(labels["statute.host"], ",") {
 		if h = strings.TrimSpace(h); h != "" {
-			routes = append(routes, Matcher{Host: strings.ToLower(h), Path: path})
+			routes = append(routes, Matcher{
+				Host:     strings.ToLower(h),
+				HostKind: HostExact,
+				Path:     path,
+				PathKind: statutePathKind(path),
+			})
 		}
 	}
 	if len(routes) == 0 {
-		routes = append(routes, Matcher{Path: path})
+		routes = append(routes, Matcher{Path: path, PathKind: statutePathKind(path)})
 	}
 
 	named, warns := namedRoutes(c, labels)
@@ -367,14 +478,20 @@ func namedRoutes(c Container, labels map[string]string) ([]Matcher, []string) {
 		}
 		m := extra[name]
 		if m == nil {
-			m = &Matcher{Path: "/*"}
+			m = &Matcher{Path: "/*", PathKind: PathAny}
 			extra[name] = m
 		}
 		switch field {
 		case "host":
 			m.Host = strings.ToLower(strings.TrimSpace(v))
+			if m.Host == "" {
+				m.HostKind = HostAny
+			} else {
+				m.HostKind = HostExact
+			}
 		case "path":
 			m.Path = v
+			m.PathKind = statutePathKind(v)
 		default:
 			warns = append(warns, fmt.Sprintf("container %s: unknown route field in label %q", c.Name, k))
 		}
@@ -409,27 +526,29 @@ type traefikService struct {
 // loadbalancer server port/scheme, and loadbalancer health checks.
 // Recognized-but-unsupported labels produce warnings; unknown traefik
 // labels are ignored the way Traefik ignores other providers' labels.
-func extractTraefik(c Container, opts ExtractOptions) ([]Service, []string) {
+func extractTraefik(c Container, opts ExtractOptions) ([]Service, []Matcher, []string) {
 	labels := c.Labels
 	if !hasPrefixedLabels(labels, traefikPrefix) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	on, enableWarn := traefikEnabled(c, opts)
 	if !on {
-		if enableWarn != "" {
-			return nil, []string{enableWarn}
+		// Not selected is not rejected, so an explicit opt-out leaves no
+		// envelope; an unreadable value is a rejection. See extractNative.
+		if enableWarn == "" {
+			return nil, nil, nil
 		}
-		return nil, nil
+		tombs, tw := traefikTombstones(c)
+		return nil, tombs, append([]string{enableWarn}, tw...)
 	}
 
 	routers, services, warns := collectTraefikLabels(c)
 
+	// An unusable container IP does not skip the router walk: the rules are
+	// still parseable, and their envelopes must stay that narrow.
 	ip, warn := containerIP(c, labels["traefik.docker.network"], opts)
 	if warn != "" {
 		warns = append(warns, warn)
-	}
-	if ip == "" {
-		return nil, warns
 	}
 
 	// Deterministic ordering for service defaulting and output.
@@ -437,10 +556,12 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []string) {
 	serviceNames := sortedKeys(services)
 
 	out := map[string]*Service{}
+	var tombs []Matcher
 	for _, rn := range routerNames {
 		r := routers[rn]
-		svc, w := bindTraefikRouter(c, r, services, serviceNames, ip, opts)
+		svc, env, w := bindTraefikRouter(c, r, services, serviceNames, ip)
 		warns = append(warns, w...)
+		tombs = append(tombs, env...)
 		if svc == nil {
 			continue
 		}
@@ -454,7 +575,29 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []string) {
 	for _, n := range sortedKeys(out) {
 		list = append(list, *out[n])
 	}
-	return list, warns
+	return list, tombs, warns
+}
+
+// traefikTombstones is the refusal envelope for a container whose
+// traefik.enable value could not be read. Nothing here may serve: the
+// routers are never bound to a service. Every rule still names traffic
+// that reaches Config.Fallback unless refused, so each router leaves the
+// envelope of its own rule. RuleEnvelope reads it even where ParseRule
+// would have succeeded: no matcher was ever built, and the envelope is a
+// superset of the rule's request set by construction.
+func traefikTombstones(c Container) ([]Matcher, []string) {
+	routers, _, _ := collectTraefikLabels(c)
+	var tombs []Matcher
+	var warns []string
+	for _, rn := range sortedKeys(routers) {
+		env := RuleEnvelope(routers[rn].rule)
+		if len(env) == 0 {
+			continue
+		}
+		tombs = append(tombs, env...)
+		warns = append(warns, RefusalWarning(fmt.Sprintf("container %s: router %q", c.Name, rn), env))
+	}
+	return tombs, warns
 }
 
 // collectTraefikLabels scans the label map into router and service
@@ -554,17 +697,26 @@ func traefikServiceName(c Container, r *traefikRouter, serviceNames []string) (s
 }
 
 // bindTraefikRouter resolves one router into a Service carrying its
-// matchers and this container's backend.
-func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string, _ ExtractOptions) (*Service, []string) {
+// matchers and this container's backend. When the router cannot be bound it
+// returns the refusal envelope covering the traffic its rule claimed.
+func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string) (*Service, []Matcher, []string) {
 	var warns []string
-	if r.rule == "" {
+	refuse := func(env []Matcher) (*Service, []Matcher, []string) {
+		return nil, env, append(warns, RefusalWarning(fmt.Sprintf("container %s: router %q", c.Name, r.name), env))
+	}
+	// A router with no rule declares no match condition. Trim here:
+	// Traefik's check is on the raw value.
+	if strings.TrimSpace(r.rule) == "" {
 		warns = append(warns, fmt.Sprintf("container %s: router %q has no rule, skipping", c.Name, r.name))
-		return nil, warns
+		return nil, nil, warns
 	}
 	matchers, err := ParseRule(r.rule)
 	if err != nil {
-		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, skipping", c.Name, r.name, err))
-		return nil, warns
+		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, dropping its routes", c.Name, r.name, err))
+		return refuse(RuleEnvelope(r.rule))
+	}
+	if ip == "" {
+		return refuse(EnvelopeOf(matchers))
 	}
 	stampMiddlewares(matchers, r.middlewares)
 
@@ -573,26 +725,17 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		warns = append(warns, warn)
 	}
 	if svcName == "" {
-		return nil, warns
+		return refuse(EnvelopeOf(matchers))
 	}
 	ts := services[svcName]
 	if ts == nil {
 		ts = &traefikService{}
 	}
 
-	port, warn := containerPort(c, ts.port)
-	if warn != "" {
-		warns = append(warns, warn)
-	}
-	if port == 0 {
-		return nil, warns
-	}
-	addr, schemeWarn := backendAddress(c, ts.scheme, ip, port)
-	if schemeWarn != "" {
-		warns = append(warns, schemeWarn)
-	}
+	addr, bw := traefikBackend(c, ts, ip)
+	warns = append(warns, bw...)
 	if addr == "" {
-		return nil, warns
+		return refuse(EnvelopeOf(matchers))
 	}
 
 	// Namespace traefik-defined pools so they cannot collide with pools
@@ -606,7 +749,25 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		HealthCheckInterval: ts.hcInterval,
 		HealthCheckTimeout:  ts.hcTimeout,
 	}
-	return svc, warns
+	return svc, nil, warns
+}
+
+// traefikBackend resolves the service's backend address for this container.
+// An empty address means the service cannot be built; the warnings say why.
+func traefikBackend(c Container, ts *traefikService, ip string) (string, []string) {
+	var warns []string
+	port, warn := containerPort(c, ts.port)
+	if warn != "" {
+		warns = append(warns, warn)
+	}
+	if port == 0 {
+		return "", warns
+	}
+	addr, schemeWarn := backendAddress(c, ts.scheme, ip, port)
+	if schemeWarn != "" {
+		warns = append(warns, schemeWarn)
+	}
+	return addr, warns
 }
 
 // stampMiddlewares copies a router's middleware references onto each

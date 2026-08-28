@@ -6,15 +6,13 @@ import (
 	"strings"
 )
 
-// Matcher is one flattened route matcher produced from a Traefik router
-// rule: an optional host plus a statute path pattern. A rule expands to
-// one or more matchers (disjunctions become separate matchers).
+// Matcher is one compiled route matcher: a host kind plus a path kind.
+// After compile the kinds are the comparison the dispatcher runs.
 type Matcher struct {
-	Host string
-	// Path is a statute pattern: exact ("/login") or trailing-wildcard
-	// prefix ("/api/*"). Defaults to "/*" when the rule constrains only
-	// the host.
-	Path string
+	Host     string
+	HostKind HostKind
+	Path     string
+	PathKind PathKind
 	// Middlewares are names of code-registered middleware chains the
 	// originating router referenced, in label order. They are
 	// router-scoped, as in Traefik: matchers derived from different
@@ -27,12 +25,14 @@ type Matcher struct {
 // Equal reports whether two matchers match the same traffic and carry the
 // same middleware references.
 func (m Matcher) Equal(o Matcher) bool {
-	return m.Host == o.Host && m.Path == o.Path && slices.Equal(m.Middlewares, o.Middlewares)
+	return m.Host == o.Host && m.HostKind == o.HostKind && m.Path == o.Path && m.PathKind == o.PathKind && slices.Equal(m.Middlewares, o.Middlewares)
 }
 
 // maxRuleMatchers caps the disjunctive expansion of a single rule so a
 // pathological label cannot balloon the route table.
 const maxRuleMatchers = 64
+
+const pathPrefixMatcher = "PathPrefix"
 
 // ParseRule parses a Traefik v2/v3 router rule into statute matchers.
 //
@@ -67,10 +67,19 @@ func conjsToMatchers(conjs []conj) ([]Matcher, error) {
 	var out []Matcher
 	for _, c := range conjs {
 		path := "/*"
+		pathKind := PathAny
 		if c.pathSet {
-			path = c.path
 			if c.prefix {
-				path = strings.TrimSuffix(path, "/") + "/*"
+				if c.path == "/" {
+					path = "/*"
+					pathKind = PathAny
+				} else {
+					path = c.path
+					pathKind = PathByte
+				}
+			} else {
+				path = c.path
+				pathKind = PathExact
 			}
 		}
 		hosts := c.hosts
@@ -78,9 +87,13 @@ func conjsToMatchers(conjs []conj) ([]Matcher, error) {
 			hosts = []string{""}
 		}
 		for _, h := range hosts {
-			// HTTP hosts are case-insensitive; store the canonical
-			// lowercase form so matching and dedupe are consistent.
-			out = append(out, Matcher{Host: strings.ToLower(h), Path: path})
+			h = strings.ToLower(h)
+			m := Matcher{Path: path, PathKind: pathKind}
+			if h != "" {
+				m.Host = h
+				m.HostKind = HostTraefik
+			}
+			out = append(out, m)
 			if len(out) > maxRuleMatchers {
 				return nil, fmt.Errorf("rule expands to more than %d matchers", maxRuleMatchers)
 			}
@@ -201,6 +214,24 @@ func isRuleIdentChar(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
+// rulePathArg rejects a Path/PathPrefix argument the dispatcher cannot
+// compare as a literal. Placeholders and regexp syntax are a hole in
+// Traefik compatibility: accepting them as byte-for-byte patterns would
+// under-match and leak into Config.Fallback.
+func rulePathArg(name, a string) error {
+	if !literalArg(a) || !strings.HasPrefix(a, "/") || pathHasPercent(a) {
+		return fmt.Errorf("rule: %s() argument %q is not a literal path", name, a)
+	}
+	return nil
+}
+
+func ruleHostArg(a string) error {
+	if a == "" || traefikHostForbidden(a) || !isASCII(a) {
+		return fmt.Errorf("rule: Host() argument %q is not a literal host", a)
+	}
+	return nil
+}
+
 // ruleExpr is a node in the parsed rule tree.
 type ruleExpr interface {
 	// expand returns the disjunctive normal form of the expression: a
@@ -302,26 +333,30 @@ func (e fnExpr) expand() ([]conj, error) {
 	}
 	switch e.name {
 	case "Host":
-		return []conj{{hosts: e.args}}, nil
-	case "Path":
-		if len(e.args) > 1 {
-			// Multi-arg Path is a disjunction (Traefik v2).
-			var out []conj
-			for _, a := range e.args {
-				out = append(out, conj{path: a, pathSet: true})
-			}
-			return out, nil
-		}
-		return []conj{{path: e.args[0], pathSet: true}}, nil
-	case "PathPrefix":
-		var out []conj
 		for _, a := range e.args {
-			out = append(out, conj{path: a, prefix: true, pathSet: true})
+			if err := ruleHostArg(a); err != nil {
+				return nil, err
+			}
 		}
-		return out, nil
+		return []conj{{hosts: e.args}}, nil
+	case "Path", pathPrefixMatcher:
+		return expandPathMatcher(e.name, e.args, e.name == pathPrefixMatcher)
 	default:
 		return nil, fmt.Errorf("rule: matcher %s() is not supported (supported: Host, Path, PathPrefix)", e.name)
 	}
+}
+
+// expandPathMatcher validates and expands Path/PathPrefix arguments. Both
+// multi-argument forms are disjunctions in Traefik v2 compatibility mode.
+func expandPathMatcher(name string, args []string, prefix bool) ([]conj, error) {
+	out := make([]conj, 0, len(args))
+	for _, a := range args {
+		if err := rulePathArg(name, a); err != nil {
+			return nil, err
+		}
+		out = append(out, conj{path: a, prefix: prefix, pathSet: true})
+	}
+	return out, nil
 }
 
 // ruleParser is a recursive-descent parser over the token stream.
@@ -420,8 +455,20 @@ func (p *ruleParser) parseArgs(fn string) ([]string, error) {
 		case tokString:
 			args = append(args, at.val)
 			p.pos++
-			if ct, ok := p.peek(); ok && ct.kind == tokComma {
+			nt, ok := p.peek()
+			if !ok {
+				return nil, fmt.Errorf("rule: unterminated %s(", fn)
+			}
+			switch nt.kind {
+			case tokComma:
 				p.pos++
+				n2, ok := p.peek()
+				if !ok || n2.kind != tokString {
+					return nil, fmt.Errorf("rule: expected argument after comma in %s(", fn)
+				}
+			case tokRParen:
+			default:
+				return nil, fmt.Errorf("rule: expected comma or ) after %s() argument", fn)
 			}
 		case tokRParen:
 			p.pos++

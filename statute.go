@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,10 +19,15 @@ import (
 
 // Config is the top-level surface configuration.
 type Config struct {
-	Listeners     Listeners
-	Upstreams     Upstreams
-	Routes        Routes
-	Docker        *DockerConfig
+	Listeners Listeners
+	Upstreams Upstreams
+	Routes    Routes
+	Docker    *DockerConfig
+
+	// Fallback answers requests no static route, Docker generation, or
+	// generation tombstone matched. Nil keeps the terminal 404.
+	Fallback http.Handler
+
 	Defaults      Defaults
 	Observability Observability
 	Shutdown      Shutdown

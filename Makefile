@@ -28,6 +28,7 @@ all: lint test cover build-examples ## Run lint, test, coverage, build examples
 
 test: ## Run all unit tests
 	$(GO) test ./...
+	$(GO) -C traefikoracle test ./...
 
 # No `-race` on 64-bit arm
 test-race: ## Run tests with the race detector, skipped where TSAN cannot start

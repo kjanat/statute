@@ -2,6 +2,7 @@ name: ci
 on: { push: { branches: [master] }, pull_request: null }
 permissions: { contents: read }
 concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
+env: { glc: "2.13.1" }
 jobs:
   test:
     name: test
@@ -13,6 +14,7 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - { name: race, run: go test -race -coverprofile=cover.out -covermode=atomic ./... }
+      - { name: Traefik oracle, run: go -C traefikoracle test ./... }
       - run: go tool cover -func=cover.out
       - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
@@ -27,11 +29,9 @@ jobs:
       # not leave a usable token in .git/config for them to reach.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
-        with:
-          tool_versions: |
-            golangci-lint 2.13.1
-      - uses: kjanat/dprint-check@eccefcd4705624893283494253344be8ac9b9b8b # v3.0.14
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with: { tool_versions: "golangci-lint ${{ env.glc }}" }
+      - uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3.0.15
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       # golangci-lint-action runs `run`, which never applies the configured
@@ -39,7 +39,7 @@ jobs:
       # mirroring what dprint-check does for the non-Go files above.
       - { name: format check, run: make fmt-check }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with: { version: v2.13.1, args: --timeout=5m }
+        with: { version: "v${{ env.glc }}", args: --timeout=5m }
   lifecycle_lint:
     name: lifecycle lint
     if: github.event_name == 'pull_request'
@@ -51,7 +51,7 @@ jobs:
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v2.13.1
+          version: v${{ env.glc }}
           args: --enable-only=statutelifecycle --new-from-merge-base=origin/${{ github.base_ref }} --whole-files --timeout=5m
   discover_fuzz:
     name: discover fuzz targets
@@ -139,6 +139,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - { name: vet e2e lane, run: go vet -tags e2e ./e2e/... }
+      - { name: test e2e helpers, run: go test -tags e2e ./e2e/cmd/... }
       - { name: smoke + regression tiers, run: make test-e2e-regression }
       # A build or daemon failure legitimately leaves no artifacts; erroring
       # on that would mask the real failure.
@@ -152,7 +153,7 @@ jobs:
         if: always()
         run: |
           leaked="$(docker ps -aq --filter label=statute.e2e=1)"
-          if [ -n "${leaked}" ]; then
+          if [[ -n "${leaked}" ]]; then
             echo "leaked containers: ${leaked}"
             printf '%s\n' "${leaked}" | xargs -r docker rm -f
             exit 1

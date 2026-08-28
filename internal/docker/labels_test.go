@@ -18,7 +18,7 @@ func webContainer(labels map[string]string) Container {
 
 func TestExtractNativeMinimal(t *testing.T) {
 	c := webContainer(map[string]string{"statute.enable": "true"})
-	svcs, warns := Extract(c, ExtractOptions{})
+	svcs, _, warns := Extract(c, ExtractOptions{})
 	if len(warns) != 0 {
 		t.Fatalf("unexpected warnings: %v", warns)
 	}
@@ -53,15 +53,15 @@ func TestExtractNativeFull(t *testing.T) {
 		"statute.ratelimit":            "100/min",
 		"statute.compress":             "gzip,br",
 	})
-	svcs, warns := Extract(c, ExtractOptions{})
+	svcs, _, warns := Extract(c, ExtractOptions{})
 	if len(warns) != 0 {
 		t.Fatalf("unexpected warnings: %v", warns)
 	}
 	want := []Service{{
 		Name: "api",
 		Routes: []Matcher{
-			{Host: "api.example.com", Path: "/v1/*"},
-			{Host: "alt.example.com", Path: "/v1/*"},
+			native("api.example.com", "/v1/*"),
+			native("alt.example.com", "/v1/*"),
 		},
 		Backend:             Backend{Address: "https://172.17.0.2:9000", Weight: 3},
 		Strategy:            "least_connections",
@@ -83,13 +83,13 @@ func TestExtractNativeNamedRoutes(t *testing.T) {
 		"statute.routes.admin.host": "admin.example.com",
 		"statute.routes.admin.path": "/admin/*",
 	})
-	svcs, _ := Extract(c, ExtractOptions{})
+	svcs, _, _ := Extract(c, ExtractOptions{})
 	if len(svcs) != 1 {
 		t.Fatalf("got %d services", len(svcs))
 	}
 	want := []Matcher{
-		{Host: "app.example.com", Path: "/*"},
-		{Host: "admin.example.com", Path: "/admin/*"},
+		native("app.example.com", "/*"),
+		native("admin.example.com", "/admin/*"),
 	}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
@@ -99,21 +99,21 @@ func TestExtractNativeNamedRoutes(t *testing.T) {
 func TestExtractOptInPolicy(t *testing.T) {
 	// No labels, opt-in default: nothing registers.
 	c := webContainer(nil)
-	if svcs, _ := Extract(c, ExtractOptions{}); len(svcs) != 0 {
+	if svcs, _, _ := Extract(c, ExtractOptions{}); len(svcs) != 0 {
 		t.Errorf("unlabeled container registered: %+v", svcs)
 	}
 	// No labels but ExposedByDefault: registers.
-	if svcs, _ := Extract(c, ExtractOptions{ExposedByDefault: true}); len(svcs) != 1 {
+	if svcs, _, _ := Extract(c, ExtractOptions{ExposedByDefault: true}); len(svcs) != 1 {
 		t.Errorf("ExposedByDefault did not register container")
 	}
 	// Explicit disable wins over ExposedByDefault.
 	c = webContainer(map[string]string{"statute.enable": "false"})
-	if svcs, _ := Extract(c, ExtractOptions{ExposedByDefault: true}); len(svcs) != 0 {
+	if svcs, _, _ := Extract(c, ExtractOptions{ExposedByDefault: true}); len(svcs) != 0 {
 		t.Errorf("statute.enable=false ignored")
 	}
 	// Carrying statute labels without an explicit enable registers.
 	c = webContainer(map[string]string{"statute.host": "a.example.com"})
-	if svcs, _ := Extract(c, ExtractOptions{}); len(svcs) != 1 {
+	if svcs, _, _ := Extract(c, ExtractOptions{}); len(svcs) != 1 {
 		t.Errorf("labeled container without enable did not register")
 	}
 }
@@ -123,7 +123,7 @@ func TestExtractComposeServiceName(t *testing.T) {
 		"statute.enable":             "true",
 		"com.docker.compose.service": "backend",
 	})
-	svcs, _ := Extract(c, ExtractOptions{})
+	svcs, _, _ := Extract(c, ExtractOptions{})
 	if len(svcs) != 1 || svcs[0].Name != "backend" {
 		t.Fatalf("compose service name not used: %+v", svcs)
 	}
@@ -134,7 +134,7 @@ func TestExtractPortSelection(t *testing.T) {
 	// rule) and warn about the ambiguity.
 	c := webContainer(map[string]string{"statute.enable": "true"})
 	c.Ports = []int{8080, 9090}
-	svcs, warns := Extract(c, ExtractOptions{})
+	svcs, _, warns := Extract(c, ExtractOptions{})
 	if len(svcs) != 1 || svcs[0].Backend.Address != "172.17.0.2:8080" {
 		t.Errorf("lowest port not picked: %+v", svcs)
 	}
@@ -143,7 +143,7 @@ func TestExtractPortSelection(t *testing.T) {
 	}
 	// No exposed port and no label: warn and skip.
 	c.Ports = nil
-	svcs, warns = Extract(c, ExtractOptions{})
+	svcs, _, warns = Extract(c, ExtractOptions{})
 	if len(svcs) != 0 || len(warns) == 0 {
 		t.Errorf("portless container: svcs=%v warns=%v", svcs, warns)
 	}
@@ -155,15 +155,15 @@ func TestExtractHostFragments(t *testing.T) {
 		"statute.enable": "true",
 		"statute.host":   "API.example.com,",
 	})
-	svcs, _ := Extract(c, ExtractOptions{})
-	want := []Matcher{{Host: "api.example.com", Path: "/*"}}
+	svcs, _, _ := Extract(c, ExtractOptions{})
+	want := []Matcher{native("api.example.com", "/*")}
 	if len(svcs) != 1 || !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
 
 	// A whitespace-only host list falls back to the host-less default.
 	c.Labels["statute.host"] = " , "
-	svcs, _ = Extract(c, ExtractOptions{})
+	svcs, _, _ = Extract(c, ExtractOptions{})
 	want = []Matcher{{Path: "/*"}}
 	if len(svcs) != 1 || !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
@@ -176,7 +176,7 @@ func TestExtractBackupAndWeight(t *testing.T) {
 		"statute.backup": "true",
 		"statute.weight": "banana",
 	})
-	svcs, warns := Extract(c, ExtractOptions{})
+	svcs, _, warns := Extract(c, ExtractOptions{})
 	if len(svcs) != 1 || !svcs[0].Backend.Backup {
 		t.Errorf("backup not set: %+v", svcs)
 	}
@@ -195,14 +195,21 @@ func TestExtractBackupAndWeight(t *testing.T) {
 }
 
 func TestExtractInvalidBackup(t *testing.T) {
-	// Invalid backup value: warn and treat as false.
+	// Invalid backup value: warn and treat as false. The registration is
+	// still built.
 	c := webContainer(map[string]string{"statute.enable": "true", "statute.backup": "yep"})
-	svcs, warns := Extract(c, ExtractOptions{})
+	svcs, tombs, warns := Extract(c, ExtractOptions{})
 	if len(svcs) != 1 || svcs[0].Backend.Backup {
 		t.Errorf("invalid backup not false: %+v", svcs)
 	}
+	if len(tombs) != 0 {
+		t.Errorf("an unreadable backup value left the refusal %v; it costs the option, not the registration", tombs)
+	}
 	if len(warns) == 0 || !strings.Contains(warns[0], "invalid boolean") {
 		t.Errorf("warns = %v", warns)
+	}
+	if len(warns) == 0 || !strings.Contains(warns[0], "treating as false") {
+		t.Errorf("backup warning does not say the label is treated as false: %v", warns)
 	}
 }
 
@@ -210,24 +217,69 @@ func TestExtractEnableParsing(t *testing.T) {
 	// ParseBool variants register, as in Traefik.
 	for _, v := range []string{"True", "1", "t"} {
 		c := webContainer(map[string]string{"statute.enable": v})
-		if svcs, _ := Extract(c, ExtractOptions{}); len(svcs) != 1 {
+		if svcs, _, _ := Extract(c, ExtractOptions{}); len(svcs) != 1 {
 			t.Errorf("statute.enable=%q did not register", v)
 		}
 	}
-	// Unparseable enable: false, with a warning.
+}
+
+// assertEnableRejectionWarning holds the enable path's warning to what
+// actually happens. The option path's "treating as false" describes a
+// registration that carries on with the label off; an enable rejection
+// discards the registration and refuses its routes, and the refusal line
+// printed right after would contradict the softer sentence.
+func assertEnableRejectionWarning(t *testing.T, warns []string) {
+	t.Helper()
+	if len(warns) == 0 {
+		t.Fatal("no warning for an unreadable enable label")
+	}
+	w := warns[0]
+	if !strings.Contains(w, "invalid boolean") {
+		t.Errorf("warns = %v", warns)
+	}
+	if strings.Contains(w, "treating as false") {
+		t.Errorf("enable warning claims the label was merely treated as false: %q", w)
+	}
+	if !strings.Contains(w, "not an opt-out") || !strings.Contains(w, "rejected") {
+		t.Errorf("enable warning does not say the registration was rejected: %q", w)
+	}
+}
+
+// An unparseable statute.enable is a rejection. Nothing registers, a
+// refusal stands, and the warning says so.
+func TestExtractUnreadableEnableRejects(t *testing.T) {
 	c := webContainer(map[string]string{"statute.enable": "banana"})
-	svcs, warns := Extract(c, ExtractOptions{})
+	svcs, tombs, warns := Extract(c, ExtractOptions{})
 	if len(svcs) != 0 {
 		t.Errorf("invalid enable registered: %+v", svcs)
 	}
-	if len(warns) == 0 || !strings.Contains(warns[0], "invalid boolean") {
-		t.Errorf("warns = %v", warns)
+	if len(tombs) == 0 {
+		t.Error("an unreadable enable left no refusal; the routes it declared would reach Config.Fallback")
 	}
+	assertEnableRejectionWarning(t, warns)
+}
+
+// The Traefik enable label reaches the same reader and owes the same
+// consequence.
+func TestTraefikUnreadableEnableRejects(t *testing.T) {
+	c := webContainer(map[string]string{
+		"traefik.enable":                       "banana",
+		"traefik.http.routers.app.rule":        "Host(`app.example.com`)",
+		"traefik.http.routers.app.middlewares": "corp-sso",
+	})
+	svcs, tombs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	if len(svcs) != 0 {
+		t.Errorf("invalid traefik.enable registered: %+v", svcs)
+	}
+	if len(tombs) == 0 {
+		t.Error("an unreadable traefik.enable left no refusal")
+	}
+	assertEnableRejectionWarning(t, warns)
 }
 
 func TestExtractSchemeCaseFold(t *testing.T) {
 	c := webContainer(map[string]string{"statute.enable": "true", "statute.scheme": "HTTPS"})
-	svcs, warns := Extract(c, ExtractOptions{})
+	svcs, _, warns := Extract(c, ExtractOptions{})
 	if len(warns) != 0 || len(svcs) != 1 || svcs[0].Backend.Address != "https://172.17.0.2:8080" {
 		t.Errorf("HTTPS scheme not folded: %+v warns=%v", svcs, warns)
 	}
@@ -236,7 +288,7 @@ func TestExtractSchemeCaseFold(t *testing.T) {
 	// silently registering it with the wrong protocol.
 	for _, scheme := range []string{"h2c", "ftp"} {
 		c.Labels["statute.scheme"] = scheme
-		svcs, warns = Extract(c, ExtractOptions{})
+		svcs, _, warns = Extract(c, ExtractOptions{})
 		if len(svcs) != 0 {
 			t.Errorf("scheme %q still registered: %+v", scheme, svcs)
 		}
@@ -253,7 +305,7 @@ func TestExtractTraefikH2CSkipped(t *testing.T) {
 		"traefik.http.services.web.loadbalancer.server.scheme": "h2c",
 		"traefik.http.services.web.loadbalancer.server.port":   "8080",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(svcs) != 0 {
 		t.Errorf("h2c service registered: %+v", svcs)
 	}
@@ -274,7 +326,7 @@ func TestExtractNamedRouteMalformed(t *testing.T) {
 		"statute.routes.admin":       "oops",
 		"statute.routes.extra.bogus": "x",
 	})
-	_, warns := Extract(c, ExtractOptions{})
+	_, _, warns := Extract(c, ExtractOptions{})
 	var malformed, unknown bool
 	for _, w := range warns {
 		if strings.Contains(w, "malformed label") {
@@ -294,21 +346,21 @@ func TestExtractNetworkSelection(t *testing.T) {
 	c.Networks = map[string]string{"bridge": "172.17.0.2", "proxy": "10.1.0.2"}
 
 	// Provider-level preferred network.
-	svcs, warns := Extract(c, ExtractOptions{Network: "proxy"})
+	svcs, _, warns := Extract(c, ExtractOptions{Network: "proxy"})
 	if len(warns) != 0 || len(svcs) != 1 || svcs[0].Backend.Address != "10.1.0.2:8080" {
 		t.Errorf("preferred network not used: %+v warns=%v", svcs, warns)
 	}
 
 	// Label-level pin overrides.
 	c.Labels["statute.network"] = "bridge"
-	svcs, _ = Extract(c, ExtractOptions{Network: "proxy"})
+	svcs, _, _ = Extract(c, ExtractOptions{Network: "proxy"})
 	if len(svcs) != 1 || svcs[0].Backend.Address != "172.17.0.2:8080" {
 		t.Errorf("label network not used: %+v", svcs)
 	}
 
 	// Multiple networks with no pin: deterministic pick plus warning.
 	delete(c.Labels, "statute.network")
-	svcs, warns = Extract(c, ExtractOptions{})
+	svcs, _, warns = Extract(c, ExtractOptions{})
 	if len(svcs) != 1 || svcs[0].Backend.Address != "172.17.0.2:8080" {
 		t.Errorf("ambiguous network pick: %+v", svcs)
 	}
@@ -323,7 +375,7 @@ func TestExtractTraefik(t *testing.T) {
 		"traefik.http.routers.web.rule":                      "Host(`app.example.com`) && PathPrefix(`/api`)",
 		"traefik.http.services.web.loadbalancer.server.port": "9000",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(warns) != 0 {
 		t.Fatalf("unexpected warnings: %v", warns)
 	}
@@ -337,7 +389,7 @@ func TestExtractTraefik(t *testing.T) {
 	if svc.Backend.Address != "172.17.0.2:9000" {
 		t.Errorf("Address = %q", svc.Backend.Address)
 	}
-	want := []Matcher{{Host: "app.example.com", Path: "/api/*"}}
+	want := []Matcher{px("app.example.com", "/api")}
 	if !reflect.DeepEqual(svc.Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svc.Routes, want)
 	}
@@ -348,7 +400,7 @@ func TestExtractTraefikDisabledWithoutOption(t *testing.T) {
 		"traefik.enable":                "true",
 		"traefik.http.routers.web.rule": "Host(`app.example.com`)",
 	})
-	if svcs, _ := Extract(c, ExtractOptions{}); len(svcs) != 0 {
+	if svcs, _, _ := Extract(c, ExtractOptions{}); len(svcs) != 0 {
 		t.Errorf("traefik labels honored without TraefikLabels: %+v", svcs)
 	}
 }
@@ -365,7 +417,7 @@ func TestExtractTraefikDefaults(t *testing.T) {
 		"traefik.http.services.app.loadbalancer.healthcheck.path":     "/ping",
 		"traefik.http.services.app.loadbalancer.healthcheck.interval": "10s",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(warns) != 0 {
 		t.Fatalf("warns = %v", warns)
 	}
@@ -387,7 +439,7 @@ func TestExtractTraefikMultipleRouters(t *testing.T) {
 		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
 		"traefik.http.services.web.loadbalancer.server.port": "8080",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(warns) != 0 {
 		t.Fatalf("warns = %v", warns)
 	}
@@ -406,7 +458,7 @@ func TestExtractTraefikUnsupportedRuleSkipsRouter(t *testing.T) {
 		"traefik.http.routers.bad.rule":  "HostRegexp(`.*`)",
 		"traefik.http.routers.good.rule": "Host(`ok.example.com`)",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(svcs) != 1 || svcs[0].Routes[0].Host != "ok.example.com" {
 		t.Errorf("good router lost: %+v", svcs)
 	}
@@ -427,14 +479,14 @@ func TestExtractTraefikMiddlewares(t *testing.T) {
 		"traefik.http.routers.web.rule":        "Host(`a.example.com`)",
 		"traefik.http.routers.web.middlewares": "auth@docker",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(warns) != 0 {
 		t.Fatalf("warns = %v", warns)
 	}
 	if len(svcs) != 1 {
 		t.Fatalf("router with middlewares label was dropped: %+v", svcs)
 	}
-	want := []Matcher{{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@docker"}}}
+	want := []Matcher{withMW(m("a.example.com", "/*"), "auth@docker")}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
@@ -448,7 +500,7 @@ func TestExtractTraefikMiddlewaresMultiple(t *testing.T) {
 		"traefik.http.routers.web.rule":        "Host(`a.example.com`) || Host(`b.example.com`)",
 		"traefik.http.routers.web.middlewares": " auth@file , ratelimit@docker,,",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(warns) != 0 {
 		t.Fatalf("warns = %v", warns)
 	}
@@ -473,7 +525,7 @@ func TestExtractTraefikRouterScopedMiddlewares(t *testing.T) {
 		"traefik.http.routers.b.rule":                        "Host(`b.example.com`)",
 		"traefik.http.services.web.loadbalancer.server.port": "8080",
 	})
-	svcs, warns := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, warns := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(warns) != 0 {
 		t.Fatalf("warns = %v", warns)
 	}
@@ -481,8 +533,8 @@ func TestExtractTraefikRouterScopedMiddlewares(t *testing.T) {
 		t.Fatalf("got %d services: %+v", len(svcs), svcs)
 	}
 	want := []Matcher{
-		{Host: "a.example.com", Path: "/*", Middlewares: []string{"auth@file"}},
-		{Host: "b.example.com", Path: "/*"},
+		withMW(m("a.example.com", "/*"), "auth@file"),
+		m("b.example.com", "/*"),
 	}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
@@ -498,7 +550,7 @@ func TestExtractBothSchemas(t *testing.T) {
 		"traefik.enable":                "true",
 		"traefik.http.routers.web.rule": "Host(`compat.example.com`)",
 	})
-	svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, _ := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(svcs) != 2 {
 		t.Fatalf("got %d services, want native + traefik: %+v", len(svcs), svcs)
 	}
@@ -511,7 +563,7 @@ func TestExtractTraefikOnlyContainerSkipsNative(t *testing.T) {
 		"traefik.enable":                "true",
 		"traefik.http.routers.web.rule": "Host(`a.example.com`)",
 	})
-	svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true, ExposedByDefault: true})
+	svcs, _, _ := Extract(c, ExtractOptions{TraefikLabels: true, ExposedByDefault: true})
 	if len(svcs) != 1 {
 		t.Fatalf("got %d services, want 1: %+v", len(svcs), svcs)
 	}
@@ -528,12 +580,12 @@ func TestExtractTraefikRequiresExplicitEnable(t *testing.T) {
 	c := webContainer(map[string]string{
 		"traefik.http.routers.web.rule": "Host(`a.example.com`)",
 	})
-	if svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true}); len(svcs) != 0 {
+	if svcs, _, _ := Extract(c, ExtractOptions{TraefikLabels: true}); len(svcs) != 0 {
 		t.Errorf("router labels without traefik.enable registered: %+v", svcs)
 	}
 	// ParseBool variants work.
 	c.Labels["traefik.enable"] = "1"
-	if svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true}); len(svcs) != 1 {
+	if svcs, _, _ := Extract(c, ExtractOptions{TraefikLabels: true}); len(svcs) != 1 {
 		t.Errorf("traefik.enable=1 did not register")
 	}
 }
@@ -546,7 +598,7 @@ func TestExtractTraefikImplicitServiceShared(t *testing.T) {
 		"traefik.http.routers.a.rule": "Host(`a.example.com`)",
 		"traefik.http.routers.b.rule": "Host(`b.example.com`)",
 	})
-	svcs, _ := Extract(c, ExtractOptions{TraefikLabels: true})
+	svcs, _, _ := Extract(c, ExtractOptions{TraefikLabels: true})
 	if len(svcs) != 1 {
 		t.Fatalf("got %d services, want 1: %+v", len(svcs), svcs)
 	}

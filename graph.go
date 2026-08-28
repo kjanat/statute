@@ -13,18 +13,21 @@ import (
 // Render with `dot -Tsvg < input.dot > topology.svg` (or any DOT-capable
 // renderer).
 //
-// The graph has four kinds of nodes:
+// The graph has five kinds of nodes:
 //
 //   - Listeners (Mrecord, blue) — one per HTTP/HTTPS listener.
 //   - Routes (rectangle, light yellow) — one per declared route.
 //   - Upstream pools (ellipse, green) — one per named pool.
 //   - Backends (circle, gray) — one per backend in each pool, dashed if Backup.
+//   - The fallback (rectangle, light red): one, when Config.Fallback is set.
 //
 // Edges:
 //
 //   - Listener → Listener for redirect-to-https arrows.
 //   - Listener → Route for the matching relation (every content listener
 //     reaches every route; the host filter is on the route node).
+//   - Listener → Fallback, dashed, from the same content listeners
+//     (terminal stage after routes and Docker tombstones miss).
 //   - Route → Pool for ProxyTo.
 //   - Pool → Backend for membership; weighted edges show Weight.
 //
@@ -59,6 +62,7 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 	d.printf("  rankdir=LR;\n  node [fontname=\"Helvetica\"];\n  edge [fontname=\"Helvetica\"];\n\n")
 	graphListeners(d, r)
 	graphRoutes(d, r)
+	graphFallback(d, r)
 	graphUpstreams(d, r)
 	d.printf("}\n")
 	return d.err
@@ -106,6 +110,25 @@ func graphRoutes(d *dotWriter, r *resolved.Config) {
 		for j := range r.Routes {
 			d.printf("  L%d -> R%d [color=\"#888\"];\n", i, j)
 		}
+	}
+}
+
+// graphFallback renders the terminal fallback stage, reached from the same
+// content listeners the routes are, and from no redirect-only listener. It
+// is reached only when no route and no tombstone of the current Docker
+// generation matched; neither the generation's routes nor its tombstones
+// are in the resolved model, so neither is in the graph.
+func graphFallback(d *dotWriter, r *resolved.Config) {
+	if !r.HasFallback {
+		return
+	}
+	d.printf("\n  // fallback\n")
+	d.printf("  F [shape=box, style=\"filled,rounded\", fillcolor=\"#f8d7da\", label=\"fallback\"];\n")
+	for i, l := range r.Listeners {
+		if l.Redirect != "" {
+			continue
+		}
+		d.printf("  L%d -> F [color=\"#888\", style=dashed];\n", i)
 	}
 }
 

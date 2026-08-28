@@ -14,14 +14,14 @@ Pre-1.0: only the latest minor gets fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.2.x   | ✅        |
-| < 0.2   | ❌        |
+| 0.6.x   | ✅        |
+| < 0.6   | ❌        |
 
 ## Hardening recommendations
 
 Not bugs in statute — deployment requirements operators must apply themselves.
 
-- **`ReadHeaderTimeout`** must be set (scaffold default `5s`). Setting it to `0` disables Slowloris protection.
+- **`ReadHeaderTimeout`** defaults to `5s`; keep it nonzero. Setting it to `0` disables Slowloris protection.
 - **`Storage` path for AutoTLS** must be persistent and on a private filesystem — the account key can issue arbitrary certs for your domains.
 - **Cloudflare API token** (DNS-01) must be scoped to the zones it manages.
 - **Metrics listener** must be private — it exposes pprof under `/debug/pprof/*`.

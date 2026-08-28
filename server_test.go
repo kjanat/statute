@@ -19,6 +19,7 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -38,6 +39,25 @@ type testNetAddr string
 
 func (a testNetAddr) Network() string { return "tcp" }
 func (a testNetAddr) String() string  { return string(a) }
+
+func TestCompiledRouteDispatchesItsMatcherIR(t *testing.T) {
+	t.Parallel()
+	c := compiledRoute{
+		route: &resolved.Route{Host: "stale.example.com", Pattern: "/stale"},
+		matcher: docker.Matcher{
+			Host:     "live.example.com",
+			HostKind: docker.HostTraefik,
+			Path:     "/api",
+			PathKind: docker.PathByte,
+		},
+	}
+	if !routeMatchesRequest(c, "live.example.com.", "/api-secret") {
+		t.Fatal("compiled matcher did not drive dispatch")
+	}
+	if routeMatchesRequest(c, "stale.example.com", "/stale") {
+		t.Fatal("resolved route strings leaked back into dispatch")
+	}
+}
 
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
 // matches in declaration order; the first hit wins.
@@ -1365,6 +1385,48 @@ func waitForListen(t *testing.T, addr string) {
 	t.Fatalf("listener at %s never accepted within %s", addr, deadline)
 }
 
+// waitForRefused is the inverse of waitForListen: it polls addr until the
+// connection is refused, which is the externally observable onset of the
+// drain. http.Server.Shutdown closes every open listener before it waits
+// for in-flight requests to finish. A refused connection proves shutdown
+// has passed the close step and is now inside the wait, the phase a test
+// holding a request open means to exercise. The readiness flag proves far
+// less: Shutdown stores it before it touches serverRun at all, and a caller
+// synchronising on it can still act while the listener is wide open.
+//
+// Nothing in the server is instrumented for this. The observation is a TCP
+// connect from outside, against the socket the client uses.
+//
+// drainDone is whatever ends when the drain does. A caller that means to
+// act mid-drain must not act after it.
+func waitForRefused(t *testing.T, addr string, drainDone <-chan error) {
+	t.Helper()
+	const deadline = 5 * time.Second
+	stop := time.Now().Add(deadline)
+	for time.Now().Before(stop) {
+		select {
+		case err := <-drainDone:
+			t.Fatalf("drain finished (err=%v) before the listener at %s closed", err, addr)
+		default:
+		}
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		var netErr net.Error
+		switch {
+		case err == nil:
+			// Closed at once: a connection that never sends a request
+			// holds the server out of quiescence and delays Shutdown.
+			_ = conn.Close()
+		case errors.As(err, &netErr) && netErr.Timeout():
+			// An unanswered dial is not proof the socket closed, and
+			// accepting it would resynchronise on the wrong event again.
+		default:
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("listener at %s still accepting %s after Shutdown began", addr, deadline)
+}
+
 // redirectHealthConfig is the minimal valid config the health lifecycle
 // tests share: one plain content listener with a redirect route, plus the
 // health endpoint on healthAddr.
@@ -1633,14 +1695,15 @@ func TestFailedStartServesHealthThenReleases(t *testing.T) {
 }
 
 // waitReadyFalse polls the ready flag until it drops, failing if the drain
-// completes first or the flag never flips.
-func waitReadyFalse(t *testing.T, srv *server, contentDone <-chan error) {
+// completes first or the flag never flips. drainDone ends when the drain
+// does (the in-flight request, or Shutdown itself).
+func waitReadyFalse(t *testing.T, srv *server, drainDone <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for srv.ready.Load() {
 		select {
-		case err := <-contentDone:
-			t.Fatalf("drain finished (content err=%v) before ready flipped false", err)
+		case err := <-drainDone:
+			t.Fatalf("drain finished (err=%v) before ready flipped false", err)
 		default:
 		}
 		if time.Now().After(deadline) {
