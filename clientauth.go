@@ -45,12 +45,14 @@ func resolveClientAuth(l *Listener, rl *resolved.Listener) error {
 	}
 
 	p := l.clientAuth[0]
-	mode, ok := resolvedClientAuthMode(p.Mode)
-	if !ok {
-		return fmt.Errorf("client_auth: unsupported mode %d", p.Mode)
+	mode, err := resolvedClientAuthMode(p.Mode)
+	if err != nil {
+		return err
 	}
-	for i, path := range p.CAFiles {
-		if strings.TrimSpace(path) == "" {
+	p.CAFiles = append([]string(nil), p.CAFiles...)
+	for i := range p.CAFiles {
+		p.CAFiles[i] = strings.TrimSpace(p.CAFiles[i])
+		if p.CAFiles[i] == "" {
 			return fmt.Errorf("client_auth: ca_files[%d]: path is empty", i)
 		}
 	}
@@ -59,23 +61,26 @@ func resolveClientAuth(l *Listener, rl *resolved.Listener) error {
 	}
 	rl.ClientAuth = &resolved.ClientAuth{
 		Mode:    mode,
-		CAFiles: append([]string(nil), p.CAFiles...),
+		CAFiles: p.CAFiles,
 	}
 	return nil
 }
 
-func resolvedClientAuthMode(mode ClientAuthMode) (resolved.ClientAuthMode, bool) {
+func resolvedClientAuthMode(mode ClientAuthMode) (resolved.ClientAuthMode, error) {
+	if mode == 0 {
+		return "", fmt.Errorf("client_auth: mode is required")
+	}
 	switch mode {
 	case RequestClientCert:
-		return resolved.ClientAuthRequest, true
+		return resolved.ClientAuthRequest, nil
 	case RequireAnyClientCert:
-		return resolved.ClientAuthRequireAny, true
+		return resolved.ClientAuthRequireAny, nil
 	case VerifyClientCertIfGiven:
-		return resolved.ClientAuthVerifyIfGiven, true
+		return resolved.ClientAuthVerifyIfGiven, nil
 	case RequireAndVerifyClientCert:
-		return resolved.ClientAuthRequireAndVerify, true
+		return resolved.ClientAuthRequireAndVerify, nil
 	default:
-		return "", false
+		return "", fmt.Errorf("client_auth: unsupported mode %d", mode)
 	}
 }
 

@@ -228,7 +228,7 @@ This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash 
 ## What `BehindCloudflare()` does NOT do
 
 - It does not refresh the CF IP list. Add an external mechanism if you want to enforce that requests come from CF.
-- `BehindCloudflare()` does not enable Authenticated Origin Pulls by itself. Configure the HTTPS listener with `ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: ...}` and Cloudflare's origin-pull CA bundle; Statute then rejects any edge connection whose client certificate does not chain to that CA. The policy covers the listener's TCP and HTTP/3 handshakes, although Cloudflare currently connects to origins over HTTP/1.1 or HTTP/2.
+- `BehindCloudflare()` does not enable Authenticated Origin Pulls by itself. Enable Authenticated Origin Pulls in Cloudflare and select a supported HTTPS origin mode such as **Full** or **Full (strict)**. Then configure the HTTPS listener with `ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: ...}` and Cloudflare's origin-pull CA bundle; Statute rejects any edge connection whose client certificate does not chain to that CA. The policy covers the listener's TCP and HTTP/3 handshakes, although Cloudflare currently connects to origins over HTTP/1.1 or HTTP/2.
 - It does not change the upstream-facing transport. Requests to your backends still go out as configured in the pool's `Transport`.
 
 ## Quick checklist

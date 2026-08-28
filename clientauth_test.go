@@ -25,15 +25,19 @@ import (
 
 func TestResolveClientAuth(t *testing.T) {
 	t.Parallel()
-	files := []string{"/etc/statute/client-ca.pem", "/etc/statute/partner-ca.pem"}
+	files := []string{" /etc/statute/client-ca.pem ", "\t/etc/statute/partner-ca.pem\n"}
+	wantFiles := []string{"/etc/statute/client-ca.pem", "/etc/statute/partner-ca.pem"}
 	policy := ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: files}
 	r := mustResolve(t, tlsRouterConfig(StaticTLS("cert.pem", "key.pem"), policy))
 	got := r.Listeners[0].ClientAuth
 	if got == nil {
 		t.Fatal("resolved listener carries no client-auth policy")
 	}
-	if got.Mode != resolved.ClientAuthRequireAndVerify || !slices.Equal(got.CAFiles, files) {
+	if got.Mode != resolved.ClientAuthRequireAndVerify || !slices.Equal(got.CAFiles, wantFiles) {
 		t.Errorf("resolved client auth = %+v", got)
+	}
+	if files[0] != " /etc/statute/client-ca.pem " {
+		t.Fatal("Resolve mutated the surface CA files")
 	}
 	files[0] = "changed"
 	if got.CAFiles[0] != "/etc/statute/client-ca.pem" {
@@ -89,6 +93,11 @@ func TestResolveClientAuthErrors(t *testing.T) {
 				return cfg
 			}(),
 			"redirect-only listener",
+		},
+		{
+			"missing mode",
+			tlsRouterConfig(StaticTLS("cert.pem", "key.pem"), ClientAuth{CAFiles: []string{"ca.pem"}}),
+			"mode is required",
 		},
 		{
 			"unknown mode",
@@ -205,6 +214,33 @@ func TestClientAuthMaterialFailsServerConstruction(t *testing.T) {
 			_, err := newServer(r)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("newServer error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildClientCAPoolRequiresFilesForVerifyingModes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		policy  *resolved.ClientAuth
+		wantErr bool
+	}{
+		{"unset", nil, false},
+		{"request", &resolved.ClientAuth{Mode: resolved.ClientAuthRequest}, false},
+		{"require any", &resolved.ClientAuth{Mode: resolved.ClientAuthRequireAny}, false},
+		{"verify if given", &resolved.ClientAuth{Mode: resolved.ClientAuthVerifyIfGiven}, true},
+		{"require and verify", &resolved.ClientAuth{Mode: resolved.ClientAuthRequireAndVerify}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool, err := buildClientCAPool(tc.policy)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("buildClientCAPool() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if pool != nil {
+				t.Errorf("buildClientCAPool() pool = %v, want nil", pool)
 			}
 		})
 	}
@@ -378,7 +414,7 @@ func assertTLSHandshake(t *testing.T, serverCfg *tls.Config, pki clientAuthPKI, 
 
 func assertTLSHandshakeForHost(t *testing.T, serverCfg *tls.Config, pki clientAuthPKI, cert *tls.Certificate, host string, want bool) {
 	t.Helper()
-	serverSide, clientSide := net.Pipe()
+	serverSide, clientSide := bufferedConnPair(t)
 	deadline := time.Now().Add(2 * time.Second)
 	_ = serverSide.SetDeadline(deadline)
 	_ = clientSide.SetDeadline(deadline)
@@ -398,10 +434,29 @@ func assertTLSHandshakeForHost(t *testing.T, serverCfg *tls.Config, pki clientAu
 	srvErr := <-serverErr
 	_ = client.Close()
 	_ = server.Close()
-	got := clientErr == nil && srvErr == nil
+	got := srvErr == nil
 	if got != want {
 		t.Errorf("handshake with cert=%v: got success=%v (client=%v server=%v), want %v", cert != nil, got, clientErr, srvErr, want)
 	}
+}
+
+func bufferedConnPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	client, err := net.DialTimeout("tcp", listener.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	server, err := listener.Accept()
+	if err != nil {
+		_ = client.Close()
+		t.Fatalf("accept: %v", err)
+	}
+	return server, client
 }
 
 func TestVerifiedClientCertificateLogFields(t *testing.T) {

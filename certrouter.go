@@ -114,7 +114,13 @@ func (s *server) buildCertRouter(l *resolved.Listener) (*certRouter, error) {
 }
 
 func buildClientCAPool(policy *resolved.ClientAuth) (*x509.CertPool, error) {
-	if policy == nil || len(policy.CAFiles) == 0 {
+	if policy == nil {
+		return nil, nil
+	}
+	if len(policy.CAFiles) == 0 {
+		if policy.Mode == resolved.ClientAuthVerifyIfGiven || policy.Mode == resolved.ClientAuthRequireAndVerify {
+			return nil, fmt.Errorf("client_auth: mode %s requires at least one CA file", policy.Mode)
+		}
 		return nil, nil
 	}
 	pool := x509.NewCertPool()

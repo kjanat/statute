@@ -463,7 +463,7 @@ The four modes map directly to Go's TLS handshake policies. `RequestClientCert` 
 
 `Resolve` validates the mode, non-empty paths, and that verifying modes name at least one CA without reading the filesystem. Server construction reads and parses every CA bundle before any listener opens; a missing or malformed bundle aborts construction. A mode that requires a certificate cannot use an automatic ACME source in an HTTPS-only config: TLS-ALPN-01 validators present no client identity, so `Resolve` requires a plain HTTP listener for fallback and the TLS listener omits the unusable challenge ALPN. Pinning the source with `HTTP01()` avoids the failed TLS-ALPN attempt; DNS-01 is independent of listener reachability.
 
-The normalized policy is present in `resolved.Listener.ClientAuth`, JSON export, and graph output. Access logs add `client_cert_subject` and typed `client_cert_sans` values only for certificates whose chain was verified. Authentication completes or fails at the listener handshake before ordinary routing; client-certificate identity does not participate in route matching.
+The normalised policy is present in `resolved.Listener.ClientAuth`, JSON export, and graph output. Access logs add `client_cert_subject` and typed `client_cert_sans` values only for certificates whose chain was verified. Authentication completes or fails at the listener handshake before ordinary routing; client-certificate identity does not participate in route matching.
 
 ### HTTP/3
 
