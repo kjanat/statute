@@ -60,8 +60,33 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 		if id != "" {
 			entry["request_id"] = id
 		}
+		addVerifiedClientCert(entry, r)
 		enc.Encode(entry)
 	})
+}
+
+func addVerifiedClientCert(entry map[string]any, r *http.Request) {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		return
+	}
+	cert := r.TLS.VerifiedChains[0][0]
+	entry["client_cert_subject"] = cert.Subject.String()
+	var sans []string
+	for _, name := range cert.DNSNames {
+		sans = append(sans, "dns:"+name)
+	}
+	for _, email := range cert.EmailAddresses {
+		sans = append(sans, "email:"+email)
+	}
+	for _, ip := range cert.IPAddresses {
+		sans = append(sans, "ip:"+ip.String())
+	}
+	for _, uri := range cert.URIs {
+		sans = append(sans, "uri:"+uri.String())
+	}
+	if len(sans) > 0 {
+		entry["client_cert_sans"] = sans
+	}
 }
 
 // shouldLog returns true when this request should be written. The status

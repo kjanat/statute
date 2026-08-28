@@ -25,6 +25,7 @@ var scenarios = map[string]func(node string) statute.Config{
 	"routes":        routesConfig,
 	"upstream-tls":  upstreamTLSConfig,
 	"h3":            h3Config,
+	"client-mtls":   clientMTLSConfig,
 	"isolation":     isolationConfig,
 	"startup-bad":   startupBadConfig,
 	"trusted":       trustedConfig,

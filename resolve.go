@@ -108,10 +108,32 @@ func validateTLSAcrossListeners(listeners []*resolved.Listener) error {
 	if err := validateHTTP01HasPlainListener(listeners); err != nil {
 		return err
 	}
+	if err := validateClientAuthACMEHasPlainListener(listeners); err != nil {
+		return err
+	}
 	if err := validatePinnedDomainCollisions(listeners); err != nil {
 		return err
 	}
 	return validatePinnedACMEAccounts(listeners)
+}
+
+func validateClientAuthACMEHasPlainListener(listeners []*resolved.Listener) error {
+	for _, listener := range listeners {
+		if listener.Scheme == schemeHTTP {
+			return nil
+		}
+	}
+	for _, listener := range listeners {
+		if !clientAuthRequiresCertificate(listener.ClientAuth) {
+			continue
+		}
+		for _, source := range listener.AutoTLSSources {
+			if source.Challenge == resolved.ChallengeAuto {
+				return fmt.Errorf("client_auth: mode %s on an automatic ACME listener requires a plain HTTP listener because TLS-ALPN-01 validators do not present client certificates; add statute.HTTP(\":80\") or pin the source with HTTP01", listener.ClientAuth.Mode)
+			}
+		}
+	}
+	return nil
 }
 
 // validateHTTP01HasPlainListener rejects an HTTP-01-pinned source in a
@@ -572,6 +594,9 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		return nil, err
 	}
 	if err := resolveTLSPolicy(l, rl); err != nil {
+		return nil, err
+	}
+	if err := resolveClientAuth(l, rl); err != nil {
 		return nil, err
 	}
 	if err := resolveTrustedProxy(l.trustedProxy, rl); err != nil {

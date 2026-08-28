@@ -134,6 +134,34 @@ func h3Config(string) statute.Config {
 	}
 }
 
+// clientMTLSConfig requires one lane-CA client certificate across the HTTPS
+// listener's HTTP/1.1, HTTP/2, and HTTP/3 transports.
+func clientMTLSConfig(string) statute.Config {
+	return statute.Config{
+		Listeners: statute.Listeners{
+			statute.HTTPS(":8443",
+				statute.StaticTLS("/certs/statute.crt", "/certs/statute.key"),
+				statute.HTTP2(),
+				statute.HTTP3(":8443/udp"),
+				statute.ClientAuth{
+					Mode:    statute.RequireAndVerifyClientCert,
+					CAFiles: []string{"/certs/ca.crt"},
+				},
+			),
+		},
+		Upstreams: statute.Upstreams{
+			poolOrigin: statute.Pool{Backends: []statute.Backend{{Address: origin1Addr}}},
+		},
+		Routes: statute.Routes{
+			statute.Match("/*").ProxyTo(poolOrigin).
+				With(statute.RequestID().From("X-Request-Id")),
+		},
+		Defaults:      e2eDefaults(),
+		Observability: e2eObservability(),
+		Shutdown:      e2eShutdown(),
+	}
+}
+
 // isolationConfig gives each node passive health only, fed exclusively
 // by the proxy traffic that node itself serves. Failures driven through
 // one node demote a backend there and nowhere else — the per-node state

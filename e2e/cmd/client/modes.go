@@ -24,8 +24,18 @@ import (
 // tlsConfigFor builds the client TLS policy for one target: an explicit
 // PEM bundle when the scenario provides one (the harness PKI or a
 // Pebble-issued root), system roots otherwise.
-func tlsConfigFor(rootsFile, serverName string) (*tls.Config, error) {
+func tlsConfigFor(rootsFile, serverName, certFile, keyFile string) (*tls.Config, error) {
 	cfg := &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
+	if (certFile == "") != (keyFile == "") {
+		return nil, errors.New("client certificate and key must be configured together")
+	}
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load client certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
 	if rootsFile == "" {
 		return cfg, nil
 	}
@@ -62,7 +72,7 @@ func runGet(args []string) error {
 	if *target == "" {
 		return errors.New("get: -url required")
 	}
-	tlsCfg, err := tlsConfigFor(*roots, "")
+	tlsCfg, err := tlsConfigFor(*roots, "", "", "")
 	if err != nil {
 		return err
 	}
@@ -93,7 +103,7 @@ func runWait(args []string) error {
 	if *target == "" {
 		return errors.New("wait: -url required")
 	}
-	tlsCfg, err := tlsConfigFor(*roots, "")
+	tlsCfg, err := tlsConfigFor(*roots, "", "", "")
 	if err != nil {
 		return err
 	}
@@ -135,7 +145,7 @@ func runProbeNegative(args []string) error {
 	if *target == "" {
 		return errors.New("probe-negative: -url required")
 	}
-	tlsCfg, err := tlsConfigFor(*roots, "")
+	tlsCfg, err := tlsConfigFor(*roots, "", "", "")
 	if err != nil {
 		return err
 	}
@@ -147,6 +157,13 @@ func runProbeNegative(args []string) error {
 		tr := &http3.Transport{TLSClientConfig: tlsCfg}
 		defer tr.Close()
 		client := &http.Client{Timeout: *timeout, Transport: tr, CheckRedirect: noRedirect}
+		probeErr = drainGet(client, *target)
+	case "h2":
+		client := &http.Client{
+			Timeout:       *timeout,
+			Transport:     &http.Transport{TLSClientConfig: tlsCfg, ForceAttemptHTTP2: true},
+			CheckRedirect: noRedirect,
+		}
 		probeErr = drainGet(client, *target)
 	case "h1":
 		client := &http.Client{
@@ -227,7 +244,7 @@ func runStream(args []string) error {
 	if *target == "" {
 		return errors.New("stream: -url required")
 	}
-	tlsCfg, err := tlsConfigFor(*roots, "")
+	tlsCfg, err := tlsConfigFor(*roots, "", "", "")
 	if err != nil {
 		return err
 	}
@@ -352,7 +369,7 @@ func dialUpgrade(u *url.URL, roots string) (net.Conn, error) {
 	if u.Scheme != "https" {
 		return d.DialContext(ctx, "tcp", host)
 	}
-	tlsCfg, err := tlsConfigFor(roots, u.Hostname())
+	tlsCfg, err := tlsConfigFor(roots, u.Hostname(), "", "")
 	if err != nil {
 		return nil, err
 	}

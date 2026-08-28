@@ -261,6 +261,68 @@ func TestRegression_HTTP3(t *testing.T) {
 	}
 }
 
+// TestRegression_ClientMTLS proves listener-wide client authentication over
+// each supported HTTPS protocol and rejection before ordinary routing.
+func TestRegression_ClientMTLS(t *testing.T) {
+	t.Parallel()
+	topo := harness.MustTopology(t, "1s1c")
+	r := harness.Start(t, "client-mtls", topo)
+	ctx := context.Background()
+	r.AwaitReady(ctx)
+
+	rep := r.ExecutePlan(ctx, harness.Client1, clientMTLSPlan())
+	assertClientMTLSProtocols(t, rep)
+	assertMissingClientCertRejected(ctx, t, r)
+	assertVerifiedClientCertLogged(ctx, t, r)
+}
+
+func clientMTLSPlan() *report.Plan {
+	plan := &report.Plan{Name: "client-mtls"}
+	for _, proto := range []string{"h1", "h2", "h3"} {
+		plan.Steps = append(plan.Steps, report.Step{
+			Name: proto, URL: "https://statute-1:8443/echo", TargetServer: harness.Server1,
+			Proto: proto, Count: 1, RootsFile: "/certs/ca.crt",
+			ClientCertFile: "/certs/statute.crt", ClientKeyFile: "/certs/statute.key",
+			Expect: report.Expect{Status: 200, BodyContains: `"origin":"origin-1"`},
+		})
+	}
+	return plan
+}
+
+func assertClientMTLSProtocols(t *testing.T, rep *report.Report) {
+	t.Helper()
+	for _, result := range rep.Results {
+		if result.Proto == "h2" && result.NegotiatedProto != "HTTP/2.0" {
+			t.Errorf("h2 step negotiated %q", result.NegotiatedProto)
+		}
+		if result.Proto == "h3" && result.NegotiatedProto != "HTTP/3.0" {
+			t.Errorf("h3 step negotiated %q", result.NegotiatedProto)
+		}
+	}
+}
+
+func assertMissingClientCertRejected(ctx context.Context, t *testing.T, r *harness.Run) {
+	t.Helper()
+	for _, proto := range []string{"h1", "h2", "h3"} {
+		out, err := r.Compose.RunClient(ctx, harness.Client1,
+			"probe-negative", "-url", "https://statute-1:8443/echo",
+			"-proto", proto, "-roots", "/certs/ca.crt")
+		if err != nil {
+			t.Errorf("missing certificate over %s was not rejected: %v\n%s", proto, err, out)
+		}
+	}
+}
+
+func assertVerifiedClientCertLogged(ctx context.Context, t *testing.T, r *harness.Run) {
+	t.Helper()
+	logs := awaitServiceLog(ctx, t, r, harness.Server1, "verified client identity in access log", func(logs string) (bool, string) {
+		return strings.Contains(logs, `"client_cert_subject":"CN=statute-e2e-proxy"`), logs
+	})
+	if strings.Contains(logs, `"path":"/echo"`) && !strings.Contains(logs, `"client_cert_sans"`) {
+		t.Errorf("verified client access log has no SANs:\n%s", logs)
+	}
+}
+
 func runHTTP3(t *testing.T, topo harness.Topology) {
 	r := harness.Start(t, "h3", topo)
 	ctx := context.Background()

@@ -489,6 +489,47 @@ func TestLint_FB001CatchAllShadowsFallback(t *testing.T) {
 	}
 }
 
+func TestLintTLS007WeakClientAuth(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		mode ClientAuthMode
+		want bool
+	}{
+		{"request", RequestClientCert, true},
+		{"require any", RequireAnyClientCert, true},
+		{"verify if given", VerifyClientCertIfGiven, true},
+		{"require and verify", RequireAndVerifyClientCert, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := []string(nil)
+			if clientAuthVerifies(tc.mode) {
+				files = []string{"client-ca.pem"}
+			}
+			findings, err := Lint(tlsRouterConfig(
+				StaticTLS("cert.pem", "key.pem"),
+				ClientAuth{Mode: tc.mode, CAFiles: files},
+			))
+			if err != nil {
+				t.Fatalf("Lint: %v", err)
+			}
+			var hits []Finding
+			for _, finding := range findings {
+				if finding.Code == "TLS007" {
+					hits = append(hits, finding)
+				}
+			}
+			if (len(hits) == 1) != tc.want {
+				t.Fatalf("TLS007 findings = %v, want finding=%v", hits, tc.want)
+			}
+			if tc.want && hits[0].Path != "listeners[0].client_auth.mode" {
+				t.Errorf("path = %q", hits[0].Path)
+			}
+		})
+	}
+}
+
 // With neither Docker nor a fallback, a catch-all hides only the terminal
 // 404. That is not a finding.
 func TestLint_FB001SilentWithoutShadowedTiers(t *testing.T) {

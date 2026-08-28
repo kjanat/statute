@@ -64,6 +64,23 @@ func TestGraphDOT_BadConfigReturnsError(t *testing.T) {
 	}
 }
 
+func TestGraphDOTShowsClientAuth(t *testing.T) {
+	t.Parallel()
+	cfg := tlsRouterConfig(
+		StaticTLS("cert.pem", "key.pem"),
+		ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{"/run/certs/client-ca.pem"}},
+	)
+	var buf bytes.Buffer
+	if err := GraphDOT(cfg, &buf); err != nil {
+		t.Fatalf("GraphDOT: %v", err)
+	}
+	for _, want := range []string{"client-auth=require-and-verify", "client-ca=[/run/certs/client-ca.pem]"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("graph missing %q:\n%s", want, buf.String())
+		}
+	}
+}
+
 func TestGraphDOT_ShowsDockerPoolPolicy(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
