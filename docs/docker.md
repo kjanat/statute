@@ -128,7 +128,7 @@ label form, in either the native or the Traefik schema: they exist only in
 compiled configuration. A Docker-discovered pool therefore always runs with
 the default 200–399 probe acceptance, the derived probe host, and no
 passive demotion. Transport tuning (`Transport`, including
-`FlushInterval`) likewise has no label form — Traefik's
+`ResponseHeaderTimeout` and `FlushInterval`) likewise has no label form. Traefik's
 `loadbalancer.responseforwarding.flushinterval` is not supported — so a
 Docker-discovered pool runs with default transport settings.
 

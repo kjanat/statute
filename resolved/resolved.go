@@ -274,6 +274,9 @@ type Transport struct {
 	IdleConnTimeout     time.Duration
 	DialTimeout         time.Duration
 	TLSHandshakeTimeout time.Duration
+	// ResponseHeaderTimeout bounds the wait for upstream response headers;
+	// zero keeps Go's default of no timeout.
+	ResponseHeaderTimeout time.Duration
 	// FlushInterval is the reverse-proxy response flush interval; zero
 	// means no periodic flushing (detected streaming responses still
 	// flush immediately).

@@ -155,6 +155,9 @@ type Transport struct {
 	IdleConnTimeout     string // e.g. "90s"
 	DialTimeout         string // e.g. "5s"
 	TLSHandshakeTimeout string // e.g. "5s"
+	// ResponseHeaderTimeout bounds upstream response-header wait. Empty keeps
+	// Go's no-timeout default; response-body transfer remains unbounded.
+	ResponseHeaderTimeout string
 
 	// FlushInterval is how often the reverse proxy flushes buffered
 	// response bytes to the client, e.g. "100ms". Empty or "0" keeps Go's

@@ -134,6 +134,65 @@ func TestResolveTransportFlushInterval(t *testing.T) {
 	}
 }
 
+// TestResolveTransportResponseHeaderTimeout covers explicit and zero defaults.
+func TestResolveTransportResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
+	tr, err := resolveTransport(Transport{ResponseHeaderTimeout: "5s"})
+	if err != nil {
+		t.Fatalf("resolveTransport: %v", err)
+	}
+	if tr.ResponseHeaderTimeout != 5*time.Second {
+		t.Errorf("ResponseHeaderTimeout: got %v, want 5s", tr.ResponseHeaderTimeout)
+	}
+	tr, err = resolveTransport(Transport{})
+	if err != nil {
+		t.Fatalf("resolveTransport: %v", err)
+	}
+	if tr.ResponseHeaderTimeout != 0 {
+		t.Errorf("default ResponseHeaderTimeout: got %v, want 0", tr.ResponseHeaderTimeout)
+	}
+}
+
+// TestPoolTransportCarriesResponseHeaderTimeout pins transport and health timeouts.
+func TestPoolTransportCarriesResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP(":0")},
+		Upstreams: Upstreams{
+			"api": Pool{
+				Backends:    []Backend{{Address: "127.0.0.1:9001"}},
+				HealthCheck: HealthCheck{Path: "/healthz", Interval: "1h", Timeout: "2s"},
+				Transport:   Transport{ResponseHeaderTimeout: "5s"},
+			},
+			"plain": Pool{Backends: []Backend{{Address: "127.0.0.1:9002"}}},
+		},
+		Routes: Routes{
+			Match("/api/*").ProxyTo("api"),
+			Match("/*").ProxyTo("plain"),
+		},
+	})
+	ph, err := newPoolHandler(r.Upstreams["api"])
+	if err != nil {
+		t.Fatalf("newPoolHandler: %v", err)
+	}
+	t.Cleanup(ph.transport.CloseIdleConnections)
+	if ph.transport.ResponseHeaderTimeout != 5*time.Second {
+		t.Errorf("transport ResponseHeaderTimeout: got %v, want 5s", ph.transport.ResponseHeaderTimeout)
+	}
+	if ph.hc.client.Timeout != 2*time.Second {
+		t.Errorf("health client Timeout: got %v, want 2s", ph.hc.client.Timeout)
+	}
+
+	plain, err := newPoolHandler(r.Upstreams["plain"])
+	if err != nil {
+		t.Fatalf("newPoolHandler: %v", err)
+	}
+	t.Cleanup(plain.transport.CloseIdleConnections)
+	if plain.transport.ResponseHeaderTimeout != 0 {
+		t.Errorf("default ResponseHeaderTimeout: got %v, want 0", plain.transport.ResponseHeaderTimeout)
+	}
+}
+
 // TestBackendProxyCarriesFlushInterval — the pool's flush interval lands on
 // every backend proxy (routes sharing the pool observe one value by
 // construction), a default pool stays at zero, and probes keep riding the
