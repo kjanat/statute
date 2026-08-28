@@ -12,21 +12,18 @@ jobs:
     runs-on: ubuntu-slim
     env: { SHA: "${{ github.sha }}" }
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - parallel:
-          - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-            with: { clean: false }
           - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
             id: wiki
-            with: { clean: false, repository: "${{ github.repository }}.wiki", path: wiki, fetch-depth: 0 }
-          - uses: kjanat/runner@master
-      - parallel:
-          - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-            with: { bootstrap: true, bootstrap_args: --yes, bootstrap_skip: repos }
+            with: { repository: "${{ github.repository }}.wiki", path: wiki, fetch-depth: 0 }
           - name: configure git
-            working-directory: wiki
             run: |
               git config --global user.name 'github-actions[bot]'
               git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          - uses: kjanat/runner@master
+          - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+            with: { bootstrap: true, bootstrap_args: --yes, bootstrap_skip: repos }
       - name: start a generation branch
         working-directory: wiki
         run: |
