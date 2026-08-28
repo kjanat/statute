@@ -57,6 +57,7 @@ func TestAcceptedRulesMatchTraefik(t *testing.T) {
 		{name: "operator precedence", rule: "Host(`a.example.com`) && Path(`/x`) || Host(`b.example.com`)"},
 		{name: "double-dot regression", rule: "Host(`0..`) || Host(`0`)"},
 		{name: "v2 multi-argument host", rule: "Host(`a.example.com`, `b.example.com`)", syntax: "v2"},
+		{name: "v2 double-dot regression", rule: "Host(`0..`, `0`)", syntax: "v2"},
 		{name: "v2 multi-argument host and prefix", rule: "Host(`a.example.com`, `b.example.com`) && PathPrefix(`/api`)", syntax: "v2"},
 	}
 	for _, tc := range tests {

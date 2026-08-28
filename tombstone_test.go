@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -498,8 +497,9 @@ func appRouter(rule string) fakeDaemonContainer {
 // is repaired and later regresses is announced again.
 func TestDockerTombstoneReannouncesAfterRepair(t *testing.T) {
 	var logs bytes.Buffer
+	oldOutput := log.Writer()
 	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(oldOutput) })
 
 	broken := appRouter("Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)")
 	fixed := appRouter("Host(`app.example.com`)")
@@ -527,8 +527,9 @@ func TestDockerTombstoneReannouncesAfterRepair(t *testing.T) {
 // The clearing edge is announced on the transition and only there.
 func TestDockerTombstoneAnnouncesRepair(t *testing.T) {
 	var logs bytes.Buffer
+	oldOutput := log.Writer()
 	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(oldOutput) })
 
 	broken := appRouter("Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)")
 	fixed := appRouter("Host(`app.example.com`)")
