@@ -8,7 +8,8 @@ type Listener struct {
 
 	autoTLS      []*AutoTLSConfig
 	staticTLS    []*StaticTLSConfig
-	tlsPolicy    []TLSPolicy // slice so resolve can reject a second declaration
+	tlsPolicy    []TLSPolicy  // slice so resolve can reject a second declaration
+	clientAuth   []ClientAuth // slice so resolve can reject a second declaration
 	enableHTTP2  bool
 	http3Addr    string
 	behindCF     bool

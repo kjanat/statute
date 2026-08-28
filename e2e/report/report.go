@@ -33,12 +33,15 @@ type Step struct {
 	Body    string            `json:"body,omitempty"`
 	// RootsFile is a PEM bundle the TLS transports trust; empty means
 	// system roots. ServerName overrides SNI when the URL host is not
-	// the certificate name.
-	RootsFile   string `json:"roots_file,omitempty"`
-	ServerName  string `json:"server_name,omitempty"`
-	Count       int    `json:"count"`
-	Concurrency int    `json:"concurrency"`
-	Expect      Expect `json:"expect"`
+	// the certificate name. ClientCertFile and ClientKeyFile are an
+	// optional client identity presented during the handshake.
+	RootsFile      string `json:"roots_file,omitempty"`
+	ServerName     string `json:"server_name,omitempty"`
+	ClientCertFile string `json:"client_cert_file,omitempty"`
+	ClientKeyFile  string `json:"client_key_file,omitempty"`
+	Count          int    `json:"count"`
+	Concurrency    int    `json:"concurrency"`
+	Expect         Expect `json:"expect"`
 }
 
 // Expect is the per-request success predicate. Zero values are not

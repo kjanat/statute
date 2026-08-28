@@ -447,6 +447,24 @@ Without a policy a listener keeps the defaults it has always had: minimum TLS 1.
 
 Resolve also rejects the combinations that could never serve. A suite list must include `TLSECDHEECDSAWithAES128GCM` or `TLSECDHERSAWithAES128GCM`: `net/http` checks every TLS 1.2 suite override for one of those two before it will serve TLS at all — HTTP/2 enabled or not — so a listener without them would bind and then never answer a handshake. `HTTP3()` under `MaxVersion: statute.TLS12` is an error, since QUIC is defined over TLS 1.3 alone; so is an RSA-only suite list under a 1.2 cap on a listener with a pinned HTTP-01/DNS-01 source — the in-tree ACME manager always generates ECDSA P-256 keys, an `ECDHE_RSA` suite needs an RSA certificate to sign the key exchange, and the SNI router never falls back past the source that matched the name, so no other certificate on the listener (static fallback included) can rescue those domains. The same policy over automatic sources is lint rule `TLS004` (warning) rather than an error: autocert picks each leaf's key type from the ClientHello — ECDSA P-256 unless the client advertises no ECDSA support — so only legacy RSA-only clients connect, and where `acme-tls/1` is advertised the ECDSA challenge certificate makes TLS-ALPN-01 validation fail too. An unsupported version, an inverted window, an unknown suite, a suite listed twice, a second policy on one listener, and a policy on a redirect-only listener (which terminates no TLS) are errors too. One policy covers the whole listener — every TLS source on it and the HTTP/3 server sharing its certificates. The resolved schema and `-export` output carry it normalised: `"1.2"`/`"1.3"` for the versions, IANA names in declaration order for the suites.
 
+**Client-certificate authentication.** `ClientAuth` applies one handshake policy to an entire HTTPS listener, including every SNI certificate source and its HTTP/3 server:
+
+```go
+statute.HTTPS(":443",
+	statute.StaticTLS("/etc/statute/server.crt", "/etc/statute/server.key"),
+    statute.ClientAuth{
+        Mode:    statute.RequireAndVerifyClientCert,
+        CAFiles: []string{"/etc/statute/client-ca.pem"},
+    },
+)
+```
+
+The four modes map directly to Go's TLS handshake policies. `RequestClientCert` asks for a certificate without requiring or verifying it. `RequireAnyClientCert` requires a certificate but does not verify its chain. `VerifyClientCertIfGiven` verifies a presented certificate but still admits a client that presents none. `RequireAndVerifyClientCert` requires a certificate chaining to one of `CAFiles`; use this for authentication and Cloudflare Authenticated Origin Pulls. Lint warning `TLS007` reports the other three modes because none guarantees an authenticated peer.
+
+`Resolve` validates the mode, non-empty paths, and that verifying modes name at least one CA without reading the filesystem. Server construction reads and parses every CA bundle before any listener opens; a missing or malformed bundle aborts construction. A mode that requires a certificate cannot use an automatic ACME source in an HTTPS-only config: TLS-ALPN-01 validators present no client identity, so `Resolve` requires a plain HTTP listener for fallback and the TLS listener omits the unusable challenge ALPN. Pinning the source with `HTTP01()` avoids the failed TLS-ALPN attempt; DNS-01 is independent of listener reachability.
+
+The normalized policy is present in `resolved.Listener.ClientAuth`, JSON export, and graph output. Access logs add `client_cert_subject` and typed `client_cert_sans` values only for certificates whose chain was verified. Authentication completes or fails at the listener handshake before ordinary routing; client-certificate identity does not participate in route matching.
+
 ### HTTP/3
 
 ```go
@@ -498,6 +516,7 @@ The table is the index. The paragraph beside each feature above stays the explan
 | `TLS004`  | warning  | `listeners[i].tls_policy`                       | A TLS 1.2 cap with RSA-only suites governs a listener with an automatic ACME source, whose leaves are ECDSA.                     |
 | `TLS005`  | warning  | `listeners[i].auto_tls[j].directory`            | The ACME directory is Let's Encrypt staging, which issues certificates no public trust store accepts.                            |
 | `TLS006`  | warning  | `listeners[i].auto_tls[j].directory`            | The ACME directory is some other non-Let's-Encrypt endpoint, named in the message so a private CA surfaces before deploy.        |
+| `TLS007`  | warning  | `listeners[i].client_auth.mode`                 | Client-certificate mode does not require a certificate that chains to the configured client CA.                                  |
 
 <!-- lint-rules:end -->
 

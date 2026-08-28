@@ -147,6 +147,9 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 		if l.Redirect != "" {
 			label = fmt.Sprintf("%s -> %s (redirect)", strings.ToUpper(l.Scheme), l.Redirect)
 		}
+		if l.ClientAuth != nil {
+			label += fmt.Sprintf("\\nclient-auth=%s\\nclient-ca=%v", l.ClientAuth.Mode, l.ClientAuth.CAFiles)
+		}
 		d.printf("  L%d [shape=Mrecord, style=filled, fillcolor=\"#cfe2ff\", label=%q];\n", i, label)
 	}
 

@@ -114,7 +114,7 @@ func executeStep(plan *report.Plan, step *report.Step) []report.Result {
 // within a step (the realistic browser/SDK shape) and never across
 // protocol boundaries.
 func clientFor(step *report.Step) (*http.Client, func(), error) {
-	tlsCfg, err := tlsConfigFor(step.RootsFile, step.ServerName)
+	tlsCfg, err := tlsConfigFor(step.RootsFile, step.ServerName, step.ClientCertFile, step.ClientKeyFile)
 	if err != nil {
 		return nil, nil, err
 	}

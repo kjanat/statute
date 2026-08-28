@@ -27,14 +27,14 @@ complete when only the surface or runtime understands it.
 
 ## Ownership model
 
-| Layer          | Owns                                                                                                              | Must not absorb                                   |
-| -------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Route          | host/path/client matchers, one route action, route middleware                                                     | backend transport or state shared by other routes |
-| Upstream pool  | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                 | router-specific middleware or matchers            |
-| Listener       | ingress protocol, downstream TLS policy/material selection, trusted-proxy policy, listener wrapping/observability | route-specific policy                             |
-| Docker router  | router rule expansion and router-scoped middleware references                                                     | service-wide backend state                        |
-| Docker service | discovered backends, strategy, and routes; exact-key code-owned pool policy                                       | router policy or another service's pool policy    |
-| Resolved model | normalized immutable configuration contract                                                                       | runtime-only mutable state                        |
+| Layer          | Owns                                                                                                                  | Must not absorb                                   |
+| -------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Route          | host/path/client matchers, one route action, route middleware                                                         | backend transport or state shared by other routes |
+| Upstream pool  | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                     | router-specific middleware or matchers            |
+| Listener       | ingress protocol, downstream TLS/client-auth policy, material selection, trusted-proxy policy, wrapping/observability | route-specific policy                             |
+| Docker router  | router rule expansion and router-scoped middleware references                                                         | service-wide backend state                        |
+| Docker service | discovered backends, strategy, and routes; exact-key code-owned pool policy                                           | router policy or another service's pool policy    |
+| Resolved model | normalized immutable configuration contract                                                                           | runtime-only mutable state                        |
 
 A single pool may be shared by many static or Docker-derived routes. That sharing is
 intentional. Therefore any behavior that can legitimately differ between two routes
@@ -215,6 +215,19 @@ exact match, then supported wildcard match, then hostless fallback. Once a sourc
 selected for an SNI name, an error from that source is not permission to silently
 fall through to another policy.
 
+Client-certificate authentication is listener-owned. One normalized `ClientAuth`
+policy covers every certificate source and both the TCP and QUIC TLS configs built
+for that listener. Route selection receives only connections admitted by the
+handshake, and client-certificate identity has no matcher. Resolve validates only
+shape and paths; construction loads the CA bundles before sockets open, and missing
+or malformed material aborts the listener. A verified peer's subject and SANs may
+enter the access log; certificates lacking a verified chain are omitted.
+
+An ACME TLS-ALPN-01 validator presents no client certificate. A client-auth mode
+that requires one therefore suppresses the challenge ALPN and needs a plain HTTP
+listener when an automatic source is present, allowing autocert's HTTP-01 fallback.
+Pinned HTTP-01 and DNS-01 sources keep their existing challenge ownership.
+
 Automatic challenge selection uses the shared autocert manager. Pinned HTTP-01 and
 DNS-01 sources use in-tree managers. Their lifecycle and storage are distinct; do
 not merge their state merely because they issue certificates for the same listener.
@@ -251,6 +264,9 @@ second `Start` is insufficient.
 Listener-level observability wraps the routed content path. Access logging and
 metrics use the final response status, including handlers that emit informational
 1xx responses before the final status.
+
+Access logs may describe a verified TLS client certificate from the request's
+connection state. Enforcement remains in the TLS handshake.
 
 Response-writer wrappers must preserve interfaces needed by streaming and efficient
 copy paths, such as flushing and `io.ReaderFrom`, when the underlying writer

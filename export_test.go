@@ -215,3 +215,30 @@ func TestExport_CarriesTLSPolicy(t *testing.T) {
 		t.Errorf("cipher suites: got %v, want %v", p.CipherSuites, want)
 	}
 }
+
+func TestExportCarriesClientAuth(t *testing.T) {
+	t.Parallel()
+	cfg := tlsRouterConfig(
+		StaticTLS("cert.pem", "key.pem"),
+		ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{"/run/certs/client-ca.pem"}},
+	)
+	var buf bytes.Buffer
+	if err := Export(cfg, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	var out struct {
+		Listeners []struct {
+			ClientAuth *struct {
+				Mode    string
+				CAFiles []string
+			}
+		}
+	}
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	p := out.Listeners[0].ClientAuth
+	if p == nil || p.Mode != "require-and-verify" || !slices.Equal(p.CAFiles, []string{"/run/certs/client-ca.pem"}) {
+		t.Errorf("exported ClientAuth = %+v", p)
+	}
+}

@@ -75,6 +75,7 @@ var lintRules = []func(*resolved.Config) []Finding{
 	ruleDuplicateACMEOrders,
 	ruleRSAOnlySuitesWithAutocert,
 	ruleACMEDirectory,
+	ruleWeakClientAuth,
 	ruleCatchAllShadowsFallback,
 }
 
@@ -408,6 +409,22 @@ func ruleACMEDirectory(c *resolved.Config) []Finding {
 				})
 			}
 		}
+	}
+	return out
+}
+
+func ruleWeakClientAuth(c *resolved.Config) []Finding {
+	var out []Finding
+	for i, l := range c.Listeners {
+		if l.ClientAuth == nil || l.ClientAuth.Mode == resolved.ClientAuthRequireAndVerify {
+			continue
+		}
+		out = append(out, Finding{
+			Severity: SeverityWarning,
+			Code:     "TLS007",
+			Message:  fmt.Sprintf("Client certificate mode %q does not require a certificate that chains to the configured client CA; use require-and-verify for authentication.", l.ClientAuth.Mode),
+			Path:     fmt.Sprintf("listeners[%d].client_auth.mode", i),
+		})
 	}
 	return out
 }

@@ -89,6 +89,10 @@ type Listener struct {
 	// own TLS 1.2 cipher-suite selection.
 	TLSPolicy *TLSPolicy
 
+	// ClientAuth is the listener-wide client-certificate handshake policy.
+	// Nil means the listener does not request a client certificate.
+	ClientAuth *ClientAuth
+
 	// BehindCloudflare indicates the listener is fronted by Cloudflare. The
 	// runtime suppresses TLS-ALPN-01 challenges (HTTP-01 only) and trusts
 	// CF-Connecting-IP / True-Client-IP for client IP attribution.
@@ -116,6 +120,26 @@ type TLSPolicy struct {
 	// were declared. Empty means unset: the TLS stack's own selection
 	// applies. TLS 1.3 suites are fixed by the protocol and never listed.
 	CipherSuites []string
+}
+
+// ClientAuthMode is the normalized client-certificate handshake policy.
+type ClientAuthMode string
+
+const (
+	// ClientAuthRequest asks for a certificate without requiring it.
+	ClientAuthRequest ClientAuthMode = "request"
+	// ClientAuthRequireAny requires a certificate without chain verification.
+	ClientAuthRequireAny ClientAuthMode = "require-any"
+	// ClientAuthVerifyIfGiven verifies a certificate when one is presented.
+	ClientAuthVerifyIfGiven ClientAuthMode = "verify-if-given"
+	// ClientAuthRequireAndVerify requires a CA-verified certificate.
+	ClientAuthRequireAndVerify ClientAuthMode = "require-and-verify"
+)
+
+// ClientAuth is a resolved listener-wide client-certificate policy.
+type ClientAuth struct {
+	Mode    ClientAuthMode
+	CAFiles []string
 }
 
 // AutoTLS is the resolved ACME configuration.

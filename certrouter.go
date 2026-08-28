@@ -2,8 +2,10 @@ package statute
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -76,6 +78,7 @@ type certRouter struct {
 	exact     map[string]certGetter // lowercased exact SNI name -> source
 	wildcards map[string]certGetter // lowercased "*.suffix" pattern -> source
 	fallback  certGetter            // hostless static source; nil when absent
+	clientCAs *x509.CertPool
 
 	// hasACMETLS records that an HTTP-01 ACME source is present, so the
 	// listener must advertise the acme-tls/1 ALPN protocol for TLS-ALPN-01
@@ -89,9 +92,14 @@ type certRouter struct {
 // sources, the per-source dns01Manager for DNS-01 sources. Static key pairs
 // load here so a bad path fails at construction, not mid-handshake.
 func (s *server) buildCertRouter(l *resolved.Listener) (*certRouter, error) {
+	clientCAs, err := buildClientCAPool(l.ClientAuth)
+	if err != nil {
+		return nil, err
+	}
 	cr := &certRouter{
 		exact:     make(map[string]certGetter),
 		wildcards: make(map[string]certGetter),
+		clientCAs: clientCAs,
 	}
 	if err := cr.indexACMESources(s, l.AutoTLSSources); err != nil {
 		return nil, err
@@ -103,6 +111,23 @@ func (s *server) buildCertRouter(l *resolved.Listener) (*certRouter, error) {
 		return nil, errors.New("https listener has no TLS material")
 	}
 	return cr, nil
+}
+
+func buildClientCAPool(policy *resolved.ClientAuth) (*x509.CertPool, error) {
+	if policy == nil || len(policy.CAFiles) == 0 {
+		return nil, nil
+	}
+	pool := x509.NewCertPool()
+	for _, path := range policy.CAFiles {
+		pemBytes, err := os.ReadFile(path) //nolint:gosec // G304: operator-configured CA path
+		if err != nil {
+			return nil, fmt.Errorf("client CA file: %w", err)
+		}
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, fmt.Errorf("client CA file %s: no certificates found", path)
+		}
+	}
+	return pool, nil
 }
 
 func (cr *certRouter) indexACMESources(s *server, sources []*resolved.AutoTLS) error {
@@ -206,15 +231,37 @@ func certRouterTLSConfig(cr *certRouter, l *resolved.Listener) *tls.Config {
 		MinVersion:     tls.VersionTLS12,
 	}
 	applyTLSPolicy(cfg, l.TLSPolicy)
+	applyClientAuth(cfg, l.ClientAuth, cr.clientCAs)
 	protos := []string{alpnHTTP1}
 	if l.EnableHTTP2 {
 		protos = append([]string{alpnHTTP2}, protos...)
 	}
-	if cr.hasACMETLS && !l.BehindCloudflare {
+	if cr.hasACMETLS && !l.BehindCloudflare && !clientAuthRequiresCertificate(l.ClientAuth) {
 		protos = append(protos, alpnACMETLS)
 	}
 	cfg.NextProtos = protos
 	return cfg
+}
+
+func applyClientAuth(cfg *tls.Config, policy *resolved.ClientAuth, clientCAs *x509.CertPool) {
+	if policy == nil {
+		return
+	}
+	cfg.ClientCAs = clientCAs
+	switch policy.Mode {
+	case resolved.ClientAuthRequest:
+		cfg.ClientAuth = tls.RequestClientCert
+	case resolved.ClientAuthRequireAny:
+		cfg.ClientAuth = tls.RequireAnyClientCert
+	case resolved.ClientAuthVerifyIfGiven:
+		cfg.ClientAuth = tls.VerifyClientCertIfGiven
+	case resolved.ClientAuthRequireAndVerify:
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	default:
+		// A hand-built resolved schema must not widen an unknown policy.
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+		cfg.ClientCAs = nil
+	}
 }
 
 // applyTLSPolicy overlays the listener's resolved downstream TLS policy on
