@@ -139,6 +139,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - { name: vet e2e lane, run: go vet -tags e2e ./e2e/... }
+      - { name: test e2e helpers, run: go test -tags e2e ./e2e/cmd/... }
       - { name: smoke + regression tiers, run: make test-e2e-regression }
       # A build or daemon failure legitimately leaves no artifacts; erroring
       # on that would mask the real failure.
