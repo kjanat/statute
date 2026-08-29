@@ -108,6 +108,81 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	assertStatic()
 }
 
+// dockerOut runs one raw docker command and returns its output, failing
+// the test on error.
+func dockerOut(ctx context.Context, t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+// TestRegression_DockerOnDemandWorkload proves the on-demand lifecycle
+// against a real Docker Engine: a running labeled container is adopted and
+// idle-stopped, its dormant route still matches and the request wakes the
+// container, and the idle window stops it again afterwards.
+func TestRegression_DockerOnDemandWorkload(t *testing.T) {
+	t.Parallel()
+	topo := harness.MustTopology(t, "1s1c")
+	r := harness.Start(t, "workload", topo, "scenarios/docker/compose.yml")
+	ctx := context.Background()
+	r.AwaitReady(ctx)
+
+	network := r.Compose.Project + "_mesh"
+	image := os.Getenv("STATUTE_E2E_IMAGE")
+	name := r.Compose.Project + "-wl-1"
+	dockerCLI(ctx, t, "run", "-d", "--name", name,
+		"--network", network,
+		"--entrypoint", "/origin",
+		"-e", "ORIGIN_ID=origin-wl",
+		"-e", "ORIGIN_ADDR=:7000",
+		"--label", "statute.e2e=1",
+		"--label", "statute.enable=true",
+		"--label", "statute.path=/*",
+		"--label", "statute.port=7000",
+		"--label", "statute.service=wl",
+		"--label", "statute.network="+network,
+		image)
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", name).Run()
+	})
+
+	serves := func() (bool, string) {
+		out, err := clientGet(ctx, r, fmt.Sprintf("http://statute-1:%d/echo", harness.PortHTTP))
+		if err != nil {
+			return false, "error: " + err.Error() + out
+		}
+		return strings.Contains(out, `"origin":"origin-wl"`), out
+	}
+	running := func() bool {
+		out := dockerOut(ctx, t, "inspect", "-f", "{{.State.Running}}", name)
+		return strings.TrimSpace(out) == "true"
+	}
+
+	// Adoption: the externally started container passes the readiness
+	// gate and serves.
+	pollUntil(t, 30*time.Second, "labeled container becomes a route", serves)
+
+	// The idle policy applies to the adopted container.
+	pollUntil(t, 30*time.Second, "idle stop after adoption", func() (bool, string) {
+		return !running(), "container still running"
+	})
+
+	// A dormant route still matches: the request wakes the workload and
+	// is answered, without ever reaching a 404 or fallback.
+	pollUntil(t, 60*time.Second, "request wakes the dormant workload", serves)
+	if !running() {
+		t.Fatal("workload served but its container is not running")
+	}
+
+	// Idle stops it again after the wake.
+	pollUntil(t, 30*time.Second, "idle stop after activation", func() (bool, string) {
+		return !running(), "container still running"
+	})
+}
+
 // TestRegression_ACMEHTTP01 proves a hermetic ACME issuance: Pebble as
 // the CA through the Directory override, HTTP-01 tokens served on the
 // plain listener, and the issued certificate actually terminating TLS

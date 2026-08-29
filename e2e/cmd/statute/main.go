@@ -31,6 +31,7 @@ var scenarios = map[string]func(node string) statute.Config{
 	"trusted":       trustedConfig,
 	"acme-http01":   acmeHTTP01Config,
 	"docker":        dockerDiscoveryConfig,
+	"workload":      workloadConfig,
 	"observability": observabilityConfig,
 }
 
