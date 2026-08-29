@@ -27,15 +27,15 @@ complete when only the surface or runtime understands it.
 
 ## Ownership model
 
-| Layer           | Owns                                                                                                                  | Must not absorb                                         |
-| --------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Route           | host/path/client matchers, one route action, route middleware                                                         | backend transport or state shared by other routes       |
-| Upstream pool   | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                     | router-specific middleware or matchers                  |
-| Listener        | ingress protocol, downstream TLS/client-auth policy, material selection, trusted-proxy policy, wrapping/observability | route-specific policy                                   |
-| Docker router   | router rule expansion and router-scoped middleware references                                                         | service-wide backend state                              |
-| Docker service  | discovered backends, strategy, and routes; exact-key code-owned pool policy                                           | router policy or another service's pool policy          |
-| Docker workload | activation, readiness, and idle lifecycle of one discovered service                                                   | backend health semantics or another service's lifecycle |
-| Resolved model  | normalized immutable configuration contract                                                                           | runtime-only mutable state                              |
+| Layer           | Owns                                                                                                                  | Must not absorb                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Route           | host/path/client matchers, one route action, route middleware                                                         | backend transport or state shared by other routes                           |
+| Upstream pool   | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                     | router-specific middleware or matchers                                      |
+| Listener        | ingress protocol, downstream TLS/client-auth policy, material selection, trusted-proxy policy, wrapping/observability | route-specific policy                                                       |
+| Docker router   | router rule expansion and router-scoped middleware references                                                         | service-wide backend state                                                  |
+| Docker service  | discovered backends, strategy, and routes; exact-key code-owned pool policy                                           | router policy or another service's pool policy                              |
+| Docker workload | activation, readiness, and idle lifecycle of one container beneath a discovered service                               | backend health semantics, pool-wide state, or another container's lifecycle |
+| Resolved model  | normalized immutable configuration contract                                                                           | runtime-only mutable state                                                  |
 
 A single pool may be shared by many static or Docker-derived routes. That sharing is
 intentional. Therefore any behavior that can legitimately differ between two routes
@@ -193,6 +193,14 @@ stop it again after an idle period. The scope is narrow on purpose:
 Routing remains the primary concern and lifecycle exists to make a routed service
 available. A requirement that needs any of the excluded capabilities belongs
 outside this layer.
+
+A discovered service is not the unit of activation. `mergeService` folds
+same-named registrations from several containers into one pool. Such a service
+carries one backend plus every backend folded in from its siblings, and takes its
+pool-level label settings from the first container. Start and stop act on a
+container, so the workload is the per-container contribution beneath a service. A
+service with more than one contributor has no single activation owner. On-demand
+does not apply to it, and the provider reports that.
 
 Workload lifecycle is separate from backend health. Backend health begins healthy
 and demotes on evidence of failure, and degraded mode still routes to primaries
