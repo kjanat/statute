@@ -13,6 +13,7 @@ func webContainer(labels map[string]string) Container {
 		Labels:   labels,
 		Networks: map[string]string{"bridge": "172.17.0.2"},
 		Ports:    []int{8080},
+		Running:  true,
 	}
 }
 
@@ -64,6 +65,10 @@ func TestExtractNativeFull(t *testing.T) {
 			native("alt.example.com", "/v1/*"),
 		},
 		Backend:             Backend{Address: "https://172.17.0.2:9000", Weight: 3},
+		Container:           "web-1",
+		ContainerID:         "abc123",
+		Running:             true,
+		Contributors:        1,
 		Strategy:            "least_connections",
 		HealthCheckPath:     "/healthz",
 		HealthCheckInterval: "5s",
@@ -601,5 +606,104 @@ func TestExtractTraefikImplicitServiceShared(t *testing.T) {
 	}
 	if svcs[0].Name != "web-1@traefik" || len(svcs[0].Routes) != 2 {
 		t.Errorf("service = %+v", svcs[0])
+	}
+}
+
+func TestCandidateServices(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		opts   ExtractOptions
+		want   []string
+	}{
+		{
+			name:   "native default name",
+			labels: map[string]string{"statute.enable": "true"},
+			want:   []string{"web-1"},
+		},
+		{
+			name:   "native service label",
+			labels: map[string]string{"statute.enable": "true", "statute.service": "api"},
+			want:   []string{"api"},
+		},
+		{
+			name: "traefik router and declared service",
+			labels: map[string]string{
+				"traefik.enable":                                   "true",
+				"traefik.http.routers.r1.rule":                     "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service":                  "a",
+				"traefik.http.services.b.loadbalancer.server.port": "80",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik", "b@traefik"},
+		},
+		{
+			name: "native and traefik together",
+			labels: map[string]string{
+				"statute.enable":                  "true",
+				"traefik.enable":                  "true",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik", "web-1"},
+		},
+		{
+			name: "disabled native does not join active traefik",
+			labels: map[string]string{
+				"statute.enable":                  "false",
+				"statute.service":                 "native",
+				"traefik.enable":                  "true",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik"},
+		},
+		{
+			name: "disabled traefik does not join active native",
+			labels: map[string]string{
+				"statute.enable":                  "true",
+				"traefik.enable":                  "false",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"web-1"},
+		},
+		{
+			name: "unreadable enable values remain candidates",
+			labels: map[string]string{
+				"statute.enable":                  "invalid",
+				"traefik.enable":                  "invalid",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik", "web-1"},
+		},
+		{
+			name: "exposed by default with traefik labels stays traefik only",
+			labels: map[string]string{
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{ExposedByDefault: true, TraefikLabels: true},
+			want: []string{"a@traefik"},
+		},
+		{
+			name:   "no labels, opt-in default",
+			labels: map[string]string{},
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := webContainer(tt.labels)
+			got := CandidateServices(c, tt.opts)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("CandidateServices = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -67,6 +67,22 @@ func dockerDiscoveryConfig(string) statute.Config {
 	}
 }
 
+// workloadConfig grants on-demand activation for the native service named
+// wl: its labeled container is started by routed demand, adopted when found
+// running, and stopped again after a short idle window. Readiness stays on
+// the automatic TCP probe.
+func workloadConfig(string) statute.Config {
+	return statute.Config{
+		Listeners: statute.Listeners{statute.HTTP(":8080")},
+		Docker: statute.Docker().Refresh("1s").Workload("wl", statute.WorkloadPolicy{
+			IdleAfter: "3s",
+		}),
+		Defaults:      e2eDefaults(),
+		Observability: e2eObservability(),
+		Shutdown:      e2eShutdown(),
+	}
+}
+
 // observabilityConfig emits all three signals plus the health endpoint
 // so one request id can be correlated from the client report through
 // the access log and origin journal to a span at the collector and a

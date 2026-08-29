@@ -1,8 +1,8 @@
 // Package docker is a minimal Docker Engine API client plus the label
 // extraction logic that turns container labels into statute service
-// registrations. It speaks only the two endpoints the docker provider
-// needs — container listing and the event stream — over a unix socket or
-// TCP, with no dependency on the Docker SDK.
+// registrations. It speaks only the endpoints the docker provider needs
+// (container listing, inspection, start/stop, and the event stream) over a
+// unix socket or TCP, with no dependency on the Docker SDK.
 package docker
 
 import (
@@ -86,12 +86,16 @@ type Container struct {
 	// Ports is the deduplicated, sorted list of private (container-side)
 	// TCP ports the container exposes.
 	Ports []int
+	// Running reports whether the container's state is "running". A
+	// stopped container has no network IP and lists no ports.
+	Running bool
 }
 
 // containerJSON mirrors the wire format of GET /containers/json.
 type containerJSON struct {
 	ID     string   `json:"Id"`
 	Names  []string `json:"Names"`
+	State  string   `json:"State"`
 	Labels map[string]string
 	Ports  []struct {
 		PrivatePort int    `json:"PrivatePort"`
@@ -104,10 +108,11 @@ type containerJSON struct {
 	}
 }
 
-// ListContainers returns the running containers.
+// ListContainers returns all containers, running and stopped alike. The
+// caller decides what a stopped container may contribute.
 func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 	q := url.Values{}
-	q.Set("filters", `{"status":["running"]}`)
+	q.Set("all", "true")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/containers/json?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
@@ -161,21 +166,103 @@ func normalizeContainer(cj containerJSON) Container {
 		Labels:   cj.Labels,
 		Networks: networks,
 		Ports:    ports,
+		Running:  cj.State == "running",
 	}
+}
+
+// InspectState is the lifecycle subset of GET /containers/{id}/json.
+type InspectState struct {
+	Running bool
+	// Health is the HEALTHCHECK status: "starting", "healthy", or
+	// "unhealthy". Empty when the container defines no HEALTHCHECK.
+	Health string
+}
+
+// InspectContainer returns the container's current lifecycle state.
+func (c *Client) InspectContainer(ctx context.Context, id string) (InspectState, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/containers/"+url.PathEscape(id)+"/json", nil)
+	if err != nil {
+		return InspectState{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return InspectState{}, fmt.Errorf("docker: inspect container: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return InspectState{}, fmt.Errorf("docker: inspect container: unexpected status %s", resp.Status)
+	}
+	var raw struct {
+		State struct {
+			Running bool
+			Health  *struct {
+				Status string
+			}
+		}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return InspectState{}, fmt.Errorf("docker: inspect container: decode: %w", err)
+	}
+	out := InspectState{Running: raw.State.Running}
+	if raw.State.Health != nil {
+		out.Health = raw.State.Health.Status
+	}
+	return out, nil
+}
+
+// StartContainer starts the container. A container that is already running
+// is not an error.
+func (c *Client) StartContainer(ctx context.Context, id string) error {
+	return c.lifecyclePost(ctx, id, "start")
+}
+
+// StopContainer stops the container with the daemon's default grace
+// period. A container that is already stopped is not an error.
+func (c *Client) StopContainer(ctx context.Context, id string) error {
+	return c.lifecyclePost(ctx, id, "stop")
+}
+
+// lifecyclePost issues one container lifecycle POST. 204 is success and
+// 304 means the container is already in the requested state.
+func (c *Client) lifecyclePost(ctx context.Context, id, action string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/containers/"+url.PathEscape(id)+"/"+action, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker: %s container: %w", action, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
+		return fmt.Errorf("docker: %s container: unexpected status %s", action, resp.Status)
+	}
+	return nil
 }
 
 // Event is a Docker Engine event. Only the discriminating fields are kept.
 type Event struct {
 	Type   string `json:"Type"`
 	Action string `json:"Action"`
+	Actor  struct {
+		ID         string            `json:"ID"`
+		Attributes map[string]string `json:"Attributes"`
+	} `json:"Actor"`
+}
+
+// ActorName is the container name the event describes, or "".
+func (e Event) ActorName() string {
+	return e.Actor.Attributes["name"]
 }
 
 // typeContainer is the Event.Type value for container lifecycle events.
 const typeContainer = "container"
 
 // topologyActions are the container lifecycle actions that can change the
-// set of routable backends.
+// set of routable backends. Stopped containers can contribute dormant
+// workload routes, so creation and removal are topology changes too.
 var topologyActions = map[string]bool{
+	"create":  true,
 	"start":   true,
 	"die":     true,
 	"stop":    true,
@@ -185,6 +272,7 @@ var topologyActions = map[string]bool{
 	"restart": true,
 	"update":  true,
 	"rename":  true,
+	"destroy": true,
 }
 
 // ChangesTopology reports whether the event can alter routing state.

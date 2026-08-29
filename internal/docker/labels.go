@@ -26,11 +26,20 @@ type Service struct {
 	Name   string
 	Routes []Matcher
 	// Backend is this container's address, "ip:port" or "https://ip:port".
+	// It is empty for a dormant contribution: a stopped container has no
+	// network IP, so its address exists only once it runs.
 	Backend Backend
 	// Extra holds backends folded in from other containers when
 	// same-named services are merged into one pool. Extraction itself
 	// never fills it.
 	Extra []Backend
+
+	// Container, ContainerID, and Running mirror the contributing
+	// container; Contributors counts merged containers.
+	Container    string
+	ContainerID  string
+	Running      bool
+	Contributors int
 
 	// Pool-level settings, all optional label strings validated later by
 	// the statute resolver. When containers in one service disagree, the
@@ -119,6 +128,49 @@ func RefusalWarning(subject string, env []Matcher) string {
 		return fmt.Sprintf("%s: routes dropped and could not be bounded to a host or path, so every unmatched request is now refused with 404 and Fallback is not consulted", subject)
 	}
 	return fmt.Sprintf("%s: routes dropped, refusing %s (fail-closed; these requests do not reach the fallback)", subject, describeEnvelope(env))
+}
+
+// CandidateServices returns every service identity the container's labels
+// could register, without validating the registration. The provider uses it
+// to decide whether a stopped container is named by a workload policy even
+// when extraction refuses the labels it carries, so the refusal envelope of
+// a covered registration survives its container being stopped.
+func CandidateServices(c Container, opts ExtractOptions) []string {
+	labels := c.Labels
+	seen := map[string]bool{}
+	if nativeCandidate(c, opts) {
+		name := defaultServiceName(c)
+		if s := labels["statute.service"]; s != "" {
+			name = s
+		}
+		seen[name] = true
+	}
+	if traefikCandidate(c, opts) {
+		routers, services, _ := collectTraefikLabels(c)
+		serviceNames := sortedKeys(services)
+		for _, name := range serviceNames {
+			seen[name+"@traefik"] = true
+		}
+		for _, rn := range sortedKeys(routers) {
+			if name, _ := traefikServiceName(c, routers[rn], serviceNames); name != "" {
+				seen[name+"@traefik"] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	return sortedKeys(seen)
+}
+
+func nativeCandidate(c Container, opts ExtractOptions) bool {
+	enabled, warning := nativeEnabled(c, opts)
+	return nativeApplies(c.Labels, opts) && (enabled || warning != "")
+}
+
+func traefikCandidate(c Container, opts ExtractOptions) bool {
+	enabled, warning := traefikEnabled(c, opts)
+	return opts.TraefikLabels && hasPrefixedLabels(c.Labels, traefikPrefix) && (enabled || warning != "")
 }
 
 // hasPrefixedLabels reports whether any label carries the given prefix.
@@ -305,7 +357,7 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []st
 		return nil, nil, nil
 	}
 
-	backend, warns := nativeBackend(c, labels, opts)
+	backend, warns := nativeBackendFor(c, labels, opts)
 	if backend == nil {
 		tombs, refused := refuseNative(c, labels, warns)
 		return nil, tombs, refused
@@ -318,6 +370,10 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []st
 		Name:                defaultServiceName(c),
 		Routes:              routes,
 		Backend:             *backend,
+		Container:           c.Name,
+		ContainerID:         c.ID,
+		Running:             c.Running,
+		Contributors:        1,
 		Strategy:            labels["statute.strategy"],
 		HealthCheckPath:     labels["statute.healthcheck.path"],
 		HealthCheckInterval: labels["statute.healthcheck.interval"],
@@ -374,6 +430,16 @@ func nativeApplies(labels map[string]string, opts ExtractOptions) bool {
 		return false
 	}
 	return !opts.TraefikLabels || !hasPrefixedLabels(labels, traefikPrefix)
+}
+
+// nativeBackendFor resolves the running container's backend. A stopped
+// container contributes an empty one and keeps its routes: it has no IP and
+// lists no ports until it runs.
+func nativeBackendFor(c Container, labels map[string]string, opts ExtractOptions) (*Backend, []string) {
+	if !c.Running {
+		return &Backend{}, nil
+	}
+	return nativeBackend(c, labels, opts)
 }
 
 // nativeBackend resolves the container's address, weight, and backup flag
@@ -545,10 +611,15 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []Matcher, []s
 	routers, services, warns := collectTraefikLabels(c)
 
 	// An unusable container IP does not skip the router walk: the rules are
-	// still parseable, and their envelopes must stay that narrow.
-	ip, warn := containerIP(c, labels["traefik.docker.network"], opts)
-	if warn != "" {
-		warns = append(warns, warn)
+	// still parseable, and their envelopes must stay that narrow. A stopped
+	// container has no IP at all, and that is not a defect to warn about.
+	var ip string
+	if c.Running {
+		var warn string
+		ip, warn = containerIP(c, labels["traefik.docker.network"], opts)
+		if warn != "" {
+			warns = append(warns, warn)
+		}
 	}
 
 	// Deterministic ordering for service defaulting and output.
@@ -715,7 +786,7 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, dropping its routes", c.Name, r.name, err))
 		return refuse(RuleEnvelope(r.rule))
 	}
-	if ip == "" {
+	if ip == "" && c.Running {
 		return refuse(EnvelopeOf(matchers))
 	}
 	stampMiddlewares(matchers, r.middlewares)
@@ -732,10 +803,15 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		ts = &traefikService{}
 	}
 
-	addr, bw := traefikBackend(c, ts, ip)
-	warns = append(warns, bw...)
-	if addr == "" {
-		return refuse(EnvelopeOf(matchers))
+	// A stopped container contributes no address; see Service.Backend.
+	var backend Backend
+	if c.Running {
+		addr, bw := traefikBackend(c, ts, ip)
+		warns = append(warns, bw...)
+		if addr == "" {
+			return refuse(EnvelopeOf(matchers))
+		}
+		backend = Backend{Address: addr, Weight: 1}
 	}
 
 	// Namespace traefik-defined pools so they cannot collide with pools
@@ -743,7 +819,12 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 	svc := &Service{
 		Name:    svcName + "@traefik",
 		Routes:  matchers,
-		Backend: Backend{Address: addr, Weight: 1},
+		Backend: backend,
+
+		Container:    c.Name,
+		ContainerID:  c.ID,
+		Running:      c.Running,
+		Contributors: 1,
 
 		HealthCheckPath:     ts.hcPath,
 		HealthCheckInterval: ts.hcInterval,

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"statute.kjanat.dev/resolved"
 )
 
 func TestExport_ProducesValidJSON(t *testing.T) {
@@ -287,5 +289,48 @@ func TestExportCarriesClientAuth(t *testing.T) {
 	p := out.Listeners[0].ClientAuth
 	if p == nil || p.Mode != "require-and-verify" || !slices.Equal(p.CAFiles, []string{"/run/certs/client-ca.pem"}) {
 		t.Errorf("exported ClientAuth = %+v", p)
+	}
+}
+
+func TestExport_CarriesDockerWorkloads(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":8080")},
+		Docker: Docker().Workload("app@traefik", WorkloadPolicy{
+			IdleAfter: "1m",
+			Readiness: HTTPReadiness("/healthz"),
+		}),
+	}
+	var buf bytes.Buffer
+	if err := Export(cfg, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	var out struct {
+		Docker struct {
+			Workloads map[string]struct {
+				IdleAfter    int64
+				ReadyTimeout int64
+				Readiness    struct {
+					Mode int
+					Path string
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	w, ok := out.Docker.Workloads["app@traefik"]
+	if !ok {
+		t.Fatalf("workload missing from export: %s", buf.String())
+	}
+	if w.IdleAfter != int64(time.Minute) {
+		t.Errorf("exported IdleAfter = %d", w.IdleAfter)
+	}
+	if w.ReadyTimeout != int64(2*time.Minute) {
+		t.Errorf("exported ReadyTimeout = %d, want the resolved default", w.ReadyTimeout)
+	}
+	if w.Readiness.Mode != int(resolved.ReadinessHTTP) || w.Readiness.Path != "/healthz" {
+		t.Errorf("exported readiness = %+v", w.Readiness)
 	}
 }

@@ -60,7 +60,51 @@ type Docker struct {
 	// PoolPolicy is immutable code-owned policy keyed by exact service identity;
 	// Docker supplies backends, strategy, and routes at runtime.
 	PoolPolicy map[string]PoolPolicy
+	// Workloads is code-owned on-demand activation policy keyed by exact
+	// service identity; only a key here grants start/stop authority.
+	Workloads map[string]Workload
 }
+
+// Workload is a resolved on-demand activation policy for one
+// Docker-discovered service with a single contributing container.
+type Workload struct {
+	// IdleAfter stops the container once this long has passed since the
+	// last in-flight request, WebSocket, or stream finished.
+	IdleAfter time.Duration
+	// StartTimeout bounds the Docker start call.
+	StartTimeout time.Duration
+	// ReadyTimeout bounds the wait for readiness after a start.
+	ReadyTimeout time.Duration
+	// BackoffBase and BackoffCap bound the exponential backoff between
+	// failed activations.
+	BackoffBase time.Duration
+	BackoffCap  time.Duration
+	// Readiness is how an activated container proves it can serve.
+	Readiness WorkloadReadiness
+}
+
+// WorkloadReadiness is a resolved readiness policy.
+type WorkloadReadiness struct {
+	Mode ReadinessMode
+	// Path is the probe path for ReadinessHTTP; empty otherwise.
+	Path string
+}
+
+// ReadinessMode selects the signal that proves an activated container ready.
+type ReadinessMode int
+
+const (
+	// ReadinessAuto uses the container's HEALTHCHECK when it defines one,
+	// else a TCP connect to the discovered backend.
+	ReadinessAuto ReadinessMode = iota
+	// ReadinessDockerHealth waits for the Docker HEALTHCHECK to report healthy.
+	ReadinessDockerHealth
+	// ReadinessTCP waits for a TCP connect to the discovered backend to succeed.
+	ReadinessTCP
+	// ReadinessHTTP probes Path over the pool's transport until the
+	// response status is in the 200-399 range.
+	ReadinessHTTP
+)
 
 // Listener is a resolved listener.
 type Listener struct {

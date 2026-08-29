@@ -202,6 +202,12 @@ container, so the workload is the per-container contribution beneath a service. 
 service with more than one contributor has no single activation owner. On-demand
 does not apply to it, and the provider reports that.
 
+The dual holds. A stop acts on the whole container, so a container contributing
+more than one service has no single controllable lifecycle: one service's idle
+timer would tear the container down while a sibling service still carries
+traffic its workload never counted. On-demand requires a one-to-one service and
+container pair; anything else is reported and left ungated.
+
 Workload lifecycle is separate from backend health. Backend health begins healthy
 and demotes on evidence of failure, and degraded mode still routes to primaries
 when every backend is demoted. An activated workload has the opposite default: it
