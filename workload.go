@@ -674,10 +674,10 @@ func (p *dockerProvider) workloadFor(service string) *workload {
 
 // updateWorkloads reconciles the registry with one derived generation: it
 // creates entries for newly covered services, feeds each entry the observed
-// container state, and retires entries whose grant disappeared. A service
-// merged from several containers has no single activation owner, so the
-// policy does not apply and the provider says so.
-func (p *dockerProvider) updateWorkloads(services []docker.Service) {
+// container state, and retires entries whose grant disappeared. The policy
+// applies only to a one-to-one service and container pair; see
+// multiServiceContainers.
+func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService map[string]bool) {
 	p.workloadMu.Lock()
 	defer p.workloadMu.Unlock()
 	seen := make(map[string]bool, len(p.cfg.Workloads))
@@ -689,6 +689,10 @@ func (p *dockerProvider) updateWorkloads(services []docker.Service) {
 		}
 		if svc.Contributors > 1 {
 			p.warn([]string{fmt.Sprintf("service %q: on-demand workload policy needs one contributing container, found %d; policy not applied", svc.Name, svc.Contributors)})
+			continue
+		}
+		if multiService[svc.Container] {
+			p.warn([]string{fmt.Sprintf("service %q: container %q contributes more than one service and a stop acts on all of them; on-demand policy not applied", svc.Name, svc.Container)})
 			continue
 		}
 		seen[svc.Name] = true

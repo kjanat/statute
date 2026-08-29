@@ -138,7 +138,7 @@ func RefusalWarning(subject string, env []Matcher) string {
 func CandidateServices(c Container, opts ExtractOptions) []string {
 	labels := c.Labels
 	seen := map[string]bool{}
-	if hasPrefixedLabels(labels, statutePrefix) || opts.ExposedByDefault {
+	if nativeApplies(labels, opts) {
 		name := defaultServiceName(c)
 		if s := labels["statute.service"]; s != "" {
 			name = s
@@ -156,6 +156,9 @@ func CandidateServices(c Container, opts ExtractOptions) []string {
 				seen[name+"@traefik"] = true
 			}
 		}
+	}
+	if len(seen) == 0 {
+		return nil
 	}
 	return sortedKeys(seen)
 }

@@ -763,3 +763,47 @@ func TestWorkloadRecreationRequiresFreshReadiness(t *testing.T) {
 		t.Fatal("re-proven readiness left no idle timer armed")
 	}
 }
+
+func TestWorkloadMultiServiceContainerIsNotGated(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+
+	// One container contributes two Traefik services; a stop would act
+	// on both, so the policy naming one of them must fail closed.
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Workloads:     map[string]resolved.Workload{"a@traefik": testWorkloadPolicy()},
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port,
+		labels: map[string]string{
+			"traefik.enable":                                   "true",
+			"traefik.http.routers.ra.rule":                     "Host(`a.example.com`)",
+			"traefik.http.routers.ra.service":                  "a",
+			"traefik.http.routers.rb.rule":                     "Host(`b.example.com`)",
+			"traefik.http.routers.rb.service":                  "b",
+			"traefik.http.services.a.loadbalancer.server.port": portStr,
+			"traefik.http.services.b.loadbalancer.server.port": portStr,
+		},
+	}})
+	mustSync(t, p)
+
+	if w := p.workloadFor("a@traefik"); w != nil {
+		t.Fatal("multi-service container got a workload entry")
+	}
+	router := srv.buildRouter()
+	for _, h := range []string{"a.example.com", "b.example.com"} {
+		rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://"+h+"/", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("ungated route %s: %d, want 200", h, rec.Code)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := daemon.stopCount("combo-1") + daemon.startCount("combo-1"); got != 0 {
+		t.Fatalf("provider issued %d lifecycle calls without a single-service owner", got)
+	}
+}

@@ -266,7 +266,7 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		return err
 	}
 	services, tombstones := p.deriveServices(containers)
-	p.updateWorkloads(services)
+	p.updateWorkloads(services, p.multiServiceContainers(containers))
 
 	prev := p.srv.dynamic.Load()
 	// Pool health checkers deliberately outlive this sync call; they derive
@@ -286,11 +286,7 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 func (p *dockerProvider) deriveServices(containers []docker.Container) ([]docker.Service, []docker.Matcher) {
 	sort.Slice(containers, func(i, j int) bool { return containers[i].Name < containers[j].Name })
 
-	opts := docker.ExtractOptions{
-		Network:          p.cfg.Network,
-		ExposedByDefault: p.cfg.ExposedByDefault,
-		TraefikLabels:    p.cfg.TraefikLabels,
-	}
+	opts := p.extractOptions()
 	merged := map[string]*docker.Service{}
 	var order []string
 	var tombs []docker.Matcher
@@ -351,6 +347,15 @@ func mergeService(base *docker.Service, add docker.Service) {
 	}
 }
 
+// extractOptions is the provider's label-extraction configuration.
+func (p *dockerProvider) extractOptions() docker.ExtractOptions {
+	return docker.ExtractOptions{
+		Network:          p.cfg.Network,
+		ExposedByDefault: p.cfg.ExposedByDefault,
+		TraefikLabels:    p.cfg.TraefikLabels,
+	}
+}
+
 // workloadIntended reports whether a code-owned workload policy names any
 // service the container's labels could register.
 func (p *dockerProvider) workloadIntended(c docker.Container, opts docker.ExtractOptions) bool {
@@ -360,6 +365,25 @@ func (p *dockerProvider) workloadIntended(c docker.Container, opts docker.Extrac
 		}
 	}
 	return false
+}
+
+// multiServiceContainers names every container whose labels could register
+// more than one service. Start and stop act on the whole container, so a
+// container beneath several services has no single controllable lifecycle
+// owner: one service's idle timer could stop it while another service still
+// carries traffic the workload never counted.
+func (p *dockerProvider) multiServiceContainers(containers []docker.Container) map[string]bool {
+	opts := p.extractOptions()
+	var out map[string]bool
+	for _, c := range containers {
+		if len(docker.CandidateServices(c, opts)) > 1 {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[c.Name] = true
+		}
+	}
+	return out
 }
 
 // buildTable turns derived services into the next dynamic generation,

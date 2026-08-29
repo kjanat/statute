@@ -95,9 +95,11 @@ Docker: statute.Docker().
 ```
 
 Registration is the only source of the start/stop authority; a container
-label can never grant it. The policy applies to a service contributed by
-exactly one container. A merged multi-container service has no single
-activation owner, so the policy is not applied and the provider reports it.
+label can never grant it. The policy requires a one-to-one service and
+container pair. A merged multi-container service has no single activation
+owner, and a container contributing several services has no single
+controllable lifecycle, since a stop acts on all of them at once; either
+shape leaves the policy unapplied and the provider reports it.
 
 How it behaves:
 

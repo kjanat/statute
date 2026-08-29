@@ -608,3 +608,68 @@ func TestExtractTraefikImplicitServiceShared(t *testing.T) {
 		t.Errorf("service = %+v", svcs[0])
 	}
 }
+
+func TestCandidateServices(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		opts   ExtractOptions
+		want   []string
+	}{
+		{
+			name:   "native default name",
+			labels: map[string]string{"statute.enable": "true"},
+			want:   []string{"web-1"},
+		},
+		{
+			name:   "native service label",
+			labels: map[string]string{"statute.enable": "true", "statute.service": "api"},
+			want:   []string{"api"},
+		},
+		{
+			name: "traefik router and declared service",
+			labels: map[string]string{
+				"traefik.enable":                                   "true",
+				"traefik.http.routers.r1.rule":                     "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service":                  "a",
+				"traefik.http.services.b.loadbalancer.server.port": "80",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik", "b@traefik"},
+		},
+		{
+			name: "native and traefik together",
+			labels: map[string]string{
+				"statute.enable":                  "true",
+				"traefik.enable":                  "true",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik", "web-1"},
+		},
+		{
+			name: "exposed by default with traefik labels stays traefik only",
+			labels: map[string]string{
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{ExposedByDefault: true, TraefikLabels: true},
+			want: []string{"a@traefik"},
+		},
+		{
+			name:   "no labels, opt-in default",
+			labels: map[string]string{},
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := webContainer(tt.labels)
+			got := CandidateServices(c, tt.opts)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("CandidateServices = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

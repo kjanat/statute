@@ -153,11 +153,13 @@ func (d *DockerConfig) PoolPolicy(name string, policy PoolPolicy) *DockerConfig 
 // discovered-service identity, such as "foo@traefik". The matched service's
 // container starts when a routed request needs it, serves once readiness is
 // established, and stops after IdleAfter. Only registration grants that
-// authority; a label can never widen it. The policy applies only to a
-// service contributed by exactly one container, since a merged service has
-// no single activation owner; the provider reports when that bars it. An
-// unmatched name produces a Docker provider diagnostic. Registering the
-// same name again replaces the earlier policy.
+// authority; a label can never widen it. The policy requires a one-to-one
+// service and container pair: a merged service has no single activation
+// owner, and a container beneath several services has no single
+// controllable lifecycle, since a stop acts on all of them at once. The
+// provider reports when either shape bars the policy. An unmatched name
+// produces a Docker provider diagnostic. Registering the same name again
+// replaces the earlier policy.
 func (d *DockerConfig) Workload(name string, policy WorkloadPolicy) *DockerConfig {
 	if d.workloads == nil {
 		d.workloads = map[string]WorkloadPolicy{}
