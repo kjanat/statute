@@ -206,11 +206,9 @@ route declaration of a stopped container, apart from whether a backend is usable
 right now. Such a route is a real match: it does not become a route miss, does not
 fall through to the next dispatch tier, and does not reach `Config.Fallback`.
 
-Docker reporting a container as running is not readiness. The readiness policy and
-the precedence between its signals are part of the feature's contract, and an
-activated workload serves no traffic until one of those signals establishes
-readiness. Active-health semantics do not carry over, because they begin from
-healthy.
+Docker reporting a container as running is not readiness. An activated workload
+serves no traffic until a readiness signal establishes it. Active-health semantics
+begin from healthy and do not carry over.
 
 Activation is single-flight. Concurrent requests for one dormant workload produce
 one start operation, one readiness wait, and one outcome delivered consistently to
@@ -229,10 +227,10 @@ workload is stopping has one defined outcome and never proxies into a container
 being torn down.
 
 Lifecycle state belongs to the generation that owns it. Docker generations are
-replaced atomically, so every change here states what happens when a generation
-retires while a workload is starting, when labels change during activation, when
-Statute shuts down mid-activation, and when Docker reports an external stop. A
-retired generation may not mutate or cancel its successor's state.
+replaced atomically, and a retired generation may not mutate or cancel its
+successor's state. That holds while a workload is starting, while labels change
+during activation, while Statute shuts down mid-activation, and when Docker
+reports a stop from outside.
 
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to
