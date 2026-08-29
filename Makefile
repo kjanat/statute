@@ -5,6 +5,7 @@
 # consider adding a target here instead.
 
 GO              ?= go
+GOFMT           ?= $(shell $(GO) env GOROOT)/bin/gofmt
 GOLANGCI_LINT   ?= golangci-lint
 CUSTOM_GCL      ?= ./custom-gcl
 COVER_PROFILE   ?= cover.out
@@ -50,7 +51,7 @@ test-race: ## Run tests with the race detector, skipped where TSAN cannot start
 fmt-check: ## Fail if any tracked Go file is not formatted
 	@if [ -z "$$(git ls-files -- '*.go')" ]; then \
 		echo "fmt-check: no tracked Go files (not a git checkout?)" >&2; exit 1; fi; \
-	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r gofmt -l --)"; then \
+	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r "$(GOFMT)" -l --)"; then \
 		echo "fmt-check: gofmt failed" >&2; exit 1; fi; \
 	if [ -n "$$drift" ]; then echo "gofmt drift:"; echo "$$drift"; exit 1; fi; \
 	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r $(GO) tool goimports -local statute.kjanat.dev -l --)"; then \

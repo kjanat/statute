@@ -21,7 +21,10 @@ cd statute
 go test ./...
 ```
 
-That should work on any platform with Go 1.27+. The Makefile is the canonical interface for development tasks:
+That should work on any platform with Go 1.27+. Formatting also requires
+[`dprint`](https://dprint.dev/install/) on `PATH`; use one of its documented
+installation methods before running `make fmt-check` or `make lint`. The
+Makefile is the canonical interface for development tasks:
 
 ```sh
 make test            # all unit tests
