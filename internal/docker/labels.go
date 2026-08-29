@@ -130,6 +130,36 @@ func RefusalWarning(subject string, env []Matcher) string {
 	return fmt.Sprintf("%s: routes dropped, refusing %s (fail-closed; these requests do not reach the fallback)", subject, describeEnvelope(env))
 }
 
+// CandidateServices returns every service identity the container's labels
+// could register, without validating the registration. The provider uses it
+// to decide whether a stopped container is named by a workload policy even
+// when extraction refuses the labels it carries, so the refusal envelope of
+// a covered registration survives its container being stopped.
+func CandidateServices(c Container, opts ExtractOptions) []string {
+	labels := c.Labels
+	seen := map[string]bool{}
+	if hasPrefixedLabels(labels, statutePrefix) || opts.ExposedByDefault {
+		name := defaultServiceName(c)
+		if s := labels["statute.service"]; s != "" {
+			name = s
+		}
+		seen[name] = true
+	}
+	if opts.TraefikLabels && hasPrefixedLabels(labels, traefikPrefix) {
+		routers, services, _ := collectTraefikLabels(c)
+		serviceNames := sortedKeys(services)
+		for _, name := range serviceNames {
+			seen[name+"@traefik"] = true
+		}
+		for _, rn := range sortedKeys(routers) {
+			if name, _ := traefikServiceName(c, routers[rn], serviceNames); name != "" {
+				seen[name+"@traefik"] = true
+			}
+		}
+	}
+	return sortedKeys(seen)
+}
+
 // hasPrefixedLabels reports whether any label carries the given prefix.
 func hasPrefixedLabels(labels map[string]string, prefix string) bool {
 	for k := range labels {

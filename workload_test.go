@@ -536,3 +536,180 @@ func TestWorkloadGrantRemovalLeavesContainerRunning(t *testing.T) {
 		t.Fatalf("retired workload phase = %v, want ready untouched", got)
 	}
 }
+
+func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cold start: %d", rec.Code)
+	}
+	w := p.workloadFor("wl")
+
+	// The ready decision and the active-count registration share one
+	// critical section; an idle expiry in between must find the count.
+	if err := w.ensureReady(context.Background(), p); err != nil {
+		t.Fatalf("ensureReady: %v", err)
+	}
+	w.mu.Lock()
+	active := w.active
+	w.mu.Unlock()
+	if active != 1 {
+		t.Fatalf("active after ensureReady = %d, want 1", active)
+	}
+	stopsBefore := daemon.stopCount("wl-1")
+	p.idleExpire(w)
+	if got := w.phaseNow(); got != workloadReady {
+		t.Fatalf("idle expiry with a counted request moved phase to %v", got)
+	}
+	if got := daemon.stopCount("wl-1"); got != stopsBefore {
+		t.Fatalf("idle expiry with a counted request issued a stop")
+	}
+	w.end(p)
+}
+
+func TestWorkloadShutdownDuringActivationIssuesNoStop(t *testing.T) {
+	policy := testWorkloadPolicy()
+	policy.ReadyTimeout = 30 * time.Second
+
+	// Port 1 answers nothing; the activation is still in flight when
+	// the provider run stops.
+	p, daemon, router := workloadFixture(t, policy, "http://127.0.0.1:1", true)
+
+	done := make(chan int)
+	go func() {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+		done <- rec.Code
+	}()
+	waitWorkloadPhase(t, p, workloadStarting)
+	w := p.workloadFor("wl")
+
+	p.lifecycleMu.Lock()
+	run := p.current
+	p.lifecycleMu.Unlock()
+	run.stop()
+
+	if code := <-done; code != http.StatusServiceUnavailable {
+		t.Fatalf("waiter during shutdown: %d, want 503", code)
+	}
+	if got := daemon.stopCount("wl-1"); got != 0 {
+		t.Fatalf("shutdown issued %d stop calls, want 0", got)
+	}
+	w.mu.Lock()
+	phase, failedUntil := w.phase, w.failedUntil
+	w.mu.Unlock()
+	if phase != workloadDormant {
+		t.Fatalf("phase after abandoned activation = %v, want dormant", phase)
+	}
+	if !failedUntil.IsZero() {
+		t.Fatal("abandoned activation left a backoff window")
+	}
+}
+
+func TestWorkloadStoppedCoveredContainerKeepsRefusalEnvelope(t *testing.T) {
+	fallbackHit := false
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Workloads:     map[string]resolved.Workload{"api@traefik": testWorkloadPolicy()},
+	}
+	p, srv, _ := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{
+		{name: "api-1", stopped: true, labels: map[string]string{
+			"traefik.enable":                                     "true",
+			"traefik.http.routers.r1.rule":                       "Host(`covered.example.com`) && Header(`X-K`, `v`)",
+			"traefik.http.routers.r1.service":                    "api",
+			"traefik.http.services.api.loadbalancer.server.port": "7000",
+		}},
+		{name: "other-1", stopped: true, labels: map[string]string{
+			"traefik.enable":               "true",
+			"traefik.http.routers.r2.rule": "Host(`other.example.com`) && Header(`X-K`, `v`)",
+		}},
+	})
+	srv.cfg.Fallback = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackHit = true
+		w.WriteHeader(http.StatusTeapot)
+	})
+	mustSync(t, p)
+	router := srv.buildRouter()
+
+	// The covered registration's unparseable rule keeps refusing while
+	// its container is stopped.
+	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://covered.example.com/", nil))
+	if rec.Code != http.StatusNotFound || fallbackHit {
+		t.Fatalf("covered refusal: %d (fallback hit: %v), want tombstoned 404", rec.Code, fallbackHit)
+	}
+	// The uncovered stopped container stays invisible: its traffic
+	// reaches the fallback like any unmatched request.
+	rec = runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://other.example.com/", nil))
+	if rec.Code != http.StatusTeapot || !fallbackHit {
+		t.Fatalf("uncovered stopped container: %d, want fallback", rec.Code)
+	}
+}
+
+func TestWorkloadBackoffSurvivesRecreation(t *testing.T) {
+	policy := testWorkloadPolicy()
+	policy.BackoffBase = 5 * time.Second
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+
+	p, daemon, router := workloadFixture(t, policy, backend.URL, true)
+	daemon.mu.Lock()
+	daemon.failStart = true
+	containers := daemon.containers
+	daemon.mu.Unlock()
+
+	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed activation: %d", rec.Code)
+	}
+
+	// The container is recreated: it leaves one listing entirely and
+	// returns under the same name. The backoff window must survive.
+	daemon.swap(nil)
+	mustSync(t, p)
+	daemon.swap(containers)
+	mustSync(t, p)
+
+	rec = runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("recreated crash-looper: %d (Retry-After %q), want immediate backoff 503", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if got := daemon.startCount("wl-1"); got != 1 {
+		t.Fatalf("start calls = %d, want 1: recreation shed the backoff", got)
+	}
+}
+
+func TestWorkloadStaleObserveLeavesNoBackoff(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+
+	p, daemon, _ := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	w := p.workloadFor("wl")
+
+	// An observe-only activation whose container turns out stopped, the
+	// stale-listing race, corrects to dormant without a backoff window.
+	w.mu.Lock()
+	act, err := p.beginActivationLocked(w, true)
+	w.mu.Unlock()
+	if err != nil {
+		t.Fatalf("beginActivation: %v", err)
+	}
+	<-act.done
+	w.mu.Lock()
+	phase, failedUntil := w.phase, w.failedUntil
+	w.mu.Unlock()
+	if phase != workloadDormant || !failedUntil.IsZero() {
+		t.Fatalf("stale observe: phase %v, backoff until %v; want dormant without backoff", phase, failedUntil)
+	}
+	if got := daemon.stopCount("wl-1"); got != 0 {
+		t.Fatalf("stale observe issued %d stop calls", got)
+	}
+}

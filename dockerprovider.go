@@ -297,8 +297,8 @@ func (p *dockerProvider) deriveServices(containers []docker.Container) ([]docker
 	for _, c := range containers {
 		svcs, envelopes, warns := docker.Extract(c, opts)
 		// A stopped container participates only when a workload policy
-		// names one of its services; any other stays invisible.
-		if !c.Running && !p.workloadCovered(svcs) {
+		// names it; see workloadIntended.
+		if !c.Running && !p.workloadIntended(c, opts) {
 			continue
 		}
 		p.warn(warns)
@@ -351,11 +351,11 @@ func mergeService(base *docker.Service, add docker.Service) {
 	}
 }
 
-// workloadCovered reports whether any of the extracted services is named by
-// a code-owned workload policy.
-func (p *dockerProvider) workloadCovered(svcs []docker.Service) bool {
-	for i := range svcs {
-		if _, ok := p.cfg.Workloads[svcs[i].Name]; ok {
+// workloadIntended reports whether a code-owned workload policy names any
+// service the container's labels could register.
+func (p *dockerProvider) workloadIntended(c docker.Container, opts docker.ExtractOptions) bool {
+	for _, name := range docker.CandidateServices(c, opts) {
+		if _, ok := p.cfg.Workloads[name]; ok {
 			return true
 		}
 	}

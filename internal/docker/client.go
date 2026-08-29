@@ -259,8 +259,10 @@ func (e Event) ActorName() string {
 const typeContainer = "container"
 
 // topologyActions are the container lifecycle actions that can change the
-// set of routable backends.
+// set of routable backends. Stopped containers can contribute dormant
+// workload routes, so creation and removal are topology changes too.
 var topologyActions = map[string]bool{
+	"create":  true,
 	"start":   true,
 	"die":     true,
 	"stop":    true,
@@ -270,6 +272,7 @@ var topologyActions = map[string]bool{
 	"restart": true,
 	"update":  true,
 	"rename":  true,
+	"destroy": true,
 }
 
 // ChangesTopology reports whether the event can alter routing state.

@@ -75,9 +75,7 @@ func workloadConfig(string) statute.Config {
 	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
 		Docker: statute.Docker().Refresh("1s").Workload("wl", statute.WorkloadPolicy{
-			IdleAfter:    "3s",
-			StartTimeout: "30s",
-			ReadyTimeout: "60s",
+			IdleAfter: "3s",
 		}),
 		Defaults:      e2eDefaults(),
 		Observability: e2eObservability(),

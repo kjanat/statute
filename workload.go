@@ -93,14 +93,14 @@ const (
 )
 
 // workloadActivation is one single-flight activation attempt. Every request
-// waiting for the same dormant workload shares one of these; err is written
-// before done closes and read only after.
+// waiting for the same dormant workload shares one; the outcome is the
+// phase the workload holds once done closes.
 type workloadActivation struct {
 	// observe marks an activation without a start call: the container
 	// was found running and only readiness has to be established.
 	observe bool
+	started time.Time
 	done    chan struct{}
-	err     error
 }
 
 // workload carries the lifecycle state of one on-demand container. The zero
@@ -123,7 +123,9 @@ type workload struct {
 	// active counts in-flight proxied requests, including streams and
 	// WebSockets: the gate decrements only when the proxy call returns.
 	active int
-	idle   *time.Timer
+	// waiting counts requests blocked on an activation or stop outcome.
+	waiting int
+	idle    *time.Timer
 	// failures counts consecutive failed activations; failedUntil is the
 	// end of the current backoff window.
 	failures    int
@@ -166,10 +168,10 @@ func (w *workload) containerRefLocked() string {
 	return w.container
 }
 
-// begin records one in-flight request and holds off the idle timer.
-func (w *workload) begin() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+// beginLocked records one in-flight request and holds off the idle timer.
+// w.mu must be held; serveState calls it in the same critical section that
+// read the phase.
+func (w *workload) beginLocked() {
 	w.active++
 	if w.idle != nil {
 		w.idle.Stop()
@@ -232,27 +234,41 @@ func (w *workload) ensureReady(ctx context.Context, p *dockerProvider) error {
 		if err != nil || ready {
 			return err
 		}
+		w.addWaiting(1)
 		select {
 		case <-wait:
+			w.addWaiting(-1)
 		case <-ctx.Done():
+			w.addWaiting(-1)
 			return workloadUnavailable{}
 		}
 	}
 }
 
+// addWaiting adjusts the count of requests blocked on an outcome.
+func (w *workload) addWaiting(delta int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.waiting += delta
+}
+
 // serveState reads the phase under the lock and decides what this request
 // does next: serve now, wait on the returned channel (an activation outcome
-// or a stop confirmation) and re-evaluate, or fail with err.
+// or a stop confirmation) and re-evaluate, or fail with err. A ready return
+// has already registered the request in the active count under the same
+// lock that read the phase, closing the gap an idle stop could enter.
 func (w *workload) serveState(p *dockerProvider) (ready bool, wait <-chan struct{}, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	switch w.phase {
 	case workloadReady:
+		w.beginLocked()
 		return true, nil, nil
 	case workloadStopPending:
 		// Revoke the pending stop: no Docker call has been issued yet,
 		// so the workload simply keeps serving.
 		w.toLocked(workloadReady)
+		w.beginLocked()
 		return true, nil, nil
 	case workloadFailed:
 		if remaining := time.Until(w.failedUntil); remaining > 0 {
@@ -306,7 +322,7 @@ func (g *workloadGate) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	g.w.begin()
+	// ensureReady registered this request in the active count.
 	defer g.w.end(g.p)
 	pool := g.p.currentPool(g.w.service)
 	if pool == nil || !pool.isLive() {
@@ -327,7 +343,7 @@ func (p *dockerProvider) beginActivationLocked(w *workload, observe bool) (*work
 	if !w.toLocked(workloadStarting) {
 		return nil, workloadUnavailable{}
 	}
-	act := &workloadActivation{observe: observe, done: make(chan struct{})}
+	act := &workloadActivation{observe: observe, started: time.Now(), done: make(chan struct{})}
 	w.activation = act
 	if !p.trackRun(func(ctx context.Context) { p.activate(ctx, w, act) }) {
 		w.activation = nil
@@ -370,7 +386,7 @@ func (p *dockerProvider) runActivation(ctx context.Context, w *workload, observe
 		insp, err := p.client.InspectContainer(rctx, ref)
 		if err == nil {
 			if !insp.Running {
-				return errors.New("container is not running")
+				return errWorkloadStopped
 			}
 			if p.probeReady(rctx, w, insp) {
 				return nil
@@ -451,44 +467,76 @@ func (p *dockerProvider) probeHTTP(ctx context.Context, w *workload, addr string
 	return resp.StatusCode >= 200 && resp.StatusCode < 400
 }
 
+// errWorkloadStopped reports a container observed not running during
+// readiness: an exit after our start, or an observe-only activation racing
+// a stop that a stale listing had not seen yet.
+var errWorkloadStopped = errors.New("container is not running")
+
 // finishActivation publishes one activation outcome to every waiter. On
 // failure the workload enters its backoff window, and a container this
-// attempt started is stopped again to reclaim its resources.
+// attempt started is stopped again to reclaim its resources. Two failure
+// shapes skip the backoff and return to dormant: a shutdown-cancelled
+// attempt, which the next boot adopts cleanly, and an observe-only
+// attempt whose container turned out stopped, which corrects a stale
+// listing.
 func (p *dockerProvider) finishActivation(ctx context.Context, w *workload, act *workloadActivation, err error) {
-	var cleanupRef string
+	out := w.settleActivation(p, act, err)
+	elapsed := time.Since(act.started).Round(time.Millisecond)
+	switch {
+	case err == nil:
+		log.Printf("statute: docker: workload %q: ready in %s (%d waiting)", w.service, elapsed, out.waiters)
+	case out.abandoned:
+		log.Printf("statute: docker: workload %q: activation abandoned by shutdown", w.service)
+	case out.stale:
+	default:
+		log.Printf("statute: docker: workload %q: activation failed after %s (%d waiting): %v", w.service, elapsed, out.waiters, err)
+		if out.cleanupRef != "" {
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workloadStopTimeout)
+			defer cancel()
+			if serr := p.client.StopContainer(sctx, out.cleanupRef); serr != nil {
+				log.Printf("statute: docker: workload %q: cleanup stop failed: %v", w.service, serr)
+			}
+		}
+	}
+}
+
+// activationOutcome is what settleActivation decided under the lock.
+type activationOutcome struct {
+	cleanupRef string
+	waiters    int
+	abandoned  bool
+	stale      bool
+}
+
+// settleActivation applies one activation outcome to the state machine and
+// wakes every waiter. w.mu is taken here.
+func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, err error) activationOutcome {
 	w.mu.Lock()
-	if err == nil {
+	defer w.mu.Unlock()
+	out := activationOutcome{
+		abandoned: err != nil && errors.Is(err, context.Canceled),
+		stale:     err != nil && act.observe && errors.Is(err, errWorkloadStopped),
+	}
+	switch {
+	case err == nil:
 		w.toLocked(workloadReady)
 		w.failures = 0
 		w.failedUntil = time.Time{}
 		w.armIdleLocked(p)
-	} else {
+	case out.abandoned || out.stale:
+		w.toLocked(workloadDormant)
+	default:
 		w.failures++
-		backoff := workloadBackoff(w.policy, w.failures)
-		w.failedUntil = time.Now().Add(backoff)
+		w.failedUntil = time.Now().Add(workloadBackoff(w.policy, w.failures))
 		w.toLocked(workloadFailed)
 		if !act.observe && !w.retired {
-			cleanupRef = w.containerRefLocked()
+			out.cleanupRef = w.containerRefLocked()
 		}
 	}
 	w.activation = nil
-	act.err = err
 	close(act.done)
-	service := w.service
-	w.mu.Unlock()
-
-	if err == nil {
-		log.Printf("statute: docker: workload %q: ready", service)
-		return
-	}
-	log.Printf("statute: docker: workload %q: activation failed: %v", service, err)
-	if cleanupRef != "" {
-		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workloadStopTimeout)
-		defer cancel()
-		if serr := p.client.StopContainer(sctx, cleanupRef); serr != nil {
-			log.Printf("statute: docker: workload %q: cleanup stop failed: %v", service, serr)
-		}
-	}
+	out.waiters = w.waiting
+	return out
 }
 
 // workloadBackoff is the exponential backoff after the given number of
@@ -605,10 +653,22 @@ func (p *dockerProvider) trackRun(f func(context.Context)) bool {
 }
 
 // workloadFor returns the registry entry gating the named service, or nil.
+// A retired entry holds no grant and gates nothing; it stays registered
+// only to carry its backoff bookkeeping across a recreation.
 func (p *dockerProvider) workloadFor(service string) *workload {
 	p.workloadMu.Lock()
 	defer p.workloadMu.Unlock()
-	return p.workloadEntries[service]
+	w := p.workloadEntries[service]
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	retired := w.retired
+	w.mu.Unlock()
+	if retired {
+		return nil
+	}
+	return w
 }
 
 // updateWorkloads reconciles the registry with one derived generation: it
@@ -639,19 +699,31 @@ func (p *dockerProvider) updateWorkloads(services []docker.Service) {
 			w = &workload{service: svc.Name, policy: policy}
 			p.workloadEntries[svc.Name] = w
 		}
+		w.mu.Lock()
+		w.retired = false
+		w.mu.Unlock()
 		p.observeWorkload(w, svc)
 	}
+	p.retireMissingLocked(seen)
+}
+
+// retireMissingLocked retires every entry whose service the generation no
+// longer names. A retired entry stays registered with its backoff
+// bookkeeping, so a crash-looping container recreated under the same
+// service name cannot shed its window; the registry is bounded by the
+// compiled policy map. p.workloadMu must be held.
+func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
 	for name, w := range p.workloadEntries {
 		if seen[name] {
 			continue
 		}
 		w.mu.Lock()
+		alreadyRetired := w.retired
 		w.retired = true
 		w.stopIdleLocked()
 		phase := w.phase
 		w.mu.Unlock()
-		delete(p.workloadEntries, name)
-		if phase == workloadReady || phase == workloadStarting {
+		if !alreadyRetired && (phase == workloadReady || phase == workloadStarting) {
 			p.warn([]string{fmt.Sprintf("service %q: on-demand grant removed; its container is left as it is", name)})
 		}
 	}

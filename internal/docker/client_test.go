@@ -123,8 +123,10 @@ func TestEventChangesTopology(t *testing.T) {
 		ev   Event
 		want bool
 	}{
+		{Event{Type: "container", Action: "create"}, true},
 		{Event{Type: "container", Action: "start"}, true},
 		{Event{Type: "container", Action: "die"}, true},
+		{Event{Type: "container", Action: "destroy"}, true},
 		{Event{Type: "container", Action: "health_status: healthy"}, true},
 		{Event{Type: "container", Action: "exec_start: ls"}, false},
 		{Event{Type: "network", Action: "connect"}, false},
