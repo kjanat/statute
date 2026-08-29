@@ -321,7 +321,15 @@ type Transport struct {
 	FlushInterval      time.Duration
 	ServerName         string
 	RootCAFiles        []string
+	ClientCertificate  *ClientCertificate
 	InsecureSkipVerify bool
+}
+
+// ClientCertificate is the normalized upstream client identity loaded when
+// the owning pool is constructed.
+type ClientCertificate struct {
+	CertFile string
+	KeyFile  string
 }
 
 // Route is a resolved route. Exactly one of the four actions is set:

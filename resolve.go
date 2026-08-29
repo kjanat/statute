@@ -465,6 +465,10 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 			return resolved.Transport{}, fmt.Errorf("root_ca_files[%d]: path is empty", i)
 		}
 	}
+	clientCertificate, err := resolveClientCertificate(t.ClientCertificate)
+	if err != nil {
+		return resolved.Transport{}, err
+	}
 	return resolved.Transport{
 		MaxIdleConnsPerHost:   maxIdle,
 		IdleConnTimeout:       idle,
@@ -474,8 +478,21 @@ func resolveTransport(t Transport) (resolved.Transport, error) {
 		FlushInterval:         flush,
 		ServerName:            t.ServerName,
 		RootCAFiles:           append([]string(nil), t.RootCAFiles...),
+		ClientCertificate:     clientCertificate,
 		InsecureSkipVerify:    t.InsecureSkipVerify,
 	}, nil
+}
+
+func resolveClientCertificate(c ClientCertificate) (*resolved.ClientCertificate, error) {
+	certFile := strings.TrimSpace(c.CertFile)
+	keyFile := strings.TrimSpace(c.KeyFile)
+	if (certFile == "") != (keyFile == "") {
+		return nil, errors.New("client_certificate: cert_file and key_file must be set together")
+	}
+	if certFile == "" {
+		return nil, nil
+	}
+	return &resolved.ClientCertificate{CertFile: certFile, KeyFile: keyFile}, nil
 }
 
 // resolveDocker fills provider defaults and parses the refresh interval.

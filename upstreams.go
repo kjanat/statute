@@ -184,8 +184,19 @@ type Transport struct {
 	// RootCAFiles are PEM files whose certificates replace the system roots
 	// when verifying backend certificates. Useful for internal CAs.
 	RootCAFiles []string
+	// ClientCertificate is the certificate and private key Statute presents
+	// to HTTPS backends that require client authentication. Both paths must
+	// be set together.
+	ClientCertificate ClientCertificate
 	// InsecureSkipVerify disables backend certificate verification
 	// entirely. The lint rule TLS002 warns when it is set; prefer
 	// RootCAFiles and ServerName.
 	InsecureSkipVerify bool
+}
+
+// ClientCertificate names one PEM-encoded certificate chain and its private
+// key. The pair is loaded once when the owning upstream pool is constructed.
+type ClientCertificate struct {
+	CertFile string
+	KeyFile  string
 }

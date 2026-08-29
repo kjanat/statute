@@ -4,11 +4,14 @@
 // behavior-rich HTTP server the compiled Statute binary proxies to over
 // real sockets. One binary serves as origin-1 or origin-2 depending on
 // ORIGIN_ID; TLS material is optional and turns the listener into an
-// HTTPS (and HTTP/2) origin for upstream-TLS scenarios.
+// HTTPS (and HTTP/2) origin for upstream-TLS scenarios. A client CA makes
+// that listener require a verified client certificate too.
 package main
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -31,6 +34,21 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	cert, key := os.Getenv("ORIGIN_TLS_CERT"), os.Getenv("ORIGIN_TLS_KEY")
+	if clientCAFile := os.Getenv("ORIGIN_TLS_CLIENT_CA"); clientCAFile != "" {
+		pemBytes, err := os.ReadFile(clientCAFile)
+		if err != nil {
+			log.Fatalf(`{"origin":%q,"event":"client_ca_error","err":%q}`, id, err)
+		}
+		clientCAs := x509.NewCertPool()
+		if !clientCAs.AppendCertsFromPEM(pemBytes) {
+			log.Fatalf(`{"origin":%q,"event":"client_ca_error","err":"no certificates found"}`, id)
+		}
+		srv.TLSConfig = &tls.Config{
+			ClientAuth: tls.RequireAndVerifyClientCert,
+			ClientCAs:  clientCAs,
+			MinVersion: tls.VersionTLS12,
+		}
+	}
 	log.SetFlags(0)
 	log.Printf(`{"origin":%q,"event":"listening","addr":%q,"tls":%v}`, id, addr, cert != "")
 	var err error

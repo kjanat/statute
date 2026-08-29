@@ -137,6 +137,12 @@ func transportPolicyString(transport resolved.Transport) string {
 		"header=" + transport.ResponseHeaderTimeout.String(),
 		"flush=" + transport.FlushInterval.String(),
 	}
+	if transport.ClientCertificate != nil {
+		parts = append(parts,
+			"client-cert="+transport.ClientCertificate.CertFile,
+			"client-key="+transport.ClientCertificate.KeyFile,
+		)
+	}
 	return strings.Join(parts, ",")
 }
 

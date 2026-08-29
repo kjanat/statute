@@ -96,6 +96,9 @@ func TestGraphDOT_ShowsDockerPoolPolicy(t *testing.T) {
 					MaxIdleConnsPerHost: 17, IdleConnTimeout: "71s", DialTimeout: "6s", TLSHandshakeTimeout: "7s",
 					ResponseHeaderTimeout: "8s", FlushInterval: "9s", ServerName: "app.internal",
 					RootCAFiles: []string{"/run/certs/root.pem"},
+					ClientCertificate: ClientCertificate{
+						CertFile: "/run/certs/client.crt", KeyFile: "/run/certs/client.key",
+					},
 				},
 				UpstreamHost: HostValue("app.internal"),
 			}).
@@ -110,6 +113,7 @@ func TestGraphDOT_ShowsDockerPoolPolicy(t *testing.T) {
 		"DP_0", "DP_1", "app@traefik", "app_traefik", "Docker pool policy", "host=app.internal",
 		"health=active(path=/ready,interval=13s,timeout=4s,healthy=4,unhealthy=5,host=probe.internal,statuses=[200 204])+passive(window=30s,max=3)",
 		"transport=custom-tls,sni=app.internal,roots=[/run/certs/root.pem],max-idle=17,idle=1m11s,dial=6s,handshake=7s,header=8s,flush=9s",
+		"client-cert=/run/certs/client.crt,client-key=/run/certs/client.key",
 		"transport=insecure-tls,sni=,roots=[],max-idle=32,idle=1m30s,dial=5s,handshake=5s,header=0s,flush=0s",
 	} {
 		if !strings.Contains(graph, want) {

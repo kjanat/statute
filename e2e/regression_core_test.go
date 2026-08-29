@@ -174,9 +174,9 @@ func awaitNodeOrigins(ctx context.Context, t *testing.T, r *harness.Run, server,
 	})
 }
 
-// TestRegression_UpstreamTLSParity proves backend TLS verification and
-// Host policy hold identically for proxied requests and active health
-// probes, and that a route whose pool cannot verify its backend fails
+// TestRegression_UpstreamTLSParity proves backend TLS verification, client
+// identity, and Host policy hold identically for proxied requests and active
+// health probes, and that a route whose pool cannot verify its backend fails
 // closed.
 func TestRegression_UpstreamTLSParity(t *testing.T) {
 	t.Parallel()
