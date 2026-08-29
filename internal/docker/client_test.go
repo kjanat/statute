@@ -72,6 +72,7 @@ func TestListContainers(t *testing.T) {
 		Labels:   map[string]string{"statute.enable": "true"},
 		Networks: map[string]string{"bridge": "172.17.0.2"},
 		Ports:    []int{8080},
+		Running:  true,
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ListContainers = %+v, want %+v", got, want)
@@ -229,5 +230,95 @@ func TestUnixSocketEndToEnd(t *testing.T) {
 	got, err := client.ListContainers(context.Background())
 	if err != nil || len(got) != 0 {
 		t.Fatalf("ListContainers over unix socket: %v %v", got, err)
+	}
+}
+
+// lifecycleDaemon adds the inspect/start/stop endpoints to a fake daemon
+// and records the lifecycle calls it receives.
+func lifecycleDaemon(t *testing.T, inspectJSON string) (*Client, *[]string) {
+	t.Helper()
+	var calls []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/containers/{id}/json", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, "inspect "+r.PathValue("id"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(inspectJSON))
+	})
+	mux.HandleFunc("/containers/{id}/start", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, "start "+r.PathValue("id"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/containers/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, "stop "+r.PathValue("id"))
+		w.WriteHeader(http.StatusNotModified)
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	client, err := NewClient("tcp://" + strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return client, &calls
+}
+
+func TestInspectContainer(t *testing.T) {
+	client, _ := lifecycleDaemon(t, `{"State":{"Running":true,"Health":{"Status":"healthy"}}}`)
+	got, err := client.InspectContainer(context.Background(), "abc123")
+	if err != nil {
+		t.Fatalf("InspectContainer: %v", err)
+	}
+	want := InspectState{Running: true, Health: "healthy"}
+	if got != want {
+		t.Fatalf("InspectContainer = %+v, want %+v", got, want)
+	}
+}
+
+func TestInspectContainerWithoutHealthcheck(t *testing.T) {
+	client, _ := lifecycleDaemon(t, `{"State":{"Running":false}}`)
+	got, err := client.InspectContainer(context.Background(), "abc123")
+	if err != nil {
+		t.Fatalf("InspectContainer: %v", err)
+	}
+	if got.Running || got.Health != "" {
+		t.Fatalf("InspectContainer = %+v, want stopped without health", got)
+	}
+}
+
+func TestStartAndStopContainer(t *testing.T) {
+	client, calls := lifecycleDaemon(t, `{}`)
+	if err := client.StartContainer(context.Background(), "abc123"); err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+	// 304 means already stopped, which is success.
+	if err := client.StopContainer(context.Background(), "abc123"); err != nil {
+		t.Fatalf("StopContainer: %v", err)
+	}
+	want := []string{"start abc123", "stop abc123"}
+	if !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("calls = %v, want %v", *calls, want)
+	}
+}
+
+func TestEventActorName(t *testing.T) {
+	events := []string{
+		`{"Type":"container","Action":"start","Actor":{"ID":"abc123","Attributes":{"name":"web-1"}}}`,
+	}
+	client := fakeDaemon(t, "[]", events)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var got []Event
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = client.StreamEvents(ctx, func(ev Event) {
+			got = append(got, ev)
+			cancel()
+		})
+	}()
+	<-done
+	if len(got) != 1 || got[0].ActorName() != "web-1" || got[0].Actor.ID != "abc123" {
+		t.Fatalf("events = %+v, want actor name web-1", got)
 	}
 }

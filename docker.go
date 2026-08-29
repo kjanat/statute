@@ -1,5 +1,9 @@
 package statute
 
+import (
+	"statute.kjanat.dev/resolved"
+)
+
 // DockerConfig declares the Docker label-discovery provider. Construct via
 // Docker.
 //
@@ -58,6 +62,7 @@ type DockerConfig struct {
 	middleware        map[string][]Middleware
 	defaultMiddleware []Middleware
 	poolPolicy        map[string]PoolPolicy
+	workloads         map[string]WorkloadPolicy
 }
 
 // Docker begins a Docker provider declaration with the default endpoint
@@ -142,4 +147,79 @@ func (d *DockerConfig) PoolPolicy(name string, policy PoolPolicy) *DockerConfig 
 	}
 	d.poolPolicy[name] = policy
 	return d
+}
+
+// Workload registers code-owned on-demand activation policy for one
+// discovered-service identity, such as "foo@traefik". The matched service's
+// container starts when a routed request needs it, serves once readiness is
+// established, and stops after IdleAfter. Only registration grants that
+// authority; a label can never widen it. The policy applies only to a
+// service contributed by exactly one container, since a merged service has
+// no single activation owner; the provider reports when that bars it. An
+// unmatched name produces a Docker provider diagnostic. Registering the
+// same name again replaces the earlier policy.
+func (d *DockerConfig) Workload(name string, policy WorkloadPolicy) *DockerConfig {
+	if d.workloads == nil {
+		d.workloads = map[string]WorkloadPolicy{}
+	}
+	d.workloads[name] = policy
+	return d
+}
+
+// WorkloadPolicy configures on-demand activation for one Docker-discovered
+// service. The zero value of every field selects its default.
+type WorkloadPolicy struct {
+	// IdleAfter stops the container this long after the last in-flight
+	// request, WebSocket, or streaming response finished. Default "15m".
+	IdleAfter string
+	// StartTimeout bounds the Docker start call. Default "30s".
+	StartTimeout string
+	// ReadyTimeout bounds the wait for readiness after a start. Default "2m".
+	ReadyTimeout string
+	// BackoffBase and BackoffCap bound the exponential backoff between
+	// failed activations. Defaults "5s" and "5m".
+	BackoffBase string
+	BackoffCap  string
+	// Readiness selects how an activated container proves it can serve;
+	// the zero value is automatic. See Readiness.
+	Readiness Readiness
+}
+
+// Readiness is a workload readiness policy. The zero value is automatic:
+// the container's HEALTHCHECK when it defines one, else a TCP connect.
+// Construct the explicit policies from DockerHealthReadiness, TCPReadiness,
+// or HTTPReadiness. There is no policy that trusts a running container:
+// running is not ready.
+type Readiness struct {
+	mode resolved.ReadinessMode
+	path string
+}
+
+// DockerHealthReadiness waits for the container's HEALTHCHECK to report
+// healthy. A container without a HEALTHCHECK never becomes ready under it.
+var DockerHealthReadiness = Readiness{mode: resolved.ReadinessDockerHealth}
+
+// TCPReadiness waits for a TCP connect to the discovered backend to succeed.
+var TCPReadiness = Readiness{mode: resolved.ReadinessTCP}
+
+// HTTPReadiness probes the given path over the pool's transport until the
+// response status is in the 200-399 range.
+func HTTPReadiness(path string) Readiness {
+	return Readiness{mode: resolved.ReadinessHTTP, path: path}
+}
+
+// String returns the canonical name of the readiness policy.
+func (r Readiness) String() string {
+	switch r.mode {
+	case resolved.ReadinessAuto:
+		return "auto"
+	case resolved.ReadinessDockerHealth:
+		return "docker_health"
+	case resolved.ReadinessTCP:
+		return "tcp"
+	case resolved.ReadinessHTTP:
+		return "http:" + r.path
+	default:
+		return enumUnknown
+	}
 }

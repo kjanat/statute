@@ -124,3 +124,24 @@ func TestGraphDOT_ShowsDockerPoolPolicy(t *testing.T) {
 		t.Errorf("policy node identifiers are not distinct:\n%s", graph)
 	}
 }
+
+func TestGraphDOT_ShowsDockerWorkload(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":8080")},
+		Docker: Docker().Workload("app@traefik", WorkloadPolicy{
+			IdleAfter: "10m",
+			Readiness: HTTPReadiness("/healthz"),
+		}),
+	}
+	var buf bytes.Buffer
+	if err := GraphDOT(cfg, &buf); err != nil {
+		t.Fatalf("GraphDOT: %v", err)
+	}
+	dot := buf.String()
+	for _, want := range []string{"DW_0", "Docker workload", "app@traefik", "idle_after=10m", "readiness=http:/healthz"} {
+		if !strings.Contains(dot, want) {
+			t.Errorf("DOT output misses %q:\n%s", want, dot)
+		}
+	}
+}

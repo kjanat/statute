@@ -13,6 +13,7 @@ func webContainer(labels map[string]string) Container {
 		Labels:   labels,
 		Networks: map[string]string{"bridge": "172.17.0.2"},
 		Ports:    []int{8080},
+		Running:  true,
 	}
 }
 
@@ -64,6 +65,10 @@ func TestExtractNativeFull(t *testing.T) {
 			native("alt.example.com", "/v1/*"),
 		},
 		Backend:             Backend{Address: "https://172.17.0.2:9000", Weight: 3},
+		Container:           "web-1",
+		ContainerID:         "abc123",
+		Running:             true,
+		Contributors:        1,
 		Strategy:            "least_connections",
 		HealthCheckPath:     "/healthz",
 		HealthCheckInterval: "5s",

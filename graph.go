@@ -66,8 +66,45 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 	graphFallback(d, r)
 	graphUpstreams(d, r)
 	graphDockerPoolPolicies(d, r)
+	graphDockerWorkloads(d, r)
 	d.printf("}\n")
 	return d.err
+}
+
+// graphDockerWorkloads renders one node per code-owned on-demand workload
+// policy, mirroring the pool-policy nodes.
+func graphDockerWorkloads(d *dotWriter, r *resolved.Config) {
+	if r.Docker == nil || len(r.Docker.Workloads) == 0 {
+		return
+	}
+	names := make([]string, 0, len(r.Docker.Workloads))
+	for name := range r.Docker.Workloads {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	d.printf("\n  // docker on-demand workloads\n")
+	for i, name := range names {
+		w := r.Docker.Workloads[name]
+		label := fmt.Sprintf("%s\\nDocker workload\\nidle_after=%s\\nready_timeout=%s\\nreadiness=%s",
+			name, w.IdleAfter, w.ReadyTimeout, readinessPolicyString(w.Readiness))
+		d.printf("  DW_%d [shape=ellipse, style=\"filled,dashed\", fillcolor=\"#fff3cd\", label=%q];\n", i, label)
+	}
+}
+
+func readinessPolicyString(r resolved.WorkloadReadiness) string {
+	switch r.Mode {
+	case resolved.ReadinessAuto:
+		return "auto"
+	case resolved.ReadinessDockerHealth:
+		return "docker_health"
+	case resolved.ReadinessTCP:
+		return "tcp"
+	case resolved.ReadinessHTTP:
+		return "http:" + r.Path
+	default:
+		return enumUnknown
+	}
 }
 
 func graphDockerPoolPolicies(d *dotWriter, r *resolved.Config) {

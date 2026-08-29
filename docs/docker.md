@@ -37,6 +37,7 @@ statute.Main(statute.Config{
 | `Middleware(name, mw...)`  | Register a named, code-owned middleware chain that container labels may reference (see below). Re-registering a name replaces it.     |
 | `DefaultMiddleware(mw...)` | Middleware applied to every Docker-discovered route, outermost — before label-referenced chains and label hints.                      |
 | `PoolPolicy(name, policy)` | Attach code-owned transport, Host, and health policy to one exact discovered-service identity. Re-registering a name replaces it.     |
+| `Workload(name, policy)`   | Grant on-demand activation for one exact discovered-service identity: start its container on routed demand, stop it when idle.        |
 
 > **Warning — TCP endpoints are unauthenticated.** The client speaks plain
 > HTTP with no TLS or client certificates, and whoever can answer on that
@@ -76,6 +77,61 @@ discovered from labels. Cover labeled hosts with a wildcard certificate
 (`AutoTLS("example.com", "*.example.com")` via DNS-01) or list them
 explicitly. A label naming a host outside your certificate coverage will
 route, but TLS for it will not be issued.
+
+## On-demand workloads (`Workload`)
+
+A service that is needed rarely can scale to zero. Register its identity
+with `Workload` and statute starts the container when a routed request
+needs it, holds the request until readiness is established, proxies it, and
+stops the container again once it has been idle:
+
+```go
+Docker: statute.Docker().
+    Workload("tools", statute.WorkloadPolicy{
+        IdleAfter:    "15m",
+        ReadyTimeout: "2m",
+        Readiness:    statute.HTTPReadiness("/healthz"),
+    }),
+```
+
+Registration is the only source of the start/stop authority; a container
+label can never grant it. The policy applies to a service contributed by
+exactly one container. A merged multi-container service has no single
+activation owner, so the policy is not applied and the provider reports it.
+
+How it behaves:
+
+- **A dormant route still matches.** The stopped container keeps its
+  identity, labels, and routes; only the backend address is absent until it
+  runs. The route never falls through to `Fallback` because the workload is
+  stopped.
+- **Running is not ready.** An activated container serves nothing until the
+  readiness policy proves it: the container's `HEALTHCHECK` when it defines
+  one, else a TCP connect (the default), or `HTTPReadiness(path)` /
+  `TCPReadiness` / `DockerHealthReadiness` explicitly.
+- **Activation is single-flight.** Concurrent requests for one dormant
+  workload produce one start call and one readiness wait, and every waiter
+  gets the same outcome. One client disconnecting cancels nothing the
+  others still need.
+- **Failure is terminal for the request.** A start error or readiness
+  timeout answers `503` and never continues into `Fallback`. The container
+  statute started is stopped again, and an exponential backoff
+  (`BackoffBase` to `BackoffCap`) spaces further attempts; requests inside
+  the window get `503` with `Retry-After`.
+- **Idle is measured from request completion.** In-flight requests, open
+  WebSockets, and open streaming responses each hold the workload active;
+  the `IdleAfter` timer starts when the last one finishes. A request
+  arriving while the stop is pending revokes it; one arriving after the
+  stop call was issued waits and triggers a fresh activation.
+- **External changes reconcile.** A container stopped outside statute
+  becomes dormant and reactivates on the next request. A container started
+  outside statute is adopted through the same readiness gate, and the idle
+  policy applies to it: a manual start does not exempt a workload from its
+  own scale-to-zero policy. Statute's own shutdown leaves workloads as they
+  are.
+
+Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
+`BackoffBase` 5s, `BackoffCap` 5m.
 
 ## Native label schema (`statute.*`)
 

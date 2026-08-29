@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"net/http"
 	"slices"
 	"sort"
 	"strings"
@@ -40,13 +41,20 @@ type dockerProvider struct {
 
 	lifecycleMu sync.Mutex
 	current     *dockerRun
+	// syncMu serializes reconciles: besides the reconcile loop, an
+	// activation may sync to materialize a started container's backend.
+	syncMu sync.Mutex
 	// warned dedupes label warnings across reconciles so a misconfigured
-	// container logs once, not once per event. Touched only by the sync
-	// goroutine (and start, which precedes it).
+	// container logs once per provider lifetime. Guarded by syncMu.
 	warned map[string]bool
 	// refusal is the previous generation's refusal announcement, or "" when
 	// it refused nothing; see announceRefusal.
 	refusal string
+
+	// workloadEntries is the on-demand lifecycle registry, keyed by
+	// discovered-service identity; entries outlive generation swaps.
+	workloadMu      sync.Mutex
+	workloadEntries map[string]*workload
 }
 
 // dockerRun owns one provider generation's watcher, reconcile loop, and
@@ -58,6 +66,26 @@ type dockerRun struct {
 	wg       sync.WaitGroup
 	kick     chan struct{}
 	stopOnce sync.Once
+	// trackMu guards stopping, so no goroutine joins wg once stop began.
+	trackMu  sync.Mutex
+	stopping bool
+}
+
+// track runs f on the run's context under its WaitGroup, so stop awaits it.
+// It reports false once the run is stopping.
+func (r *dockerRun) track(f func(context.Context)) bool {
+	r.trackMu.Lock()
+	if r.stopping || r.ctx.Err() != nil {
+		r.trackMu.Unlock()
+		return false
+	}
+	r.wg.Add(1)
+	r.trackMu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		f(r.ctx)
+	}()
+	return true
 }
 
 // dockerDebounce coalesces bursts of container events (compose up starts
@@ -119,6 +147,10 @@ func (r *dockerRun) stop() {
 		return
 	}
 	r.stopOnce.Do(func() {
+		r.trackMu.Lock()
+		r.stopping = true
+		r.trackMu.Unlock()
+		r.provider.stopWorkloadTimers()
 		r.cancel()
 		r.wg.Wait()
 		p := r.provider
@@ -224,12 +256,17 @@ func (p *dockerProvider) syncLogged(ctx context.Context) {
 
 // sync lists containers, derives services from labels, builds the next
 // route-table generation, swaps it in, and retires replaced pool handlers.
+// Reconciles are serialized: activations may trigger one to materialize a
+// started container's backend while the event loop schedules its own.
 func (p *dockerProvider) sync(ctx context.Context) error {
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
 	containers, err := p.client.ListContainers(ctx)
 	if err != nil {
 		return err
 	}
 	services, tombstones := p.deriveServices(containers)
+	p.updateWorkloads(services)
 
 	prev := p.srv.dynamic.Load()
 	// Pool health checkers deliberately outlive this sync call; they derive
@@ -259,6 +296,11 @@ func (p *dockerProvider) deriveServices(containers []docker.Container) ([]docker
 	var tombs []docker.Matcher
 	for _, c := range containers {
 		svcs, envelopes, warns := docker.Extract(c, opts)
+		// A stopped container participates only when a workload policy
+		// names one of its services; any other stays invisible.
+		if !c.Running && !p.workloadCovered(svcs) {
+			continue
+		}
 		p.warn(warns)
 		tombs = append(tombs, envelopes...)
 		for _, svc := range svcs {
@@ -295,14 +337,29 @@ func (p *dockerProvider) warn(warns []string) {
 // base: the backend joins the pool, unseen routes are appended, and pool
 // settings keep base's (first container wins). Routes differing only in
 // middleware references stay separate — the references are router-scoped.
+// Contributors accumulates so workload policy can see that this service has
+// no single activation owner.
 func mergeService(base *docker.Service, add docker.Service) {
 	base.Extra = append(base.Extra, add.Backend)
 	base.Extra = append(base.Extra, add.Extra...)
+	base.Contributors += add.Contributors
+	base.Running = base.Running || add.Running
 	for _, r := range add.Routes {
 		if !slices.ContainsFunc(base.Routes, r.Equal) {
 			base.Routes = append(base.Routes, r)
 		}
 	}
+}
+
+// workloadCovered reports whether any of the extracted services is named by
+// a code-owned workload policy.
+func (p *dockerProvider) workloadCovered(svcs []docker.Service) bool {
+	for i := range svcs {
+		if _, ok := p.cfg.Workloads[svcs[i].Name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // buildTable turns derived services into the next dynamic generation,
@@ -351,35 +408,14 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	if warn != "" {
 		p.warn([]string{warn})
 	}
-	policy, hasPolicy := preparePoolPolicy(&pool, p.cfg.PoolPolicy, svc.Name)
-	rp, err := resolvePool(svc.Name, pool)
+	gated := p.workloadFor(svc.Name)
+	rp, err := p.resolveServicePool(svc, pool, gated)
 	if err != nil {
 		p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", svc.Name, err)})
 		return p.refuse(svc.Name, svc.Routes)
 	}
-	if hasPolicy {
-		applyPoolPolicy(rp, policy)
-	}
 
-	hints, warns := serviceHints(svc)
-	p.warn(warns)
-	type routeChain struct {
-		m   docker.Matcher
-		mws []resolved.Middleware
-	}
-	var kept []routeChain
-	var tombs []docker.Matcher
-	for _, m := range svc.Routes {
-		mws, warn := p.routeMiddleware(svc, m, hints)
-		if warn != "" {
-			p.warn([]string{warn})
-			// Fails closed per matcher, so this one refuses on its own
-			// while its siblings keep routing.
-			tombs = append(tombs, p.refuse(svc.Name, []docker.Matcher{m})...)
-			continue
-		}
-		kept = append(kept, routeChain{m: m, mws: mws})
-	}
+	kept, tombs := p.routeChains(svc)
 	if len(kept) == 0 {
 		return tombs
 	}
@@ -392,6 +428,12 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		}
 		return append(tombs, p.refuse(svc.Name, keptMatchers)...)
 	}
+	// The gate resolves the pool at proxy time: the generation that
+	// queued a waiter cannot carry a dormant container's backend.
+	base := http.Handler(running.handler)
+	if gated != nil {
+		base = &workloadGate{p: p, w: gated}
+	}
 	for _, rc := range kept {
 		next.routes = append(next.routes, compiledRoute{
 			route: &resolved.Route{
@@ -400,11 +442,58 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 				Upstream:   rp,
 				Middleware: rc.mws,
 			},
-			handler: wrapMiddleware(rc.mws, running.handler),
+			handler: wrapMiddleware(rc.mws, base),
 			matcher: rc.m,
 		})
 	}
 	return tombs
+}
+
+// resolveServicePool resolves the derived pool and overlays the code-owned
+// policy. A gated dormant service legitimately has no backends yet: its
+// container is stopped and the address exists only once it runs. The route
+// must still compile, so the empty pool is allowed through and the gate
+// holds requests until a generation carries the backend.
+func (p *dockerProvider) resolveServicePool(svc *docker.Service, pool Pool, gated *workload) (*resolved.Pool, error) {
+	policy, hasPolicy := preparePoolPolicy(&pool, p.cfg.PoolPolicy, svc.Name)
+	resolve := resolvePool
+	if gated != nil && len(pool.Backends) == 0 {
+		resolve = resolveDormantPool
+	}
+	rp, err := resolve(svc.Name, pool)
+	if err != nil {
+		return nil, err
+	}
+	if hasPolicy {
+		applyPoolPolicy(rp, policy)
+	}
+	return rp, nil
+}
+
+// routeChain is one route matcher with its resolved middleware chain.
+type routeChain struct {
+	m   docker.Matcher
+	mws []resolved.Middleware
+}
+
+// routeChains resolves each of the service's routes into its middleware
+// chain. A route referencing an unregistered middleware fails closed per
+// matcher: it joins the refusal envelope while its siblings keep routing.
+func (p *dockerProvider) routeChains(svc *docker.Service) ([]routeChain, []docker.Matcher) {
+	hints, warns := serviceHints(svc)
+	p.warn(warns)
+	var kept []routeChain
+	var tombs []docker.Matcher
+	for _, m := range svc.Routes {
+		mws, warn := p.routeMiddleware(svc, m, hints)
+		if warn != "" {
+			p.warn([]string{warn})
+			tombs = append(tombs, p.refuse(svc.Name, []docker.Matcher{m})...)
+			continue
+		}
+		kept = append(kept, routeChain{m: m, mws: mws})
+	}
+	return kept, tombs
 }
 
 // preparePoolPolicy removes discovered values for fields that code owns before

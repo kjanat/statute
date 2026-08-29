@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,10 +20,14 @@ import (
 // fakeDaemonContainer is the wire shape /containers/json responses are
 // built from in these tests.
 type fakeDaemonContainer struct {
-	name   string
-	ip     string
-	port   int
-	labels map[string]string
+	name    string
+	ip      string
+	port    int
+	labels  map[string]string
+	stopped bool
+	// health is the HEALTHCHECK status inspect reports; "" means the
+	// container defines none.
+	health string
 }
 
 func daemonJSON(t *testing.T, containers []fakeDaemonContainer) string {
@@ -32,13 +37,22 @@ func daemonJSON(t *testing.T, containers []fakeDaemonContainer) string {
 	}
 	out := make([]map[string]any, 0, len(containers))
 	for i, c := range containers {
+		state := "running"
+		ports := []map[string]any{{"PrivatePort": c.port, "Type": "tcp"}}
+		networks := map[string]netJSON{"bridge": {IPAddress: c.ip}}
+		if c.stopped {
+			state = "exited"
+			ports = nil
+			networks = nil
+		}
 		out = append(out, map[string]any{
 			"Id":     fmt.Sprintf("id-%d", i),
 			"Names":  []string{"/" + c.name},
+			"State":  state,
 			"Labels": c.labels,
-			"Ports":  []map[string]any{{"PrivatePort": c.port, "Type": "tcp"}},
+			"Ports":  ports,
 			"NetworkSettings": map[string]any{
-				"Networks": map[string]netJSON{"bridge": {IPAddress: c.ip}},
+				"Networks": networks,
 			},
 		})
 	}
@@ -49,19 +63,121 @@ func daemonJSON(t *testing.T, containers []fakeDaemonContainer) string {
 	return string(b)
 }
 
+// fakeDaemon is a stateful fake Docker Engine: listing, inspect, and the
+// start/stop lifecycle endpoints all read and mutate one container list.
+type fakeDaemon struct {
+	t  *testing.T
+	mu sync.Mutex
+
+	containers []fakeDaemonContainer
+	starts     map[string]int
+	stops      map[string]int
+	// failStart makes every start call answer 500.
+	failStart bool
+}
+
+func (d *fakeDaemon) swap(cs []fakeDaemonContainer) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.containers = cs
+}
+
+func (d *fakeDaemon) find(ref string) *fakeDaemonContainer {
+	for i := range d.containers {
+		if d.containers[i].name == ref || fmt.Sprintf("id-%d", i) == ref {
+			return &d.containers[i]
+		}
+	}
+	return nil
+}
+
+func (d *fakeDaemon) startCount(name string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.starts[name]
+}
+
+func (d *fakeDaemon) stopCount(name string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.stops[name]
+}
+
+func (d *fakeDaemon) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		<-r.Context().Done()
+	})
+	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) {
+		d.mu.Lock()
+		body := daemonJSON(d.t, d.containers)
+		d.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+	mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/containers/"), "/")
+		if len(parts) != 2 {
+			http.NotFound(w, r)
+			return
+		}
+		ref, action := parts[0], parts[1]
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		c := d.find(ref)
+		if c == nil {
+			http.NotFound(w, r)
+			return
+		}
+		switch action {
+		case "json":
+			var health any
+			if c.health != "" {
+				health = map[string]any{"Status": c.health}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"State": map[string]any{"Running": !c.stopped, "Health": health},
+			})
+		case "start":
+			d.starts[c.name]++
+			if d.failStart {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			c.stopped = false
+			w.WriteHeader(http.StatusNoContent)
+		case "stop":
+			d.stops[c.name]++
+			c.stopped = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	return mux
+}
+
 // newFakeProvider builds a dockerProvider wired to a fake daemon serving
 // the given container list. The returned function swaps the daemon's
 // container list for reconcile tests.
 func newFakeProvider(t *testing.T, cfg *resolved.Docker, containers []fakeDaemonContainer) (*dockerProvider, *server, func([]fakeDaemonContainer)) {
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, containers)
+	return p, srv, daemon.swap
+}
+
+// newFakeProviderDaemon is newFakeProvider returning the daemon itself, for
+// tests that drive the lifecycle endpoints.
+func newFakeProviderDaemon(t *testing.T, cfg *resolved.Docker, containers []fakeDaemonContainer) (*dockerProvider, *server, *fakeDaemon) {
 	t.Helper()
-	current := daemonJSON(t, containers)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
-	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(current))
-	})
-	ts := httptest.NewServer(mux)
+	daemon := &fakeDaemon{t: t, containers: containers, starts: map[string]int{}, stops: map[string]int{}}
+	ts := httptest.NewServer(daemon.handler())
 	t.Cleanup(ts.Close)
 
 	cfg.Endpoint = "tcp://" + strings.TrimPrefix(ts.URL, "http://")
@@ -77,7 +193,7 @@ func newFakeProvider(t *testing.T, cfg *resolved.Docker, containers []fakeDaemon
 			}
 		}
 	})
-	return p, srv, func(cs []fakeDaemonContainer) { current = daemonJSON(t, cs) }
+	return p, srv, daemon
 }
 
 // mustSync reconciles once, failing the test on error.
@@ -1163,5 +1279,58 @@ func TestResolveConfigCarriesDocker(t *testing.T) {
 	}
 	if rc.Docker == nil || !rc.Docker.TraefikLabels {
 		t.Fatalf("resolved docker = %+v", rc.Docker)
+	}
+}
+
+func TestResolveDockerWorkloads(t *testing.T) {
+	d, err := resolveDocker(Docker().
+		Workload("wl", WorkloadPolicy{}).
+		Workload("api@traefik", WorkloadPolicy{
+			IdleAfter:    "1m",
+			StartTimeout: "10s",
+			ReadyTimeout: "45s",
+			BackoffBase:  "1s",
+			BackoffCap:   "30s",
+			Readiness:    HTTPReadiness("/healthz"),
+		}))
+	if err != nil {
+		t.Fatalf("resolveDocker: %v", err)
+	}
+
+	defaults := d.Workloads["wl"]
+	want := resolved.Workload{
+		IdleAfter:    15 * time.Minute,
+		StartTimeout: 30 * time.Second,
+		ReadyTimeout: 2 * time.Minute,
+		BackoffBase:  5 * time.Second,
+		BackoffCap:   5 * time.Minute,
+	}
+	if defaults != want {
+		t.Errorf("defaulted workload = %+v, want %+v", defaults, want)
+	}
+
+	explicit := d.Workloads["api@traefik"]
+	if explicit.IdleAfter != time.Minute || explicit.ReadyTimeout != 45*time.Second {
+		t.Errorf("explicit workload = %+v", explicit)
+	}
+	if explicit.Readiness.Mode != resolved.ReadinessHTTP || explicit.Readiness.Path != "/healthz" {
+		t.Errorf("readiness = %+v", explicit.Readiness)
+	}
+}
+
+func TestResolveDockerWorkloadErrors(t *testing.T) {
+	tests := map[string]WorkloadPolicy{
+		"bad idle":       {IdleAfter: "later"},
+		"negative idle":  {IdleAfter: "-1m"},
+		"cap below base": {BackoffBase: "10s", BackoffCap: "1s"},
+		"relative path":  {Readiness: HTTPReadiness("healthz")},
+	}
+	for name, policy := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveDocker(Docker().Workload("wl", policy))
+			if err == nil || !strings.Contains(err.Error(), `workload "wl"`) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }

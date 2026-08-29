@@ -281,6 +281,13 @@ func resolvePool(name string, p Pool) (*resolved.Pool, error) {
 	if len(p.Backends) == 0 {
 		return nil, errors.New("pool has no backends")
 	}
+	return resolveDormantPool(name, p)
+}
+
+// resolveDormantPool is resolvePool without the backend requirement. Only
+// the Docker provider calls it, for a workload-gated service whose stopped
+// container has no address yet.
+func resolveDormantPool(name string, p Pool) (*resolved.Pool, error) {
 	rp := &resolved.Pool{
 		Name:     name,
 		Strategy: resolved.Strategy(p.Strategy),
@@ -521,6 +528,10 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 	if err != nil {
 		return nil, err
 	}
+	workloads, err := resolveDockerWorkloads(d)
+	if err != nil {
+		return nil, err
+	}
 	return &resolved.Docker{
 		Endpoint:          endpoint,
 		Network:           d.network,
@@ -530,7 +541,63 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 		Middleware:        registry,
 		DefaultMiddleware: defaults,
 		PoolPolicy:        poolPolicy,
+		Workloads:         workloads,
 	}, nil
+}
+
+// Workload policy defaults; every field of WorkloadPolicy may override its own.
+const (
+	defaultWorkloadIdleAfter    = 15 * time.Minute
+	defaultWorkloadStartTimeout = 30 * time.Second
+	defaultWorkloadReadyTimeout = 2 * time.Minute
+	defaultWorkloadBackoffBase  = 5 * time.Second
+	defaultWorkloadBackoffCap   = 5 * time.Minute
+)
+
+// resolveDockerWorkloads validates and normalizes the code-owned on-demand
+// activation policy map. Like PoolPolicy, exact-name matching against
+// discovered services happens during reconciliation.
+func resolveDockerWorkloads(d *DockerConfig) (map[string]resolved.Workload, error) {
+	var out map[string]resolved.Workload
+	for _, name := range slices.Sorted(maps.Keys(d.workloads)) {
+		policy := d.workloads[name]
+		w := resolved.Workload{
+			Readiness: resolved.WorkloadReadiness{Mode: policy.Readiness.mode, Path: policy.Readiness.path},
+		}
+		fields := []struct {
+			label    string
+			value    string
+			fallback time.Duration
+			into     *time.Duration
+		}{
+			{"idle_after", policy.IdleAfter, defaultWorkloadIdleAfter, &w.IdleAfter},
+			{"start_timeout", policy.StartTimeout, defaultWorkloadStartTimeout, &w.StartTimeout},
+			{"ready_timeout", policy.ReadyTimeout, defaultWorkloadReadyTimeout, &w.ReadyTimeout},
+			{"backoff_base", policy.BackoffBase, defaultWorkloadBackoffBase, &w.BackoffBase},
+			{"backoff_cap", policy.BackoffCap, defaultWorkloadBackoffCap, &w.BackoffCap},
+		}
+		for _, f := range fields {
+			v, err := parse.DurationOr(f.value, f.fallback)
+			if err != nil {
+				return nil, fmt.Errorf("workload %q: %s: %w", name, f.label, err)
+			}
+			if v <= 0 {
+				return nil, fmt.Errorf("workload %q: %s: must be positive, got %q", name, f.label, f.value)
+			}
+			*f.into = v
+		}
+		if w.BackoffCap < w.BackoffBase {
+			return nil, fmt.Errorf("workload %q: backoff_cap %s is below backoff_base %s", name, w.BackoffCap, w.BackoffBase)
+		}
+		if w.Readiness.Mode == resolved.ReadinessHTTP && !strings.HasPrefix(w.Readiness.Path, "/") {
+			return nil, fmt.Errorf("workload %q: readiness path %q: must start with /", name, w.Readiness.Path)
+		}
+		if out == nil {
+			out = make(map[string]resolved.Workload, len(d.workloads))
+		}
+		out[name] = w
+	}
+	return out, nil
 }
 
 // resolveDockerMiddleware resolves the code-owned registry of named
