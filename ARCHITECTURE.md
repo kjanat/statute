@@ -27,14 +27,15 @@ complete when only the surface or runtime understands it.
 
 ## Ownership model
 
-| Layer          | Owns                                                                                                                  | Must not absorb                                   |
-| -------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Route          | host/path/client matchers, one route action, route middleware                                                         | backend transport or state shared by other routes |
-| Upstream pool  | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                     | router-specific middleware or matchers            |
-| Listener       | ingress protocol, downstream TLS/client-auth policy, material selection, trusted-proxy policy, wrapping/observability | route-specific policy                             |
-| Docker router  | router rule expansion and router-scoped middleware references                                                         | service-wide backend state                        |
-| Docker service | discovered backends, strategy, and routes; exact-key code-owned pool policy                                           | router policy or another service's pool policy    |
-| Resolved model | normalized immutable configuration contract                                                                           | runtime-only mutable state                        |
+| Layer           | Owns                                                                                                                  | Must not absorb                                         |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Route           | host/path/client matchers, one route action, route middleware                                                         | backend transport or state shared by other routes       |
+| Upstream pool   | backends, balancing strategy, backend health, transport, upstream Host/TLS policy                                     | router-specific middleware or matchers                  |
+| Listener        | ingress protocol, downstream TLS/client-auth policy, material selection, trusted-proxy policy, wrapping/observability | route-specific policy                                   |
+| Docker router   | router rule expansion and router-scoped middleware references                                                         | service-wide backend state                              |
+| Docker service  | discovered backends, strategy, and routes; exact-key code-owned pool policy                                           | router policy or another service's pool policy          |
+| Docker workload | activation, readiness, and idle lifecycle of one discovered service                                                   | backend health semantics or another service's lifecycle |
+| Resolved model  | normalized immutable configuration contract                                                                           | runtime-only mutable state                              |
 
 A single pool may be shared by many static or Docker-derived routes. That sharing is
 intentional. Therefore any behavior that can legitimately differ between two routes
@@ -178,6 +179,66 @@ handlers it constructed; retiring a generation must not let a later generation
 adopt already-shut-down runtime state merely because configuration fingerprints
 match.
 
+## On-demand Docker workloads
+
+Statute may activate a stopped Docker workload when a routed request needs it and
+stop it again after an idle period. The scope is narrow on purpose:
+
+- one Docker host, the one Statute already observes;
+- activation driven only by routing demand Statute observes directly;
+- no placement, scheduling, replicas, leader election, cluster membership, or
+  storage provisioning;
+- no jobs, deployment pipelines, canaries, or image promotion.
+
+Routing remains the primary concern and lifecycle exists to make a routed service
+available. A requirement that needs any of the excluded capabilities belongs
+outside this layer.
+
+Workload lifecycle is separate from backend health. Backend health begins healthy
+and demotes on evidence of failure, and degraded mode still routes to primaries
+when every backend is demoted. An activated workload has the opposite default: it
+is unavailable until readiness is positively established, and requests wait before
+any backend is eligible. A dormant or starting workload is therefore not an
+unhealthy backend, and `backendState` carries no lifecycle meaning.
+
+A dormant route still matches. Discovery keeps the workload identity, labels, and
+route declaration of a stopped container, apart from whether a backend is usable
+right now. Such a route is a real match: it does not become a route miss, does not
+fall through to the next dispatch tier, and does not reach `Config.Fallback`.
+
+Docker reporting a container as running is not readiness. The readiness policy and
+the precedence between its signals are part of the feature's contract, and an
+activated workload serves no traffic until one of those signals establishes
+readiness. Active-health semantics do not carry over, because they begin from
+healthy.
+
+Activation is single-flight. Concurrent requests for one dormant workload produce
+one start operation, one readiness wait, and one outcome delivered consistently to
+every waiter. Cancellation is explicit: one client disconnecting does not cancel an
+activation the remaining waiters still need.
+
+Activation failure is terminal for the request. A timeout or failure answers the
+client, `503` with `Retry-After` where meaningful, and does not continue into
+`Config.Fallback`. Operator code that never asked for the workload cannot answer
+for it. The original request survives until proxying begins.
+
+Idle is measured from request completion. An in-flight HTTP request, an open
+WebSocket, and an open streaming response each hold the workload active, and the
+idle timer starts when the last of them finishes. A request arriving while the
+workload is stopping has one defined outcome and never proxies into a container
+being torn down.
+
+Lifecycle state belongs to the generation that owns it. Docker generations are
+replaced atomically, so every change here states what happens when a generation
+retires while a workload is starting, when labels change during activation, when
+Statute shuts down mid-activation, and when Docker reports an external stop. A
+retired generation may not mutate or cancel its successor's state.
+
+Authority is code-owned. A container label may select or parameterize an activation
+policy the binary already grants. A label alone never grants Statute authority to
+start or stop a workload, following the trust boundary that governs code-owned
+middleware and `PoolPolicy`.
+
 ## Upstream pools and health
 
 A pool owns backend selection and the transport shared by proxy traffic to its
@@ -287,4 +348,5 @@ Before merging an architectural change, be able to answer all of these:
 - Which request view does routing, logging, caching, and the upstream observe?
 - Which component owns cleanup after partial startup and normal shutdown?
 - Do proxy traffic and health traffic still share the policies they are supposed to?
+- Which state is workload lifecycle and which is backend health?
 - Does the resolved/exported model describe exactly what runtime executes?
