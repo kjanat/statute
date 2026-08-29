@@ -309,8 +309,6 @@ func TestBackendProxyCarriesFlushInterval(t *testing.T) {
 	}
 }
 
-// TestResolveTransportTLS — server-verification fields survive resolution, the
-// CA list is copied rather than aliased, and an empty path fails at resolve time.
 func TestResolveTransportTLS(t *testing.T) {
 	t.Parallel()
 	files := []string{"/etc/ca/internal.pem"}
