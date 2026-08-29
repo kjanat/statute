@@ -25,12 +25,6 @@ issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 
-formatters:
-  enable: [gci, gofmt, goimports]
-  settings:
-    gci: { sections: [standard, default, localmodule] }
-    goimports: { local-prefixes: [statute.kjanat.dev] }
-
 linters:
   default: standard
   enable:

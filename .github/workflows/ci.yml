@@ -31,12 +31,13 @@ jobs:
         with: { persist-credentials: false }
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with: { tool_versions: "golangci-lint ${{ env.glc }}" }
-      - uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3.0.15
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
+      - uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3.0.15
+        with: { install-only: true }
       # golangci-lint-action runs `run`, which never applies the configured
-      # formatters; `make fmt-check` is the gate for Go formatting drift,
-      # mirroring what dprint-check does for the non-Go files above.
+      # formatters. `make fmt-check` and dprint use the same pinned goimports
+      # tool, while this explicit step also checks every tracked Go file.
       - { name: format check, run: make fmt-check }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with: { version: "v${{ env.glc }}", args: --timeout=5m }

@@ -5,6 +5,7 @@
 # consider adding a target here instead.
 
 GO              ?= go
+GOFMT           ?= $(shell $(GO) env GOROOT)/bin/gofmt
 GOLANGCI_LINT   ?= golangci-lint
 CUSTOM_GCL      ?= ./custom-gcl
 COVER_PROFILE   ?= cover.out
@@ -45,22 +46,18 @@ test-race: ## Run tests with the race detector, skipped where TSAN cannot start
 		exit 1; \
 	fi
 
-# golangci-lint applies the configured formatters through `fmt`, not `run`,
-# so an unformatted tree passes `run`. Both gates run: gofmt for the printer
-# form, golangci-lint fmt for the configured gci/goimports grouping.
-#
-# COMPAT: golangci-lint vendors its own go/printer, so on rare map literals
-# the two disagree in BOTH directions, each rejecting what the other emits,
-# and no formatter run satisfies both. Separating the short keys from the
-# long ones with a blank line breaks the alignment run and settles it. See
-# internal/docker/labels_test.go for the one instance in this tree.
+# Both checks use the active Go toolchain's go/printer. gofmt checks source
+# form, while the pinned goimports tool additionally enforces import groups.
 fmt-check: ## Fail if any tracked Go file is not formatted
 	@if [ -z "$$(git ls-files -- '*.go')" ]; then \
 		echo "fmt-check: no tracked Go files (not a git checkout?)" >&2; exit 1; fi; \
-	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r gofmt -l --)"; then \
+	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r "$(GOFMT)" -l --)"; then \
 		echo "fmt-check: gofmt failed" >&2; exit 1; fi; \
-	if [ -n "$$drift" ]; then echo "gofmt drift:"; echo "$$drift"; exit 1; fi
-	$(GOLANGCI_LINT) fmt --diff
+	if [ -n "$$drift" ]; then echo "gofmt drift:"; echo "$$drift"; exit 1; fi; \
+	if ! drift="$$(git ls-files -z -- '*.go' | xargs -0 -r $(GO) tool goimports -local statute.kjanat.dev -l --)"; then \
+		echo "fmt-check: goimports failed" >&2; exit 1; fi; \
+	if [ -n "$$drift" ]; then echo "goimports drift:"; echo "$$drift"; exit 1; fi
+	dprint check
 
 lint: fmt-check ## Check formatting, build the custom golangci-lint, run all linters
 	$(GOLANGCI_LINT) custom
