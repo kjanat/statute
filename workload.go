@@ -488,6 +488,7 @@ func (p *dockerProvider) finishActivation(ctx context.Context, w *workload, act 
 	case out.abandoned:
 		log.Printf("statute: docker: workload %q: activation abandoned by shutdown", w.service)
 	case out.stale:
+		log.Printf("statute: docker: workload %q: stale listing corrected, container is stopped", w.service)
 	default:
 		log.Printf("statute: docker: workload %q: activation failed after %s (%d waiting): %v", w.service, elapsed, out.waiters, err)
 		if out.cleanupRef != "" {
@@ -699,12 +700,28 @@ func (p *dockerProvider) updateWorkloads(services []docker.Service) {
 			w = &workload{service: svc.Name, policy: policy}
 			p.workloadEntries[svc.Name] = w
 		}
-		w.mu.Lock()
-		w.retired = false
-		w.mu.Unlock()
+		w.unretire()
 		p.observeWorkload(w, svc)
 	}
 	p.retireMissingLocked(seen)
+}
+
+// unretire restores the grant on a retained entry. A retained phase can be
+// stale: the container was removed while ready, so running now proves
+// nothing. A stale ready or stop-pending resets to dormant, keeping the
+// backoff bookkeeping, and the following observation re-proves readiness
+// through the observe gate and re-arms the idle timer.
+func (w *workload) unretire() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.retired {
+		return
+	}
+	w.retired = false
+	if w.phase == workloadReady || w.phase == workloadStopPending {
+		w.toLocked(workloadDormant)
+		w.stopIdleLocked()
+	}
 }
 
 // retireMissingLocked retires every entry whose service the generation no

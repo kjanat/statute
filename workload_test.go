@@ -713,3 +713,53 @@ func TestWorkloadStaleObserveLeavesNoBackoff(t *testing.T) {
 		t.Fatalf("stale observe issued %d stop calls", got)
 	}
 }
+
+func TestWorkloadRecreationRequiresFreshReadiness(t *testing.T) {
+	policy := testWorkloadPolicy()
+	policy.IdleAfter = 5 * time.Second
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+
+	p, daemon, router := workloadFixture(t, policy, backend.URL, true)
+	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cold start: %d", rec.Code)
+	}
+	w := p.workloadFor("wl")
+
+	// The container is removed while the workload is ready; the retained
+	// entry keeps its phase.
+	daemon.mu.Lock()
+	containers := daemon.containers
+	daemon.mu.Unlock()
+	daemon.swap(nil)
+	mustSync(t, p)
+	if got := w.phaseNow(); got != workloadReady {
+		t.Fatalf("retained phase = %v, want the stale ready this test exercises", got)
+	}
+
+	// Recreated and running, HEALTHCHECK still "starting": the entry
+	// must re-enter the readiness gate.
+	recreated := make([]fakeDaemonContainer, len(containers))
+	copy(recreated, containers)
+	recreated[0].health = "starting"
+	daemon.swap(recreated)
+	mustSync(t, p)
+	waitWorkloadPhase(t, p, workloadStarting)
+	if got := daemon.startCount("wl-1"); got != 1 {
+		t.Fatalf("observe adoption issued %d start calls, want the original 1", got)
+	}
+
+	daemon.mu.Lock()
+	daemon.find("wl-1").health = "healthy"
+	daemon.mu.Unlock()
+	waitWorkloadPhase(t, p, workloadReady)
+	w.mu.Lock()
+	idleArmed := w.idle != nil
+	w.mu.Unlock()
+	if !idleArmed {
+		t.Fatal("re-proven readiness left no idle timer armed")
+	}
+}
