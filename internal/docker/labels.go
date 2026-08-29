@@ -138,14 +138,14 @@ func RefusalWarning(subject string, env []Matcher) string {
 func CandidateServices(c Container, opts ExtractOptions) []string {
 	labels := c.Labels
 	seen := map[string]bool{}
-	if nativeApplies(labels, opts) {
+	if nativeCandidate(c, opts) {
 		name := defaultServiceName(c)
 		if s := labels["statute.service"]; s != "" {
 			name = s
 		}
 		seen[name] = true
 	}
-	if opts.TraefikLabels && hasPrefixedLabels(labels, traefikPrefix) {
+	if traefikCandidate(c, opts) {
 		routers, services, _ := collectTraefikLabels(c)
 		serviceNames := sortedKeys(services)
 		for _, name := range serviceNames {
@@ -161,6 +161,16 @@ func CandidateServices(c Container, opts ExtractOptions) []string {
 		return nil
 	}
 	return sortedKeys(seen)
+}
+
+func nativeCandidate(c Container, opts ExtractOptions) bool {
+	enabled, warning := nativeEnabled(c, opts)
+	return nativeApplies(c.Labels, opts) && (enabled || warning != "")
+}
+
+func traefikCandidate(c Container, opts ExtractOptions) bool {
+	enabled, warning := traefikEnabled(c, opts)
+	return opts.TraefikLabels && hasPrefixedLabels(c.Labels, traefikPrefix) && (enabled || warning != "")
 }
 
 // hasPrefixedLabels reports whether any label carries the given prefix.

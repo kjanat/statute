@@ -807,3 +807,42 @@ func TestWorkloadMultiServiceContainerIsNotGated(t *testing.T) {
 		t.Fatalf("provider issued %d lifecycle calls without a single-service owner", got)
 	}
 }
+
+func TestWorkloadDisabledSchemaDoesNotMakeContainerMultiService(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Workloads:     map[string]resolved.Workload{"wl": testWorkloadPolicy()},
+	}
+	p, srv, _ := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "wl-1", ip: host, port: port,
+		labels: map[string]string{
+			"statute.enable":                      "true",
+			"statute.service":                     "wl",
+			"statute.host":                        "wl.example.com",
+			"traefik.enable":                      "false",
+			"traefik.http.routers.shadow.rule":    "Host(`shadow.example.com`)",
+			"traefik.http.routers.shadow.service": "shadow",
+			"traefik.http.services.shadow.loadbalancer.server.port": portStr,
+		},
+	}})
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+
+	if w := p.workloadFor("wl"); w == nil {
+		t.Fatal("active service lost its workload gate to an explicitly disabled schema")
+	}
+	rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Fatalf("active route: code=%d body=%q, want 200 ok", rec.Code, rec.Body.String())
+	}
+}

@@ -649,6 +649,40 @@ func TestCandidateServices(t *testing.T) {
 			want: []string{"a@traefik", "web-1"},
 		},
 		{
+			name: "disabled native does not join active traefik",
+			labels: map[string]string{
+				"statute.enable":                  "false",
+				"statute.service":                 "native",
+				"traefik.enable":                  "true",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik"},
+		},
+		{
+			name: "disabled traefik does not join active native",
+			labels: map[string]string{
+				"statute.enable":                  "true",
+				"traefik.enable":                  "false",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"web-1"},
+		},
+		{
+			name: "unreadable enable values remain candidates",
+			labels: map[string]string{
+				"statute.enable":                  "invalid",
+				"traefik.enable":                  "invalid",
+				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
+				"traefik.http.routers.r1.service": "a",
+			},
+			opts: ExtractOptions{TraefikLabels: true},
+			want: []string{"a@traefik", "web-1"},
+		},
+		{
 			name: "exposed by default with traefik labels stays traefik only",
 			labels: map[string]string{
 				"traefik.http.routers.r1.rule":    "Host(`a.example.com`)",
