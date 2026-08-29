@@ -117,6 +117,12 @@ suite if it reaps anything, and CI repeats that proof in an
    fast; `TestRegression_*` runs nightly and on demand; `TestSoak_*`
    is the scheduled stress tier.
 
+The `upstream-tls` regression uses the lane PKI in both directions: Statute
+verifies the origin certificate, while `origin-1` requires Statute's client
+certificate. Its request journal must contain both proxied traffic and an active
+health probe, proving the pool's one TLS transport carries the same server
+verification, SNI, Host policy, and client identity on both paths.
+
 Failure semantics are strict on purpose: a missing prerequisite (no
 `STATUTE_E2E_IMAGE`, no Docker) fails the test rather than skipping it,
 so CI can never silently drop declared coverage.

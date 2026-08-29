@@ -64,11 +64,7 @@ func routesConfig(string) statute.Config {
 	}
 }
 
-// upstreamTLSConfig proves upstream TLS verification and Host policy
-// parity between proxy traffic and active health probes. The good pool
-// verifies against the lane CA; the bad pool trusts only an unrelated
-// CA (pinning the served leaf itself would legitimately verify), so
-// verification can never succeed and the route must fail closed.
+// upstreamTLSConfig exercises server verification, client identity, and Host policy on proxy and probe traffic.
 func upstreamTLSConfig(string) statute.Config {
 	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
@@ -82,7 +78,12 @@ func upstreamTLSConfig(string) statute.Config {
 					Healthy:   1,
 					Unhealthy: 10,
 				},
-				Transport:    statute.Transport{RootCAFiles: []string{"/certs/ca.crt"}},
+				Transport: statute.Transport{
+					RootCAFiles: []string{"/certs/ca.crt"},
+					ClientCertificate: statute.ClientCertificate{
+						CertFile: "/certs/statute.crt", KeyFile: "/certs/statute.key",
+					},
+				},
 				UpstreamHost: statute.TargetHost,
 			},
 			"tls-bad": statute.Pool{

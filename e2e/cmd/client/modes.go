@@ -68,11 +68,13 @@ func runGet(args []string) error {
 	fs := flag.NewFlagSet("get", flag.ExitOnError)
 	target := fs.String("url", "", "URL to fetch")
 	roots := fs.String("roots", "", "PEM roots for HTTPS targets")
+	cert := fs.String("cert", "", "PEM client certificate for mTLS targets")
+	key := fs.String("key", "", "PEM private key for the client certificate")
 	fs.Parse(args)
 	if *target == "" {
 		return errors.New("get: -url required")
 	}
-	tlsCfg, err := tlsConfigFor(*roots, "", "", "")
+	tlsCfg, err := tlsConfigFor(*roots, "", *cert, *key)
 	if err != nil {
 		return err
 	}

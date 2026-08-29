@@ -140,6 +140,10 @@ Docker: statute.Docker().TraefikLabels().
         Transport: statute.Transport{
             ServerName: "api.internal",
             RootCAFiles: []string{"/run/certs/api-root.pem"},
+            ClientCertificate: statute.ClientCertificate{
+                CertFile: "/run/certs/api-client.crt",
+                KeyFile:  "/run/certs/api-client.key",
+            },
         },
         UpstreamHost: statute.HostValue("api.internal"),
     }),
@@ -152,6 +156,11 @@ routes. It cannot leak to another service or into router middleware. A key that
 matches no discovered service produces a deduplicated provider warning. Traefik's
 `loadbalancer.responseforwarding.flushinterval` remains unsupported; use
 `PoolPolicy.Transport.FlushInterval` instead.
+
+The transport's upstream client certificate is pool-owned too: proxy requests
+and active health probes present the same identity. An unreadable, malformed, or
+mismatched certificate/key pair rejects only the matched discovered service and
+keeps its routes fail-closed; sibling services continue serving.
 
 ## Traefik compatibility (`TraefikLabels()`)
 

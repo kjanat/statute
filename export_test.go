@@ -170,8 +170,55 @@ func TestExport_CarriesDockerPoolPolicy(t *testing.T) {
 		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
 	}
 	policy := out.Docker.PoolPolicy["app@traefik"]
-	if !policy.HealthCheck.Enabled || !policy.PassiveHealthCheck.Enabled || policy.Transport.ServerName != "app.internal" || policy.Transport.ResponseHeaderTimeout != int64(5*time.Second) || policy.HostValue != "app.internal" {
-		t.Errorf("exported PoolPolicy = %+v", policy)
+	if !policy.HealthCheck.Enabled || !policy.PassiveHealthCheck.Enabled {
+		t.Errorf("exported health policy = %+v", policy)
+	}
+	if policy.Transport.ServerName != "app.internal" {
+		t.Errorf("exported ServerName = %q", policy.Transport.ServerName)
+	}
+	if policy.Transport.ResponseHeaderTimeout != int64(5*time.Second) {
+		t.Errorf("exported ResponseHeaderTimeout = %d", policy.Transport.ResponseHeaderTimeout)
+	}
+	if policy.HostValue != "app.internal" {
+		t.Errorf("exported HostValue = %q", policy.HostValue)
+	}
+}
+
+func TestExportCarriesUpstreamClientCertificate(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":8080")},
+		Upstreams: Upstreams{"api": Pool{
+			Backends: []Backend{{Address: "https://api.internal"}},
+			Transport: Transport{ClientCertificate: ClientCertificate{
+				CertFile: "/certs/client.crt", KeyFile: "/certs/client.key",
+			}},
+		}},
+		Routes: Routes{Match("/*").ProxyTo("api")},
+	}
+	var buf bytes.Buffer
+	if err := Export(cfg, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	var out struct {
+		Upstreams map[string]struct {
+			Transport struct {
+				ClientCertificate *struct {
+					CertFile string
+					KeyFile  string
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	clientCertificate := out.Upstreams["api"].Transport.ClientCertificate
+	if clientCertificate == nil {
+		t.Fatal("exported client certificate is nil")
+	}
+	if clientCertificate.CertFile != "/certs/client.crt" || clientCertificate.KeyFile != "/certs/client.key" {
+		t.Errorf("exported client certificate = %+v", clientCertificate)
 	}
 }
 

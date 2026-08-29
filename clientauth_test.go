@@ -310,6 +310,8 @@ type clientAuthPKI struct {
 	caFile              string
 	serverCertFile      string
 	serverKeyFile       string
+	clientCertFile      string
+	clientKeyFile       string
 	clientCert          tls.Certificate
 	untrustedClientCert tls.Certificate
 	serverRoots         *x509.CertPool
@@ -323,12 +325,13 @@ func makeClientAuthPKI(t *testing.T) clientAuthPKI {
 	writeFile(t, dir, "client-ca.pem", pemCert(caDER))
 	caFile := dir + "/client-ca.pem"
 	serverCertFile, serverKeyFile, _ := makeSignedTestCert(t, dir, "server", 3, ca, caKey, pkix.Name{CommonName: "server"}, []string{"x.example", "one.example", "two.example"}, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
-	_, _, clientCert := makeSignedTestCert(t, dir, "client", 4, ca, caKey, pkix.Name{CommonName: "verified-client", Organization: []string{"Statute tests"}}, []string{"client.example"}, []string{"client@example.test"}, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	clientCertFile, clientKeyFile, clientCert := makeSignedTestCert(t, dir, "client", 4, ca, caKey, pkix.Name{CommonName: "verified-client", Organization: []string{"Statute tests"}}, []string{"client.example"}, []string{"client@example.test"}, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 	_, _, untrusted := makeSignedTestCert(t, dir, "untrusted", 5, badCA, badCAKey, pkix.Name{CommonName: "untrusted-client"}, nil, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	return clientAuthPKI{
 		caFile: caFile, serverCertFile: serverCertFile, serverKeyFile: serverKeyFile,
+		clientCertFile: clientCertFile, clientKeyFile: clientKeyFile,
 		clientCert: clientCert, untrustedClientCert: untrusted, serverRoots: pool,
 	}
 }

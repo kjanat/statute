@@ -5,6 +5,7 @@ services:
     environment:
       ORIGIN_TLS_CERT: /certs/origin.crt
       ORIGIN_TLS_KEY: /certs/origin.key
+      ORIGIN_TLS_CLIENT_CA: /certs/ca.crt
   origin-2:
     environment:
       ORIGIN_TLS_CERT: /certs/origin.crt

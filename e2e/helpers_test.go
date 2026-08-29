@@ -47,13 +47,17 @@ type journalEntry struct {
 }
 
 // originJournal reads one origin's request journal; scheme is "http" or
-// "https" (TLS origins need the lane roots).
+// "https" (TLS origins need the lane roots, and may require its client leaf).
 func originJournal(ctx context.Context, r *harness.Run, origin, scheme string) []journalEntry {
 	r.T.Helper()
 	url := fmt.Sprintf("%s://%s:%d/admin/requests", scheme, origin, harness.PortOrigin)
 	extra := []string{}
 	if scheme == "https" {
-		extra = append(extra, "-roots", "/certs/ca.crt")
+		extra = append(extra,
+			"-roots", "/certs/ca.crt",
+			"-cert", "/certs/statute.crt",
+			"-key", "/certs/statute.key",
+		)
 	}
 	out := mustClientGet(ctx, r, url, extra...)
 	var entries []journalEntry

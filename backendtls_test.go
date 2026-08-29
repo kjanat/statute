@@ -1,6 +1,8 @@
 package statute
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -111,6 +113,72 @@ func TestHealthCheckSharesPoolTransport(t *testing.T) {
 	t.Cleanup(ph.transport.CloseIdleConnections)
 	if ph.hc.client.Transport != http.RoundTripper(ph.transport) {
 		t.Error("health checker does not share the pool transport")
+	}
+}
+
+// TestUpstreamClientCertificateCoversProxyAndHealth proves an mTLS backend
+// accepts both traffic paths through the pool's one shared transport. Omitting
+// the identity fails the proxy handshake closed.
+func TestUpstreamClientCertificateCoversProxyAndHealth(t *testing.T) {
+	t.Parallel()
+	pki := makeClientAuthPKI(t)
+	serverCert, err := tls.LoadX509KeyPair(pki.serverCertFile, pki.serverKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		_, _ = w.Write([]byte("authenticated"))
+	}))
+	backend.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCert}, ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs: pki.serverRoots, MinVersion: tls.VersionTLS12,
+	}
+	backend.StartTLS()
+	t.Cleanup(backend.Close)
+
+	pool := Pool{
+		Backends: []Backend{{Address: backend.URL}},
+		HealthCheck: HealthCheck{
+			Path: "/health", Interval: "1h", Timeout: "1s", Healthy: 1, Unhealthy: 1,
+		},
+		Transport: Transport{
+			ServerName: "x.example", RootCAFiles: []string{pki.caFile},
+			ClientCertificate: ClientCertificate{CertFile: pki.clientCertFile, KeyFile: pki.clientKeyFile},
+		},
+	}
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP(":0")}, Upstreams: Upstreams{"secure": pool},
+		Routes: Routes{Match("/*").ProxyTo("secure")},
+	})
+	ph, err := newPoolHandler(r.Upstreams["secure"])
+	if err != nil {
+		t.Fatalf("newPoolHandler: %v", err)
+	}
+	t.Cleanup(ph.transport.CloseIdleConnections)
+	b := ph.primary[0]
+	b.markHealthy(false)
+	run := &healthRun{checker: ph.hc, successes: map[*backendState]int{}, failures: map[*backendState]int{}}
+	run.active.Store(true)
+	run.probe(context.Background(), b)
+	if !b.isHealthy() {
+		t.Error("mTLS health probe did not authenticate")
+	}
+	rec := runRequest(t, ph, httptest.NewRequest(http.MethodGet, "http://client/", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "authenticated" {
+		t.Errorf("mTLS proxy: got %d %q, want 200 authenticated", rec.Code, rec.Body.String())
+	}
+
+	pool.Transport.ClientCertificate = ClientCertificate{}
+	rec = proxyThrough(t, Config{
+		Listeners: Listeners{HTTP(":0")}, Upstreams: Upstreams{"secure": pool},
+		Routes: Routes{Match("/*").ProxyTo("secure")},
+	})
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("proxy without client identity: got %d, want 502", rec.Code)
 	}
 }
 
@@ -241,8 +309,6 @@ func TestBackendProxyCarriesFlushInterval(t *testing.T) {
 	}
 }
 
-// TestResolveTransportTLS — the TLS fields survive resolution, the CA list
-// is copied rather than aliased, and an empty path fails at resolve time.
 func TestResolveTransportTLS(t *testing.T) {
 	t.Parallel()
 	files := []string{"/etc/ca/internal.pem"}
@@ -265,6 +331,27 @@ func TestResolveTransportTLS(t *testing.T) {
 	_, err = resolveTransport(Transport{RootCAFiles: []string{"  "}})
 	if err == nil || !strings.Contains(err.Error(), "root_ca_files[0]: path is empty") {
 		t.Errorf("empty CA path: got %v, want path-is-empty error", err)
+	}
+}
+
+func TestResolveTransportClientCertificate(t *testing.T) {
+	t.Parallel()
+	surface := ClientCertificate{CertFile: " /etc/client.crt ", KeyFile: "\t/etc/client.key\n"}
+	tr, err := resolveTransport(Transport{ClientCertificate: surface})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.ClientCertificate == nil || tr.ClientCertificate.CertFile != "/etc/client.crt" || tr.ClientCertificate.KeyFile != "/etc/client.key" {
+		t.Errorf("resolved client certificate: %+v", tr.ClientCertificate)
+	}
+	if surface.CertFile != " /etc/client.crt " || surface.KeyFile != "\t/etc/client.key\n" {
+		t.Errorf("Resolve mutated the surface client certificate: %+v", surface)
+	}
+	for _, clientCertificate := range []ClientCertificate{{CertFile: "/client.crt"}, {KeyFile: "/client.key"}} {
+		_, err = resolveTransport(Transport{ClientCertificate: clientCertificate})
+		if err == nil || !strings.Contains(err.Error(), "cert_file and key_file must be set together") {
+			t.Errorf("incomplete client certificate %+v: got %v, want paired-path error", clientCertificate, err)
+		}
 	}
 }
 
@@ -298,6 +385,38 @@ func TestBackendTLSConfig(t *testing.T) {
 	_, err = backendTLSConfig(resolved.Transport{RootCAFiles: []string{dir + "/junk.pem"}})
 	if err == nil || !strings.Contains(err.Error(), "no certificates found") {
 		t.Errorf("junk CA file: got %v, want no-certificates error", err)
+	}
+
+}
+
+func TestBackendTLSConfigClientCertificate(t *testing.T) {
+	t.Parallel()
+	pki := makeClientAuthPKI(t)
+	cfg, err := backendTLSConfig(resolved.Transport{ClientCertificate: &resolved.ClientCertificate{
+		CertFile: pki.clientCertFile, KeyFile: pki.clientKeyFile,
+	}})
+	if err != nil || len(cfg.Certificates) != 1 {
+		t.Fatalf("client certificate: cfg=%+v err=%v", cfg, err)
+	}
+	_, err = backendTLSConfig(resolved.Transport{ClientCertificate: &resolved.ClientCertificate{
+		CertFile: "/nonexistent/client.crt", KeyFile: "/nonexistent/client.key",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "client certificate") {
+		t.Errorf("missing client certificate: got %v, want client-certificate error", err)
+	}
+	_, err = backendTLSConfig(resolved.Transport{ClientCertificate: &resolved.ClientCertificate{
+		CertFile: pki.clientCertFile, KeyFile: pki.serverKeyFile,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "private key") {
+		t.Errorf("mismatched client key: got %v, want private-key error", err)
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "malformed.crt", "not a certificate")
+	_, err = backendTLSConfig(resolved.Transport{ClientCertificate: &resolved.ClientCertificate{
+		CertFile: dir + "/malformed.crt", KeyFile: pki.clientKeyFile,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "client certificate") {
+		t.Errorf("malformed client certificate: got %v, want client-certificate error", err)
 	}
 }
 

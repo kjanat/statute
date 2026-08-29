@@ -214,11 +214,15 @@ A backend with an `https://` address gets its certificate verified against the s
     Transport: statute.Transport{
         ServerName:  "foo.internal.example",
         RootCAFiles: []string{"/etc/webserver/internal-ca.pem"},
+        ClientCertificate: statute.ClientCertificate{
+            CertFile: "/etc/webserver/client.crt",
+            KeyFile:  "/etc/webserver/client.key",
+        },
     },
 }
 ```
 
-`ServerName` overrides the hostname verified (and sent as SNI) when backends are dialed by IP but present a certificate for a DNS name; `RootCAFiles` replaces the system roots with your internal CA. Reverse-proxy requests and active health-check probes share the same transport, so one policy covers both. `InsecureSkipVerify: true` is the explicit escape hatch that disables verification entirely — the lint rule `TLS002` warns whenever it is set.
+`ServerName` overrides the hostname verified (and sent as SNI) when backends are dialed by IP but present a certificate for a DNS name; `RootCAFiles` replaces the system roots with your internal CA. `ClientCertificate` presents the configured certificate chain and private key to HTTPS backends that require mTLS; both paths are required, and the pair is loaded before the pool serves. Reverse-proxy requests and active health-check probes share the same transport, so server verification and client identity cover both. `InsecureSkipVerify: true` is the explicit escape hatch that disables server verification entirely — it does not disable client-certificate presentation, and the lint rule `TLS002` warns whenever it is set.
 
 ### Routes and middleware
 

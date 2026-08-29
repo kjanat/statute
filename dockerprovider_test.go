@@ -1089,7 +1089,7 @@ func TestDockerUnmatchedPoolPolicyWarnsOnce(t *testing.T) {
 	}
 }
 
-func TestDockerPoolPolicyTLSFailureRefusesOnlyMatchedService(t *testing.T) {
+func TestDockerPoolPolicyClientCertificateFailureRefusesOnlyMatchedService(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("healthy sibling"))
 	}))
@@ -1097,7 +1097,10 @@ func TestDockerPoolPolicyTLSFailureRefusesOnlyMatchedService(t *testing.T) {
 	host, port := backendHostPort(t, backend)
 
 	cfg, err := resolveDocker(Docker().PoolPolicy("bad", PoolPolicy{
-		Transport: Transport{RootCAFiles: []string{"/definitely/missing/statute-pool-policy-ca.pem"}},
+		Transport: Transport{ClientCertificate: ClientCertificate{
+			CertFile: "/definitely/missing/statute-client.crt",
+			KeyFile:  "/definitely/missing/statute-client.key",
+		}},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -1129,7 +1132,7 @@ func TestDockerPoolPolicyTLSFailureRefusesOnlyMatchedService(t *testing.T) {
 		t.Fatalf("sibling route: code=%d body=%q", good.Code, good.Body.String())
 	}
 
-	if !dockerWarningContains(p, `service "bad"`, "root CA file") {
+	if !dockerWarningContains(p, `service "bad"`, "client certificate") {
 		t.Errorf("missing service-scoped TLS policy warning: %v", p.warned)
 	}
 }

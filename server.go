@@ -1080,7 +1080,7 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 // when the pool leaves TLS at Go's defaults. CA files load here rather than
 // at Resolve time, keeping Resolve pure the way listener TLS material does.
 func backendTLSConfig(t resolved.Transport) (*tls.Config, error) {
-	if t.ServerName == "" && len(t.RootCAFiles) == 0 && !t.InsecureSkipVerify {
+	if t.ServerName == "" && len(t.RootCAFiles) == 0 && t.ClientCertificate == nil && !t.InsecureSkipVerify {
 		return nil, nil
 	}
 	cfg := &tls.Config{
@@ -1103,7 +1103,23 @@ func backendTLSConfig(t resolved.Transport) (*tls.Config, error) {
 		}
 		cfg.RootCAs = roots
 	}
+	certificates, err := loadClientCertificate(t.ClientCertificate)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Certificates = certificates
 	return cfg, nil
+}
+
+func loadClientCertificate(c *resolved.ClientCertificate) ([]tls.Certificate, error) {
+	if c == nil {
+		return nil, nil
+	}
+	cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("client certificate: %w", err)
+	}
+	return []tls.Certificate{cert}, nil
 }
 
 // newBackendProxy builds one backend's reverse proxy. recordFailure is the
