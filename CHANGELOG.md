@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- On-demand Docker activation and issued stops stay bound to one immutable container identity across discovery generations. Replacing a container beneath the same service now fails stale waiters closed, ignores the old operation's result and cleanup, and establishes the running successor's readiness afresh.
+- On-demand Docker activation, request activity, and issued stops stay bound to one immutable container identity across discovery generations. Replacing a container beneath the same service now fails stale waiters closed, ignores the old operation's result, completion, and cleanup, and establishes the running successor's readiness afresh.
 
 - Docker Traefik matching keeps the configured `Host()` spelling, so ``Host(`example.com.`)`` matches `example.com..` the way Traefik does, and ``Host(`0.`)`` is no longer treated as a subset of ``Host(`0`)``. `Host("*")` / `Host("*.example.com")` and `Path`/`PathPrefix` arguments containing `%` are rejected and tombstoned: a literal star or encoded path would miss Traefik's traffic into Fallback. Matcher arguments require commas, matching Traefik's parser. Native `Match` and Traefik rules compile to one matcher IR so mixed generations absorb and dispatch on the same kinds.
 

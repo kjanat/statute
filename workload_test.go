@@ -792,7 +792,22 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 	if got := daemon.stopCount("wl-1"); got != stopsBefore {
 		t.Fatalf("idle expiry with a counted request issued a stop")
 	}
-	w.end(p)
+	w.end(p, ref)
+}
+
+func TestWorkloadStaleCompletionDoesNotChangeCurrentActivity(t *testing.T) {
+	w := workload{
+		phase:       workloadReady,
+		containerID: "new-id",
+		active:      1,
+	}
+	w.end(nil, "old-id")
+	w.mu.Lock()
+	active, idle := w.active, w.idle
+	w.mu.Unlock()
+	if active != 1 || idle != nil {
+		t.Fatalf("current activity after stale completion: active=%d idle=%v", active, idle)
+	}
 }
 
 func TestWorkloadShutdownDuringActivationIssuesNoStop(t *testing.T) {
@@ -885,6 +900,7 @@ func TestWorkloadBackoffSurvivesRecreation(t *testing.T) {
 	daemon.mu.Lock()
 	daemon.failStart = true
 	containers := daemon.containers
+	oldID := containers[0].id
 	daemon.mu.Unlock()
 
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
@@ -896,6 +912,10 @@ func TestWorkloadBackoffSurvivesRecreation(t *testing.T) {
 	// returns under the same name. The backoff window must survive.
 	daemon.swap(nil)
 	mustSync(t, p)
+	containers[0] = daemon.recreate(containers[0])
+	if containers[0].id == oldID {
+		t.Fatal("recreated container retained its old ID")
+	}
 	daemon.swap(containers)
 	mustSync(t, p)
 
@@ -956,6 +976,7 @@ func TestWorkloadRecreationRequiresFreshReadiness(t *testing.T) {
 	// entry keeps its phase.
 	daemon.mu.Lock()
 	containers := daemon.containers
+	oldID := containers[0].id
 	daemon.mu.Unlock()
 	daemon.swap(nil)
 	mustSync(t, p)
@@ -967,6 +988,10 @@ func TestWorkloadRecreationRequiresFreshReadiness(t *testing.T) {
 	// must re-enter the readiness gate.
 	recreated := make([]fakeDaemonContainer, len(containers))
 	copy(recreated, containers)
+	recreated[0] = daemon.recreate(recreated[0])
+	if recreated[0].id == oldID {
+		t.Fatal("recreated container retained its old ID")
+	}
 	recreated[0].health = "starting"
 	daemon.swap(recreated)
 	mustSync(t, p)
@@ -1179,6 +1204,81 @@ func TestWorkloadStreamingResponseHoldsIdleStop(t *testing.T) {
 	waitWorkloadPhase(t, p, workloadDormant)
 	if got := daemon.stopCount("wl-1"); got != 1 {
 		t.Fatalf("stop calls after stream = %d, want 1", got)
+	}
+}
+
+func TestWorkloadReplacementDetachesStreamingActivity(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseStream := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseStream()
+	oldBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("a"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-release
+		_, _ = w.Write([]byte("b"))
+	}))
+	t.Cleanup(oldBackend.Close)
+	newBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("new"))
+	}))
+	t.Cleanup(newBackend.Close)
+	oldHost, oldPortStr, _ := net.SplitHostPort(strings.TrimPrefix(oldBackend.URL, "http://"))
+	oldPort, _ := strconv.Atoi(oldPortStr)
+	newHost, newPortStr, _ := net.SplitHostPort(strings.TrimPrefix(newBackend.URL, "http://"))
+	newPort, _ := strconv.Atoi(newPortStr)
+	labels := map[string]string{
+		"statute.enable":  "true",
+		"statute.service": "wl",
+		"statute.host":    "wl.example.com",
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{
+		name: "wl-1", ip: oldHost, port: oldPort, labels: labels,
+	}})
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	proxy := httptest.NewServer(srv.buildRouter())
+	t.Cleanup(proxy.Close)
+
+	done := make(chan error)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, proxy.URL, nil)
+		req.Host = "wl.example.com"
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_, err = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+		done <- err
+	}()
+	waitSignal(t, started, "old streaming response did not start")
+	daemon.mu.Lock()
+	oldID := daemon.containers[0].id
+	daemon.mu.Unlock()
+	replacement := daemon.recreate(fakeDaemonContainer{
+		name: "wl-1", ip: newHost, port: newPort, labels: labels,
+	})
+	if replacement.id == oldID {
+		t.Fatal("same-name replacement retained its old ID")
+	}
+	daemon.swap([]fakeDaemonContainer{replacement})
+	mustSync(t, p)
+	waitWorkloadPhase(t, p, workloadReady)
+	waitWorkloadPhase(t, p, workloadDormant)
+
+	releaseStream()
+	if err := waitError(t, done, time.Second, "old streaming response did not finish"); err != nil {
+		t.Fatalf("old streaming request: %v", err)
+	}
+	if got := p.workloadFor("wl").phaseNow(); got != workloadDormant {
+		t.Fatalf("stale completion changed successor phase to %v", got)
 	}
 }
 

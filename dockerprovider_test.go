@@ -100,10 +100,22 @@ func (d *fakeDaemon) swap(cs []fakeDaemonContainer) {
 			next[i].id = id
 			continue
 		}
-		next[i].id = fmt.Sprintf("id-%d", d.nextID)
-		d.nextID++
+		next[i].id = d.nextContainerIDLocked()
 	}
 	d.containers = next
+}
+
+func (d *fakeDaemon) recreate(c fakeDaemonContainer) fakeDaemonContainer {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	c.id = d.nextContainerIDLocked()
+	return c
+}
+
+func (d *fakeDaemon) nextContainerIDLocked() string {
+	id := fmt.Sprintf("id-%d", d.nextID)
+	d.nextID++
+	return id
 }
 
 func (d *fakeDaemon) find(ref string) *fakeDaemonContainer {

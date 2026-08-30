@@ -206,6 +206,7 @@ func (w *workload) bindContainerLocked(svc *docker.Service) bool {
 	changed := hadBinding && !w.sameContainerLocked(svc)
 	if changed {
 		w.supersedeBindingLocked()
+		w.active = 0
 	}
 	w.container = svc.Container
 	w.containerID = svc.ContainerID
@@ -251,10 +252,14 @@ func (w *workload) beginLocked() {
 	}
 }
 
-// end records a finished request; the last one arms the idle timer.
-func (w *workload) end(p *dockerProvider) {
+// end records a finished request for one container binding; the last current
+// request arms the idle timer. A stale completion cannot mutate its successor.
+func (w *workload) end(p *dockerProvider, ref string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.containerRefLocked() != ref {
+		return
+	}
 	w.active--
 	w.armIdleLocked(p)
 }
@@ -409,7 +414,7 @@ func (g *workloadGate) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// ensureReady registered this request in the active count.
-	defer g.w.end(g.p)
+	defer g.w.end(g.p, ref)
 	pool := g.p.currentPool(g.w.service, ref)
 	if pool == nil || !pool.isLive() {
 		http.Error(rw, "no backends available", http.StatusServiceUnavailable)

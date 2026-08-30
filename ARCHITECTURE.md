@@ -250,7 +250,9 @@ An activation or issued stop is bound to one immutable container identity. If a
 reconcile replaces that container beneath the same service, waiters on the stale
 operation fail closed, its eventual result is ignored, and a running successor
 enters a fresh observe-only readiness attempt. Stale work neither establishes
-readiness nor issues cleanup for the successor.
+readiness nor issues cleanup for the successor. Request activity and completion
+carry the same identity: an old stream may finish, but cannot hold or arm the
+successor's idle lifecycle.
 
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to

@@ -131,8 +131,9 @@ How it behaves:
   policy applies to it: a manual start does not exempt a workload from its
   own scale-to-zero policy. Replacement beneath the same service supersedes
   an in-flight operation: its waiters fail closed, stale cleanup is ignored,
-  and a running successor proves readiness afresh. Statute's own shutdown
-  leaves workloads as they are.
+  a running successor proves readiness afresh, and old request completions
+  cannot affect the successor's idle timer. Statute's own shutdown leaves
+  workloads as they are.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.
