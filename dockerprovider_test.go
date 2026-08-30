@@ -76,13 +76,15 @@ type fakeDaemon struct {
 	starts     map[string]int
 	stops      map[string]int
 	// failStart and failStop make their lifecycle calls answer 500.
-	failStart      bool
-	failStop       bool
-	loseStopReply  bool
-	stallInspect   bool
-	inspectStarted chan struct{}
-	stopStarted    chan struct{}
-	stopRelease    chan struct{}
+	failStart          bool
+	failStop           bool
+	rejectStop         bool
+	stopFailsAfterSide bool
+	loseStopReply      bool
+	stallInspect       bool
+	inspectStarted     chan struct{}
+	stopStarted        chan struct{}
+	stopRelease        chan struct{}
 }
 
 func (d *fakeDaemon) swap(cs []fakeDaemonContainer) {
@@ -181,28 +183,62 @@ func (d *fakeDaemon) stallInspectLocked(w http.ResponseWriter, r *http.Request) 
 	return true
 }
 
-func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, ref string, c *fakeDaemonContainer) {
-	if d.loseStopReply {
-		d.stops[c.name]++
-		if d.stopStarted != nil {
-			close(d.stopStarted)
-			d.stopStarted = nil
-		}
-		conn, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			d.t.Errorf("hijack lost stop response: %v", err)
-			return
-		}
-		_ = conn.Close()
-		release := d.stopRelease
-		d.mu.Unlock()
+func (d *fakeDaemon) signalStopStartedLocked() {
+	if d.stopStarted != nil {
+		close(d.stopStarted)
+		d.stopStarted = nil
+	}
+}
+
+func (d *fakeDaemon) loseStopResponseLocked(w http.ResponseWriter, ref string, c *fakeDaemonContainer) {
+	d.stops[c.name]++
+	d.signalStopStartedLocked()
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		d.t.Errorf("hijack lost stop response: %v", err)
+		return
+	}
+	_ = conn.Close()
+	release := d.stopRelease
+	d.mu.Unlock()
+	if release != nil {
+		<-release
+	}
+	d.mu.Lock()
+	if current := d.find(ref); current != nil {
+		current.stopped = true
+	}
+}
+
+func (d *fakeDaemon) failStopAfterSideEffectLocked(w http.ResponseWriter, ref string, c *fakeDaemonContainer) {
+	d.stops[c.name]++
+	d.signalStopStartedLocked()
+	release := d.stopRelease
+	go func() {
 		if release != nil {
 			<-release
 		}
 		d.mu.Lock()
+		defer d.mu.Unlock()
 		if current := d.find(ref); current != nil {
 			current.stopped = true
 		}
+	}()
+	http.Error(w, "stop confirmation failed", http.StatusInternalServerError)
+}
+
+func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, ref string, c *fakeDaemonContainer) {
+	if d.loseStopReply {
+		d.loseStopResponseLocked(w, ref, c)
+		return
+	}
+	if d.rejectStop {
+		d.stops[c.name]++
+		http.Error(w, "rejected", http.StatusConflict)
+		return
+	}
+	if d.stopFailsAfterSide {
+		d.failStopAfterSideEffectLocked(w, ref, c)
 		return
 	}
 	c = d.stopContainerLocked(ref, c)

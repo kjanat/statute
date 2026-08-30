@@ -268,12 +268,14 @@ Docker call references refine monotonically. Discovery may add an immutable ID t
 a name-only binding, and a later observation without that ID cannot erase it. A
 Docker mutation remains represented by binding-owned workload state until its
 outcome settles. This includes the cleanup stop after a failed activation. A lost
-stop response enters a non-serving unknown state even when an immediate inspect
-still reports running, because the accepted server-side stop may still complete.
-The operation owns backed-off retries of bounded calls and coalesced reconciliation
-until a confirmed response or stopped observation resolves it. Readiness uses the
-same provider-owned publication edge, keeping global rebuild work out of
-per-activation polling.
+stop response or server error enters a non-serving unknown state even when an
+immediate inspect still reports running, because the server-side stop may still
+complete. Uncertainty belongs to the whole mutation and is monotonic: a later
+rejected retry cannot erase an earlier attempt whose outcome was ambiguous. The
+operation owns backed-off retries of bounded calls and coalesced reconciliation
+until a successful or already-stopped response, a missing immutable container ID,
+or a stopped observation resolves it. Readiness uses the same provider-owned
+publication edge, keeping global rebuild work out of per-activation polling.
 
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to

@@ -223,8 +223,8 @@ func (c *Client) StopContainer(ctx context.Context, id string) error {
 	return c.lifecyclePost(ctx, id, "stop")
 }
 
-// LifecycleOutcomeAmbiguous reports whether Docker may have accepted a
-// lifecycle mutation even though the client did not receive its response.
+// LifecycleOutcomeAmbiguous reports whether Docker may have applied a
+// lifecycle mutation without returning terminal evidence to the client.
 func LifecycleOutcomeAmbiguous(err error) bool {
 	var lifecycleErr *lifecycleError
 	return errors.As(err, &lifecycleErr) && lifecycleErr.ambiguous
@@ -264,9 +264,10 @@ func (c *Client) lifecyclePost(ctx context.Context, id, action string) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
 		return &lifecycleError{
-			action: action,
-			err:    fmt.Errorf("unexpected status %s", resp.Status),
-			status: resp.StatusCode,
+			action:    action,
+			err:       fmt.Errorf("unexpected status %s", resp.Status),
+			ambiguous: resp.StatusCode >= http.StatusInternalServerError,
+			status:    resp.StatusCode,
 		}
 	}
 	return nil

@@ -328,8 +328,13 @@ func TestLifecycleOutcomeAmbiguous(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	err = client.StopContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleOutcomeAmbiguous(err) {
+		t.Fatalf("daemon 500: err=%v ambiguous=%v, want error and true", err, LifecycleOutcomeAmbiguous(err))
+	}
+	status = http.StatusConflict
+	err = client.StopContainer(context.Background(), "abc123")
 	if err == nil || LifecycleOutcomeAmbiguous(err) {
-		t.Fatalf("daemon response: err=%v ambiguous=%v, want error and false", err, LifecycleOutcomeAmbiguous(err))
+		t.Fatalf("daemon rejection: err=%v ambiguous=%v, want error and false", err, LifecycleOutcomeAmbiguous(err))
 	}
 	status = http.StatusNotFound
 	err = client.StopContainer(context.Background(), "abc123")

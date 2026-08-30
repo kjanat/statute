@@ -141,6 +141,7 @@ type workloadStop struct {
 	binding    workloadBindingKey
 	ref        string
 	issued     bool
+	uncertain  bool
 	converging bool
 }
 
@@ -861,6 +862,13 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 	}
 	stop.issued = false
 	if attempt.result == workloadStopAmbiguous {
+		stop.uncertain = true
+		if w.phase == workloadStopIssued {
+			w.toLocked(workloadStopUnknown)
+		}
+		return workloadStopUnsettled
+	}
+	if attempt.result == workloadStopRejected && stop.uncertain {
 		if w.phase == workloadStopIssued {
 			w.toLocked(workloadStopUnknown)
 		}

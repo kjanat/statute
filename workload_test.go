@@ -54,7 +54,7 @@ func TestWorkloadLegalTransitions(t *testing.T) {
 		{"idle shutdown", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadDormant}},
 		{"revoked idle stop", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadReady}},
 		{"failed stop call, container still running", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadReady}},
-		{"unknown stop retry rejected", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadStopUnknown, workloadStopIssued, workloadReady}},
+		{"unknown stop retry succeeds", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadStopUnknown, workloadStopIssued, workloadDormant}},
 		{"unknown stop later observed stopped", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadStopUnknown, workloadDormant}},
 		{"failed activation cleanup", []workloadPhase{workloadStarting, workloadStopIssued, workloadFailed}},
 		{"activation fails then retries", []workloadPhase{workloadStarting, workloadFailed, workloadStarting, workloadReady}},
@@ -294,6 +294,23 @@ func waitStartCount(t *testing.T, daemon *fakeDaemon, name string, want int) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("start calls for %q = %d, want %d", name, daemon.startCount(name), want)
+}
+
+func waitUncertainStopAttempts(t *testing.T, p *dockerProvider, daemon *fakeDaemon, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		w := p.workloadFor("wl")
+		w.mu.Lock()
+		stop := w.stop
+		settled := w.phase == workloadStopUnknown && stop != nil && stop.uncertain && !stop.issued
+		w.mu.Unlock()
+		if daemon.stopCount("wl-1") >= want && settled {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("stop did not remain uncertain after %d attempts", want)
 }
 
 func assertSuccessorActivation(t *testing.T, p *dockerProvider, daemon *fakeDaemon) {
@@ -782,6 +799,70 @@ func TestWorkloadLostStopResponseNeverReopensServing(t *testing.T) {
 	}
 	if got := p.workloadFor("wl").phaseNow(); got == workloadReady {
 		t.Fatal("ambiguous stop reopened serving after an immediate running inspect")
+	}
+
+	releaseStop()
+	waitWorkloadPhase(t, p, workloadDormant)
+}
+
+func TestWorkloadStop500AfterSideEffectNeverReopensServing(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	daemon.mu.Lock()
+	daemon.stopFailsAfterSide = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("initial request = %d, want 200", rec.Code)
+	}
+	waitSignal(t, stopStarted, "idle stop side effect was not issued")
+	waitWorkloadPhase(t, p, workloadStopUnknown)
+	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("request after ambiguous 500 = %d, want 503", rec.Code)
+	}
+
+	releaseStop()
+	waitWorkloadPhase(t, p, workloadDormant)
+}
+
+func TestWorkloadRejectedRetryDoesNotEraseStopUncertainty(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	daemon.mu.Lock()
+	daemon.loseStopReply = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("initial request = %d, want 200", rec.Code)
+	}
+	waitSignal(t, stopStarted, "idle stop was not accepted by the daemon")
+	daemon.mu.Lock()
+	daemon.loseStopReply = false
+	daemon.rejectStop = true
+	daemon.mu.Unlock()
+	waitUncertainStopAttempts(t, p, daemon, 2)
+	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("request after rejected retry = %d, want 503", rec.Code)
 	}
 
 	releaseStop()

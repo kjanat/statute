@@ -136,12 +136,14 @@ How it behaves:
   when labels change their route or middleware policy during activation.
 - **Issued mutations stay owned.** Idle stops and failed-activation cleanup
   stops remain non-serving lifecycle operations until their outcome settles.
-  If a stop response is lost, an immediate running inspect does not reopen
-  traffic: Docker may still finish the accepted stop. Statute coalesces discovery
-  and retries the bounded call until a confirmed response or stopped observation
-  resolves the operation, including when periodic refresh is disabled. A recreated
-  container starts with fresh pool health and connections, even when its name and
-  backend address are unchanged. Statute's own shutdown leaves workloads as they are.
+  If a stop response is lost or Docker returns a server error, an immediate running
+  inspect does not reopen traffic: Docker may still finish the stop. That uncertainty
+  remains attached to the mutation and cannot be erased by a later rejected retry.
+  Statute coalesces discovery and retries the bounded call until positive stopped or
+  missing-container evidence resolves the operation, including when periodic refresh
+  is disabled. A recreated container starts with fresh pool health and connections,
+  even when its name and backend address are unchanged. Statute's own shutdown leaves
+  workloads as they are.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.
