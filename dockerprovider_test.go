@@ -73,7 +73,9 @@ type fakeDaemon struct {
 	starts     map[string]int
 	stops      map[string]int
 	// failStart makes every start call answer 500.
-	failStart bool
+	failStart   bool
+	stopStarted chan struct{}
+	stopRelease chan struct{}
 }
 
 func (d *fakeDaemon) swap(cs []fakeDaemonContainer) {
@@ -101,6 +103,21 @@ func (d *fakeDaemon) stopCount(name string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.stops[name]
+}
+
+func (d *fakeDaemon) stopContainerLocked(ref string, c *fakeDaemonContainer) *fakeDaemonContainer {
+	d.stops[c.name]++
+	if d.stopStarted != nil {
+		close(d.stopStarted)
+		d.stopStarted = nil
+	}
+	if release := d.stopRelease; release != nil {
+		d.mu.Unlock()
+		<-release
+		d.mu.Lock()
+		return d.find(ref)
+	}
+	return c
 }
 
 func (d *fakeDaemon) handler() http.Handler {
@@ -154,7 +171,11 @@ func (d *fakeDaemon) handler() http.Handler {
 			c.stopped = false
 			w.WriteHeader(http.StatusNoContent)
 		case "stop":
-			d.stops[c.name]++
+			c = d.stopContainerLocked(ref, c)
+			if c == nil {
+				http.NotFound(w, r)
+				return
+			}
 			c.stopped = true
 			w.WriteHeader(http.StatusNoContent)
 		default:

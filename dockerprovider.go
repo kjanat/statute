@@ -26,6 +26,9 @@ type dynamicTable struct {
 	// generation discarded; see compileTombstones.
 	tombstones []compiledRoute
 	pools      map[string]*runningPool
+	// workloadRefs binds a gated service in this generation to the exact
+	// container whose backend the pool carries.
+	workloadRefs map[string]string
 	// fingerprints allow the next generation to reuse a pool handler —
 	// keeping its health state and connection pool — when its resolved
 	// config is unchanged.
@@ -86,6 +89,25 @@ func (r *dockerRun) track(f func(context.Context)) bool {
 		f(r.ctx)
 	}()
 	return true
+}
+
+// trackCancelable is track with a child context the workload registry may
+// cancel when a container binding is superseded.
+func (r *dockerRun) trackCancelable(f func(context.Context)) (context.CancelFunc, bool) {
+	r.trackMu.Lock()
+	if r.stopping || r.ctx.Err() != nil {
+		r.trackMu.Unlock()
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(r.ctx)
+	r.wg.Add(1)
+	r.trackMu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		defer cancel()
+		f(ctx)
+	}()
+	return cancel, true
 }
 
 // dockerDebounce coalesces bursts of container events (compose up starts
@@ -266,7 +288,7 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		return err
 	}
 	services, tombstones := p.deriveServices(containers)
-	p.updateWorkloads(services, p.multiServiceContainers(containers))
+	p.updateWorkloads(services, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
 
 	prev := p.srv.dynamic.Load()
 	// Pool health checkers deliberately outlive this sync call; they derive
@@ -394,6 +416,7 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 	next := &dynamicTable{
 		pools:        make(map[string]*runningPool, len(services)),
 		fingerprints: make(map[string]string, len(services)),
+		workloadRefs: make(map[string]string, len(p.cfg.Workloads)),
 	}
 	tombs := slices.Clone(tombstones)
 	matchedPolicy := make(map[string]bool, len(p.cfg.PoolPolicy))
@@ -433,6 +456,9 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		p.warn([]string{warn})
 	}
 	gated := p.workloadFor(svc.Name)
+	if gated != nil {
+		next.workloadRefs[svc.Name] = serviceContainerRef(svc)
+	}
 	rp, err := p.resolveServicePool(svc, pool, gated)
 	if err != nil {
 		p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", svc.Name, err)})
@@ -456,7 +482,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	// queued a waiter cannot carry a dormant container's backend.
 	base := http.Handler(running.handler)
 	if gated != nil {
-		base = &workloadGate{p: p, w: gated}
+		base = &workloadGate{p: p, w: gated, ref: serviceContainerRef(svc)}
 	}
 	for _, rc := range kept {
 		next.routes = append(next.routes, compiledRoute{

@@ -1,7 +1,10 @@
 package statute
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -232,6 +235,76 @@ func waitWorkloadPhase(t *testing.T, p *dockerProvider, want workloadPhase) {
 	t.Fatalf("workload phase = %v, want %v", w.phaseNow(), want)
 }
 
+func waitSignal(t *testing.T, ch <-chan struct{}, timeout time.Duration, message string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(timeout):
+		t.Fatal(message)
+	}
+}
+
+func waitStatus(t *testing.T, ch <-chan int, timeout time.Duration, message string) int {
+	t.Helper()
+	select {
+	case code := <-ch:
+		return code
+	case <-time.After(timeout):
+		t.Fatal(message)
+		return 0
+	}
+}
+
+func waitError(t *testing.T, ch <-chan error, timeout time.Duration, message string) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(timeout):
+		t.Fatal(message)
+		return nil
+	}
+}
+
+func assertStatusPending(t *testing.T, ch <-chan int, wait time.Duration) {
+	t.Helper()
+	select {
+	case code := <-ch:
+		t.Fatalf("request completed with %d while Docker stop was in flight", code)
+	case <-time.After(wait):
+	}
+}
+
+func waitStartCount(t *testing.T, daemon *fakeDaemon, name string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if daemon.startCount(name) == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("start calls for %q = %d, want %d", name, daemon.startCount(name), want)
+}
+
+func assertSuccessorActivation(t *testing.T, p *dockerProvider, daemon *fakeDaemon) {
+	t.Helper()
+	w := p.workloadFor("wl")
+	w.mu.Lock()
+	ref := w.containerRefLocked()
+	act := w.activation
+	w.mu.Unlock()
+	if ref != "id-1" || act == nil || act.ref != "id-1" || !act.observe {
+		t.Fatalf("successor binding: ref=%q activation=%+v", ref, act)
+	}
+	if got := daemon.stopCount("wl-old") + daemon.stopCount("wl-new"); got != 0 {
+		t.Fatalf("superseded activation issued %d cleanup stops", got)
+	}
+	if got := daemon.startCount("wl-new"); got != 0 {
+		t.Fatalf("running successor received %d start calls", got)
+	}
+}
+
 func TestWorkloadDormantRouteActivatesAndServes(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("woken"))
@@ -421,6 +494,48 @@ func TestWorkloadRevokedStopServesWithoutColdStart(t *testing.T) {
 	}
 }
 
+func TestWorkloadRequestWaitsForIssuedStopAndReactivates(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	daemon.mu.Lock()
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+
+	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cold start: %d", rec.Code)
+	}
+	waitSignal(t, stopStarted, time.Second, "idle stop was not issued")
+	waitWorkloadPhase(t, p, workloadStopIssued)
+
+	done := make(chan int)
+	go func() {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+		done <- rec.Code
+	}()
+	assertStatusPending(t, done, 100*time.Millisecond)
+	releaseStop()
+	if code := waitStatus(t, done, 3*time.Second, "request did not reactivate after issued stop"); code != http.StatusOK {
+		t.Fatalf("request after issued stop = %d, want 200", code)
+	}
+	if got := daemon.stopCount("wl-1"); got != 1 {
+		t.Fatalf("stop calls = %d, want 1", got)
+	}
+	if got := daemon.startCount("wl-1"); got != 2 {
+		t.Fatalf("start calls = %d, want 2", got)
+	}
+}
+
 func TestWorkloadExternalStopReconcilesAndReactivates(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -552,7 +667,10 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 
 	// The ready decision and the active-count registration share one
 	// critical section; an idle expiry in between must find the count.
-	if err := w.ensureReady(context.Background(), p); err != nil {
+	w.mu.Lock()
+	ref := w.containerRefLocked()
+	w.mu.Unlock()
+	if _, err := w.ensureReady(context.Background(), p, ref); err != nil {
 		t.Fatalf("ensureReady: %v", err)
 	}
 	w.mu.Lock()
@@ -844,5 +962,166 @@ func TestWorkloadDisabledSchemaDoesNotMakeContainerMultiService(t *testing.T) {
 	rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
 		t.Fatalf("active route: code=%d body=%q, want 200 ok", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWorkloadContainerReplacementSupersedesActivation(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	labels := func(enabled string) map[string]string {
+		return map[string]string{
+			"statute.enable":  enabled,
+			"statute.service": "wl",
+			"statute.host":    "wl.example.com",
+		}
+	}
+	policy := testWorkloadPolicy()
+	policy.IdleAfter = 5 * time.Second
+	policy.ReadyTimeout = 2 * time.Second
+	policy.Readiness.Mode = resolved.ReadinessDockerHealth
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"wl": policy},
+	}, []fakeDaemonContainer{{
+		name: "wl-old", ip: host, port: port, stopped: true, health: "starting", labels: labels("true"),
+	}})
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	oldReq := httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)
+	oldHandler := findHandler(srv.dynamic.Load().routes, "wl.example.com", oldReq)
+	if oldHandler == nil {
+		t.Fatal("initial workload route is missing")
+	}
+
+	done := make(chan int)
+	go func() {
+		rec := httptest.NewRecorder()
+		oldHandler.ServeHTTP(rec, oldReq)
+		done <- rec.Code
+	}()
+	waitWorkloadPhase(t, p, workloadStarting)
+	waitStartCount(t, daemon, "wl-old", 1)
+
+	daemon.swap([]fakeDaemonContainer{
+		{name: "wl-old", ip: host, port: port, health: "starting", labels: labels("false")},
+		{name: "wl-new", ip: host, port: port, health: "starting", labels: labels("true")},
+	})
+	mustSync(t, p)
+	if code := waitStatus(t, done, time.Second, "superseded activation did not release its waiter"); code != http.StatusServiceUnavailable {
+		t.Fatalf("superseded activation response = %d, want 503", code)
+	}
+
+	assertSuccessorActivation(t, p, daemon)
+
+	daemon.mu.Lock()
+	daemon.find("wl-new").health = "healthy"
+	daemon.mu.Unlock()
+	waitWorkloadPhase(t, p, workloadReady)
+	stale := runRequest(t, oldHandler, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if stale.Code != http.StatusServiceUnavailable {
+		t.Fatalf("stale route reached successor: code=%d, want 503", stale.Code)
+	}
+	rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Fatalf("successor route: code=%d body=%q, want 200 ok", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWorkloadStreamingResponseHoldsIdleStop(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseStream := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseStream()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("a"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-release
+		_, _ = w.Write([]byte("b"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	proxy := httptest.NewServer(router)
+	t.Cleanup(proxy.Close)
+
+	done := make(chan error)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, proxy.URL, nil)
+		req.Host = "wl.example.com"
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_, err = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+		done <- err
+	}()
+	waitSignal(t, started, time.Second, "streaming response did not start")
+	time.Sleep(400 * time.Millisecond)
+	if got := daemon.stopCount("wl-1"); got != 0 {
+		t.Fatalf("streaming response allowed %d idle stops", got)
+	}
+	releaseStream()
+	if err := waitError(t, done, time.Second, "streaming response did not finish"); err != nil {
+		t.Fatalf("streaming request: %v", err)
+	}
+	waitWorkloadPhase(t, p, workloadDormant)
+	if got := daemon.stopCount("wl-1"); got != 1 {
+		t.Fatalf("stop calls after stream = %d, want 1", got)
+	}
+}
+
+func TestWorkloadWebSocketHoldsIdleStop(t *testing.T) {
+	opened := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWebSocket := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseWebSocket()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack backend: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprint(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		_ = rw.Flush()
+		close(opened)
+		<-release
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	proxy := httptest.NewServer(router)
+	t.Cleanup(proxy.Close)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_, _ = fmt.Fprint(conn, "GET / HTTP/1.1\r\nHost: wl.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read upgrade: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %d, want 101", resp.StatusCode)
+	}
+	waitSignal(t, opened, time.Second, "WebSocket did not open")
+	time.Sleep(400 * time.Millisecond)
+	if got := daemon.stopCount("wl-1"); got != 0 {
+		t.Fatalf("open WebSocket allowed %d idle stops", got)
+	}
+	releaseWebSocket()
+	_ = conn.Close()
+	waitWorkloadPhase(t, p, workloadDormant)
+	if got := daemon.stopCount("wl-1"); got != 1 {
+		t.Fatalf("stop calls after WebSocket = %d, want 1", got)
 	}
 }

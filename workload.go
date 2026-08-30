@@ -92,15 +92,32 @@ const (
 	workloadStopTimeout = 30 * time.Second
 )
 
+// workloadWait is one outcome a request may wait on. A superseded outcome
+// belongs to an earlier container binding and must fail that request closed.
+type workloadWait struct {
+	done       chan struct{}
+	superseded bool
+}
+
 // workloadActivation is one single-flight activation attempt. Every request
 // waiting for the same dormant workload shares one; the outcome is the
 // phase the workload holds once done closes.
 type workloadActivation struct {
+	workloadWait
 	// observe marks an activation without a start call: the container
 	// was found running and only readiness has to be established.
 	observe bool
 	started time.Time
-	done    chan struct{}
+	ref     string
+	policy  resolved.Workload
+	cancel  context.CancelFunc
+}
+
+// workloadStop is one issued Docker stop, bound to the container that was
+// current when the call began.
+type workloadStop struct {
+	workloadWait
+	ref string
 }
 
 // workload carries the lifecycle state of one on-demand container. The zero
@@ -117,9 +134,9 @@ type workload struct {
 	// authority; no Docker start or stop may be issued any more.
 	retired    bool
 	activation *workloadActivation
-	// stopDone is non-nil during stop-issued and closes when the stop
-	// confirmed, so queued requests know when to activate again.
-	stopDone chan struct{}
+	// stop is non-nil during stop-issued and wakes queued requests when
+	// the bound call settles or its container binding is superseded.
+	stop *workloadStop
 	// active counts in-flight proxied requests, including streams and
 	// WebSockets: the gate decrements only when the proxy call returns.
 	active int
@@ -166,6 +183,61 @@ func (w *workload) containerRefLocked() string {
 		return w.containerID
 	}
 	return w.container
+}
+
+func serviceContainerRef(svc *docker.Service) string {
+	if svc.ContainerID != "" {
+		return svc.ContainerID
+	}
+	return svc.Container
+}
+
+func (w *workload) sameContainerLocked(svc *docker.Service) bool {
+	if w.containerID != "" && svc.ContainerID != "" {
+		return w.containerID == svc.ContainerID
+	}
+	return w.container == svc.Container
+}
+
+// bindContainerLocked moves the registry entry to one observation. A new
+// container invalidates in-flight work owned by the preceding binding.
+func (w *workload) bindContainerLocked(svc *docker.Service) bool {
+	hadBinding := w.container != "" || w.containerID != ""
+	changed := hadBinding && !w.sameContainerLocked(svc)
+	if changed {
+		w.supersedeBindingLocked()
+	}
+	w.container = svc.Container
+	w.containerID = svc.ContainerID
+	return changed
+}
+
+func (w *workload) supersedeBindingLocked() {
+	switch w.phase {
+	case workloadStarting:
+		act := w.activation
+		if act != nil {
+			act.superseded = true
+			if act.cancel != nil {
+				act.cancel()
+			}
+			w.activation = nil
+			close(act.done)
+		}
+		w.toLocked(workloadDormant)
+	case workloadReady, workloadStopPending:
+		w.toLocked(workloadDormant)
+		w.stopIdleLocked()
+	case workloadStopIssued:
+		stop := w.stop
+		if stop != nil {
+			stop.superseded = true
+			w.stop = nil
+			close(stop.done)
+		}
+		w.toLocked(workloadDormant)
+	case workloadDormant, workloadFailed:
+	}
 }
 
 // beginLocked records one in-flight request and holds off the idle timer.
@@ -228,19 +300,22 @@ func (e workloadUnavailable) Error() string {
 // needed. ctx is the request's context: its cancellation abandons this
 // request's wait and nothing else. The activation itself runs on the provider
 // run's context, so the remaining waiters keep the outcome they need.
-func (w *workload) ensureReady(ctx context.Context, p *dockerProvider) error {
+func (w *workload) ensureReady(ctx context.Context, p *dockerProvider, expectedRef string) (string, error) {
 	for {
-		ready, wait, err := w.serveState(p)
-		if err != nil || ready {
-			return err
+		ref, wait, err := w.serveState(p, expectedRef) //nolint:contextcheck // request context must not own activation
+		if err != nil || ref != "" {
+			return ref, err
 		}
 		w.addWaiting(1)
 		select {
-		case <-wait:
+		case <-wait.done:
 			w.addWaiting(-1)
+			if wait.superseded {
+				return "", workloadUnavailable{}
+			}
 		case <-ctx.Done():
 			w.addWaiting(-1)
-			return workloadUnavailable{}
+			return "", workloadUnavailable{}
 		}
 	}
 }
@@ -257,49 +332,56 @@ func (w *workload) addWaiting(delta int) {
 // or a stop confirmation) and re-evaluate, or fail with err. A ready return
 // has already registered the request in the active count under the same
 // lock that read the phase, closing the gap an idle stop could enter.
-func (w *workload) serveState(p *dockerProvider) (ready bool, wait <-chan struct{}, err error) {
+func (w *workload) serveState(p *dockerProvider, expectedRef string) (ref string, wait *workloadWait, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.containerRefLocked() != expectedRef {
+		return "", nil, workloadUnavailable{}
+	}
+	return w.serveCurrentStateLocked(p)
+}
+
+func (w *workload) serveCurrentStateLocked(p *dockerProvider) (ref string, wait *workloadWait, err error) {
 	switch w.phase {
 	case workloadReady:
 		w.beginLocked()
-		return true, nil, nil
+		return w.containerRefLocked(), nil, nil
 	case workloadStopPending:
 		// Revoke the pending stop: no Docker call has been issued yet,
 		// so the workload simply keeps serving.
 		w.toLocked(workloadReady)
 		w.beginLocked()
-		return true, nil, nil
+		return w.containerRefLocked(), nil, nil
 	case workloadFailed:
 		if remaining := time.Until(w.failedUntil); remaining > 0 {
-			return false, nil, workloadUnavailable{retryAfter: remaining}
+			return "", nil, workloadUnavailable{retryAfter: remaining}
 		}
 		return w.beginAndWait(p)
 	case workloadDormant:
 		return w.beginAndWait(p)
 	case workloadStarting:
 		if w.activation == nil {
-			return false, nil, workloadUnavailable{}
+			return "", nil, workloadUnavailable{}
 		}
-		return false, w.activation.done, nil
+		return "", &w.activation.workloadWait, nil
 	case workloadStopIssued:
-		if w.stopDone == nil {
-			return false, nil, workloadUnavailable{}
+		if w.stop == nil {
+			return "", nil, workloadUnavailable{}
 		}
-		return false, w.stopDone, nil
+		return "", &w.stop.workloadWait, nil
 	default:
-		return false, nil, workloadUnavailable{}
+		return "", nil, workloadUnavailable{}
 	}
 }
 
 // beginAndWait starts a single-flight activation and hands its outcome
 // channel to the caller. w.mu must be held.
-func (w *workload) beginAndWait(p *dockerProvider) (bool, <-chan struct{}, error) {
+func (w *workload) beginAndWait(p *dockerProvider) (string, *workloadWait, error) {
 	act, err := p.beginActivationLocked(w, false)
 	if err != nil {
-		return false, nil, err
+		return "", nil, err
 	}
-	return false, act.done, nil
+	return "", &act.workloadWait, nil
 }
 
 // workloadGate holds requests for an on-demand service until its workload is
@@ -311,10 +393,14 @@ func (w *workload) beginAndWait(p *dockerProvider) (bool, <-chan struct{}, error
 type workloadGate struct {
 	p *dockerProvider
 	w *workload
+	// ref is the immutable container binding of the route generation that
+	// constructed this gate.
+	ref string
 }
 
 func (g *workloadGate) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	if err := g.w.ensureReady(r.Context(), g.p); err != nil {
+	ref, err := g.w.ensureReady(r.Context(), g.p, g.ref)
+	if err != nil {
 		var unavailable workloadUnavailable
 		if errors.As(err, &unavailable) && unavailable.retryAfter > 0 {
 			rw.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(unavailable.retryAfter.Seconds()))))
@@ -324,7 +410,7 @@ func (g *workloadGate) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 	// ensureReady registered this request in the active count.
 	defer g.w.end(g.p)
-	pool := g.p.currentPool(g.w.service)
+	pool := g.p.currentPool(g.w.service, ref)
 	if pool == nil || !pool.isLive() {
 		http.Error(rw, "no backends available", http.StatusServiceUnavailable)
 		return
@@ -343,13 +429,21 @@ func (p *dockerProvider) beginActivationLocked(w *workload, observe bool) (*work
 	if !w.toLocked(workloadStarting) {
 		return nil, workloadUnavailable{}
 	}
-	act := &workloadActivation{observe: observe, started: time.Now(), done: make(chan struct{})}
+	act := &workloadActivation{
+		observe: observe,
+		started: time.Now(),
+		ref:     w.containerRefLocked(),
+		policy:  w.policy,
+	}
+	act.done = make(chan struct{})
 	w.activation = act
-	if !p.trackRun(func(ctx context.Context) { p.activate(ctx, w, act) }) {
+	cancel, tracked := p.trackRunCancelable(func(ctx context.Context) { p.activate(ctx, w, act) })
+	if !tracked {
 		w.activation = nil
 		w.toLocked(workloadDormant)
 		return nil, workloadUnavailable{}
 	}
+	act.cancel = cancel
 	return act, nil
 }
 
@@ -359,36 +453,31 @@ func (p *dockerProvider) beginActivationLocked(w *workload, observe bool) (*work
 // than the cold start, and an unclaimed ready workload is reclaimed by the
 // idle policy.
 func (p *dockerProvider) activate(ctx context.Context, w *workload, act *workloadActivation) {
-	err := p.runActivation(ctx, w, act.observe)
+	err := p.runActivation(ctx, w, act)
 	p.finishActivation(ctx, w, act, err)
 }
 
 // runActivation starts the container unless the activation is observe-only,
 // then establishes readiness within the policy's deadline.
-func (p *dockerProvider) runActivation(ctx context.Context, w *workload, observe bool) error {
-	w.mu.Lock()
-	ref := w.containerRefLocked()
-	policy := w.policy
-	w.mu.Unlock()
-
-	if !observe {
-		sctx, cancel := context.WithTimeout(ctx, policy.StartTimeout)
-		err := p.client.StartContainer(sctx, ref)
+func (p *dockerProvider) runActivation(ctx context.Context, w *workload, act *workloadActivation) error {
+	if !act.observe {
+		sctx, cancel := context.WithTimeout(ctx, act.policy.StartTimeout)
+		err := p.client.StartContainer(sctx, act.ref)
 		cancel()
 		if err != nil {
 			return err
 		}
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, policy.ReadyTimeout)
+	rctx, cancel := context.WithTimeout(ctx, act.policy.ReadyTimeout)
 	defer cancel()
 	for {
-		insp, err := p.client.InspectContainer(rctx, ref)
+		insp, err := p.client.InspectContainer(rctx, act.ref)
 		if err == nil {
 			if !insp.Running {
 				return errWorkloadStopped
 			}
-			if p.probeReady(rctx, w, insp) {
+			if p.probeReady(rctx, w, act, insp) {
 				return nil
 			}
 		}
@@ -397,7 +486,7 @@ func (p *dockerProvider) runActivation(ctx context.Context, w *workload, observe
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("readiness not established within %s", policy.ReadyTimeout)
+			return fmt.Errorf("readiness not established within %s", act.policy.ReadyTimeout)
 		case <-time.After(workloadProbeInterval):
 		}
 	}
@@ -407,15 +496,15 @@ func (p *dockerProvider) runActivation(ctx context.Context, w *workload, observe
 // backend address must have materialized in the current generation first:
 // readiness includes the pool being able to serve the waiters, and the
 // address exists only after a reconcile has observed the started container.
-func (p *dockerProvider) probeReady(ctx context.Context, w *workload, insp docker.InspectState) bool {
-	addr := p.currentBackendAddr(w.service)
+func (p *dockerProvider) probeReady(ctx context.Context, w *workload, act *workloadActivation, insp docker.InspectState) bool {
+	addr := p.currentBackendAddr(w.service, act.ref)
 	if addr == "" {
 		p.syncLogged(ctx)
-		if addr = p.currentBackendAddr(w.service); addr == "" {
+		if addr = p.currentBackendAddr(w.service, act.ref); addr == "" {
 			return false
 		}
 	}
-	mode := w.policy.Readiness.Mode
+	mode := act.policy.Readiness.Mode
 	if mode == resolved.ReadinessAuto {
 		if insp.Health != "" {
 			mode = resolved.ReadinessDockerHealth
@@ -436,7 +525,7 @@ func (p *dockerProvider) probeReady(ctx context.Context, w *workload, insp docke
 		_ = conn.Close()
 		return true
 	case resolved.ReadinessHTTP:
-		return p.probeHTTP(ctx, w, addr)
+		return p.probeHTTP(ctx, w, act, addr)
 	default:
 		return false
 	}
@@ -444,8 +533,8 @@ func (p *dockerProvider) probeReady(ctx context.Context, w *workload, insp docke
 
 // probeHTTP issues one readiness GET over the pool's transport, keeping
 // probe traffic on the same TLS policy as proxy traffic.
-func (p *dockerProvider) probeHTTP(ctx context.Context, w *workload, addr string) bool {
-	pool := p.currentPool(w.service)
+func (p *dockerProvider) probeHTTP(ctx context.Context, w *workload, act *workloadActivation, addr string) bool {
+	pool := p.currentPool(w.service, act.ref)
 	if pool == nil {
 		return false
 	}
@@ -455,7 +544,7 @@ func (p *dockerProvider) probeHTTP(ctx context.Context, w *workload, addr string
 	}
 	pctx, cancel := context.WithTimeout(ctx, workloadProbeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(pctx, http.MethodGet, target+w.policy.Readiness.Path, nil)
+	req, err := http.NewRequestWithContext(pctx, http.MethodGet, target+act.policy.Readiness.Path, nil)
 	if err != nil {
 		return false
 	}
@@ -483,6 +572,8 @@ func (p *dockerProvider) finishActivation(ctx context.Context, w *workload, act 
 	out := w.settleActivation(p, act, err)
 	elapsed := time.Since(act.started).Round(time.Millisecond)
 	switch {
+	case out.superseded:
+		log.Printf("statute: docker: workload %q: activation superseded by a newer container binding", w.service)
 	case err == nil:
 		log.Printf("statute: docker: workload %q: ready in %s (%d waiting)", w.service, elapsed, out.waiters)
 	case out.abandoned:
@@ -507,6 +598,7 @@ type activationOutcome struct {
 	waiters    int
 	abandoned  bool
 	stale      bool
+	superseded bool
 }
 
 // settleActivation applies one activation outcome to the state machine and
@@ -514,6 +606,9 @@ type activationOutcome struct {
 func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, err error) activationOutcome {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.activation != act {
+		return activationOutcome{superseded: true}
+	}
 	out := activationOutcome{
 		abandoned: err != nil && errors.Is(err, context.Canceled),
 		stale:     err != nil && act.observe && errors.Is(err, errWorkloadStopped),
@@ -531,7 +626,7 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 		w.failedUntil = time.Now().Add(workloadBackoff(w.policy, w.failures))
 		w.toLocked(workloadFailed)
 		if !act.observe && !w.retired {
-			out.cleanupRef = w.containerRefLocked()
+			out.cleanupRef = act.ref
 		}
 	}
 	w.activation = nil
@@ -585,42 +680,49 @@ func (p *dockerProvider) performStop(ctx context.Context, w *workload) {
 		return
 	}
 	w.toLocked(workloadStopIssued)
-	ch := make(chan struct{})
-	w.stopDone = ch
-	ref := w.containerRefLocked()
+	stop := &workloadStop{ref: w.containerRefLocked()}
+	stop.done = make(chan struct{})
+	w.stop = stop
 	service := w.service
 	w.mu.Unlock()
 
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workloadStopTimeout)
-	err := p.client.StopContainer(sctx, ref)
+	err := p.client.StopContainer(sctx, stop.ref)
 	cancel()
 
 	running := false
 	if err != nil {
-		log.Printf("statute: docker: workload %q: idle stop failed: %v", service, err)
-		if insp, ierr := p.client.InspectContainer(context.WithoutCancel(ctx), ref); ierr == nil {
+		if insp, ierr := p.client.InspectContainer(context.WithoutCancel(ctx), stop.ref); ierr == nil {
 			running = insp.Running
 		}
-	} else {
-		log.Printf("statute: docker: workload %q: stopped after %s idle", service, w.policy.IdleAfter)
 	}
 
 	w.mu.Lock()
+	if w.stop != stop {
+		w.mu.Unlock()
+		return
+	}
 	if running {
 		w.toLocked(workloadReady)
 		w.armIdleLocked(p)
 	} else {
 		w.toLocked(workloadDormant)
 	}
-	w.stopDone = nil
-	close(ch)
+	w.stop = nil
+	close(stop.done)
 	w.mu.Unlock()
+	if err != nil {
+		log.Printf("statute: docker: workload %q: idle stop failed: %v", service, err)
+	} else {
+		log.Printf("statute: docker: workload %q: stopped after %s idle", service, w.policy.IdleAfter)
+	}
 }
 
-// currentPool returns the named service's pool in the current generation.
-func (p *dockerProvider) currentPool(service string) *runningPool {
+// currentPool returns the named service's pool only when the generation
+// carries the same container binding as the caller.
+func (p *dockerProvider) currentPool(service, ref string) *runningPool {
 	t := p.srv.dynamic.Load()
-	if t == nil {
+	if t == nil || t.workloadRefs[service] != ref {
 		return nil
 	}
 	return t.pools[service]
@@ -628,8 +730,8 @@ func (p *dockerProvider) currentPool(service string) *runningPool {
 
 // currentBackendAddr returns the first discovered backend address of the
 // service's current pool, or "" while the workload is dormant.
-func (p *dockerProvider) currentBackendAddr(service string) string {
-	pool := p.currentPool(service)
+func (p *dockerProvider) currentBackendAddr(service, ref string) string {
+	pool := p.currentPool(service, ref)
 	if pool == nil {
 		return ""
 	}
@@ -651,6 +753,16 @@ func (p *dockerProvider) trackRun(f func(context.Context)) bool {
 		return false
 	}
 	return r.track(f)
+}
+
+func (p *dockerProvider) trackRunCancelable(f func(context.Context)) (context.CancelFunc, bool) {
+	p.lifecycleMu.Lock()
+	r := p.current
+	p.lifecycleMu.Unlock()
+	if r == nil {
+		return nil, false
+	}
+	return r.trackCancelable(f)
 }
 
 // workloadFor returns the registry entry gating the named service, or nil.
@@ -758,8 +870,9 @@ func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
 func (p *dockerProvider) observeWorkload(w *workload, svc *docker.Service) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.container = svc.Container
-	w.containerID = svc.ContainerID
+	if w.bindContainerLocked(svc) {
+		log.Printf("statute: docker: workload %q: container binding replaced", w.service)
+	}
 	switch {
 	case svc.Running:
 		if w.phase == workloadDormant || w.phase == workloadFailed {

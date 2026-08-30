@@ -246,6 +246,12 @@ successor's state. That holds while a workload is starting, while labels change
 during activation, while Statute shuts down mid-activation, and when Docker
 reports a stop from outside.
 
+An activation or issued stop is bound to one immutable container identity. If a
+reconcile replaces that container beneath the same service, waiters on the stale
+operation fail closed, its eventual result is ignored, and a running successor
+enters a fresh observe-only readiness attempt. Stale work neither establishes
+readiness nor issues cleanup for the successor.
+
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to
 start or stop a workload, following the trust boundary that governs code-owned
