@@ -72,6 +72,7 @@ type fakeDaemon struct {
 
 	containers []fakeDaemonContainer
 	nextID     int
+	lists      int
 	starts     map[string]int
 	stops      map[string]int
 	// failStart and failStop make their lifecycle calls answer 500.
@@ -139,6 +140,12 @@ func (d *fakeDaemon) stopCount(name string) int {
 	return d.stops[name]
 }
 
+func (d *fakeDaemon) listCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lists
+}
+
 func (d *fakeDaemon) stopContainerLocked(ref string, c *fakeDaemonContainer) *fakeDaemonContainer {
 	d.stops[c.name]++
 	if d.stopStarted != nil {
@@ -200,6 +207,7 @@ func (d *fakeDaemon) handler() http.Handler {
 	})
 	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) {
 		d.mu.Lock()
+		d.lists++
 		body := daemonJSON(d.t, d.containers)
 		d.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -247,6 +255,33 @@ func (d *fakeDaemon) handler() http.Handler {
 		}
 	})
 	return mux
+}
+
+func TestDockerActivationReconcilesAreCoalesced(t *testing.T) {
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, nil)
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	before := daemon.listCount()
+
+	var changed <-chan struct{}
+	for range 100 {
+		got := p.requestReconcile()
+		if got == nil {
+			t.Fatal("running provider rejected a reconcile request")
+		}
+		if changed == nil {
+			changed = got
+		} else if got != changed {
+			t.Fatal("one reconcile burst returned multiple publication edges")
+		}
+	}
+	waitSignal(t, changed, "coalesced reconcile did not publish a generation")
+	if got := daemon.listCount() - before; got != 1 {
+		t.Fatalf("100 reconcile requests performed %d Docker listings, want 1", got)
+	}
 }
 
 // newFakeProvider builds a dockerProvider wired to a fake daemon serving

@@ -255,6 +255,23 @@ carry the same identity: an old stream may finish, but cannot hold or arm the
 successor's idle lifecycle. Its binding token remains stable when the Docker call
 target is refined from a known container's name to its ID.
 
+Three lifetimes remain distinct. A workload registry allocates an explicit
+container-incarnation key and keeps request activity with that binding. The
+dynamic table owns a routing revision derived from handler-carried matcher and
+middleware semantics; it stays stable while a stopped container materializes its
+backend, while a label or middleware change invalidates queued handlers before
+they can proxy. A `runningPool` owns health state and transport connections and is
+reused only when both its resolved fingerprint and, for a gated workload, its
+container-incarnation key remain equal.
+
+Docker call references refine monotonically. Discovery may add an immutable ID to
+a name-only binding, and a later observation without that ID cannot erase it. A
+failed idle stop followed by a failed verification enters a non-serving unknown
+state. Requests fail closed until a later Docker observation proves the container
+running or stopped. Readiness requests a provider-owned, coalesced reconcile and
+waits for successful generation publication, keeping global rebuild work out of
+per-activation polling.
+
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to
 start or stop a workload, following the trust boundary that governs code-owned

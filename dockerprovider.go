@@ -18,17 +18,18 @@ import (
 )
 
 // dynamicTable is one immutable generation of label-derived routing state.
-// The server swaps whole generations atomically; requests in flight keep
-// the generation they started with.
+// The server swaps whole generations atomically. Workload routes additionally
+// validate their handler-carried policy revision after a readiness wait.
 type dynamicTable struct {
 	routes []compiledRoute
 	// tombstones are the refusal envelopes of the registrations this
 	// generation discarded; see compileTombstones.
 	tombstones []compiledRoute
 	pools      map[string]*runningPool
-	// workloadBindings bind a gated service in this generation to the exact
-	// container incarnation whose backend the pool carries.
-	workloadBindings map[string]*workloadBinding
+	// workloadBindings and workloadRevisions keep container incarnation and
+	// handler-carried routing policy as separate compatibility dimensions.
+	workloadBindings  map[string]workloadBindingKey
+	workloadRevisions map[string]workloadRoutingRevision
 	// fingerprints allow the next generation to reuse a pool handler —
 	// keeping its health state and connection pool — when its resolved
 	// config is unchanged.
@@ -44,8 +45,8 @@ type dockerProvider struct {
 
 	lifecycleMu sync.Mutex
 	current     *dockerRun
-	// syncMu serializes reconciles: besides the reconcile loop, an
-	// activation may sync to materialize a started container's backend.
+	// syncMu serializes reconciles requested by the event loop, refreshes,
+	// and coalesced activation demand.
 	syncMu sync.Mutex
 	// warned dedupes label warnings across reconciles so a misconfigured
 	// container logs once per provider lifetime. Guarded by syncMu.
@@ -53,6 +54,10 @@ type dockerProvider struct {
 	// refusal is the previous generation's refusal announcement, or "" when
 	// it refused nothing; see announceRefusal.
 	refusal string
+	// generationChanged closes after each successful dynamic-table
+	// publication. Activations use it to await a coalesced reconcile.
+	generationMu      sync.Mutex
+	generationChanged chan struct{}
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
@@ -120,10 +125,11 @@ func newDockerProvider(cfg *resolved.Docker, srv *server) (*dockerProvider, erro
 		return nil, err
 	}
 	return &dockerProvider{
-		cfg:    cfg,
-		client: client,
-		srv:    srv,
-		warned: make(map[string]bool),
+		cfg:               cfg,
+		client:            client,
+		srv:               srv,
+		warned:            make(map[string]bool),
+		generationChanged: make(chan struct{}),
 	}, nil
 }
 
@@ -278,8 +284,8 @@ func (p *dockerProvider) syncLogged(ctx context.Context) {
 
 // sync lists containers, derives services from labels, builds the next
 // route-table generation, swaps it in, and retires replaced pool handlers.
-// Reconciles are serialized: activations may trigger one to materialize a
-// started container's backend while the event loop schedules its own.
+// Reconciles are serialized; successful publication wakes activations waiting
+// for a started container's backend to materialize.
 func (p *dockerProvider) sync(ctx context.Context) error {
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
@@ -294,11 +300,37 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	// Pool health checkers deliberately outlive this sync call; they derive
 	// their own lifetime and stop on generation retirement or shutdown.
 	next, retired := p.buildTable(services, tombstones, prev) //nolint:contextcheck
-	p.srv.dynamic.Store(next)
+	p.publishGeneration(next)
 	for _, pool := range retired {
 		pool.shutdown()
 	}
 	return nil
+}
+
+func (p *dockerProvider) publishGeneration(next *dynamicTable) {
+	p.srv.dynamic.Store(next)
+	p.generationMu.Lock()
+	if p.generationChanged != nil {
+		close(p.generationChanged)
+	}
+	p.generationChanged = make(chan struct{})
+	p.generationMu.Unlock()
+}
+
+// requestReconcile coalesces activation demand onto the provider run's event
+// loop and returns the successful-publication edge callers can await.
+func (p *dockerProvider) requestReconcile() <-chan struct{} {
+	p.lifecycleMu.Lock()
+	r := p.current
+	p.lifecycleMu.Unlock()
+	if r == nil {
+		return nil
+	}
+	p.generationMu.Lock()
+	changed := p.generationChanged
+	p.generationMu.Unlock()
+	r.trigger()
+	return changed
 }
 
 // deriveServices extracts label registrations from every container and
@@ -414,9 +446,10 @@ func (p *dockerProvider) multiServiceContainers(containers []docker.Container) m
 // after the swap.
 func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
-		pools:            make(map[string]*runningPool, len(services)),
-		fingerprints:     make(map[string]string, len(services)),
-		workloadBindings: make(map[string]*workloadBinding, len(p.cfg.Workloads)),
+		pools:             make(map[string]*runningPool, len(services)),
+		fingerprints:      make(map[string]string, len(services)),
+		workloadBindings:  make(map[string]workloadBindingKey, len(p.cfg.Workloads)),
+		workloadRevisions: make(map[string]workloadRoutingRevision, len(p.cfg.Workloads)),
 	}
 	tombs := slices.Clone(tombstones)
 	matchedPolicy := make(map[string]bool, len(p.cfg.PoolPolicy))
@@ -456,7 +489,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		p.warn([]string{warn})
 	}
 	gated := p.workloadFor(svc.Name)
-	var binding *workloadBinding
+	var binding workloadBindingKey
 	if gated != nil {
 		binding = gated.currentBinding()
 		next.workloadBindings[svc.Name] = binding
@@ -471,8 +504,13 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	if len(kept) == 0 {
 		return tombs
 	}
+	var revision workloadRoutingRevision
+	if gated != nil {
+		revision = fingerprintWorkloadRoutes(kept)
+		next.workloadRevisions[svc.Name] = revision
+	}
 
-	running := p.servicePoolHandler(svc.Name, rp, prev, next)
+	running := p.servicePoolHandler(svc.Name, rp, binding, prev, next)
 	if running == nil {
 		keptMatchers := make([]docker.Matcher, 0, len(kept))
 		for _, rc := range kept {
@@ -484,9 +522,20 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	// queued a waiter cannot carry a dormant container's backend.
 	base := http.Handler(running.handler)
 	if gated != nil {
-		base = &workloadGate{p: p, w: gated, binding: binding}
+		base = &workloadGate{p: p, w: gated, binding: binding, revision: revision}
 	}
-	for _, rc := range kept {
+	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, next)
+	return tombs
+}
+
+func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, next *dynamicTable) {
+	for _, rc := range chains {
+		handler := wrapMiddleware(rc.mws, base)
+		if gated != nil {
+			handler = &workloadRevisionGate{
+				p: p, service: name, binding: binding, revision: revision, next: handler,
+			}
+		}
 		next.routes = append(next.routes, compiledRoute{
 			route: &resolved.Route{
 				Pattern:    rc.m.Path,
@@ -494,11 +543,10 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 				Upstream:   rp,
 				Middleware: rc.mws,
 			},
-			handler: wrapMiddleware(rc.mws, base),
+			handler: handler,
 			matcher: rc.m,
 		})
 	}
-	return tombs
 }
 
 // resolveServicePool resolves the derived pool and overlays the code-owned
@@ -526,6 +574,26 @@ func (p *dockerProvider) resolveServicePool(svc *docker.Service, pool Pool, gate
 type routeChain struct {
 	m   docker.Matcher
 	mws []resolved.Middleware
+}
+
+type workloadRoutingRevision string
+
+// fingerprintWorkloadRoutes covers the matcher and middleware semantics held
+// by compiled handlers while excluding backend materialization.
+func fingerprintWorkloadRoutes(chains []routeChain) workloadRoutingRevision {
+	type semantics struct {
+		Matcher    docker.Matcher
+		Middleware []resolved.Middleware
+	}
+	view := make([]semantics, len(chains))
+	for i := range chains {
+		view[i] = semantics{Matcher: chains[i].m, Middleware: chains[i].mws}
+	}
+	b, err := json.Marshal(view)
+	if err != nil {
+		return workloadRoutingRevision(fmt.Sprintf("%+v", view))
+	}
+	return workloadRoutingRevision(b)
 }
 
 // routeChains resolves each of the service's routes into its middleware
@@ -625,15 +693,16 @@ func (p *dockerProvider) announceRefusal(env []docker.Matcher) {
 	log.Printf("statute: docker: generation: refusals cleared; unmatched requests are no longer blocked by Docker tombstones")
 }
 
-// servicePoolHandler returns the pool handler for the named service,
-// reusing prev's handler — keeping its health state and connections —
-// when the resolved pool config is unchanged. Nil means the handler could
-// not be built; the warning has been logged.
-func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, prev, next *dynamicTable) *runningPool {
+// servicePoolHandler returns the pool handler for the named service. Reuse
+// preserves health and connections only across the same resolved config and,
+// for a gated workload, the same container incarnation. Nil means construction
+// failed and its warning has been logged.
+func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, binding workloadBindingKey, prev, next *dynamicTable) *runningPool {
 	fp := poolFingerprint(rp)
 	pool := next.pools[name]
 	if pool == nil {
-		if prev != nil && prev.fingerprints[name] == fp && prev.pools[name].isLive() {
+		sameBinding := binding == 0 || (prev != nil && prev.workloadBindings[name] == binding)
+		if prev != nil && sameBinding && prev.fingerprints[name] == fp && prev.pools[name].isLive() {
 			pool = prev.pools[name]
 		} else {
 			ph, err := newPoolHandler(rp)
