@@ -235,11 +235,11 @@ func waitWorkloadPhase(t *testing.T, p *dockerProvider, want workloadPhase) {
 	t.Fatalf("workload phase = %v, want %v", w.phaseNow(), want)
 }
 
-func waitSignal(t *testing.T, ch <-chan struct{}, timeout time.Duration, message string) {
+func waitSignal(t *testing.T, ch <-chan struct{}, message string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(timeout):
+	case <-time.After(time.Second):
 		t.Fatal(message)
 	}
 }
@@ -302,6 +302,19 @@ func assertSuccessorActivation(t *testing.T, p *dockerProvider, daemon *fakeDaem
 	}
 	if got := daemon.startCount("wl-new"); got != 0 {
 		t.Fatalf("running successor received %d start calls", got)
+	}
+}
+
+func assertIssuedStopDidNotAffectSuccessor(t *testing.T, daemon *fakeDaemon) {
+	t.Helper()
+	if got := daemon.stopCount("wl-old"); got != 1 {
+		t.Fatalf("old-container stop calls = %d, want 1", got)
+	}
+	if got := daemon.stopCount("wl-new"); got != 0 {
+		t.Fatalf("successor stop calls = %d, want 0", got)
+	}
+	if got := daemon.startCount("wl-new"); got != 0 {
+		t.Fatalf("successor start calls = %d, want 0", got)
 	}
 }
 
@@ -514,7 +527,7 @@ func TestWorkloadRequestWaitsForIssuedStopAndReactivates(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cold start: %d", rec.Code)
 	}
-	waitSignal(t, stopStarted, time.Second, "idle stop was not issued")
+	waitSignal(t, stopStarted, "idle stop was not issued")
 	waitWorkloadPhase(t, p, workloadStopIssued)
 
 	done := make(chan int)
@@ -533,6 +546,79 @@ func TestWorkloadRequestWaitsForIssuedStopAndReactivates(t *testing.T) {
 	}
 	if got := daemon.startCount("wl-1"); got != 2 {
 		t.Fatalf("start calls = %d, want 2", got)
+	}
+}
+
+func TestWorkloadContainerReplacementSupersedesIssuedStop(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	labels := func(enabled string) map[string]string {
+		return map[string]string{
+			"statute.enable":  enabled,
+			"statute.service": "wl",
+			"statute.host":    "wl.example.com",
+		}
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{
+		name: "wl-old", ip: host, port: port, labels: labels("true"),
+	}})
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	router := srv.buildRouter()
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("initial request = %d, want 200", rec.Code)
+	}
+	waitSignal(t, stopStarted, "idle stop was not issued")
+	waitWorkloadPhase(t, p, workloadStopIssued)
+
+	done := make(chan int)
+	go func() {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+		done <- rec.Code
+	}()
+	assertStatusPending(t, done, 100*time.Millisecond)
+	daemon.swap([]fakeDaemonContainer{
+		{name: "wl-old", ip: host, port: port, labels: labels("false")},
+		{name: "wl-new", ip: host, port: port, health: "starting", labels: labels("true")},
+	})
+	mustSync(t, p)
+	if code := waitStatus(t, done, time.Second, "superseded stop did not release its waiter"); code != http.StatusServiceUnavailable {
+		t.Fatalf("superseded stop response = %d, want 503", code)
+	}
+	w := p.workloadFor("wl")
+	w.mu.Lock()
+	ref := w.containerRefLocked()
+	act := w.activation
+	w.mu.Unlock()
+	if ref != "id-1" || act == nil || act.ref != "id-1" || !act.observe {
+		t.Fatalf("successor binding: ref=%q activation=%+v", ref, act)
+	}
+
+	releaseStop()
+	daemon.mu.Lock()
+	daemon.find("wl-new").health = "healthy"
+	daemon.mu.Unlock()
+	waitWorkloadPhase(t, p, workloadReady)
+	assertIssuedStopDidNotAffectSuccessor(t, daemon)
+	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("successor request = %d, want 200", rec.Code)
 	}
 }
 
@@ -1062,7 +1148,7 @@ func TestWorkloadStreamingResponseHoldsIdleStop(t *testing.T) {
 		}
 		done <- err
 	}()
-	waitSignal(t, started, time.Second, "streaming response did not start")
+	waitSignal(t, started, "streaming response did not start")
 	time.Sleep(400 * time.Millisecond)
 	if got := daemon.stopCount("wl-1"); got != 0 {
 		t.Fatalf("streaming response allowed %d idle stops", got)
@@ -1113,7 +1199,7 @@ func TestWorkloadWebSocketHoldsIdleStop(t *testing.T) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("upgrade status = %d, want 101", resp.StatusCode)
 	}
-	waitSignal(t, opened, time.Second, "WebSocket did not open")
+	waitSignal(t, opened, "WebSocket did not open")
 	time.Sleep(400 * time.Millisecond)
 	if got := daemon.stopCount("wl-1"); got != 0 {
 		t.Fatalf("open WebSocket allowed %d idle stops", got)
