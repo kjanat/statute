@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -773,13 +774,14 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 	// The ready decision and the active-count registration share one
 	// critical section; an idle expiry in between must find the count.
 	w.mu.Lock()
-	ref := w.containerRefLocked()
+	binding := w.binding
 	w.mu.Unlock()
-	if _, err := w.ensureReady(context.Background(), p, ref); err != nil {
+	lease, err := w.ensureReady(context.Background(), p, binding)
+	if err != nil {
 		t.Fatalf("ensureReady: %v", err)
 	}
 	w.mu.Lock()
-	active := w.active
+	active := w.binding.active
 	w.mu.Unlock()
 	if active != 1 {
 		t.Fatalf("active after ensureReady = %d, want 1", active)
@@ -792,21 +794,57 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 	if got := daemon.stopCount("wl-1"); got != stopsBefore {
 		t.Fatalf("idle expiry with a counted request issued a stop")
 	}
-	w.end(p, ref)
+	w.end(p, lease)
 }
 
 func TestWorkloadStaleCompletionDoesNotChangeCurrentActivity(t *testing.T) {
+	oldBinding := &workloadBinding{containerID: "old-id", active: 1}
+	currentBinding := &workloadBinding{containerID: "new-id", active: 1}
 	w := workload{
-		phase:       workloadReady,
-		containerID: "new-id",
-		active:      1,
+		phase:   workloadReady,
+		binding: currentBinding,
 	}
-	w.end(nil, "old-id")
+	w.end(nil, workloadLease{binding: oldBinding})
 	w.mu.Lock()
-	active, idle := w.active, w.idle
+	active, idle := w.binding.active, w.idle
 	w.mu.Unlock()
-	if active != 1 || idle != nil {
-		t.Fatalf("current activity after stale completion: active=%d idle=%v", active, idle)
+	if oldBinding.active != 0 || active != 1 || idle != nil {
+		t.Fatalf("activity after stale completion: old=%d current=%d idle=%v", oldBinding.active, active, idle)
+	}
+}
+
+func TestWorkloadContainerIDRefinesExistingBinding(t *testing.T) {
+	binding := &workloadBinding{container: "wl-1", active: 1}
+	w := workload{
+		phase:   workloadReady,
+		policy:  resolved.Workload{IdleAfter: time.Hour},
+		binding: binding,
+	}
+	w.mu.Lock()
+	changed := w.bindContainerLocked(&docker.Service{Container: "wl-1", ContainerID: "new-id"})
+	w.mu.Unlock()
+	if changed || w.binding != binding {
+		t.Fatal("a name-to-ID refinement replaced the container binding")
+	}
+	if got := binding.ref(); got != "new-id" {
+		t.Fatalf("refined Docker reference = %q, want new-id", got)
+	}
+	pool := &runningPool{}
+	p := &dockerProvider{srv: &server{}}
+	p.srv.dynamic.Store(&dynamicTable{
+		pools:            map[string]*runningPool{"wl": pool},
+		workloadBindings: map[string]*workloadBinding{"wl": binding},
+	})
+	if got := p.currentPool("wl", binding); got != pool {
+		t.Fatal("a name-to-ID refinement detached the generation pool")
+	}
+	w.end(p, workloadLease{binding: binding})
+	w.mu.Lock()
+	active, idle := w.binding.active, w.idle
+	w.stopIdleLocked()
+	w.mu.Unlock()
+	if active != 0 || idle == nil {
+		t.Fatalf("activity after refined completion: active=%d idle=%v", active, idle)
 	}
 }
 

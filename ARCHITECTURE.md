@@ -252,7 +252,8 @@ operation fail closed, its eventual result is ignored, and a running successor
 enters a fresh observe-only readiness attempt. Stale work neither establishes
 readiness nor issues cleanup for the successor. Request activity and completion
 carry the same identity: an old stream may finish, but cannot hold or arm the
-successor's idle lifecycle.
+successor's idle lifecycle. Its binding token remains stable when the Docker call
+target is refined from a known container's name to its ID.
 
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to

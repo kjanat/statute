@@ -26,9 +26,9 @@ type dynamicTable struct {
 	// generation discarded; see compileTombstones.
 	tombstones []compiledRoute
 	pools      map[string]*runningPool
-	// workloadRefs binds a gated service in this generation to the exact
-	// container whose backend the pool carries.
-	workloadRefs map[string]string
+	// workloadBindings bind a gated service in this generation to the exact
+	// container incarnation whose backend the pool carries.
+	workloadBindings map[string]*workloadBinding
 	// fingerprints allow the next generation to reuse a pool handler —
 	// keeping its health state and connection pool — when its resolved
 	// config is unchanged.
@@ -414,9 +414,9 @@ func (p *dockerProvider) multiServiceContainers(containers []docker.Container) m
 // after the swap.
 func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
-		pools:        make(map[string]*runningPool, len(services)),
-		fingerprints: make(map[string]string, len(services)),
-		workloadRefs: make(map[string]string, len(p.cfg.Workloads)),
+		pools:            make(map[string]*runningPool, len(services)),
+		fingerprints:     make(map[string]string, len(services)),
+		workloadBindings: make(map[string]*workloadBinding, len(p.cfg.Workloads)),
 	}
 	tombs := slices.Clone(tombstones)
 	matchedPolicy := make(map[string]bool, len(p.cfg.PoolPolicy))
@@ -456,8 +456,10 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		p.warn([]string{warn})
 	}
 	gated := p.workloadFor(svc.Name)
+	var binding *workloadBinding
 	if gated != nil {
-		next.workloadRefs[svc.Name] = serviceContainerRef(svc)
+		binding = gated.currentBinding()
+		next.workloadBindings[svc.Name] = binding
 	}
 	rp, err := p.resolveServicePool(svc, pool, gated)
 	if err != nil {
@@ -482,7 +484,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	// queued a waiter cannot carry a dormant container's backend.
 	base := http.Handler(running.handler)
 	if gated != nil {
-		base = &workloadGate{p: p, w: gated, ref: serviceContainerRef(svc)}
+		base = &workloadGate{p: p, w: gated, binding: binding}
 	}
 	for _, rc := range kept {
 		next.routes = append(next.routes, compiledRoute{
