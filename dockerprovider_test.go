@@ -20,6 +20,7 @@ import (
 // fakeDaemonContainer is the wire shape /containers/json responses are
 // built from in these tests.
 type fakeDaemonContainer struct {
+	id      string
 	name    string
 	ip      string
 	port    int
@@ -36,7 +37,7 @@ func daemonJSON(t *testing.T, containers []fakeDaemonContainer) string {
 		IPAddress string `json:"IPAddress"`
 	}
 	out := make([]map[string]any, 0, len(containers))
-	for i, c := range containers {
+	for _, c := range containers {
 		state := "running"
 		ports := []map[string]any{{"PrivatePort": c.port, "Type": "tcp"}}
 		networks := map[string]netJSON{"bridge": {IPAddress: c.ip}}
@@ -46,7 +47,7 @@ func daemonJSON(t *testing.T, containers []fakeDaemonContainer) string {
 			networks = nil
 		}
 		out = append(out, map[string]any{
-			"Id":     fmt.Sprintf("id-%d", i),
+			"Id":     c.id,
 			"Names":  []string{"/" + c.name},
 			"State":  state,
 			"Labels": c.labels,
@@ -70,23 +71,44 @@ type fakeDaemon struct {
 	mu sync.Mutex
 
 	containers []fakeDaemonContainer
+	nextID     int
 	starts     map[string]int
 	stops      map[string]int
-	// failStart makes every start call answer 500.
-	failStart   bool
-	stopStarted chan struct{}
-	stopRelease chan struct{}
+	// failStart and failStop make their lifecycle calls answer 500.
+	failStart      bool
+	failStop       bool
+	stallInspect   bool
+	inspectStarted chan struct{}
+	stopStarted    chan struct{}
+	stopRelease    chan struct{}
 }
 
 func (d *fakeDaemon) swap(cs []fakeDaemonContainer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.containers = cs
+	ids := make(map[string]string, len(d.containers))
+	for _, c := range d.containers {
+		ids[c.name] = c.id
+	}
+	next := make([]fakeDaemonContainer, len(cs))
+	copy(next, cs)
+	for i := range next {
+		if next[i].id != "" {
+			continue
+		}
+		if id := ids[next[i].name]; id != "" {
+			next[i].id = id
+			continue
+		}
+		next[i].id = fmt.Sprintf("id-%d", d.nextID)
+		d.nextID++
+	}
+	d.containers = next
 }
 
 func (d *fakeDaemon) find(ref string) *fakeDaemonContainer {
 	for i := range d.containers {
-		if d.containers[i].name == ref || fmt.Sprintf("id-%d", i) == ref {
+		if d.containers[i].name == ref || d.containers[i].id == ref {
 			return &d.containers[i]
 		}
 	}
@@ -118,6 +140,39 @@ func (d *fakeDaemon) stopContainerLocked(ref string, c *fakeDaemonContainer) *fa
 		return d.find(ref)
 	}
 	return c
+}
+
+func (d *fakeDaemon) stallInspectLocked(w http.ResponseWriter, r *http.Request) bool {
+	if !d.stallInspect {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	if d.inspectStarted != nil {
+		close(d.inspectStarted)
+		d.inspectStarted = nil
+	}
+	d.mu.Unlock()
+	<-r.Context().Done()
+	d.mu.Lock()
+	return true
+}
+
+func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, ref string, c *fakeDaemonContainer) {
+	c = d.stopContainerLocked(ref, c)
+	if c == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if d.failStop {
+		http.Error(w, "boom", http.StatusInternalServerError)
+		return
+	}
+	c.stopped = true
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (d *fakeDaemon) handler() http.Handler {
@@ -154,6 +209,9 @@ func (d *fakeDaemon) handler() http.Handler {
 		}
 		switch action {
 		case "json":
+			if d.stallInspectLocked(w, r) {
+				return
+			}
 			var health any
 			if c.health != "" {
 				health = map[string]any{"Status": c.health}
@@ -171,13 +229,7 @@ func (d *fakeDaemon) handler() http.Handler {
 			c.stopped = false
 			w.WriteHeader(http.StatusNoContent)
 		case "stop":
-			c = d.stopContainerLocked(ref, c)
-			if c == nil {
-				http.NotFound(w, r)
-				return
-			}
-			c.stopped = true
-			w.WriteHeader(http.StatusNoContent)
+			d.stopResponseLocked(w, r, ref, c)
 		default:
 			http.NotFound(w, r)
 		}
@@ -197,7 +249,8 @@ func newFakeProvider(t *testing.T, cfg *resolved.Docker, containers []fakeDaemon
 // tests that drive the lifecycle endpoints.
 func newFakeProviderDaemon(t *testing.T, cfg *resolved.Docker, containers []fakeDaemonContainer) (*dockerProvider, *server, *fakeDaemon) {
 	t.Helper()
-	daemon := &fakeDaemon{t: t, containers: containers, starts: map[string]int{}, stops: map[string]int{}}
+	daemon := &fakeDaemon{t: t, starts: map[string]int{}, stops: map[string]int{}}
+	daemon.swap(containers)
 	ts := httptest.NewServer(daemon.handler())
 	t.Cleanup(ts.Close)
 

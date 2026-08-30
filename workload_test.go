@@ -594,10 +594,9 @@ func TestWorkloadContainerReplacementSupersedesIssuedStop(t *testing.T) {
 		done <- rec.Code
 	}()
 	assertStatusPending(t, done, 100*time.Millisecond)
-	daemon.swap([]fakeDaemonContainer{
-		{name: "wl-old", ip: host, port: port, labels: labels("false")},
-		{name: "wl-new", ip: host, port: port, health: "starting", labels: labels("true")},
-	})
+	daemon.swap([]fakeDaemonContainer{{
+		name: "wl-new", ip: host, port: port, health: "starting", labels: labels("true"),
+	}})
 	mustSync(t, p)
 	if code := waitStatus(t, done, time.Second, "superseded stop did not release its waiter"); code != http.StatusServiceUnavailable {
 		t.Fatalf("superseded stop response = %d, want 503", code)
@@ -620,6 +619,26 @@ func TestWorkloadContainerReplacementSupersedesIssuedStop(t *testing.T) {
 	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
 		t.Fatalf("successor request = %d, want 200", rec.Code)
 	}
+}
+
+func TestWorkloadStopInspectFallbackIsBounded(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, false)
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("initial request = %d, want 200", rec.Code)
+	}
+	daemon.mu.Lock()
+	daemon.failStop = true
+	daemon.stallInspect = true
+	daemon.inspectStarted = make(chan struct{})
+	inspectStarted := daemon.inspectStarted
+	daemon.mu.Unlock()
+
+	waitSignal(t, inspectStarted, "stop fallback did not inspect the container")
+	waitWorkloadPhase(t, p, workloadDormant)
 }
 
 func TestWorkloadExternalStopReconcilesAndReactivates(t *testing.T) {

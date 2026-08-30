@@ -692,7 +692,10 @@ func (p *dockerProvider) performStop(ctx context.Context, w *workload) {
 
 	running := false
 	if err != nil {
-		if insp, ierr := p.client.InspectContainer(context.WithoutCancel(ctx), stop.ref); ierr == nil {
+		ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), workloadProbeTimeout)
+		insp, ierr := p.client.InspectContainer(ictx, stop.ref)
+		icancel()
+		if ierr == nil {
 			running = insp.Running
 		}
 	}
