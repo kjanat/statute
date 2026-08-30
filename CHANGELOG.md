@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- On-demand Docker routing policy, activation, request activity, pool runtime, and issued stops now keep separate generation ownership. Label changes invalidate queued handlers, container replacement creates fresh health and connection state, Docker IDs refine monotonically, and an unverifiable stop remains non-serving until discovery establishes its outcome. Activation-driven reconciles are coalesced and wake on generation publication, avoiding global rebuilds in every readiness poll.
+- On-demand Docker routing policy, activation, request activity, pool runtime, and issued mutations now keep separate generation ownership. Label changes invalidate queued handlers, container replacement creates fresh health and connection state, and Docker IDs refine monotonically. Idle and failed-activation cleanup stops remain non-serving until a confirmed response or stopped observation settles them; lost responses converge through backed-off retries of bounded calls and coalesced generation publication.
 
 - Docker Traefik matching keeps the configured `Host()` spelling, so ``Host(`example.com.`)`` matches `example.com..` the way Traefik does, and ``Host(`0.`)`` is no longer treated as a subset of ``Host(`0`)``. `Host("*")` / `Host("*.example.com")` and `Path`/`PathPrefix` arguments containing `%` are rejected and tombstoned: a literal star or encoded path would miss Traefik's traffic into Fallback. Matcher arguments require commas, matching Traefik's parser. Native `Match` and Traefik rules compile to one matcher IR so mixed generations absorb and dispatch on the same kinds.
 

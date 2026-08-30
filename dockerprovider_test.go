@@ -78,6 +78,7 @@ type fakeDaemon struct {
 	// failStart and failStop make their lifecycle calls answer 500.
 	failStart      bool
 	failStop       bool
+	loseStopReply  bool
 	stallInspect   bool
 	inspectStarted chan struct{}
 	stopStarted    chan struct{}
@@ -181,6 +182,29 @@ func (d *fakeDaemon) stallInspectLocked(w http.ResponseWriter, r *http.Request) 
 }
 
 func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, ref string, c *fakeDaemonContainer) {
+	if d.loseStopReply {
+		d.stops[c.name]++
+		if d.stopStarted != nil {
+			close(d.stopStarted)
+			d.stopStarted = nil
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			d.t.Errorf("hijack lost stop response: %v", err)
+			return
+		}
+		_ = conn.Close()
+		release := d.stopRelease
+		d.mu.Unlock()
+		if release != nil {
+			<-release
+		}
+		d.mu.Lock()
+		if current := d.find(ref); current != nil {
+			current.stopped = true
+		}
+		return
+	}
 	c = d.stopContainerLocked(ref, c)
 	if c == nil {
 		http.NotFound(w, r)

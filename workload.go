@@ -36,8 +36,8 @@ const (
 	// workloadStopPending is an idle stop decided but not yet issued.
 	// A Docker stop cannot be cancelled, so this half stays revocable.
 	workloadStopPending
-	// workloadStopIssued is a stop call in flight. Nothing proxies from
-	// here on; an arriving request waits and then activates again.
+	// workloadStopIssued is an idle or failed-activation cleanup stop in
+	// flight. Nothing proxies until the owned mutation settles.
 	workloadStopIssued
 	// workloadStopUnknown withholds lifecycle authority after stop verification
 	// fails, until discovery establishes whether the container is running.
@@ -80,11 +80,11 @@ func (p workloadPhase) serving() bool { return p == workloadReady }
 // `starting` once its backoff window has passed or an external start cleared it.
 var workloadTransitions = map[workloadPhase][]workloadPhase{
 	workloadDormant:     {workloadStarting},
-	workloadStarting:    {workloadReady, workloadFailed, workloadDormant},
+	workloadStarting:    {workloadReady, workloadStopIssued, workloadFailed, workloadDormant},
 	workloadReady:       {workloadStopPending, workloadDormant},
 	workloadStopPending: {workloadReady, workloadStopIssued, workloadDormant},
-	workloadStopIssued:  {workloadDormant, workloadReady, workloadStopUnknown},
-	workloadStopUnknown: {workloadDormant, workloadStarting},
+	workloadStopIssued:  {workloadDormant, workloadReady, workloadStopUnknown, workloadFailed},
+	workloadStopUnknown: {workloadDormant, workloadStopIssued, workloadFailed},
 	workloadFailed:      {workloadStarting, workloadDormant},
 }
 
@@ -96,6 +96,9 @@ const (
 	// workloadStopTimeout bounds an idle stop call. It exceeds the
 	// daemon's default 10s kill grace so a clean stop can complete.
 	workloadStopTimeout = 30 * time.Second
+	// workloadStopRetryCap bounds the delay between convergence attempts for
+	// a stop whose response was lost or whose verification was unavailable.
+	workloadStopRetryCap = 5 * time.Second
 )
 
 // workloadWait is one outcome a request may wait on. A superseded outcome
@@ -103,6 +106,7 @@ const (
 type workloadWait struct {
 	done       chan struct{}
 	superseded bool
+	failed     bool
 	waiting    int
 }
 
@@ -121,11 +125,23 @@ type workloadActivation struct {
 	cancel  context.CancelFunc
 }
 
-// workloadStop is one issued Docker stop, bound to the container that was
-// current when the call began.
+type workloadStopKind uint8
+
+const (
+	workloadIdleStop workloadStopKind = iota
+	workloadCleanupStop
+)
+
+// workloadStop is one issued Docker mutation, bound to the container that was
+// current when the call began. It remains owned while an ambiguous response
+// converges through discovery and bounded retries.
 type workloadStop struct {
 	workloadWait
-	ref string
+	kind       workloadStopKind
+	binding    workloadBindingKey
+	ref        string
+	issued     bool
+	converging bool
 }
 
 type workloadBindingKey uint64
@@ -286,15 +302,13 @@ func (w *workload) supersedeBindingLocked() {
 	case workloadReady, workloadStopPending:
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()
-	case workloadStopIssued:
+	case workloadStopIssued, workloadStopUnknown:
 		stop := w.stop
 		if stop != nil {
 			stop.superseded = true
 			w.stop = nil
 			close(stop.done)
 		}
-		w.toLocked(workloadDormant)
-	case workloadStopUnknown:
 		w.toLocked(workloadDormant)
 	case workloadDormant, workloadFailed:
 	}
@@ -374,7 +388,7 @@ func (w *workload) ensureReady(ctx context.Context, p *dockerProvider, expectedB
 		select {
 		case <-wait.done:
 			w.finishWaiting(wait)
-			if wait.superseded {
+			if wait.superseded || wait.failed {
 				return workloadLease{}, workloadUnavailable{}
 			}
 		case <-ctx.Done():
@@ -666,13 +680,9 @@ func (p *dockerProvider) probeHTTP(ctx context.Context, w *workload, act *worklo
 // a stop that a stale listing had not seen yet.
 var errWorkloadStopped = errors.New("container is not running")
 
-// finishActivation publishes one activation outcome to every waiter. On
-// failure the workload enters its backoff window, and a container this
-// attempt started is stopped again to reclaim its resources. Two failure
-// shapes skip the backoff and return to dormant: a shutdown-cancelled
-// attempt, which the next boot adopts cleanly, and an observe-only
-// attempt whose container turned out stopped, which corrects a stale
-// listing.
+// finishActivation publishes one activation outcome to every waiter. A
+// failed start-owned attempt first installs its cleanup stop in workload state,
+// then runs that mutation under the same provider-owned goroutine.
 func (p *dockerProvider) finishActivation(ctx context.Context, w *workload, act *workloadActivation, err error) {
 	out := w.settleActivation(p, act, err)
 	elapsed := time.Since(act.started).Round(time.Millisecond)
@@ -689,23 +699,19 @@ func (p *dockerProvider) finishActivation(ctx context.Context, w *workload, act 
 	default:
 		errText := strconv.Quote(err.Error())
 		log.Printf("statute: docker: workload %s: activation failed after %s (%d waiting): %s", service, elapsed, out.waiters, errText)
-		if out.cleanupRef != "" {
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workloadStopTimeout)
-			defer cancel()
-			if serr := p.client.StopContainer(sctx, out.cleanupRef); serr != nil {
-				log.Printf("statute: docker: workload %s: cleanup stop failed: %s", service, strconv.Quote(serr.Error()))
-			}
+		if out.stop != nil {
+			p.runOwnedStop(ctx, w, out.stop)
 		}
 	}
 }
 
 // activationOutcome is what settleActivation decided under the lock.
 type activationOutcome struct {
-	cleanupRef string
 	waiters    int
 	abandoned  bool
 	stale      bool
 	superseded bool
+	stop       *workloadStop
 }
 
 // settleActivation applies one activation outcome to the state machine and
@@ -720,6 +726,7 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 		abandoned: err != nil && errors.Is(err, context.Canceled),
 		stale:     err != nil && act.observe && errors.Is(err, errWorkloadStopped),
 	}
+	act.failed = err != nil
 	switch {
 	case err == nil:
 		w.toLocked(workloadReady)
@@ -731,9 +738,11 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 	default:
 		w.failures++
 		w.failedUntil = time.Now().Add(workloadBackoff(w.policy, w.failures))
-		w.toLocked(workloadFailed)
 		if !act.observe && !w.retired {
-			out.cleanupRef = act.ref
+			w.toLocked(workloadStopIssued)
+			out.stop = w.newStopLocked(workloadCleanupStop, act.binding, act.ref)
+		} else {
+			w.toLocked(workloadFailed)
 		}
 	}
 	w.activation = nil
@@ -787,55 +796,202 @@ func (p *dockerProvider) performStop(ctx context.Context, w *workload) {
 		return
 	}
 	w.toLocked(workloadStopIssued)
-	stop := &workloadStop{ref: w.containerRefLocked()}
+	stop := w.newStopLocked(workloadIdleStop, w.binding.key, w.containerRefLocked())
+	w.mu.Unlock()
+	p.runOwnedStop(ctx, w, stop)
+}
+
+func (w *workload) newStopLocked(kind workloadStopKind, binding workloadBindingKey, ref string) *workloadStop {
+	stop := &workloadStop{kind: kind, binding: binding, ref: ref, converging: true}
 	stop.done = make(chan struct{})
 	w.stop = stop
-	service := strconv.Quote(w.service)
-	w.mu.Unlock()
+	return stop
+}
 
+type workloadStopResult uint8
+
+const (
+	workloadStopSucceeded workloadStopResult = iota
+	workloadStopRejected
+	workloadStopAmbiguous
+)
+
+type workloadStopAttempt struct {
+	result     workloadStopResult
+	stopErr    error
+	inspectErr error
+}
+
+func (p *dockerProvider) attemptOwnedStop(ctx context.Context, stop *workloadStop) workloadStopAttempt {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workloadStopTimeout)
 	err := p.client.StopContainer(sctx, stop.ref)
 	cancel()
-
-	known := err == nil
-	running := false
-	var inspectErr error
-	if err != nil {
-		ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), workloadProbeTimeout)
-		insp, ierr := p.client.InspectContainer(ictx, stop.ref)
-		icancel()
-		if ierr == nil {
-			known = true
-			running = insp.Running
-		} else {
-			inspectErr = ierr
-		}
+	if err == nil {
+		return workloadStopAttempt{result: workloadStopSucceeded}
+	}
+	if docker.LifecycleContainerMissing(err) {
+		return workloadStopAttempt{result: workloadStopSucceeded, stopErr: err}
 	}
 
+	ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), workloadProbeTimeout)
+	insp, inspectErr := p.client.InspectContainer(ictx, stop.ref)
+	icancel()
+	if inspectErr == nil && !insp.Running {
+		return workloadStopAttempt{result: workloadStopSucceeded, stopErr: err}
+	}
+	if inspectErr == nil && !docker.LifecycleOutcomeAmbiguous(err) {
+		return workloadStopAttempt{result: workloadStopRejected, stopErr: err}
+	}
+	return workloadStopAttempt{result: workloadStopAmbiguous, stopErr: err, inspectErr: inspectErr}
+}
+
+type workloadStopApply uint8
+
+const (
+	workloadStopObsolete workloadStopApply = iota
+	workloadStopUnsettled
+	workloadStopSettled
+)
+
+func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attempt workloadStopAttempt) workloadStopApply {
 	w.mu.Lock()
-	if w.stop != stop {
-		w.mu.Unlock()
-		return
+	defer w.mu.Unlock()
+	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+		return workloadStopObsolete
 	}
-	switch {
-	case !known:
-		w.toLocked(workloadStopUnknown)
-	case running:
+	stop.issued = false
+	if attempt.result == workloadStopAmbiguous {
+		if w.phase == workloadStopIssued {
+			w.toLocked(workloadStopUnknown)
+		}
+		return workloadStopUnsettled
+	}
+	w.settleStopLocked(p, stop, attempt.result)
+	return workloadStopSettled
+}
+
+func (w *workload) settleStopLocked(p *dockerProvider, stop *workloadStop, result workloadStopResult) {
+	if stop.kind == workloadCleanupStop {
+		w.toLocked(workloadFailed)
+	} else if result == workloadStopSucceeded {
+		w.toLocked(workloadDormant)
+	} else {
 		w.toLocked(workloadReady)
 		w.armIdleLocked(p)
-	default:
-		w.toLocked(workloadDormant)
 	}
 	w.stop = nil
 	close(stop.done)
-	w.mu.Unlock()
-	if inspectErr != nil {
-		log.Printf("statute: docker: workload %s: idle stop outcome unknown: stop: %s; inspect: %s", service, strconv.Quote(err.Error()), strconv.Quote(inspectErr.Error()))
-	} else if err != nil {
-		log.Printf("statute: docker: workload %s: idle stop failed: %s", service, strconv.Quote(err.Error()))
-	} else {
-		log.Printf("statute: docker: workload %s: stopped after %s idle", service, strconv.Quote(w.policy.IdleAfter.String()))
+}
+
+func (p *dockerProvider) runOwnedStop(ctx context.Context, w *workload, stop *workloadStop) {
+	defer w.finishStopConvergence(stop)
+	if !w.beginStopAttempt(stop) {
+		return
 	}
+	result := p.executeOwnedStopAttempt(ctx, w, stop, true)
+	if result != workloadStopUnsettled {
+		return
+	}
+
+	for delay := workloadProbeInterval; ; delay = min(delay*2, workloadStopRetryCap) {
+		if !p.waitStopRetry(ctx, w, stop, delay) {
+			return
+		}
+		if !w.beginStopAttempt(stop) {
+			return
+		}
+		if p.executeOwnedStopAttempt(ctx, w, stop, false) != workloadStopUnsettled {
+			return
+		}
+	}
+}
+
+func (p *dockerProvider) executeOwnedStopAttempt(ctx context.Context, w *workload, stop *workloadStop, logUnsettled bool) workloadStopApply {
+	attempt := p.attemptOwnedStop(ctx, stop)
+	result := w.applyStopAttempt(p, stop, attempt)
+	if result != workloadStopUnsettled || logUnsettled {
+		p.logStopAttempt(w, stop, attempt, result)
+	}
+	return result
+}
+
+func (p *dockerProvider) waitStopRetry(ctx context.Context, w *workload, stop *workloadStop, delay time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(delay):
+	}
+	changed := p.requestReconcile()
+	if changed != nil {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+		case <-time.After(workloadProbeTimeout):
+		}
+	}
+	return w.stopIsCurrent(stop)
+}
+
+func (w *workload) beginStopAttempt(stop *workloadStop) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+		return false
+	}
+	if w.phase == workloadStopUnknown {
+		w.toLocked(workloadStopIssued)
+	}
+	stop.issued = true
+	return true
+}
+
+func (w *workload) stopIsCurrent(stop *workloadStop) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stop == stop && w.binding != nil && w.binding.key == stop.binding
+}
+
+func (w *workload) finishStopConvergence(stop *workloadStop) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stop == stop {
+		stop.converging = false
+	}
+}
+
+func (p *dockerProvider) ensureStopConvergenceLocked(w *workload, stop *workloadStop) {
+	if stop == nil || stop.converging {
+		return
+	}
+	stop.converging = true
+	if !p.trackRun(func(ctx context.Context) { p.runOwnedStop(ctx, w, stop) }) {
+		stop.converging = false
+	}
+}
+
+func (p *dockerProvider) logStopAttempt(w *workload, stop *workloadStop, attempt workloadStopAttempt, result workloadStopApply) {
+	if result == workloadStopObsolete {
+		return
+	}
+	service := strconv.Quote(w.service)
+	if result == workloadStopUnsettled {
+		inspect := "none"
+		if attempt.inspectErr != nil {
+			inspect = strconv.Quote(attempt.inspectErr.Error())
+		}
+		log.Printf("statute: docker: workload %s: stop outcome unknown: stop: %s; inspect: %s", service, strconv.Quote(attempt.stopErr.Error()), inspect)
+		return
+	}
+	if attempt.result == workloadStopRejected {
+		log.Printf("statute: docker: workload %s: stop rejected: %s", service, strconv.Quote(attempt.stopErr.Error()))
+		return
+	}
+	if stop.kind == workloadCleanupStop {
+		log.Printf("statute: docker: workload %s: failed-activation cleanup settled", service)
+		return
+	}
+	log.Printf("statute: docker: workload %s: stopped after %s idle", service, strconv.Quote(w.policy.IdleAfter.String()))
 }
 
 // currentPool returns the named service's pool only when the generation
@@ -1006,30 +1162,45 @@ func (p *dockerProvider) observeWorkload(w *workload, svc *docker.Service) {
 	if w.bindContainerLocked(svc) {
 		log.Printf("statute: docker: workload %q: container binding replaced", w.service)
 	}
-	switch {
-	case svc.Running:
-		if w.phase == workloadDormant || w.phase == workloadFailed || w.phase == workloadStopUnknown {
-			w.failures = 0
-			w.failedUntil = time.Time{}
-			if _, err := p.beginActivationLocked(w, true); err == nil {
-				log.Printf("statute: docker: workload %q: found running, establishing readiness", w.service)
-			}
+	if svc.Running {
+		p.observeRunningWorkloadLocked(w)
+		return
+	}
+	p.observeStoppedWorkloadLocked(w)
+}
+
+func (p *dockerProvider) observeRunningWorkloadLocked(w *workload) {
+	switch w.phase {
+	case workloadStopUnknown:
+		p.ensureStopConvergenceLocked(w, w.stop)
+	case workloadDormant, workloadFailed:
+		w.failures = 0
+		w.failedUntil = time.Time{}
+		if _, err := p.beginActivationLocked(w, true); err == nil {
+			log.Printf("statute: docker: workload %q: found running, establishing readiness", w.service)
+		}
+	case workloadStarting, workloadReady, workloadStopPending, workloadStopIssued:
+		// These phases already own the running observation or its in-flight
+		// lifecycle mutation.
+	}
+}
+
+func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
+	switch w.phase {
+	case workloadReady:
+		w.toLocked(workloadDormant)
+		w.stopIdleLocked()
+		log.Printf("statute: docker: workload %q: container stopped outside statute", w.service)
+	case workloadStopPending:
+		w.toLocked(workloadDormant)
+		w.stopIdleLocked()
+	case workloadStopUnknown:
+		if w.stop != nil {
+			w.settleStopLocked(p, w.stop, workloadStopSucceeded)
 		}
 	default:
-		switch w.phase {
-		case workloadReady:
-			w.toLocked(workloadDormant)
-			w.stopIdleLocked()
-			log.Printf("statute: docker: workload %q: container stopped outside statute", w.service)
-		case workloadStopPending:
-			w.toLocked(workloadDormant)
-			w.stopIdleLocked()
-		case workloadStopUnknown:
-			w.toLocked(workloadDormant)
-		default:
-			// dormant and failed already agree; starting and stop-issued
-			// resolve through their own in-flight operations.
-		}
+		// dormant and failed already agree; starting and stop-issued
+		// resolve through their own in-flight operations.
 	}
 }
 

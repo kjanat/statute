@@ -8,6 +8,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -222,6 +223,33 @@ func (c *Client) StopContainer(ctx context.Context, id string) error {
 	return c.lifecyclePost(ctx, id, "stop")
 }
 
+// LifecycleOutcomeAmbiguous reports whether Docker may have accepted a
+// lifecycle mutation even though the client did not receive its response.
+func LifecycleOutcomeAmbiguous(err error) bool {
+	var lifecycleErr *lifecycleError
+	return errors.As(err, &lifecycleErr) && lifecycleErr.ambiguous
+}
+
+// LifecycleContainerMissing reports a definitive Docker response that the
+// mutation target no longer exists.
+func LifecycleContainerMissing(err error) bool {
+	var lifecycleErr *lifecycleError
+	return errors.As(err, &lifecycleErr) && lifecycleErr.status == http.StatusNotFound
+}
+
+type lifecycleError struct {
+	action    string
+	err       error
+	ambiguous bool
+	status    int
+}
+
+func (e *lifecycleError) Error() string {
+	return fmt.Sprintf("docker: %s container: %v", e.action, e.err)
+}
+
+func (e *lifecycleError) Unwrap() error { return e.err }
+
 // lifecyclePost issues one container lifecycle POST. 204 is success and
 // 304 means the container is already in the requested state.
 func (c *Client) lifecyclePost(ctx context.Context, id, action string) error {
@@ -231,11 +259,15 @@ func (c *Client) lifecyclePost(ctx context.Context, id, action string) error {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("docker: %s container: %w", action, err)
+		return &lifecycleError{action: action, err: err, ambiguous: true}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
-		return fmt.Errorf("docker: %s container: unexpected status %s", action, resp.Status)
+		return &lifecycleError{
+			action: action,
+			err:    fmt.Errorf("unexpected status %s", resp.Status),
+			status: resp.StatusCode,
+		}
 	}
 	return nil
 }

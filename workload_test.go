@@ -54,8 +54,9 @@ func TestWorkloadLegalTransitions(t *testing.T) {
 		{"idle shutdown", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadDormant}},
 		{"revoked idle stop", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadReady}},
 		{"failed stop call, container still running", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadReady}},
-		{"unknown stop later observed running", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadStopUnknown, workloadStarting, workloadReady}},
+		{"unknown stop retry rejected", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadStopUnknown, workloadStopIssued, workloadReady}},
 		{"unknown stop later observed stopped", []workloadPhase{workloadStarting, workloadReady, workloadStopPending, workloadStopIssued, workloadStopUnknown, workloadDormant}},
+		{"failed activation cleanup", []workloadPhase{workloadStarting, workloadStopIssued, workloadFailed}},
 		{"activation fails then retries", []workloadPhase{workloadStarting, workloadFailed, workloadStarting, workloadReady}},
 		{"external start clears a failure", []workloadPhase{workloadStarting, workloadFailed, workloadStarting, workloadReady}},
 		{"external stop while starting", []workloadPhase{workloadStarting, workloadDormant}},
@@ -418,6 +419,52 @@ func TestWorkloadActivationFailureIsTerminalAndBacksOff(t *testing.T) {
 	}
 }
 
+func TestWorkloadFailedActivationOwnsCleanupStop(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	policy := testWorkloadPolicy()
+	policy.ReadyTimeout = 50 * time.Millisecond
+	policy.Readiness.Mode = resolved.ReadinessDockerHealth
+	p, daemon, router := workloadFixture(t, policy, backend.URL, true)
+	daemon.mu.Lock()
+	daemon.find("wl-1").health = "starting"
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+
+	first := make(chan int)
+	go func() {
+		first <- runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)).Code
+	}()
+	waitSignal(t, stopStarted, "failed activation did not issue its cleanup stop")
+	if code := waitStatus(t, first, time.Second, "failed activation waiter remained attached to cleanup"); code != http.StatusServiceUnavailable {
+		t.Fatalf("failed activation = %d, want 503", code)
+	}
+	waitWorkloadPhase(t, p, workloadStopIssued)
+	mustSync(t, p)
+	if got := p.workloadFor("wl").phaseNow(); got != workloadStopIssued {
+		t.Fatalf("running observation during cleanup moved phase to %v", got)
+	}
+
+	second := make(chan int)
+	go func() {
+		second <- runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)).Code
+	}()
+	assertStatusPending(t, second, 100*time.Millisecond)
+	releaseStop()
+	if code := waitStatus(t, second, time.Second, "request did not leave settled cleanup"); code != http.StatusServiceUnavailable {
+		t.Fatalf("request after cleanup = %d, want 503", code)
+	}
+	waitWorkloadPhase(t, p, workloadFailed)
+}
+
 func TestWorkloadIdleStopAndReactivation(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -655,13 +702,90 @@ func TestWorkloadStopInspectFailureHoldsUnknownState(t *testing.T) {
 	}
 
 	daemon.mu.Lock()
+	daemon.failStop = false
 	daemon.stallInspect = false
 	daemon.mu.Unlock()
-	mustSync(t, p)
-	waitWorkloadPhase(t, p, workloadReady)
-	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
-		t.Fatalf("request after running observation = %d, want 200", rec.Code)
+	waitWorkloadPhase(t, p, workloadDormant)
+	if got := daemon.stopCount("wl-1"); got < 2 {
+		t.Fatalf("unknown stop converged after %d stop calls, want a bounded retry", got)
 	}
+}
+
+func TestWorkloadStopConvergenceRestartsWithProviderRun(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, false)
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("initial request = %d, want 200", rec.Code)
+	}
+	daemon.mu.Lock()
+	daemon.failStop = true
+	daemon.stallInspect = true
+	daemon.inspectStarted = make(chan struct{})
+	inspectStarted := daemon.inspectStarted
+	daemon.mu.Unlock()
+	waitSignal(t, inspectStarted, "stop fallback did not inspect the container")
+	waitWorkloadPhase(t, p, workloadStopUnknown)
+
+	p.lifecycleMu.Lock()
+	firstRun := p.current
+	p.lifecycleMu.Unlock()
+	stopped := make(chan struct{})
+	go func() {
+		firstRun.stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider shutdown did not own stop convergence")
+	}
+
+	daemon.mu.Lock()
+	daemon.failStop = false
+	daemon.stallInspect = false
+	daemon.mu.Unlock()
+	secondRun, err := p.start()
+	if err != nil {
+		t.Fatalf("provider restart: %v", err)
+	}
+	t.Cleanup(secondRun.stop)
+	waitWorkloadPhase(t, p, workloadDormant)
+}
+
+func TestWorkloadLostStopResponseNeverReopensServing(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	daemon.mu.Lock()
+	daemon.loseStopReply = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("initial request = %d, want 200", rec.Code)
+	}
+	waitSignal(t, stopStarted, "idle stop was not accepted by the daemon")
+	waitWorkloadPhase(t, p, workloadStopUnknown)
+	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("request after lost stop response = %d, want 503", rec.Code)
+	}
+	if got := p.workloadFor("wl").phaseNow(); got == workloadReady {
+		t.Fatal("ambiguous stop reopened serving after an immediate running inspect")
+	}
+
+	releaseStop()
+	waitWorkloadPhase(t, p, workloadDormant)
 }
 
 func TestWorkloadExternalStopReconcilesAndReactivates(t *testing.T) {

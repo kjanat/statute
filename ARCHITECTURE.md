@@ -266,10 +266,13 @@ container-incarnation key remain equal.
 
 Docker call references refine monotonically. Discovery may add an immutable ID to
 a name-only binding, and a later observation without that ID cannot erase it. A
-failed idle stop followed by a failed verification enters a non-serving unknown
-state. Requests fail closed until a later Docker observation proves the container
-running or stopped. Readiness requests a provider-owned, coalesced reconcile and
-waits for successful generation publication, keeping global rebuild work out of
+Docker mutation remains represented by binding-owned workload state until its
+outcome settles. This includes the cleanup stop after a failed activation. A lost
+stop response enters a non-serving unknown state even when an immediate inspect
+still reports running, because the accepted server-side stop may still complete.
+The operation owns backed-off retries of bounded calls and coalesced reconciliation
+until a confirmed response or stopped observation resolves it. Readiness uses the
+same provider-owned publication edge, keeping global rebuild work out of
 per-activation polling.
 
 Authority is code-owned. A container label may select or parameterize an activation

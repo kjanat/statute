@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -298,6 +299,42 @@ func TestStartAndStopContainer(t *testing.T) {
 	want := []string{"start abc123", "stop abc123"}
 	if !reflect.DeepEqual(*calls, want) {
 		t.Fatalf("calls = %v, want %v", *calls, want)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestLifecycleOutcomeAmbiguous(t *testing.T) {
+	client := &Client{
+		baseURL: "http://docker",
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, io.ErrUnexpectedEOF
+		})},
+	}
+	err := client.StopContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleOutcomeAmbiguous(err) {
+		t.Fatalf("transport failure: err=%v ambiguous=%v, want error and true", err, LifecycleOutcomeAmbiguous(err))
+	}
+
+	status := http.StatusInternalServerError
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rejected", status)
+	}))
+	t.Cleanup(ts.Close)
+	client, err = NewClient("tcp://" + strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	err = client.StopContainer(context.Background(), "abc123")
+	if err == nil || LifecycleOutcomeAmbiguous(err) {
+		t.Fatalf("daemon response: err=%v ambiguous=%v, want error and false", err, LifecycleOutcomeAmbiguous(err))
+	}
+	status = http.StatusNotFound
+	err = client.StopContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleContainerMissing(err) {
+		t.Fatalf("missing container: err=%v missing=%v, want error and true", err, LifecycleContainerMissing(err))
 	}
 }
 

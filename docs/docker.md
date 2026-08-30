@@ -134,12 +134,14 @@ How it behaves:
   a running successor proves readiness afresh, and old request completions
   cannot affect the successor's idle timer. Queued requests also fail closed
   when labels change their route or middleware policy during activation.
-- **Unknown stop outcomes fail closed.** If both Docker's stop call and the
-  verification inspect fail, statute does not claim the container is dormant.
-  Requests receive `503` until discovery proves whether it is running or
-  stopped. A recreated container starts with fresh pool health and connections,
-  even when its name and backend address are unchanged. Statute's own shutdown
-  leaves workloads as they are.
+- **Issued mutations stay owned.** Idle stops and failed-activation cleanup
+  stops remain non-serving lifecycle operations until their outcome settles.
+  If a stop response is lost, an immediate running inspect does not reopen
+  traffic: Docker may still finish the accepted stop. Statute coalesces discovery
+  and retries the bounded call until a confirmed response or stopped observation
+  resolves the operation, including when periodic refresh is disabled. A recreated
+  container starts with fresh pool health and connections, even when its name and
+  backend address are unchanged. Statute's own shutdown leaves workloads as they are.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.
