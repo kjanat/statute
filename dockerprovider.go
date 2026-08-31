@@ -333,6 +333,17 @@ func (p *dockerProvider) requestReconcile() <-chan struct{} {
 	return changed
 }
 
+// scheduleReconcile requests publication without making the caller wait for
+// its generation edge. Mutation settlement uses it to retire quarantines.
+func (p *dockerProvider) scheduleReconcile() {
+	p.lifecycleMu.Lock()
+	r := p.current
+	p.lifecycleMu.Unlock()
+	if r != nil {
+		r.trigger()
+	}
+}
+
 // deriveServices extracts label registrations from every container and
 // merges same-named services into one pool. Containers are processed in
 // name order so "first container wins" conflict resolution is stable. The
@@ -494,7 +505,7 @@ func (p *dockerProvider) addService(svc *docker.Service, quarantined bool, prev,
 		binding = gated.currentBinding()
 		next.workloadBindings[svc.Name] = binding
 	}
-	rp, err := p.resolveServicePool(svc, pool, gated)
+	rp, err := p.resolveServicePool(svc, pool, gated, quarantined)
 	if err != nil {
 		p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", svc.Name, err)})
 		return p.refuse(svc.Name, svc.Routes)
@@ -557,14 +568,13 @@ func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, cha
 }
 
 // resolveServicePool resolves the derived pool and overlays the code-owned
-// policy. A gated dormant service legitimately has no backends yet: its
-// container is stopped and the address exists only once it runs. The route
-// must still compile, so the empty pool is allowed through and the gate
-// holds requests until a generation carries the backend.
-func (p *dockerProvider) resolveServicePool(svc *docker.Service, pool Pool, gated *workload) (*resolved.Pool, error) {
+// policy. A gated dormant or mutation-quarantined service legitimately has
+// no backends: its stopped container has no address. The route must still
+// compile so its gate or quarantine can keep answering 503.
+func (p *dockerProvider) resolveServicePool(svc *docker.Service, pool Pool, gated *workload, quarantined bool) (*resolved.Pool, error) {
 	policy, hasPolicy := preparePoolPolicy(&pool, p.cfg.PoolPolicy, svc.Name)
 	resolve := resolvePool
-	if gated != nil && len(pool.Backends) == 0 {
+	if (gated != nil || quarantined) && len(pool.Backends) == 0 {
 		resolve = resolveDormantPool
 	}
 	rp, err := resolve(svc.Name, pool)

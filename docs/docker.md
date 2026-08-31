@@ -144,9 +144,12 @@ How it behaves:
   is disabled. If the service-to-container topology stops being one-to-one during an
   issued stop, lifecycle authority is revoked immediately, but every route contributed
   by that immutable container stays quarantined with `503` until the stop settles and a
-  later reconcile publishes ordinary routes. A recreated container starts with fresh
-  pool health and connections, even when its name and backend address are unchanged.
-  Statute's own shutdown leaves workloads as they are.
+  later reconcile removes quarantine. Ordinary pool rules then apply. Quarantine routes
+  remain present when the stopped container has no backend address. Settlement itself
+  schedules the reconcile, so removing quarantine does not depend on a Docker event or
+  periodic refresh. A recreated container starts with fresh pool health and connections,
+  even when its name and backend address are unchanged. Statute's own shutdown leaves
+  workloads as they are.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.

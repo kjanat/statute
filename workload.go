@@ -865,8 +865,8 @@ const (
 
 func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attempt workloadStopAttempt) workloadStopApply {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+		w.mu.Unlock()
 		return workloadStopObsolete
 	}
 	stop.issued = false
@@ -875,15 +875,22 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 		if w.phase == workloadStopIssued {
 			w.toLocked(workloadStopUnknown)
 		}
+		w.mu.Unlock()
 		return workloadStopUnsettled
 	}
 	if attempt.result == workloadStopRejected && stop.uncertain {
 		if w.phase == workloadStopIssued {
 			w.toLocked(workloadStopUnknown)
 		}
+		w.mu.Unlock()
 		return workloadStopUnsettled
 	}
+	retired := w.retired
 	w.settleStopLocked(p, stop, attempt.result)
+	w.mu.Unlock()
+	if retired {
+		p.scheduleReconcile()
+	}
 	return workloadStopSettled
 }
 

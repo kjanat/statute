@@ -282,8 +282,11 @@ one-to-one grant becomes invalid while its stop is already issued, the grant is
 revoked immediately and can authorize no new mutation. The existing stop still
 owns its retries and a container-wide non-serving quarantine: every service
 contributed by that immutable container answers `503` until terminal evidence
-settles the stop and a later reconcile publishes ordinary routes. A different
-immutable container identity does not inherit that quarantine.
+settles the stop, including generations where the stopped container has no
+materialised backend. Terminal settlement schedules a coalesced reconcile that
+publishes the quarantine's removal without relying on a Docker event or periodic
+refresh. A different immutable container identity does not inherit that
+quarantine.
 
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to

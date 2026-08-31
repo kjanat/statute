@@ -1461,7 +1461,7 @@ func TestWorkloadRetiredIssuedStopQuarantinesSiblingRoutes(t *testing.T) {
 	}
 
 	daemon.swap([]fakeDaemonContainer{{
-		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, true),
+		name: "combo-1", ip: host, port: port, stopped: true, labels: workloadTopologyLabels(portStr, true),
 	}})
 	mustSync(t, p)
 	if got := p.workloadFor("a@traefik"); got != nil {
@@ -1478,6 +1478,64 @@ func TestWorkloadRetiredIssuedStopQuarantinesSiblingRoutes(t *testing.T) {
 	daemon.find("combo-1").stopped = false
 	daemon.mu.Unlock()
 	mustSync(t, p)
+	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusOK, "applied")
+	if got := daemon.stopCount("combo-1"); got != 1 {
+		t.Fatalf("stop calls = %d, want 1", got)
+	}
+	if got := daemon.startCount("combo-1"); got != 0 {
+		t.Fatalf("retired workload issued %d start calls", got)
+	}
+}
+
+func TestWorkloadRetiredStopSettlementRepublishesRoutes(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Middleware: map[string][]resolved.Middleware{
+			"policy@file": {mustResolveMW(t, SetResponseHeader("X-Policy", "applied"))},
+		},
+		Workloads: map[string]resolved.Workload{"a@traefik": testWorkloadPolicy()},
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, false),
+	}})
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	w := p.workloadFor("a@traefik")
+	if w == nil {
+		t.Fatal("initial one-to-one service has no workload")
+	}
+	waitSignal(t, stopStarted, "idle stop was not issued")
+
+	daemon.swap([]fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, true),
+	}})
+	mustSync(t, p)
+	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusServiceUnavailable, "")
+	p.generationMu.Lock()
+	republished := p.generationChanged
+	p.generationMu.Unlock()
+
+	releaseStop()
+	waitRetiredWorkloadPhase(t, w, workloadReady)
+	waitSignal(t, republished, "settled retired stop did not republish routes")
 	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusOK, "applied")
 	if got := daemon.stopCount("combo-1"); got != 1 {
 		t.Fatalf("stop calls = %d, want 1", got)
