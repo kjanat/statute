@@ -277,6 +277,14 @@ until a successful or already-stopped response, a missing immutable container ID
 or a stopped observation resolves it. Readiness uses the same provider-owned
 publication edge, keeping global rebuild work out of per-activation polling.
 
+Lifecycle authority and mutation quarantine have separate lifetimes. If a
+one-to-one grant becomes invalid while its stop is already issued, the grant is
+revoked immediately and can authorize no new mutation. The existing stop still
+owns its retries and a container-wide non-serving quarantine: every service
+contributed by that immutable container answers `503` until terminal evidence
+settles the stop and a later reconcile publishes ordinary routes. A different
+immutable container identity does not inherit that quarantine.
+
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to
 start or stop a workload, following the trust boundary that governs code-owned

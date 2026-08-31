@@ -294,12 +294,12 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		return err
 	}
 	services, tombstones := p.deriveServices(containers)
-	p.updateWorkloads(services, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
+	quarantined := p.updateWorkloads(services, p.multiServiceContainers(containers), containers) //nolint:contextcheck // observations spawn provider-run work
 
 	prev := p.srv.dynamic.Load()
 	// Pool health checkers deliberately outlive this sync call; they derive
 	// their own lifetime and stop on generation retirement or shutdown.
-	next, retired := p.buildTable(services, tombstones, prev) //nolint:contextcheck
+	next, retired := p.buildTable(services, tombstones, quarantined, prev) //nolint:contextcheck
 	p.publishGeneration(next)
 	for _, pool := range retired {
 		pool.shutdown()
@@ -444,7 +444,7 @@ func (p *dockerProvider) multiServiceContainers(containers []docker.Container) m
 // reusing pool handlers whose resolved config is unchanged. It returns the
 // handlers from prev that were replaced or dropped and must be shut down
 // after the swap.
-func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, prev *dynamicTable) (*dynamicTable, []*runningPool) {
+func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, quarantined map[string]bool, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
 		pools:             make(map[string]*runningPool, len(services)),
 		fingerprints:      make(map[string]string, len(services)),
@@ -457,7 +457,7 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 		if _, ok := p.cfg.PoolPolicy[services[i].Name]; ok {
 			matchedPolicy[services[i].Name] = true
 		}
-		tombs = append(tombs, p.addService(&services[i], prev, next)...)
+		tombs = append(tombs, p.addService(&services[i], quarantined[services[i].Name], prev, next)...)
 	}
 	for _, name := range slices.Sorted(maps.Keys(p.cfg.PoolPolicy)) {
 		if !matchedPolicy[name] {
@@ -483,7 +483,7 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 // warning rather than poisoning the whole generation; a route whose
 // router references an unregistered middleware name is omitted the same
 // way, so the rest of the service keeps routing.
-func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTable) []docker.Matcher {
+func (p *dockerProvider) addService(svc *docker.Service, quarantined bool, prev, next *dynamicTable) []docker.Matcher {
 	pool, warn := servicePool(svc)
 	if warn != "" {
 		p.warn([]string{warn})
@@ -521,17 +521,24 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	// The gate resolves the pool at proxy time: the generation that
 	// queued a waiter cannot carry a dormant container's backend.
 	base := http.Handler(running.handler)
-	if gated != nil {
+	if quarantined {
+		base = workloadMutationQuarantine{}
+	} else if gated != nil {
 		base = &workloadGate{p: p, w: gated, binding: binding, revision: revision}
 	}
-	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, next)
+	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, quarantined, next)
 	return tombs
 }
 
-func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, next *dynamicTable) {
+func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, quarantined bool, next *dynamicTable) {
 	for _, rc := range chains {
-		handler := wrapMiddleware(rc.mws, base)
-		if gated != nil {
+		handler := base
+		if !quarantined {
+			handler = wrapMiddleware(rc.mws, handler)
+		}
+		// Quarantine is the outermost route outcome: cache, auth, retry, and
+		// other middleware cannot answer around a container-wide stop.
+		if gated != nil && !quarantined {
 			handler = &workloadRevisionGate{
 				p: p, service: name, binding: binding, revision: revision, next: handler,
 			}

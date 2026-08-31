@@ -191,6 +191,15 @@ type workloadLease struct {
 	activity *workloadActivity
 }
 
+// workloadMutationQuarantine is fixed to one published generation. It keeps
+// every route backed by a container with an unsettled retired stop non-serving;
+// only a later reconcile after terminal evidence may publish ordinary routes.
+type workloadMutationQuarantine struct{}
+
+func (workloadMutationQuarantine) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "workload lifecycle mutation is still settling", http.StatusServiceUnavailable)
+}
+
 // workload carries the lifecycle state of one on-demand container. The zero
 // value of phase is dormant.
 type workload struct {
@@ -1085,14 +1094,16 @@ func (p *dockerProvider) workloadFor(service string) *workload {
 // creates entries for newly covered services, feeds each entry the observed
 // container state, and retires entries whose grant disappeared. The policy
 // applies only to a one-to-one service and container pair; see
-// multiServiceContainers.
-func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService map[string]bool) {
+// multiServiceContainers. A retired mutation still quarantines every service
+// contributed by its container until the mutation settles.
+func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService map[string]bool, containers []docker.Container) map[string]bool {
 	p.workloadMu.Lock()
 	defer p.workloadMu.Unlock()
 	seen := make(map[string]bool, len(p.cfg.Workloads))
+	eligible := make([]bool, len(services))
 	for i := range services {
 		svc := &services[i]
-		policy, ok := p.cfg.Workloads[svc.Name]
+		_, ok := p.cfg.Workloads[svc.Name]
 		if !ok {
 			continue
 		}
@@ -1105,6 +1116,16 @@ func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService
 			continue
 		}
 		seen[svc.Name] = true
+		eligible[i] = true
+	}
+	p.retireMissingLocked(seen)
+	quarantined := p.retiredMutationQuarantinesLocked(containers)
+	for i := range services {
+		if !eligible[i] || quarantined[services[i].Name] {
+			continue
+		}
+		svc := &services[i]
+		policy := p.cfg.Workloads[svc.Name]
 		w := p.workloadEntries[svc.Name]
 		if w == nil {
 			if p.workloadEntries == nil {
@@ -1116,7 +1137,58 @@ func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService
 		w.unretire()
 		p.observeWorkload(w, svc)
 	}
-	p.retireMissingLocked(seen)
+	return quarantined
+}
+
+type workloadContainerRef struct {
+	name string
+	id   string
+}
+
+func (r workloadContainerRef) matches(c docker.Container) bool {
+	if r.id != "" && c.ID != "" {
+		return r.id == c.ID
+	}
+	return r.name != "" && r.name == c.Name
+}
+
+// retiredMutationQuarantinesLocked maps a retired stop's container-wide
+// authority onto every service the same immutable container currently
+// contributes. Grant retirement prevents new lifecycle calls; it does not
+// make an already-issued stop safe to route around. p.workloadMu must be held.
+func (p *dockerProvider) retiredMutationQuarantinesLocked(containers []docker.Container) map[string]bool {
+	refs := p.retiredMutationContainerRefsLocked()
+	if len(refs) == 0 {
+		return nil
+	}
+	return p.quarantinedServices(containers, refs)
+}
+
+func (p *dockerProvider) retiredMutationContainerRefsLocked() []workloadContainerRef {
+	var refs []workloadContainerRef
+	for _, w := range p.workloadEntries {
+		w.mu.Lock()
+		if w.retired && w.stop != nil && w.binding != nil && w.stop.binding == w.binding.key &&
+			(w.phase == workloadStopIssued || w.phase == workloadStopUnknown) {
+			refs = append(refs, workloadContainerRef{name: w.binding.container, id: w.binding.containerID})
+		}
+		w.mu.Unlock()
+	}
+	return refs
+}
+
+func (p *dockerProvider) quarantinedServices(containers []docker.Container, refs []workloadContainerRef) map[string]bool {
+	opts := p.extractOptions()
+	quarantined := map[string]bool{}
+	for _, c := range containers {
+		if !slices.ContainsFunc(refs, func(ref workloadContainerRef) bool { return ref.matches(c) }) {
+			continue
+		}
+		for _, service := range docker.CandidateServices(c, opts) {
+			quarantined[service] = true
+		}
+	}
+	return quarantined
 }
 
 // unretire restores the grant on a retained entry. A retained phase can be

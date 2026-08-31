@@ -1377,6 +1377,116 @@ func TestWorkloadMultiServiceContainerIsNotGated(t *testing.T) {
 	}
 }
 
+func workloadTopologyLabels(port string, sibling bool) map[string]string {
+	labels := map[string]string{
+		"traefik.enable":                                   "true",
+		"traefik.http.routers.ra.middlewares":              "policy@file",
+		"traefik.http.routers.ra.rule":                     "Host(`a.example.com`)",
+		"traefik.http.routers.ra.service":                  "a",
+		"traefik.http.services.a.loadbalancer.server.port": port,
+	}
+	if sibling {
+		labels["traefik.http.routers.rb.middlewares"] = "policy@file"
+		labels["traefik.http.routers.rb.rule"] = "Host(`b.example.com`)"
+		labels["traefik.http.routers.rb.service"] = "b"
+		labels["traefik.http.services.b.loadbalancer.server.port"] = port
+	}
+	return labels
+}
+
+func assertWorkloadTopologyRoutes(t *testing.T, router http.Handler, status int, policyHeader string) {
+	t.Helper()
+	for _, host := range []string{"a.example.com", "b.example.com"} {
+		rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil))
+		if rec.Code != status {
+			t.Fatalf("route %s = %d, want %d", host, rec.Code, status)
+		}
+		if got := rec.Header().Get("X-Policy"); got != policyHeader {
+			t.Fatalf("route %s: X-Policy=%q, want %q", host, got, policyHeader)
+		}
+	}
+}
+
+func waitRetiredWorkloadPhase(t *testing.T, w *workload, want workloadPhase) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if w.phaseNow() == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("retired workload phase = %v, want %v", w.phaseNow(), want)
+}
+
+func TestWorkloadRetiredIssuedStopQuarantinesSiblingRoutes(t *testing.T) {
+	backendHits := make(chan struct{}, 2)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendHits <- struct{}{}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Middleware: map[string][]resolved.Middleware{
+			"policy@file": {mustResolveMW(t, SetResponseHeader("X-Policy", "applied"))},
+		},
+		Workloads: map[string]resolved.Workload{"a@traefik": testWorkloadPolicy()},
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, false),
+	}})
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	w := p.workloadFor("a@traefik")
+	if w == nil {
+		t.Fatal("initial one-to-one service has no workload")
+	}
+	waitSignal(t, stopStarted, "idle stop was not issued")
+	if got := w.phaseNow(); got != workloadStopIssued {
+		t.Fatalf("phase before topology change = %v, want stop-issued", got)
+	}
+
+	daemon.swap([]fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, true),
+	}})
+	mustSync(t, p)
+	if got := p.workloadFor("a@traefik"); got != nil {
+		t.Fatal("multi-service topology retained lifecycle authority")
+	}
+	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusServiceUnavailable, "")
+	if got := len(backendHits); got != 0 {
+		t.Fatalf("quarantined routes reached backend %d times", got)
+	}
+
+	releaseStop()
+	waitRetiredWorkloadPhase(t, w, workloadDormant)
+	daemon.mu.Lock()
+	daemon.find("combo-1").stopped = false
+	daemon.mu.Unlock()
+	mustSync(t, p)
+	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusOK, "applied")
+	if got := daemon.stopCount("combo-1"); got != 1 {
+		t.Fatalf("stop calls = %d, want 1", got)
+	}
+	if got := daemon.startCount("combo-1"); got != 0 {
+		t.Fatalf("retired workload issued %d start calls", got)
+	}
+}
+
 func TestWorkloadDisabledSchemaDoesNotMakeContainerMultiService(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))

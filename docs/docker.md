@@ -141,9 +141,12 @@ How it behaves:
   remains attached to the mutation and cannot be erased by a later rejected retry.
   Statute coalesces discovery and retries the bounded call until positive stopped or
   missing-container evidence resolves the operation, including when periodic refresh
-  is disabled. A recreated container starts with fresh pool health and connections,
-  even when its name and backend address are unchanged. Statute's own shutdown leaves
-  workloads as they are.
+  is disabled. If the service-to-container topology stops being one-to-one during an
+  issued stop, lifecycle authority is revoked immediately, but every route contributed
+  by that immutable container stays quarantined with `503` until the stop settles and a
+  later reconcile publishes ordinary routes. A recreated container starts with fresh
+  pool health and connections, even when its name and backend address are unchanged.
+  Statute's own shutdown leaves workloads as they are.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.
