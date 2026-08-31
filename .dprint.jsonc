@@ -23,8 +23,8 @@
     "npm:dprint-plugin-yaml@0.6.0",
     "npm:@dprint/json@0.23.0",
     "https://plugins.dprint.dev/kjanat/svg-v0.4.1.wasm",
-    "npm:@dprint/markdown@0.23.1",
-    "npm:@jakebailey/dprint-plugin-gofumpt@0.0.15",
+    "npm:@dprint/markdown@0.23.2",
+    "npm:@jakebailey/dprint-plugin-gofumpt@0.0.16",
     "npm:@dprint/typescript@0.96.1",
   ],
 }
