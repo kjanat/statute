@@ -1545,6 +1545,80 @@ func TestWorkloadRetiredStopSettlementRepublishesRoutes(t *testing.T) {
 	}
 }
 
+func TestWorkloadMutationQuarantineBypassesServingCompilation(t *testing.T) {
+	backendHits := make(chan struct{}, 2)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendHits <- struct{}{}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Middleware: map[string][]resolved.Middleware{
+			"policy@file": {mustResolveMW(t, SetResponseHeader("X-Policy", "applied"))},
+		},
+		Workloads: map[string]resolved.Workload{"a@traefik": testWorkloadPolicy()},
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, false),
+	}})
+	fallbackCalls := fallbackServer(t, srv, nil)
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	w := p.workloadFor("a@traefik")
+	if w == nil {
+		t.Fatal("initial one-to-one service has no workload")
+	}
+	waitSignal(t, stopStarted, "idle stop was not issued")
+
+	labels := workloadTopologyLabels(portStr, true)
+	labels["traefik.http.routers.ra.middlewares"] = "unknown@file"
+	labels["traefik.http.routers.ra-copy.rule"] = "Host(`a.example.com`)"
+	labels["traefik.http.routers.ra-copy.service"] = "a"
+	labels["traefik.http.routers.ra-copy.middlewares"] = "unknown@file"
+	labels["traefik.http.services.b.loadbalancer.healthcheck.path"] = "/ready"
+	labels["traefik.http.services.b.loadbalancer.healthcheck.interval"] = "not-a-duration"
+	daemon.swap([]fakeDaemonContainer{{name: "combo-1", ip: host, port: port, labels: labels}})
+	mustSync(t, p)
+
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 3 || len(tab.pools) != 0 || len(tab.tombstones) != 0 {
+		t.Fatalf("quarantine table routes/pools/tombstones = %d/%d/%d, want 3/0/0", len(tab.routes), len(tab.pools), len(tab.tombstones))
+	}
+	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusServiceUnavailable, "")
+	if got := len(backendHits); got != 0 {
+		t.Fatalf("quarantine reached backend %d times", got)
+	}
+	p.generationMu.Lock()
+	republished := p.generationChanged
+	p.generationMu.Unlock()
+
+	releaseStop()
+	waitRetiredWorkloadPhase(t, w, workloadReady)
+	waitSignal(t, republished, "settled quarantine did not publish normal refusal semantics")
+	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusNotFound, "")
+	if got := fallbackCalls.Load(); got != 0 {
+		t.Fatalf("normal refusal called fallback %d times", got)
+	}
+	if got := len(backendHits); got != 0 {
+		t.Fatalf("invalid serving configuration reached backend %d times", got)
+	}
+}
+
 func TestWorkloadDisabledSchemaDoesNotMakeContainerMultiService(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))

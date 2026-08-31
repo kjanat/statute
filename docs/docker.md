@@ -145,11 +145,13 @@ How it behaves:
   issued stop, lifecycle authority is revoked immediately, but every route contributed
   by that immutable container stays quarantined with `503` until the stop settles and a
   later reconcile removes quarantine. Ordinary pool rules then apply. Quarantine routes
-  remain present when the stopped container has no backend address. Settlement itself
-  schedules the reconcile, so removing quarantine does not depend on a Docker event or
-  periodic refresh. A recreated container starts with fresh pool health and connections,
-  even when its name and backend address are unchanged. Statute's own shutdown leaves
-  workloads as they are.
+  compile from matcher identity alone: they remain present when the stopped container has
+  no backend address, and invalid middleware, health, or transport configuration cannot
+  replace their `503` with a route miss. Settlement itself schedules the reconcile, so
+  removing quarantine does not depend on a Docker event or periodic refresh. The normal
+  serving configuration is constructed and validated only after quarantine ends. A
+  recreated container starts with fresh pool health and connections, even when its name
+  and backend address are unchanged. Statute's own shutdown leaves workloads as they are.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.

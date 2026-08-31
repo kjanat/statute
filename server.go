@@ -809,6 +809,9 @@ func joinErrors(ch <-chan error) error {
 type compiledRoute struct {
 	route   *resolved.Route
 	handler http.Handler
+	// service is the Docker service identity used to order otherwise-equal
+	// dynamic matchers. Static routes and tombstones do not need it.
+	service string
 	// matcher is the compiled host/path IR used directly by the dispatcher.
 	matcher docker.Matcher
 	// clientPrefixes is the parsed form of the route's ClientIPCIDRs; empty

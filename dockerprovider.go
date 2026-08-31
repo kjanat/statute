@@ -489,12 +489,15 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 	return next, retired
 }
 
-// addService resolves one service into a pool handler and its routes,
-// appending them to next. Invalid label values skip the service with a
-// warning rather than poisoning the whole generation; a route whose
-// router references an unregistered middleware name is omitted the same
-// way, so the rest of the service keeps routing.
+// addService compiles one service into the next generation. Mutation
+// quarantine consumes only already-derived matchers because no serving
+// configuration can execute while the mutation owns traffic.
 func (p *dockerProvider) addService(svc *docker.Service, quarantined bool, prev, next *dynamicTable) []docker.Matcher {
+	if quarantined {
+		p.appendQuarantineRoutes(svc, next)
+		return nil
+	}
+
 	pool, warn := servicePool(svc)
 	if warn != "" {
 		p.warn([]string{warn})
@@ -505,7 +508,7 @@ func (p *dockerProvider) addService(svc *docker.Service, quarantined bool, prev,
 		binding = gated.currentBinding()
 		next.workloadBindings[svc.Name] = binding
 	}
-	rp, err := p.resolveServicePool(svc, pool, gated, quarantined)
+	rp, err := p.resolveServicePool(svc, pool, gated)
 	if err != nil {
 		p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", svc.Name, err)})
 		return p.refuse(svc.Name, svc.Routes)
@@ -532,24 +535,32 @@ func (p *dockerProvider) addService(svc *docker.Service, quarantined bool, prev,
 	// The gate resolves the pool at proxy time: the generation that
 	// queued a waiter cannot carry a dormant container's backend.
 	base := http.Handler(running.handler)
-	if quarantined {
-		base = workloadMutationQuarantine{}
-	} else if gated != nil {
+	if gated != nil {
 		base = &workloadGate{p: p, w: gated, binding: binding, revision: revision}
 	}
-	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, quarantined, next)
+	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, next)
 	return tombs
 }
 
-func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, quarantined bool, next *dynamicTable) {
+// appendQuarantineRoutes installs the outermost lifecycle outcome from matcher
+// semantics alone. Middleware references are deliberately removed: neither
+// route policy nor pool runtime is constructed while the mutation owns traffic.
+func (p *dockerProvider) appendQuarantineRoutes(svc *docker.Service, next *dynamicTable) {
+	for _, m := range svc.Routes {
+		m.Middlewares = nil
+		next.routes = append(next.routes, compiledRoute{
+			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
+			handler: workloadMutationQuarantine{},
+			service: svc.Name,
+			matcher: m,
+		})
+	}
+}
+
+func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, next *dynamicTable) {
 	for _, rc := range chains {
-		handler := base
-		if !quarantined {
-			handler = wrapMiddleware(rc.mws, handler)
-		}
-		// Quarantine is the outermost route outcome: cache, auth, retry, and
-		// other middleware cannot answer around a container-wide stop.
-		if gated != nil && !quarantined {
+		handler := wrapMiddleware(rc.mws, base)
+		if gated != nil {
 			handler = &workloadRevisionGate{
 				p: p, service: name, binding: binding, revision: revision, next: handler,
 			}
@@ -562,19 +573,20 @@ func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, cha
 				Middleware: rc.mws,
 			},
 			handler: handler,
+			service: name,
 			matcher: rc.m,
 		})
 	}
 }
 
 // resolveServicePool resolves the derived pool and overlays the code-owned
-// policy. A gated dormant or mutation-quarantined service legitimately has
-// no backends: its stopped container has no address. The route must still
-// compile so its gate or quarantine can keep answering 503.
-func (p *dockerProvider) resolveServicePool(svc *docker.Service, pool Pool, gated *workload, quarantined bool) (*resolved.Pool, error) {
+// policy. A gated dormant service legitimately has no backends: its stopped
+// container has no address. The route must still compile so its gate can keep
+// answering 503. Mutation quarantine bypasses pool resolution entirely.
+func (p *dockerProvider) resolveServicePool(svc *docker.Service, pool Pool, gated *workload) (*resolved.Pool, error) {
 	policy, hasPolicy := preparePoolPolicy(&pool, p.cfg.PoolPolicy, svc.Name)
 	resolve := resolvePool
-	if (gated != nil || quarantined) && len(pool.Backends) == 0 {
+	if gated != nil && len(pool.Backends) == 0 {
 		resolve = resolveDormantPool
 	}
 	rp, err := resolve(svc.Name, pool)
@@ -879,7 +891,7 @@ func sortDynamicRoutes(routes []compiledRoute) {
 		if a.Path != b.Path {
 			return a.Path < b.Path
 		}
-		return routes[i].route.Upstream.Name < routes[j].route.Upstream.Name
+		return routes[i].service < routes[j].service
 	})
 }
 
