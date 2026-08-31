@@ -60,6 +60,8 @@ type dockerProvider struct {
 	// publication. Activations use it to await a coalesced reconcile.
 	generationMu      sync.Mutex
 	generationChanged chan struct{}
+	reconciling       bool
+	reconcileDemanded bool
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
@@ -253,11 +255,38 @@ func (r *dockerRun) reconcileLoop() {
 			return
 		case <-r.kick:
 			r.debounce()
+			p.beginReconcile()
 			p.syncLogged(ctx)
+			if p.finishReconcile() {
+				r.trigger()
+			}
 		case <-tick:
+			p.beginReconcile()
 			p.syncLogged(ctx)
+			if p.finishReconcile() {
+				r.trigger()
+			}
 		}
 	}
+}
+
+// beginReconcile binds activation demand to the publication now in flight.
+func (p *dockerProvider) beginReconcile() {
+	p.generationMu.Lock()
+	p.reconciling = true
+	p.reconcileDemanded = false
+	p.generationMu.Unlock()
+}
+
+// finishReconcile reports demand that arrived after the last publication, or
+// while a failed reconcile could not satisfy its waiters.
+func (p *dockerProvider) finishReconcile() bool {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
+	demanded := p.reconcileDemanded
+	p.reconciling = false
+	p.reconcileDemanded = false
+	return demanded
 }
 
 // debounce absorbs further kicks for a short window so event bursts
@@ -316,6 +345,9 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 func (p *dockerProvider) publishGeneration(next *dynamicTable) {
 	p.srv.dynamic.Store(next)
 	p.generationMu.Lock()
+	// Demand recorded before this point waits on the edge closed below and is
+	// satisfied by this publication. Later demand schedules another reconcile.
+	p.reconcileDemanded = false
 	if p.generationChanged != nil {
 		close(p.generationChanged)
 	}
@@ -334,8 +366,14 @@ func (p *dockerProvider) requestReconcile() <-chan struct{} {
 	}
 	p.generationMu.Lock()
 	changed := p.generationChanged
+	reconciling := p.reconciling
+	if reconciling {
+		p.reconcileDemanded = true
+	}
 	p.generationMu.Unlock()
-	r.trigger()
+	if !reconciling {
+		r.trigger()
+	}
 	return changed
 }
 

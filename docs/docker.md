@@ -56,7 +56,9 @@ statute.Main(statute.Config{
   failed reconcile logs and keeps the previous routing generation serving.
 - The provider follows the Docker event stream (with reconnect + backoff)
   and coalesces bursts — a `docker compose up` starting ten containers
-  reconciles once.
+  reconciles once. Activation demand arriving during an in-flight listing
+  joins that publication edge; readiness waits one probe interval after
+  publication before checking again.
 - Route tables swap atomically per generation. Requests in flight finish
   against the generation they started with. Pool handlers whose resolved
   config is unchanged are carried over, keeping health-check state and

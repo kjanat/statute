@@ -626,20 +626,33 @@ func (p *dockerProvider) awaitReadiness(ctx context.Context, w *workload, act *w
 				return nil
 			}
 		}
-		select {
-		case <-rctx.Done():
+		if !waitReadinessProbe(rctx, generationChanged) {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return fmt.Errorf("readiness not established within %s", act.policy.ReadyTimeout)
-		case <-generationChanged:
-		case <-time.After(workloadProbeInterval):
 		}
 	}
 }
 
+func waitReadinessProbe(ctx context.Context, generationChanged <-chan struct{}) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-generationChanged:
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(workloadProbeInterval):
+			return true
+		}
+	case <-time.After(workloadProbeInterval):
+		return true
+	}
+}
+
 // probeReady evaluates one readiness probe. In every mode the discovered
-// backend address must have materialized in the current generation first.
+// backend address must have materialised in the current generation first.
 // A missing address requests one coalesced reconcile and returns its
 // publication edge so the activation can await provider progress.
 func (p *dockerProvider) probeReady(ctx context.Context, w *workload, act *workloadActivation, insp docker.InspectState) (bool, <-chan struct{}) {

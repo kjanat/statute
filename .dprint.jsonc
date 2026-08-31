@@ -27,6 +27,6 @@
     "npm:@dprint/markdown@0.23.2",
     "npm:@jakebailey/dprint-plugin-gofumpt@0.0.16",
     "npm:@dprint/typescript@0.96.1",
-    "https://plugins.dprint.dev/kjanat/shfmt-1.1.0.wasm",
+    "https://plugins.dprint.dev/kjanat/shfmt-1.1.0.wasm@423fb50333d15a8c6c57f2efe7c46a28eb855a77c77b88edb69794509d858bc9",
   ],
 }

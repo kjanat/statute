@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -318,9 +319,10 @@ func TestLifecycleOutcomeAmbiguous(t *testing.T) {
 		t.Fatalf("transport failure: err=%v ambiguous=%v, want error and true", err, LifecycleOutcomeAmbiguous(err))
 	}
 
-	status := http.StatusInternalServerError
+	var status atomic.Int64
+	status.Store(http.StatusInternalServerError)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "rejected", status)
+		http.Error(w, "rejected", int(status.Load()))
 	}))
 	t.Cleanup(ts.Close)
 	client, err = NewClient("tcp://" + strings.TrimPrefix(ts.URL, "http://"))
@@ -331,12 +333,12 @@ func TestLifecycleOutcomeAmbiguous(t *testing.T) {
 	if err == nil || !LifecycleOutcomeAmbiguous(err) {
 		t.Fatalf("daemon 500: err=%v ambiguous=%v, want error and true", err, LifecycleOutcomeAmbiguous(err))
 	}
-	status = http.StatusConflict
+	status.Store(http.StatusConflict)
 	err = client.StopContainer(context.Background(), "abc123")
 	if err == nil || LifecycleOutcomeAmbiguous(err) {
 		t.Fatalf("daemon rejection: err=%v ambiguous=%v, want error and false", err, LifecycleOutcomeAmbiguous(err))
 	}
-	status = http.StatusNotFound
+	status.Store(http.StatusNotFound)
 	err = client.StopContainer(context.Background(), "abc123")
 	if err == nil || !LifecycleContainerMissing(err) {
 		t.Fatalf("missing container: err=%v missing=%v, want error and true", err, LifecycleContainerMissing(err))

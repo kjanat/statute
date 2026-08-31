@@ -260,7 +260,7 @@ target is refined from a known container's name to its ID.
 Three lifetimes remain distinct. A workload registry allocates an explicit
 container-incarnation key and keeps request activity with that binding. The
 dynamic table owns a routing revision derived from handler-carried matcher and
-middleware semantics; it stays stable while a stopped container materializes its
+middleware semantics; it stays stable while a stopped container materialises its
 backend, while a label or middleware change invalidates queued handlers before
 they can proxy. A `runningPool` owns health state and transport connections and is
 reused only when both its resolved fingerprint and, for a gated workload, its
@@ -277,7 +277,8 @@ rejected retry cannot erase an earlier attempt whose outcome was ambiguous. The
 operation owns backed-off retries of bounded calls and coalesced reconciliation
 until a successful or already-stopped response, a missing immutable container ID,
 or a stopped observation resolves it. Readiness uses the same provider-owned
-publication edge, keeping global rebuild work out of per-activation polling.
+publication edge and remains probe-paced after publication, keeping global rebuild
+work out of per-activation polling.
 
 Lifecycle authority and mutation quarantine have separate lifetimes. If a
 one-to-one grant becomes invalid while its stop is already issued, the grant is

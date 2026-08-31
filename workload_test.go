@@ -253,6 +253,24 @@ func waitSignal(t *testing.T, ch <-chan struct{}, message string) {
 	}
 }
 
+func TestWaitReadinessProbePacesGenerationChanges(t *testing.T) {
+	changed := make(chan struct{})
+	close(changed)
+	started := time.Now()
+	if !waitReadinessProbe(context.Background(), changed) {
+		t.Fatal("closed generation edge cancelled readiness pacing")
+	}
+	if elapsed := time.Since(started); elapsed < workloadProbeInterval {
+		t.Fatalf("generation edge resumed readiness after %s, want at least %s", elapsed, workloadProbeInterval)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitReadinessProbe(ctx, changed) {
+		t.Fatal("cancelled readiness pacing resumed probing")
+	}
+}
+
 func waitStatus(t *testing.T, ch <-chan int, timeout time.Duration, message string) int {
 	t.Helper()
 	select {
@@ -301,6 +319,10 @@ func waitUncertainStopAttempts(t *testing.T, p *dockerProvider, daemon *fakeDaem
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		w := p.workloadFor("wl")
+		if w == nil {
+			time.Sleep(time.Millisecond)
+			continue
+		}
 		w.mu.Lock()
 		stop := w.stop
 		settled := w.phase == workloadStopUnknown && stop != nil && stop.uncertain && !stop.issued
@@ -315,12 +337,15 @@ func waitUncertainStopAttempts(t *testing.T, p *dockerProvider, daemon *fakeDaem
 
 func assertSuccessorActivation(t *testing.T, p *dockerProvider, daemon *fakeDaemon) {
 	t.Helper()
+	daemon.mu.Lock()
+	wantRef := daemon.find("wl-new").id
+	daemon.mu.Unlock()
 	w := p.workloadFor("wl")
 	w.mu.Lock()
 	ref := w.containerRefLocked()
 	act := w.activation
 	w.mu.Unlock()
-	if ref != "id-1" || act == nil || act.ref != "id-1" || !act.observe {
+	if ref != wantRef || act == nil || act.ref != wantRef || !act.observe {
 		t.Fatalf("successor binding: ref=%q activation=%+v", ref, act)
 	}
 	if got := daemon.stopCount("wl-old") + daemon.stopCount("wl-new"); got != 0 {
@@ -681,6 +706,7 @@ func TestWorkloadContainerReplacementDoesNotInheritIssuedStop(t *testing.T) {
 	p.generationMu.Unlock()
 
 	daemon.mu.Lock()
+	wantRef := daemon.find("wl-new").id
 	daemon.find("wl-new").health = "healthy"
 	daemon.mu.Unlock()
 	releaseStop()
@@ -693,7 +719,7 @@ func TestWorkloadContainerReplacementDoesNotInheritIssuedStop(t *testing.T) {
 	ref := w.containerRefLocked()
 	act := w.activation
 	w.mu.Unlock()
-	if ref != "id-1" || act != nil {
+	if ref != wantRef || act != nil {
 		t.Fatalf("successor binding: ref=%q activation=%+v", ref, act)
 	}
 

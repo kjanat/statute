@@ -76,6 +76,7 @@ type fakeDaemon struct {
 	starts     map[string]int
 	stops      map[string]int
 	// failStart and failStop make their lifecycle calls answer 500.
+	failList           bool
 	failStart          bool
 	failStop           bool
 	rejectStop         bool
@@ -84,6 +85,8 @@ type fakeDaemon struct {
 	loseStopReply      bool
 	stallInspect       bool
 	inspectStarted     chan struct{}
+	listStarted        chan struct{}
+	listRelease        chan struct{}
 	stopStarted        chan struct{}
 	stopRelease        chan struct{}
 }
@@ -263,6 +266,28 @@ func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (d *fakeDaemon) listContainers(w http.ResponseWriter) {
+	d.mu.Lock()
+	d.lists++
+	if d.listStarted != nil {
+		close(d.listStarted)
+		d.listStarted = nil
+	}
+	release := d.listRelease
+	fail := d.failList
+	body := daemonJSON(d.t, d.containers)
+	d.mu.Unlock()
+	if release != nil {
+		<-release
+	}
+	if fail {
+		http.Error(w, "boom", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(body))
+}
+
 func (d *fakeDaemon) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
@@ -274,14 +299,7 @@ func (d *fakeDaemon) handler() http.Handler {
 		}
 		<-r.Context().Done()
 	})
-	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) {
-		d.mu.Lock()
-		d.lists++
-		body := daemonJSON(d.t, d.containers)
-		d.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	})
+	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) { d.listContainers(w) })
 	mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/containers/"), "/")
 		if len(parts) != 2 {
@@ -334,22 +352,85 @@ func TestDockerActivationReconcilesAreCoalesced(t *testing.T) {
 	}
 	t.Cleanup(run.stop)
 	before := daemon.listCount()
+	daemon.mu.Lock()
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseList := func() { releaseOnce.Do(func() { close(listRelease) }) }
+	t.Cleanup(releaseList)
 
-	var changed <-chan struct{}
-	for range 100 {
+	changed := p.requestReconcile()
+	if changed == nil {
+		t.Fatal("running provider rejected a reconcile request")
+	}
+	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
+	for range 99 {
 		got := p.requestReconcile()
 		if got == nil {
 			t.Fatal("running provider rejected a reconcile request")
 		}
-		if changed == nil {
-			changed = got
-		} else if got != changed {
+		if got != changed {
 			t.Fatal("one reconcile burst returned multiple publication edges")
 		}
 	}
+	daemon.mu.Lock()
+	secondListStarted := make(chan struct{})
+	daemon.listStarted = secondListStarted
+	daemon.mu.Unlock()
+	releaseList()
 	waitSignal(t, changed, "coalesced reconcile did not publish a generation")
+	select {
+	case <-secondListStarted:
+		t.Fatal("reconcile demand queued during a listing triggered a second listing")
+	case <-time.After(dockerDebounce + 100*time.Millisecond):
+	}
 	if got := daemon.listCount() - before; got != 1 {
 		t.Fatalf("100 reconcile requests performed %d Docker listings, want 1", got)
+	}
+}
+
+func TestDockerActivationDemandRetriesFailedReconcile(t *testing.T) {
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, nil)
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	before := daemon.listCount()
+	daemon.mu.Lock()
+	daemon.failList = true
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseList := func() { releaseOnce.Do(func() { close(listRelease) }) }
+	t.Cleanup(releaseList)
+
+	changed := p.requestReconcile()
+	if changed == nil {
+		t.Fatal("running provider rejected a reconcile request")
+	}
+	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
+	if got := p.requestReconcile(); got != changed {
+		t.Fatal("demand during a failed reconcile returned another publication edge")
+	}
+	daemon.mu.Lock()
+	daemon.failList = false
+	daemon.listRelease = nil
+	daemon.mu.Unlock()
+	releaseList()
+	select {
+	case <-changed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed reconcile lost activation demand")
+	}
+	if got := daemon.listCount() - before; got != 2 {
+		t.Fatalf("failed reconcile performed %d Docker listings, want failure plus retry", got)
 	}
 }
 
