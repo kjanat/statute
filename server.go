@@ -851,6 +851,16 @@ func routeMatchesRequest(c compiledRoute, host, path string) bool {
 	return c.matcher.Match(host, path)
 }
 
+func findDynamicHandler(table *dynamicTable, host string, req *http.Request) http.Handler {
+	if handler := findHandler(table.routes, host, req); handler != nil {
+		return handler
+	}
+	if handler := findHandler(table.quarantines, host, req); handler != nil {
+		return handler
+	}
+	return findHandler(table.tombstones, host, req)
+}
+
 // tombstoneHandler is the one fixed refusal every tombstone serves: the
 // same 404 a dropped router produced before Config.Fallback existed. It
 // does not vary with the rule that produced it, and no other status is
@@ -868,8 +878,8 @@ func (s *server) fallbackHandler() http.Handler {
 
 // buildRouter returns an http.Handler that dispatches to the matching
 // static route in declaration order, then to the docker provider's dynamic
-// routes when one is configured, then to that generation's tombstones, then
-// to the fallback handler.
+// routes when one is configured, then its container-mutation quarantines,
+// then that generation's tombstones, then the fallback handler.
 //
 // INVARIANT: the tombstone tier sits between discovered routes and the
 // fallback. A Docker registration whose routes were discarded must not
@@ -908,11 +918,7 @@ func (s *server) buildRouter() http.Handler {
 			return
 		}
 		if t := s.dynamic.Load(); t != nil {
-			if h := findHandler(t.routes, host, req); h != nil {
-				h.ServeHTTP(w, req)
-				return
-			}
-			if h := findHandler(t.tombstones, host, req); h != nil {
+			if h := findDynamicHandler(t, host, req); h != nil {
 				h.ServeHTTP(w, req)
 				return
 			}

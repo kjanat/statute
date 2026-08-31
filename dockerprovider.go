@@ -22,6 +22,8 @@ import (
 // validate their handler-carried policy revision after a readiness wait.
 type dynamicTable struct {
 	routes []compiledRoute
+	// quarantines retain container provenance between valid routes and tombstones.
+	quarantines []compiledRoute
 	// tombstones are the refusal envelopes of the registrations this
 	// generation discarded; see compileTombstones.
 	tombstones []compiledRoute
@@ -293,13 +295,17 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	services, tombstones := p.deriveServices(containers)
-	quarantined := p.updateWorkloads(services, p.multiServiceContainers(containers), containers) //nolint:contextcheck // observations spawn provider-run work
+	contributions := p.deriveContributions(containers)
+	observed, _ := mergeContributions(contributions, nil)
+	quarantine := p.updateWorkloads(observed, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
+	p.publishContributionWarnings(contributions, quarantine)
+	services, tombstones := mergeContributions(contributions, quarantine.matches)
+	quarantine.routes = p.quarantineRouteClaims(containers, quarantine)
 
 	prev := p.srv.dynamic.Load()
 	// Pool health checkers deliberately outlive this sync call; they derive
 	// their own lifetime and stop on generation retirement or shutdown.
-	next, retired := p.buildTable(services, tombstones, quarantined, prev) //nolint:contextcheck
+	next, retired := p.buildTable(services, tombstones, quarantine.routes, prev) //nolint:contextcheck
 	p.publishGeneration(next)
 	for _, pool := range retired {
 		pool.shutdown()
@@ -344,17 +350,20 @@ func (p *dockerProvider) scheduleReconcile() {
 	}
 }
 
-// deriveServices extracts label registrations from every container and
-// merges same-named services into one pool. Containers are processed in
-// name order so "first container wins" conflict resolution is stable. The
-// second result collects the refusal envelopes extraction produced.
-func (p *dockerProvider) deriveServices(containers []docker.Container) ([]docker.Service, []docker.Matcher) {
+type dockerContribution struct {
+	container  docker.Container
+	services   []docker.Service
+	tombstones []docker.Matcher
+	warnings   []string
+}
+
+// deriveContributions retains immutable container provenance until lifecycle
+// quarantine has selected which contributions may enter ordinary merging.
+func (p *dockerProvider) deriveContributions(containers []docker.Container) []dockerContribution {
 	sort.Slice(containers, func(i, j int) bool { return containers[i].Name < containers[j].Name })
 
 	opts := p.extractOptions()
-	merged := map[string]*docker.Service{}
-	var order []string
-	var tombs []docker.Matcher
+	var out []dockerContribution
 	for _, c := range containers {
 		svcs, envelopes, warns := docker.Extract(c, opts)
 		// A stopped container participates only when a workload policy
@@ -362,9 +371,32 @@ func (p *dockerProvider) deriveServices(containers []docker.Container) ([]docker
 		if !c.Running && !p.workloadIntended(c, opts) {
 			continue
 		}
-		p.warn(warns)
-		tombs = append(tombs, envelopes...)
-		for _, svc := range svcs {
+		out = append(out, dockerContribution{container: c, services: svcs, tombstones: envelopes, warnings: warns})
+	}
+	return out
+}
+
+func (p *dockerProvider) publishContributionWarnings(contributions []dockerContribution, quarantine retiredMutationQuarantine) {
+	for _, contribution := range contributions {
+		if !quarantine.matches(contribution.container) {
+			p.warn(contribution.warnings)
+		}
+	}
+}
+
+// mergeContributions builds the logical service view after optionally
+// excluding exact container contributions. Containers are already ordered, so
+// the existing first-container-wins pool policy remains stable.
+func mergeContributions(contributions []dockerContribution, excluded func(docker.Container) bool) ([]docker.Service, []docker.Matcher) {
+	merged := map[string]*docker.Service{}
+	var order []string
+	var tombs []docker.Matcher
+	for _, contribution := range contributions {
+		if excluded != nil && excluded(contribution.container) {
+			continue
+		}
+		tombs = append(tombs, contribution.tombstones...)
+		for _, svc := range contribution.services {
 			existing, ok := merged[svc.Name]
 			if !ok {
 				s := svc
@@ -381,6 +413,17 @@ func (p *dockerProvider) deriveServices(containers []docker.Container) ([]docker
 		out = append(out, *merged[name])
 	}
 	return out, tombs
+}
+
+func (p *dockerProvider) quarantineRouteClaims(containers []docker.Container, quarantine retiredMutationQuarantine) []docker.RouteClaim {
+	var out []docker.RouteClaim
+	opts := p.extractOptions()
+	for _, container := range containers {
+		if quarantine.matches(container) {
+			out = append(out, docker.RouteClaims(container, opts)...)
+		}
+	}
+	return out
 }
 
 // warn logs each warning once for the provider's lifetime.
@@ -455,7 +498,7 @@ func (p *dockerProvider) multiServiceContainers(containers []docker.Container) m
 // reusing pool handlers whose resolved config is unchanged. It returns the
 // handlers from prev that were replaced or dropped and must be shut down
 // after the swap.
-func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, quarantined map[string]bool, prev *dynamicTable) (*dynamicTable, []*runningPool) {
+func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, quarantines []docker.RouteClaim, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
 		pools:             make(map[string]*runningPool, len(services)),
 		fingerprints:      make(map[string]string, len(services)),
@@ -464,11 +507,16 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 	}
 	tombs := slices.Clone(tombstones)
 	matchedPolicy := make(map[string]bool, len(p.cfg.PoolPolicy))
+	for _, claim := range quarantines {
+		if _, ok := p.cfg.PoolPolicy[claim.Service]; ok {
+			matchedPolicy[claim.Service] = true
+		}
+	}
 	for i := range services {
 		if _, ok := p.cfg.PoolPolicy[services[i].Name]; ok {
 			matchedPolicy[services[i].Name] = true
 		}
-		tombs = append(tombs, p.addService(&services[i], quarantined[services[i].Name], prev, next)...)
+		tombs = append(tombs, p.addService(&services[i], prev, next)...)
 	}
 	for _, name := range slices.Sorted(maps.Keys(p.cfg.PoolPolicy)) {
 		if !matchedPolicy[name] {
@@ -476,6 +524,8 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 		}
 	}
 	sortDynamicRoutes(next.routes)
+	next.quarantines = compileQuarantineRoutes(quarantines)
+	sortDynamicRoutes(next.quarantines)
 	next.tombstones = p.compileTombstones(tombs)
 
 	var retired []*runningPool
@@ -489,15 +539,8 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 	return next, retired
 }
 
-// addService compiles one service into the next generation. Mutation
-// quarantine consumes only already-derived matchers because no serving
-// configuration can execute while the mutation owns traffic.
-func (p *dockerProvider) addService(svc *docker.Service, quarantined bool, prev, next *dynamicTable) []docker.Matcher {
-	if quarantined {
-		p.appendQuarantineRoutes(svc, next)
-		return nil
-	}
-
+// addService compiles one ordinary merged service into the next generation.
+func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTable) []docker.Matcher {
 	pool, warn := servicePool(svc)
 	if warn != "" {
 		p.warn([]string{warn})
@@ -542,19 +585,20 @@ func (p *dockerProvider) addService(svc *docker.Service, quarantined bool, prev,
 	return tombs
 }
 
-// appendQuarantineRoutes installs the outermost lifecycle outcome from matcher
-// semantics alone. Middleware references are deliberately removed: neither
-// route policy nor pool runtime is constructed while the mutation owns traffic.
-func (p *dockerProvider) appendQuarantineRoutes(svc *docker.Service, next *dynamicTable) {
-	for _, m := range svc.Routes {
-		m.Middlewares = nil
-		next.routes = append(next.routes, compiledRoute{
+// compileQuarantineRoutes installs lifecycle outcomes from route envelopes
+// alone, after valid routes and before ordinary refusal tombstones.
+func compileQuarantineRoutes(claims []docker.RouteClaim) []compiledRoute {
+	out := make([]compiledRoute, 0, len(claims))
+	for _, claim := range claims {
+		m := claim.Matcher
+		out = append(out, compiledRoute{
 			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
 			handler: workloadMutationQuarantine{},
-			service: svc.Name,
+			service: claim.Service,
 			matcher: m,
 		})
 	}
+	return out
 }
 
 func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, next *dynamicTable) {
@@ -730,7 +774,7 @@ func (p *dockerProvider) servicePoolHandler(name string, rp *resolved.Pool, bind
 	fp := poolFingerprint(rp)
 	pool := next.pools[name]
 	if pool == nil {
-		sameBinding := binding == 0 || (prev != nil && prev.workloadBindings[name] == binding)
+		sameBinding := prev != nil && prev.workloadBindings[name] == binding
 		if prev != nil && sameBinding && prev.fingerprints[name] == fp && prev.pools[name].isLive() {
 			pool = prev.pools[name]
 		} else {

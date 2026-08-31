@@ -48,9 +48,10 @@ current dynamic generation. Dynamic discovery must not shadow compiled static
 configuration.
 
 A configured `Fallback` handler is the router's terminal stage, reached only
-after both tables and the current generation's Docker tombstones miss; unset, the
-terminal behavior stays `http.NotFound`. It is not a route: it has no matcher and
-no route middleware. It lives inside the content router, so everything wrapping the router keeps its precedence over it:
+after both tables, the current generation's mutation quarantines, and its Docker
+tombstones miss; unset, the terminal behavior stays `http.NotFound`. It is not a
+route: it has no matcher and no route middleware. It lives inside the content
+router, so everything wrapping the router keeps its precedence over it:
 pending HTTP-01 challenge responses on a plain HTTP listener, Alt-Svc, and
 listener observability all sit outside it, and a redirect-only listener never
 reaches it. What each ACME source claims differs: an automatic source absorbs
@@ -118,7 +119,8 @@ middleware.
 
 A discarded registration leaves a **tombstone**: a matcher carrying no upstream,
 no middleware, and one fixed 404 refusal. Dispatch is static routes, then valid
-Docker routes, then tombstones, then `Config.Fallback`. Tombstones exist because
+Docker routes, container-mutation quarantines, tombstones, and `Config.Fallback`.
+Tombstones exist because
 a dropped registration used to end in the terminal 404; with a fallback
 configured it would instead fall through into operator code that does not know
 the registration asked for a policy statute could not supply. A registration is
@@ -284,12 +286,16 @@ owns its retries and a container-wide non-serving quarantine: every service
 contributed by that immutable container answers `503` until terminal evidence
 settles the stop, including generations where the stopped container has no
 materialised backend. Quarantine compiles directly from the already-derived
-matcher identity and does not construct or validate middleware, backend, health,
-or transport configuration that cannot execute while the mutation owns traffic.
-Terminal settlement schedules a coalesced reconcile that publishes the
-quarantine's removal without relying on a Docker event or periodic refresh; only
-that later generation resumes ordinary serving validation and refusal semantics.
-A different immutable container identity does not inherit that quarantine.
+registration envelope, including one whose ordinary matcher extraction or
+serving configuration is invalid. Container provenance remains attached before
+service merging: the quarantined contribution is excluded from ordinary pools,
+while a different immutable container contributing the same service remains
+routable. Valid routes precede the quarantine tier, so an independent contributor
+with the same matcher is not shadowed; unmatched quarantined claims precede
+tombstones and answer `503`. Terminal settlement schedules a coalesced reconcile
+that publishes the quarantine's removal without relying on a Docker event or
+periodic refresh; only that later generation lets ordinary serving-validation
+results and refusal semantics determine the published route outcome.
 
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to

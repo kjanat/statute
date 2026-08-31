@@ -38,6 +38,29 @@ func TestExtractNativeMinimal(t *testing.T) {
 	}
 }
 
+func TestRouteClaimsIgnoreServingConfiguration(t *testing.T) {
+	nativeContainer := webContainer(map[string]string{
+		"statute.enable":  "true",
+		"statute.service": "api",
+		"statute.host":    "api.example.com",
+		"statute.scheme":  "unsupported",
+	})
+	nativeClaims := RouteClaims(nativeContainer, ExtractOptions{})
+	if len(nativeClaims) != 1 || nativeClaims[0].Service != "api" || !nativeClaims[0].Matcher.Match("api.example.com", "/") {
+		t.Fatalf("native claims = %+v, want api.example.com despite invalid backend scheme", nativeClaims)
+	}
+
+	traefikContainer := webContainer(map[string]string{
+		"traefik.enable":                   "true",
+		"traefik.http.routers.api.rule":    "HostRegexp(`{subdomain:[a-z]+}.example.com`)",
+		"traefik.http.routers.api.service": "api",
+	})
+	traefikClaims := RouteClaims(traefikContainer, ExtractOptions{TraefikLabels: true})
+	if len(traefikClaims) != 1 || traefikClaims[0].Service != "api@traefik" || !traefikClaims[0].Matcher.Match("anything.example", "/any") {
+		t.Fatalf("traefik claims = %+v, want fail-closed envelope despite invalid rule", traefikClaims)
+	}
+}
+
 func TestExtractNativeFull(t *testing.T) {
 	c := webContainer(map[string]string{
 		"statute.enable":               "true",

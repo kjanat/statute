@@ -271,6 +271,21 @@ func (w *workload) currentBinding() workloadBindingKey {
 	return w.binding.key
 }
 
+// ownsIssuedMutationForOtherContainer reports whether transferring the service
+// grant would detach a non-cancellable stop from its immutable container.
+func (w *workload) ownsIssuedMutationForOtherContainer(svc *docker.Service) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.ownsIssuedMutationForOtherContainerLocked(svc)
+}
+
+func (w *workload) ownsIssuedMutationForOtherContainerLocked(svc *docker.Service) bool {
+	if w.stop == nil || (w.phase != workloadStopIssued && w.phase != workloadStopUnknown) {
+		return false
+	}
+	return w.binding != nil && !w.binding.sameContainer(svc)
+}
+
 func (w *workload) newBindingLocked(svc *docker.Service) {
 	w.nextBinding++
 	w.binding = &workloadBinding{
@@ -1103,32 +1118,22 @@ func (p *dockerProvider) workloadFor(service string) *workload {
 // applies only to a one-to-one service and container pair; see
 // multiServiceContainers. A retired mutation still quarantines every service
 // contributed by its container until the mutation settles.
-func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService map[string]bool, containers []docker.Container) map[string]bool {
+func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService map[string]bool) retiredMutationQuarantine {
 	p.workloadMu.Lock()
 	defer p.workloadMu.Unlock()
 	seen := make(map[string]bool, len(p.cfg.Workloads))
 	eligible := make([]bool, len(services))
 	for i := range services {
 		svc := &services[i]
-		_, ok := p.cfg.Workloads[svc.Name]
-		if !ok {
-			continue
+		if p.workloadEligibleLocked(svc, multiService) {
+			seen[svc.Name] = true
+			eligible[i] = true
 		}
-		if svc.Contributors > 1 {
-			p.warn([]string{fmt.Sprintf("service %q: on-demand workload policy needs one contributing container, found %d; policy not applied", svc.Name, svc.Contributors)})
-			continue
-		}
-		if multiService[svc.Container] {
-			p.warn([]string{fmt.Sprintf("service %q: container %q contributes more than one service and a stop acts on all of them; on-demand policy not applied", svc.Name, svc.Container)})
-			continue
-		}
-		seen[svc.Name] = true
-		eligible[i] = true
 	}
 	p.retireMissingLocked(seen)
-	quarantined := p.retiredMutationQuarantinesLocked(containers)
+	quarantined := p.retiredMutationQuarantineLocked()
 	for i := range services {
-		if !eligible[i] || quarantined[services[i].Name] {
+		if !eligible[i] || quarantined.matchesService(&services[i]) {
 			continue
 		}
 		svc := &services[i]
@@ -1147,28 +1152,65 @@ func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService
 	return quarantined
 }
 
+func (p *dockerProvider) workloadEligibleLocked(svc *docker.Service, multiService map[string]bool) bool {
+	if _, ok := p.cfg.Workloads[svc.Name]; !ok {
+		return false
+	}
+	if w := p.workloadEntries[svc.Name]; w != nil && w.ownsIssuedMutationForOtherContainer(svc) {
+		return false
+	}
+	if svc.Contributors > 1 {
+		p.warn([]string{fmt.Sprintf("service %q: on-demand workload policy needs one contributing container, found %d; policy not applied", svc.Name, svc.Contributors)})
+		return false
+	}
+	if multiService[svc.Container] {
+		p.warn([]string{fmt.Sprintf("service %q: container %q contributes more than one service and a stop acts on all of them; on-demand policy not applied", svc.Name, svc.Container)})
+		return false
+	}
+	return true
+}
+
 type workloadContainerRef struct {
 	name string
 	id   string
 }
 
+type retiredMutationQuarantine struct {
+	containers []workloadContainerRef
+	routes     []docker.RouteClaim
+}
+
+func (q retiredMutationQuarantine) matches(c docker.Container) bool {
+	return slices.ContainsFunc(q.containers, func(ref workloadContainerRef) bool { return ref.matches(c) })
+}
+
+func (q retiredMutationQuarantine) matchesService(svc *docker.Service) bool {
+	return slices.ContainsFunc(q.containers, func(ref workloadContainerRef) bool {
+		return ref.matchesIdentity(svc.Container, svc.ContainerID)
+	})
+}
+
 func (r workloadContainerRef) matches(c docker.Container) bool {
-	if r.id != "" && c.ID != "" {
-		return r.id == c.ID
+	return r.matchesIdentity(c.Name, c.ID)
+}
+
+func (r workloadContainerRef) matchesIdentity(name, id string) bool {
+	if r.id != "" && id != "" {
+		return r.id == id
 	}
-	return r.name != "" && r.name == c.Name
+	return r.name != "" && r.name == name
 }
 
 // retiredMutationQuarantinesLocked maps a retired stop's container-wide
 // authority onto every service the same immutable container currently
 // contributes. Grant retirement prevents new lifecycle calls; it does not
 // make an already-issued stop safe to route around. p.workloadMu must be held.
-func (p *dockerProvider) retiredMutationQuarantinesLocked(containers []docker.Container) map[string]bool {
+func (p *dockerProvider) retiredMutationQuarantineLocked() retiredMutationQuarantine {
 	refs := p.retiredMutationContainerRefsLocked()
 	if len(refs) == 0 {
-		return nil
+		return retiredMutationQuarantine{}
 	}
-	return p.quarantinedServices(containers, refs)
+	return retiredMutationQuarantine{containers: refs}
 }
 
 func (p *dockerProvider) retiredMutationContainerRefsLocked() []workloadContainerRef {
@@ -1182,20 +1224,6 @@ func (p *dockerProvider) retiredMutationContainerRefsLocked() []workloadContaine
 		w.mu.Unlock()
 	}
 	return refs
-}
-
-func (p *dockerProvider) quarantinedServices(containers []docker.Container, refs []workloadContainerRef) map[string]bool {
-	opts := p.extractOptions()
-	quarantined := map[string]bool{}
-	for _, c := range containers {
-		if !slices.ContainsFunc(refs, func(ref workloadContainerRef) bool { return ref.matches(c) }) {
-			continue
-		}
-		for _, service := range docker.CandidateServices(c, opts) {
-			quarantined[service] = true
-		}
-	}
-	return quarantined
 }
 
 // unretire restores the grant on a retained entry. A retained phase can be
@@ -1246,6 +1274,9 @@ func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
 func (p *dockerProvider) observeWorkload(w *workload, svc *docker.Service) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.ownsIssuedMutationForOtherContainerLocked(svc) {
+		return
+	}
 	if w.bindContainerLocked(svc) {
 		log.Printf("statute: docker: workload %q: container binding replaced", w.service)
 	}

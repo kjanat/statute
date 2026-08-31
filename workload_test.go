@@ -275,12 +275,12 @@ func waitError(t *testing.T, ch <-chan error, timeout time.Duration, message str
 	}
 }
 
-func assertStatusPending(t *testing.T, ch <-chan int, wait time.Duration) {
+func assertStatusPending(t *testing.T, ch <-chan int) {
 	t.Helper()
 	select {
 	case code := <-ch:
 		t.Fatalf("request completed with %d while Docker stop was in flight", code)
-	case <-time.After(wait):
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -474,7 +474,7 @@ func TestWorkloadFailedActivationOwnsCleanupStop(t *testing.T) {
 	go func() {
 		second <- runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)).Code
 	}()
-	assertStatusPending(t, second, 100*time.Millisecond)
+	assertStatusPending(t, second)
 	releaseStop()
 	if code := waitStatus(t, second, time.Second, "request did not leave settled cleanup"); code != http.StatusServiceUnavailable {
 		t.Fatalf("request after cleanup = %d, want 503", code)
@@ -608,7 +608,7 @@ func TestWorkloadRequestWaitsForIssuedStopAndReactivates(t *testing.T) {
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 		done <- rec.Code
 	}()
-	assertStatusPending(t, done, 100*time.Millisecond)
+	assertStatusPending(t, done)
 	releaseStop()
 	if code := waitStatus(t, done, 3*time.Second, "request did not reactivate after issued stop"); code != http.StatusOK {
 		t.Fatalf("request after issued stop = %d, want 200", code)
@@ -621,7 +621,7 @@ func TestWorkloadRequestWaitsForIssuedStopAndReactivates(t *testing.T) {
 	}
 }
 
-func TestWorkloadContainerReplacementSupersedesIssuedStop(t *testing.T) {
+func TestWorkloadContainerReplacementDoesNotInheritIssuedStop(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -658,6 +658,7 @@ func TestWorkloadContainerReplacementSupersedesIssuedStop(t *testing.T) {
 	}
 	waitSignal(t, stopStarted, "idle stop was not issued")
 	waitWorkloadPhase(t, p, workloadStopIssued)
+	w := p.workloadFor("wl")
 
 	done := make(chan int)
 	go func() {
@@ -665,28 +666,37 @@ func TestWorkloadContainerReplacementSupersedesIssuedStop(t *testing.T) {
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 		done <- rec.Code
 	}()
-	assertStatusPending(t, done, 100*time.Millisecond)
+	assertStatusPending(t, done)
 	daemon.swap([]fakeDaemonContainer{{
 		name: "wl-new", ip: host, port: port, health: "starting", labels: labels("true"),
 	}})
 	mustSync(t, p)
-	if code := waitStatus(t, done, time.Second, "superseded stop did not release its waiter"); code != http.StatusServiceUnavailable {
-		t.Fatalf("superseded stop response = %d, want 503", code)
+	assertStatusPending(t, done)
+	if got := p.workloadFor("wl"); got != nil {
+		t.Fatal("successor inherited lifecycle authority before the predecessor stop settled")
 	}
-	w := p.workloadFor("wl")
+	assertRouteResponse(t, p.srv.buildRouter(), "http://wl.example.com/", http.StatusOK, "ok")
+	p.generationMu.Lock()
+	republished := p.generationChanged
+	p.generationMu.Unlock()
+
+	daemon.mu.Lock()
+	daemon.find("wl-new").health = "healthy"
+	daemon.mu.Unlock()
+	releaseStop()
+	if code := waitStatus(t, done, time.Second, "settled predecessor stop did not release its waiter"); code != http.StatusServiceUnavailable {
+		t.Fatalf("predecessor stop response = %d, want 503", code)
+	}
+	waitSignal(t, republished, "settlement did not publish the successor grant")
+	waitWorkloadPhase(t, p, workloadReady)
 	w.mu.Lock()
 	ref := w.containerRefLocked()
 	act := w.activation
 	w.mu.Unlock()
-	if ref != "id-1" || act == nil || act.ref != "id-1" || !act.observe {
+	if ref != "id-1" || act != nil {
 		t.Fatalf("successor binding: ref=%q activation=%+v", ref, act)
 	}
 
-	releaseStop()
-	daemon.mu.Lock()
-	daemon.find("wl-new").health = "healthy"
-	daemon.mu.Unlock()
-	waitWorkloadPhase(t, p, workloadReady)
 	assertIssuedStopDidNotAffectSuccessor(t, daemon)
 	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
 		t.Fatalf("successor request = %d, want 200", rec.Code)
@@ -1407,6 +1417,21 @@ func assertWorkloadTopologyRoutes(t *testing.T, router http.Handler, status int,
 	}
 }
 
+func assertDynamicTableShape(t *testing.T, table *dynamicTable, routes, quarantines, tombstones, pools int) {
+	t.Helper()
+	if len(table.routes) != routes || len(table.quarantines) != quarantines || len(table.tombstones) != tombstones || len(table.pools) != pools {
+		t.Fatalf("dynamic table routes/quarantines/tombstones/pools = %d/%d/%d/%d, want %d/%d/%d/%d", len(table.routes), len(table.quarantines), len(table.tombstones), len(table.pools), routes, quarantines, tombstones, pools)
+	}
+}
+
+func assertRouteResponse(t *testing.T, router http.Handler, target string, status int, body string) {
+	t.Helper()
+	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != status || (body != "" && rec.Body.String() != body) {
+		t.Fatalf("route %s = %d %q, want %d %q", target, rec.Code, rec.Body.String(), status, body)
+	}
+}
+
 func waitRetiredWorkloadPhase(t *testing.T, w *workload, want workloadPhase) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -1596,8 +1621,8 @@ func TestWorkloadMutationQuarantineBypassesServingCompilation(t *testing.T) {
 	mustSync(t, p)
 
 	tab := srv.dynamic.Load()
-	if len(tab.routes) != 3 || len(tab.pools) != 0 || len(tab.tombstones) != 0 {
-		t.Fatalf("quarantine table routes/pools/tombstones = %d/%d/%d, want 3/0/0", len(tab.routes), len(tab.pools), len(tab.tombstones))
+	if len(tab.routes) != 0 || len(tab.quarantines) != 3 || len(tab.pools) != 0 || len(tab.tombstones) != 0 {
+		t.Fatalf("quarantine table routes/quarantines/pools/tombstones = %d/%d/%d/%d, want 0/3/0/0", len(tab.routes), len(tab.quarantines), len(tab.pools), len(tab.tombstones))
 	}
 	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusServiceUnavailable, "")
 	if got := len(backendHits); got != 0 {
@@ -1616,6 +1641,266 @@ func TestWorkloadMutationQuarantineBypassesServingCompilation(t *testing.T) {
 	}
 	if got := len(backendHits); got != 0 {
 		t.Fatalf("invalid serving configuration reached backend %d times", got)
+	}
+}
+
+func TestWorkloadMutationQuarantineSurvivesExtractionRefusal(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Middleware: map[string][]resolved.Middleware{
+			"policy@file": {mustResolveMW(t, SetResponseHeader("X-Policy", "applied"))},
+		},
+		Workloads: map[string]resolved.Workload{"a@traefik": testWorkloadPolicy()},
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, false),
+	}})
+	fallbackCalls := fallbackServer(t, srv, nil)
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	w := p.workloadFor("a@traefik")
+	waitSignal(t, stopStarted, "idle stop was not issued")
+
+	daemon.swap([]fakeDaemonContainer{{
+		name: "combo-1", ip: host, port: port,
+		labels: map[string]string{
+			"traefik.enable":                                   "true",
+			"traefik.http.routers.ra.rule":                     "HostRegexp(`{subdomain:[a-z]+}.example.com`)",
+			"traefik.http.routers.ra.service":                  "a",
+			"traefik.http.services.a.loadbalancer.server.port": portStr,
+		},
+	}})
+	mustSync(t, p)
+	tab := srv.dynamic.Load()
+	assertDynamicTableShape(t, tab, 0, 1, 0, 0)
+	if dockerWarningContains(p, `router "ra"`, "dropping its routes") {
+		t.Fatal("quarantined extraction announced an ordinary route refusal")
+	}
+	assertRouteResponse(t, srv.buildRouter(), "http://invalid.example.com/", http.StatusServiceUnavailable, "")
+	p.generationMu.Lock()
+	republished := p.generationChanged
+	p.generationMu.Unlock()
+
+	releaseStop()
+	waitRetiredWorkloadPhase(t, w, workloadReady)
+	waitSignal(t, republished, "settlement did not republish extraction refusal")
+	assertRouteResponse(t, srv.buildRouter(), "http://invalid.example.com/", http.StatusNotFound, "404 page not found\n")
+	if !dockerWarningContains(p, `router "ra"`, "dropping its routes") {
+		t.Fatal("settled extraction refusal was not announced")
+	}
+	if got := fallbackCalls.Load(); got != 0 {
+		t.Fatalf("extraction refusal reached fallback %d times", got)
+	}
+}
+
+func TestWorkloadMutationQuarantineSurvivesServiceKeyReplacement(t *testing.T) {
+	backendC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("container-c"))
+	}))
+	t.Cleanup(backendC.Close)
+	backendD := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("container-d"))
+	}))
+	t.Cleanup(backendD.Close)
+	hostC, portCStr, _ := net.SplitHostPort(strings.TrimPrefix(backendC.URL, "http://"))
+	portC, _ := strconv.Atoi(portCStr)
+	hostD, portDStr, _ := net.SplitHostPort(strings.TrimPrefix(backendD.URL, "http://"))
+	portD, _ := strconv.Atoi(portDStr)
+	cfg := &resolved.Docker{
+		TraefikLabels: true,
+		Middleware: map[string][]resolved.Middleware{
+			"policy@file": {mustResolveMW(t, SetResponseHeader("X-Policy", "applied"))},
+		},
+		Workloads: map[string]resolved.Workload{"a@traefik": testWorkloadPolicy()},
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "container-c", ip: hostC, port: portC, labels: workloadTopologyLabels(portCStr, false),
+	}})
+	fallbackCalls := fallbackServer(t, srv, nil)
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	w := p.workloadFor("a@traefik")
+	waitSignal(t, stopStarted, "idle stop was not issued")
+
+	invalidC := map[string]string{
+		"traefik.enable":                                   "true",
+		"traefik.http.routers.ra.rule":                     "HostRegexp(`{subdomain:[a-z]+}.example.com`)",
+		"traefik.http.routers.ra.service":                  "a",
+		"traefik.http.services.a.loadbalancer.server.port": portCStr,
+	}
+	validD := map[string]string{
+		"traefik.enable":                                   "true",
+		"traefik.http.routers.rd.rule":                     "Host(`d.example.com`)",
+		"traefik.http.routers.rd.service":                  "a",
+		"traefik.http.services.a.loadbalancer.server.port": portDStr,
+	}
+	daemon.swap([]fakeDaemonContainer{
+		{name: "container-c", ip: hostC, port: portC, labels: invalidC},
+		{name: "container-d", ip: hostD, port: portD, labels: validD},
+	})
+	mustSync(t, p)
+	if got := p.workloadFor("a@traefik"); got != nil {
+		t.Fatal("service-key successor inherited lifecycle authority during the predecessor stop")
+	}
+	assertDynamicTableShape(t, srv.dynamic.Load(), 1, 1, 0, 1)
+	assertRouteResponse(t, srv.buildRouter(), "http://d.example.com/", http.StatusOK, "container-d")
+	assertRouteResponse(t, srv.buildRouter(), "http://quarantined.example.com/", http.StatusServiceUnavailable, "")
+	p.generationMu.Lock()
+	republished := p.generationChanged
+	p.generationMu.Unlock()
+
+	releaseStop()
+	waitRetiredWorkloadPhase(t, w, workloadReady)
+	waitSignal(t, republished, "settlement did not transfer the service grant")
+	assertRouteResponse(t, srv.buildRouter(), "http://d.example.com/", http.StatusOK, "container-d")
+	assertRouteResponse(t, srv.buildRouter(), "http://quarantined.example.com/", http.StatusNotFound, "404 page not found\n")
+	if got := fallbackCalls.Load(); got != 0 {
+		t.Fatalf("replacement refusal reached fallback %d times", got)
+	}
+}
+
+func TestWorkloadMutationQuarantineDoesNotCrossContributors(t *testing.T) {
+	backendC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("container-c"))
+	}))
+	t.Cleanup(backendC.Close)
+	backendD := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("container-d"))
+	}))
+	t.Cleanup(backendD.Close)
+	hostC, portCStr, _ := net.SplitHostPort(strings.TrimPrefix(backendC.URL, "http://"))
+	portC, _ := strconv.Atoi(portCStr)
+	hostD, portDStr, _ := net.SplitHostPort(strings.TrimPrefix(backendD.URL, "http://"))
+	portD, _ := strconv.Atoi(portDStr)
+	labels := func(port string) map[string]string {
+		return map[string]string{
+			"traefik.enable":                                        "true",
+			"traefik.http.routers.shared.rule":                      "Host(`shared.example.com`)",
+			"traefik.http.routers.shared.service":                   "shared",
+			"traefik.http.services.shared.loadbalancer.server.port": port,
+		}
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		TraefikLabels: true,
+		Workloads:     map[string]resolved.Workload{"shared@traefik": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{name: "container-c", ip: hostC, port: portC, labels: labels(portCStr)}})
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	waitSignal(t, stopStarted, "idle stop was not issued")
+
+	daemon.swap([]fakeDaemonContainer{
+		{name: "container-c", ip: hostC, port: portC, labels: labels(portCStr)},
+		{name: "container-d", ip: hostD, port: portD, labels: labels(portDStr)},
+	})
+	mustSync(t, p)
+	if got := p.workloadFor("shared@traefik"); got != nil {
+		t.Fatal("multi-contributor service retained lifecycle authority")
+	}
+	tab := srv.dynamic.Load()
+	if len(tab.routes) != 1 || len(tab.quarantines) != 1 || len(tab.pools) != 1 {
+		t.Fatalf("contributor table routes/quarantines/pools = %d/%d/%d, want 1/1/1", len(tab.routes), len(tab.quarantines), len(tab.pools))
+	}
+	rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://shared.example.com/", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "container-d" {
+		t.Fatalf("independent contributor response = %d %q, want 200 container-d", rec.Code, rec.Body.String())
+	}
+
+	releaseStop()
+}
+
+func TestWorkloadMutationQuarantineRetainsStoppedRenamedContribution(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"a": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{
+		name: "container-c", ip: host, port: port,
+		labels: map[string]string{"statute.enable": "true", "statute.service": "a", "statute.host": "a.example.com"},
+	}})
+	fallbackCalls := fallbackServer(t, srv, nil)
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	w := p.workloadFor("a")
+	waitSignal(t, stopStarted, "idle stop was not issued")
+
+	daemon.swap([]fakeDaemonContainer{{
+		name: "container-c", stopped: true,
+		labels: map[string]string{"statute.enable": "true", "statute.service": "b", "statute.host": "b.example.com"},
+	}})
+	mustSync(t, p)
+	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://b.example.com/", nil)); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("stopped renamed contribution during quarantine = %d, want 503", rec.Code)
+	}
+	p.generationMu.Lock()
+	republished := p.generationChanged
+	p.generationMu.Unlock()
+
+	releaseStop()
+	waitRetiredWorkloadPhase(t, w, workloadDormant)
+	waitSignal(t, republished, "settlement did not remove renamed quarantine")
+	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://b.example.com/", nil)); rec.Code != http.StatusTeapot {
+		t.Fatalf("stopped renamed contribution after settlement = %d, want fallback 418", rec.Code)
+	}
+	if got := fallbackCalls.Load(); got != 1 {
+		t.Fatalf("fallback calls = %d, want 1", got)
 	}
 }
 

@@ -744,6 +744,36 @@ func TestDockerReconcileReusesUnchangedPools(t *testing.T) {
 	}
 }
 
+func TestDockerPoolReuseDoesNotCrossWorkloadBoundary(t *testing.T) {
+	rp, err := resolvePool("shared", Pool{Backends: []Backend{{Address: "127.0.0.1:8080"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph, err := newPoolHandler(rp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousPool := ph.start()
+	t.Cleanup(previousPool.shutdown)
+	fingerprint := poolFingerprint(rp)
+	prev := &dynamicTable{
+		pools:            map[string]*runningPool{"shared": previousPool},
+		fingerprints:     map[string]string{"shared": fingerprint},
+		workloadBindings: map[string]workloadBindingKey{"shared": 1},
+	}
+	next := &dynamicTable{
+		pools:            map[string]*runningPool{},
+		fingerprints:     map[string]string{},
+		workloadBindings: map[string]workloadBindingKey{},
+	}
+	p := &dockerProvider{warned: map[string]bool{}}
+	currentPool := p.servicePoolHandler("shared", rp, 0, prev, next)
+	if currentPool == previousPool {
+		t.Fatal("ungated successor reused the gated predecessor pool")
+	}
+	t.Cleanup(currentPool.shutdown)
+}
+
 // TestPoolFingerprintChangesWithPoolPolicy verifies that generation reuse
 // covers every code-owned policy field. A changed effective policy cannot adopt
 // the previous handler, connection pool, or health state.
