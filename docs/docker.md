@@ -151,6 +151,8 @@ How it behaves:
   If a stop response is lost or Docker returns a server error, an immediate running
   inspect does not reopen traffic: Docker may still finish the stop. That uncertainty
   remains attached to the mutation and cannot be erased by a later rejected retry.
+  A definitive rejection with no earlier ambiguity instead proves the stop was not
+  applied, clears the prepared record, and restores the pre-stop lifecycle state.
   Statute coalesces discovery and retries the bounded call until positive stopped or
   missing-container evidence resolves the operation, including when periodic refresh
   is disabled. If the service-to-container topology stops being one-to-one during an

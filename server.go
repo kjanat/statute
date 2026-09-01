@@ -871,15 +871,29 @@ func findDynamicHandler(table *dynamicTable, host string, req *http.Request) htt
 		return quarantine.handler
 	case quarantine == nil:
 		return route.handler
-	case route.service == quarantine.service && sameDynamicTraffic(route.matcher, quarantine.matcher):
-		return route.handler
 	case sameDynamicTraffic(route.matcher, quarantine.matcher):
+		if sameService := findSameServiceDynamicRoute(table.routes, host, req, quarantine); sameService != nil {
+			return sameService.handler
+		}
 		return quarantine.handler
 	case dynamicRoutePrecedes(*quarantine, *route):
 		return quarantine.handler
 	default:
 		return route.handler
 	}
+}
+
+func findSameServiceDynamicRoute(routes []compiledRoute, host string, req *http.Request, quarantine *compiledRoute) *compiledRoute {
+	for i := range routes {
+		route := &routes[i]
+		if route.service != quarantine.service || !sameDynamicTraffic(route.matcher, quarantine.matcher) {
+			continue
+		}
+		if findCompiledRoute(routes[i:i+1], host, req) != nil {
+			return route
+		}
+	}
+	return nil
 }
 
 // tombstoneHandler is the one fixed refusal every tombstone serves: the

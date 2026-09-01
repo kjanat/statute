@@ -147,6 +147,34 @@ func TestDynamicDispatchOrdersRoutesAndQuarantinesTogether(t *testing.T) {
 	}
 }
 
+func TestDynamicDispatchFindsSameServiceHealthyTieBehindThirdRoute(t *testing.T) {
+	t.Parallel()
+	matcher := docker.CompileNative("app.example.com", "/foo")
+	healthyA := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	healthyZ := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	table := &dynamicTable{
+		routes: []compiledRoute{
+			{handler: healthyA, service: "a", matcher: matcher},
+			{handler: healthyZ, service: "z", matcher: matcher},
+		},
+		quarantines: []compiledRoute{{handler: workloadMutationQuarantine{}, service: "z", matcher: matcher}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/foo", nil)
+	handler := findDynamicHandler(table, "app.example.com", req)
+	if handler == nil {
+		t.Fatal("dynamic dispatch returned no handler")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want same-service healthy status %d", rec.Code, http.StatusAccepted)
+	}
+}
+
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
 // matches in declaration order; the first hit wins.
 func TestRouterHostAndPath(t *testing.T) {

@@ -233,9 +233,10 @@ Every issued stop has durable mutation ownership. `Docker().Storage(path)` is
 required with `Workload`; this existing persistent directory holds a write-ahead
 registry bound to the Docker endpoint. Before calling Docker, Statute persists the immutable container ID,
 mutation kind, and prepared state with atomic replacement and file and directory
-sync. Ambiguous outcomes remain recorded. Positive stopped or missing-ID evidence
-is the only terminal condition, and the record is durably removed before ordinary
-traffic can resume.
+sync. A definitive rejection before any ambiguity proves non-application and
+settles the mutation. Ambiguous outcomes remain recorded, and a later rejection
+does not erase them; only positive stopped or missing-ID evidence then settles the
+mutation. The record is durably removed before ordinary traffic can resume.
 
 A fresh process loads this registry before its first Docker route publication.
 Each record restores one retired mutation owner and quarantines only the recorded

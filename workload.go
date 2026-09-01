@@ -1067,7 +1067,7 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 		stop.uncertain = true
 		return w.unsettleStopLocked()
 	}
-	if attempt.result == workloadStopRejected {
+	if attempt.result == workloadStopRejected && stop.uncertain {
 		return w.unsettleStopLocked()
 	}
 	stop.terminal = true

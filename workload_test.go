@@ -1170,32 +1170,6 @@ func TestWorkloadIssuedStopOwnsSettlementObservation(t *testing.T) {
 	waitWorkloadPhase(t, p, workloadDormant)
 }
 
-func TestWorkloadRejectedStopRetainsDurableOwnership(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	}))
-	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
-	daemon.mu.Lock()
-	daemon.rejectStop = true
-	daemon.mu.Unlock()
-
-	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
-		t.Fatalf("activation = %d, want 200", rec.Code)
-	}
-	waitWorkloadPhase(t, p, workloadStopUnknown)
-	if !p.currentMutationRegistry().contains("id-0") {
-		t.Fatal("Docker rejection cleared mutation without stopped evidence")
-	}
-	daemon.mu.Lock()
-	daemon.rejectStop = false
-	daemon.mu.Unlock()
-	waitWorkloadPhase(t, p, workloadDormant)
-	if p.currentMutationRegistry().contains("id-0") {
-		t.Fatal("successful retry left durable mutation ownership")
-	}
-}
-
 func TestWorkloadRegistryDeleteFailureRemainsQuarantined(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -1752,6 +1726,47 @@ func TestWorkloadStopSettlementVersionsBeforeStateChange(t *testing.T) {
 	}
 	if p.currentMutationVersion("wl") != 1 || w.phaseNow() != workloadDormant {
 		t.Fatalf("settled state: version=%d phase=%v", p.currentMutationVersion("wl"), w.phaseNow())
+	}
+}
+
+func TestWorkloadFreshRejectedStopSettlesPreparedMutation(t *testing.T) {
+	registry, err := openMutationRegistry(t.TempDir(), "test-endpoint")
+	if err != nil {
+		t.Fatalf("open mutation registry: %v", err)
+	}
+	record := mutationRecord{ContainerID: "immutable-id", ContainerName: "wl-1", Service: "wl", Kind: mutationRecordIdleStop, State: mutationRecordPrepared}
+	if err := registry.put(record); err != nil {
+		t.Fatalf("persist prepared mutation: %v", err)
+	}
+	p := &dockerProvider{
+		current:          &dockerRun{registry: registry, kick: make(chan struct{}, 1)},
+		mutationVersions: map[string]uint64{},
+	}
+	binding := &workloadBinding{key: 1, container: "wl-1", containerID: "immutable-id"}
+	stop := &workloadStop{kind: workloadIdleStop, binding: binding.key, issued: true, persisted: true}
+	stop.done = make(chan struct{})
+	w := &workload{
+		service: "wl",
+		policy:  resolved.Workload{IdleAfter: time.Hour},
+		phase:   workloadStopIssued,
+		binding: binding,
+		stop:    stop,
+	}
+	t.Cleanup(func() {
+		w.mu.Lock()
+		w.stopIdleLocked()
+		w.mu.Unlock()
+	})
+
+	got := w.applyStopAttempt(p, stop, workloadStopAttempt{result: workloadStopRejected, stopErr: fmt.Errorf("definitive rejection")})
+	if got != workloadStopSettled {
+		t.Fatalf("fresh rejected stop = %v, want settled", got)
+	}
+	if registry.contains("immutable-id") {
+		t.Fatal("fresh definitive rejection retained prepared mutation")
+	}
+	if phase := w.phaseNow(); phase != workloadReady {
+		t.Fatalf("workload phase = %v, want ready", phase)
 	}
 }
 
