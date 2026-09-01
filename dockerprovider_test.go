@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -392,7 +393,7 @@ func TestDockerActivationReconcilesAreCoalesced(t *testing.T) {
 	}
 }
 
-func TestDockerActivationDemandRetriesFailedReconcile(t *testing.T) {
+func TestDockerReconcileRetriesUntilPublication(t *testing.T) {
 	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, nil)
 	run, err := p.start()
 	if err != nil {
@@ -416,9 +417,6 @@ func TestDockerActivationDemandRetriesFailedReconcile(t *testing.T) {
 		t.Fatal("running provider rejected a reconcile request")
 	}
 	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
-	if got := p.requestReconcile(); got != changed {
-		t.Fatal("demand during a failed reconcile returned another publication edge")
-	}
 	daemon.mu.Lock()
 	daemon.failList = false
 	daemon.listRelease = nil
@@ -432,6 +430,81 @@ func TestDockerActivationDemandRetriesFailedReconcile(t *testing.T) {
 	if got := daemon.listCount() - before; got != 2 {
 		t.Fatalf("failed reconcile performed %d Docker listings, want failure plus retry", got)
 	}
+}
+
+func TestDockerMutationSettlementRejectsStaleSnapshot(t *testing.T) {
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, nil)
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	before := daemon.listCount()
+	daemon.mu.Lock()
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+
+	changed := p.requestReconcile()
+	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
+	p.markMutationSettled()
+	close(listRelease)
+	waitSignal(t, changed, "stale Docker snapshot was not replaced")
+	if got := daemon.listCount() - before; got != 2 {
+		t.Fatalf("mutation settlement performed %d listings, want stale snapshot plus retry", got)
+	}
+}
+
+func TestDockerFailedInitialSyncStopsTrackedWork(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{
+		name: "wl-1", ip: host, port: port, health: "starting",
+		labels: map[string]string{"statute.enable": "true", "statute.service": "wl"},
+	}})
+	daemon.mu.Lock()
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+
+	startResult := make(chan error, 1)
+	go func() {
+		_, err := p.start()
+		startResult <- err
+	}()
+	waitSignal(t, listStarted, "initial sync did not start Docker listing")
+	p.markMutationSettled()
+	daemon.mu.Lock()
+	daemon.failList = true
+	daemon.listRelease = nil
+	daemon.mu.Unlock()
+	close(listRelease)
+	if err := <-startResult; err == nil {
+		t.Fatal("failed retrying initial sync returned nil")
+	}
+	if got := p.workloadFor("wl"); got == nil || got.phaseNow() != workloadDormant {
+		t.Fatalf("failed initial sync workload = %+v, want dormant retained entry", got)
+	}
+
+	daemon.mu.Lock()
+	daemon.failList = false
+	daemon.find("wl-1").health = "healthy"
+	daemon.mu.Unlock()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider retry: %v", err)
+	}
+	t.Cleanup(run.stop)
 }
 
 // newFakeProvider builds a dockerProvider wired to a fake daemon serving

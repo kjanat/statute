@@ -62,11 +62,15 @@ type dockerProvider struct {
 	generationChanged chan struct{}
 	reconciling       bool
 	reconcileDemanded bool
+	mutationVersion   uint64
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
 	workloadMu      sync.Mutex
 	workloadEntries map[string]*workload
+	// retiredMutations keep predecessor workloads alive while their issued
+	// stops settle independently from a successor using the same service key.
+	retiredMutations []*workload
 }
 
 // dockerRun owns one provider generation's watcher, reconcile loop, and
@@ -119,9 +123,15 @@ func (r *dockerRun) trackCancelable(f func(context.Context)) (context.CancelFunc
 	return cancel, true
 }
 
-// dockerDebounce coalesces bursts of container events (compose up starts
-// many containers at once) into a single reconcile.
-const dockerDebounce = 300 * time.Millisecond
+const (
+	// dockerDebounce coalesces bursts of container events (compose up starts
+	// many containers at once) into a single reconcile.
+	dockerDebounce = 300 * time.Millisecond
+	// A triggered reconcile owns publication until success. This prevents one
+	// transient Docker error from stranding lifecycle quarantine indefinitely.
+	dockerReconcileRetryBase = 250 * time.Millisecond
+	dockerReconcileRetryCap  = 5 * time.Second
+)
 
 func newDockerProvider(cfg *resolved.Docker, srv *server) (*dockerProvider, error) {
 	client, err := docker.NewClient(cfg.Endpoint)
@@ -153,12 +163,7 @@ func (p *dockerProvider) start() (*dockerRun, error) {
 	p.current = r
 	p.lifecycleMu.Unlock()
 	fail := func(err error) (*dockerRun, error) {
-		cancel()
-		p.lifecycleMu.Lock()
-		if p.current == r {
-			p.current = nil
-		}
-		p.lifecycleMu.Unlock()
+		r.stop()
 		return nil, err
 	}
 
@@ -168,6 +173,7 @@ func (p *dockerProvider) start() (*dockerRun, error) {
 	if err := p.sync(ctx); err != nil {
 		return fail(err)
 	}
+	p.resumeWorkloadLifecycles()
 
 	r.wg.Go(r.watchEvents)
 	r.wg.Go(r.reconcileLoop)
@@ -185,6 +191,7 @@ func (r *dockerRun) stop() {
 		r.provider.stopWorkloadTimers()
 		r.cancel()
 		r.wg.Wait()
+		r.provider.stopWorkloadTimers()
 		p := r.provider
 		p.lifecycleMu.Lock()
 		if p.current != r {
@@ -255,17 +262,30 @@ func (r *dockerRun) reconcileLoop() {
 			return
 		case <-r.kick:
 			r.debounce()
-			p.beginReconcile()
-			p.syncLogged(ctx)
-			if p.finishReconcile() {
-				r.trigger()
-			}
+			r.reconcileUntilPublished()
 		case <-tick:
-			p.beginReconcile()
-			p.syncLogged(ctx)
-			if p.finishReconcile() {
-				r.trigger()
-			}
+			r.reconcileUntilPublished()
+		}
+	}
+}
+
+func (r *dockerRun) reconcileUntilPublished() {
+	p := r.provider
+	p.beginReconcile()
+	defer func() {
+		if p.finishReconcile() && r.ctx.Err() == nil {
+			r.trigger()
+		}
+	}()
+
+	for delay := dockerReconcileRetryBase; r.ctx.Err() == nil; delay = min(delay*2, dockerReconcileRetryCap) {
+		if p.syncLogged(r.ctx) {
+			return
+		}
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-time.After(delay):
 		}
 	}
 }
@@ -305,12 +325,14 @@ func (r *dockerRun) debounce() {
 	}
 }
 
-// syncLogged runs a reconcile, logging instead of propagating errors: a
-// failed reconcile keeps the previous generation serving.
-func (p *dockerProvider) syncLogged(ctx context.Context) {
+// syncLogged runs a reconcile, logging instead of propagating errors. It
+// reports whether a new generation was published.
+func (p *dockerProvider) syncLogged(ctx context.Context) bool {
 	if err := p.sync(ctx); err != nil {
 		log.Printf("statute: docker: sync failed, keeping previous routes: %v", err)
+		return false
 	}
+	return true
 }
 
 // sync lists containers, derives services from labels, builds the next
@@ -320,31 +342,47 @@ func (p *dockerProvider) syncLogged(ctx context.Context) {
 func (p *dockerProvider) sync(ctx context.Context) error {
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
-	containers, err := p.client.ListContainers(ctx)
-	if err != nil {
-		return err
-	}
-	contributions := p.deriveContributions(containers)
-	observed, _ := mergeContributions(contributions, nil)
-	quarantine := p.updateWorkloads(observed, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
-	p.publishContributionWarnings(contributions, quarantine)
-	services, tombstones := mergeContributions(contributions, quarantine.matches)
-	quarantine.routes = p.quarantineRouteClaims(containers, quarantine)
+	for {
+		version := p.currentMutationVersion()
+		containers, err := p.client.ListContainers(ctx)
+		if err != nil {
+			return err
+		}
+		contributions := p.deriveContributions(containers)
+		observed, _ := mergeContributions(contributions, nil)
+		quarantine := p.updateWorkloads(observed, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
+		p.publishContributionWarnings(contributions, quarantine)
+		services, tombstones := mergeContributions(contributions, quarantine.matches)
+		quarantine.routes = p.quarantineRouteClaims(containers, quarantine)
 
-	prev := p.srv.dynamic.Load()
-	// Pool health checkers deliberately outlive this sync call; they derive
-	// their own lifetime and stop on generation retirement or shutdown.
-	next, retired := p.buildTable(services, tombstones, quarantine.routes, prev) //nolint:contextcheck
-	p.publishGeneration(next)
-	for _, pool := range retired {
-		pool.shutdown()
+		prev := p.srv.dynamic.Load()
+		// Pool health checkers deliberately outlive this sync call; they derive
+		// their own lifetime and stop on generation retirement or shutdown.
+		next, retired := p.buildTable(services, tombstones, quarantine.routes, prev) //nolint:contextcheck
+		if !p.publishGeneration(next, version) {
+			shutdownUnpublishedPools(next, prev)
+			continue
+		}
+		for _, pool := range retired {
+			pool.shutdown()
+		}
+		return nil
 	}
-	return nil
 }
 
-func (p *dockerProvider) publishGeneration(next *dynamicTable) {
-	p.srv.dynamic.Store(next)
+func (p *dockerProvider) currentMutationVersion() uint64 {
 	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
+	return p.mutationVersion
+}
+
+func (p *dockerProvider) publishGeneration(next *dynamicTable, mutationVersion uint64) bool {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
+	if p.mutationVersion != mutationVersion {
+		return false
+	}
+	p.srv.dynamic.Store(next)
 	// Demand recorded before this point waits on the edge closed below and is
 	// satisfied by this publication. Later demand schedules another reconcile.
 	p.reconcileDemanded = false
@@ -352,7 +390,15 @@ func (p *dockerProvider) publishGeneration(next *dynamicTable) {
 		close(p.generationChanged)
 	}
 	p.generationChanged = make(chan struct{})
-	p.generationMu.Unlock()
+	return true
+}
+
+func shutdownUnpublishedPools(next, prev *dynamicTable) {
+	for name, pool := range next.pools {
+		if prev == nil || prev.pools[name] != pool {
+			pool.shutdown()
+		}
+	}
 }
 
 // requestReconcile coalesces activation demand onto the provider run's event
@@ -386,6 +432,12 @@ func (p *dockerProvider) scheduleReconcile() {
 	if r != nil {
 		r.trigger()
 	}
+}
+
+func (p *dockerProvider) currentRun() *dockerRun {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	return p.current
 }
 
 type dockerContribution struct {

@@ -586,6 +586,8 @@ func TestWorkloadRevokedStopServesWithoutColdStart(t *testing.T) {
 	w.mu.Lock()
 	w.stopIdleLocked()
 	w.toLocked(workloadStopPending)
+	binding := w.binding.key
+	epoch := w.idleEpoch
 	w.mu.Unlock()
 
 	rec = runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
@@ -595,7 +597,7 @@ func TestWorkloadRevokedStopServesWithoutColdStart(t *testing.T) {
 	if got := w.phaseNow(); got != workloadReady {
 		t.Fatalf("phase after revoke = %v, want ready", got)
 	}
-	p.performStop(context.Background(), w)
+	p.performStop(context.Background(), w, binding, epoch)
 	if got := daemon.stopCount("wl-1"); got != 0 {
 		t.Fatalf("revoked stop still issued %d stop calls", got)
 	}
@@ -697,35 +699,59 @@ func TestWorkloadContainerReplacementDoesNotInheritIssuedStop(t *testing.T) {
 	}})
 	mustSync(t, p)
 	assertStatusPending(t, done)
-	if got := p.workloadFor("wl"); got != nil {
-		t.Fatal("successor inherited lifecycle authority before the predecessor stop settled")
-	}
-	assertRouteResponse(t, p.srv.buildRouter(), "http://wl.example.com/", http.StatusOK, "ok")
-	p.generationMu.Lock()
-	republished := p.generationChanged
-	p.generationMu.Unlock()
+	successor := requireFreshStartingSuccessor(t, p, w)
+	successorDone := make(chan int)
+	go func() {
+		successorDone <- runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)).Code
+	}()
+	assertStatusPending(t, successorDone)
 
 	daemon.mu.Lock()
 	wantRef := daemon.find("wl-new").id
 	daemon.find("wl-new").health = "healthy"
 	daemon.mu.Unlock()
+	if code := waitStatus(t, successorDone, 2*time.Second, "successor readiness did not release its waiter"); code != http.StatusOK {
+		t.Fatalf("successor readiness response = %d, want 200", code)
+	}
+	waitWorkloadPhase(t, p, workloadReady)
+	requireReadySuccessor(t, successor, wantRef)
+	assertStatusPending(t, done)
+
 	releaseStop()
 	if code := waitStatus(t, done, time.Second, "settled predecessor stop did not release its waiter"); code != http.StatusServiceUnavailable {
 		t.Fatalf("predecessor stop response = %d, want 503", code)
-	}
-	waitSignal(t, republished, "settlement did not publish the successor grant")
-	waitWorkloadPhase(t, p, workloadReady)
-	w.mu.Lock()
-	ref := w.containerRefLocked()
-	act := w.activation
-	w.mu.Unlock()
-	if ref != wantRef || act != nil {
-		t.Fatalf("successor binding: ref=%q activation=%+v", ref, act)
 	}
 
 	assertIssuedStopDidNotAffectSuccessor(t, daemon)
 	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
 		t.Fatalf("successor request = %d, want 200", rec.Code)
+	}
+}
+
+func requireFreshStartingSuccessor(t *testing.T, p *dockerProvider, predecessor *workload) *workload {
+	t.Helper()
+	successor := p.workloadFor("wl")
+	if successor == nil || successor == predecessor {
+		t.Fatal("successor did not receive a fresh lifecycle grant")
+	}
+	successor.mu.Lock()
+	ref := successor.containerRefLocked()
+	act := successor.activation
+	successor.mu.Unlock()
+	if ref == "" || act == nil || !act.observe {
+		t.Fatalf("successor readiness state: ref=%q activation=%+v", ref, act)
+	}
+	return successor
+}
+
+func requireReadySuccessor(t *testing.T, successor *workload, wantRef string) {
+	t.Helper()
+	successor.mu.Lock()
+	ref := successor.containerRefLocked()
+	act := successor.activation
+	successor.mu.Unlock()
+	if ref != wantRef || act != nil {
+		t.Fatalf("successor binding: ref=%q activation=%+v", ref, act)
 	}
 }
 
@@ -806,6 +832,33 @@ func TestWorkloadStopConvergenceRestartsWithProviderRun(t *testing.T) {
 	}
 	t.Cleanup(secondRun.stop)
 	waitWorkloadPhase(t, p, workloadDormant)
+}
+
+func TestWorkloadIdleTimerRestartsWithProviderRun(t *testing.T) {
+	policy := testWorkloadPolicy()
+	policy.IdleAfter = 500 * time.Millisecond
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, _ := workloadFixture(t, policy, backend.URL, false)
+	waitWorkloadPhase(t, p, workloadReady)
+
+	p.lifecycleMu.Lock()
+	firstRun := p.current
+	p.lifecycleMu.Unlock()
+	firstRun.stop()
+	daemon.mu.Lock()
+	daemon.stopStarted = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	daemon.mu.Unlock()
+
+	secondRun, err := p.start()
+	if err != nil {
+		t.Fatalf("provider restart: %v", err)
+	}
+	t.Cleanup(secondRun.stop)
+	waitSignal(t, stopStarted, "provider restart did not restore the idle timer")
 }
 
 func TestWorkloadLostStopResponseNeverReopensServing(t *testing.T) {
@@ -1038,6 +1091,7 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 	// critical section; an idle expiry in between must find the count.
 	w.mu.Lock()
 	binding := w.binding.key
+	epoch := w.idleEpoch
 	w.mu.Unlock()
 	lease, err := w.ensureReady(context.Background(), p, binding)
 	if err != nil {
@@ -1050,7 +1104,7 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 		t.Fatalf("active after ensureReady = %d, want 1", active)
 	}
 	stopsBefore := daemon.stopCount("wl-1")
-	p.idleExpire(w)
+	p.idleExpire(w, binding, epoch, p.currentRun())
 	if got := w.phaseNow(); got != workloadReady {
 		t.Fatalf("idle expiry with a counted request moved phase to %v", got)
 	}
@@ -1058,6 +1112,54 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 		t.Fatalf("idle expiry with a counted request issued a stop")
 	}
 	w.end(p, lease)
+}
+
+func TestWorkloadStaleIdleCallbackCannotUseSuccessorRun(t *testing.T) {
+	p := &dockerProvider{}
+	oldRun := &dockerRun{provider: p, ctx: context.Background()}
+	newRun := &dockerRun{provider: p, ctx: context.Background()}
+	p.current = oldRun
+	w := &workload{
+		phase: workloadReady,
+		binding: &workloadBinding{
+			key:       1,
+			container: "old",
+		},
+		nextBinding: 1,
+		idleEpoch:   1,
+	}
+
+	oldRun.trackMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		p.idleExpire(w, 1, 1, oldRun)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for w.phaseNow() != workloadStopPending {
+		if time.Now().After(deadline) {
+			oldRun.trackMu.Unlock()
+			t.Fatal("idle callback did not reach stop-pending")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	w.mu.Lock()
+	w.stopIdleLocked()
+	w.bindContainerLocked(&docker.Service{Container: "new", ContainerID: "new-id"})
+	w.phase = workloadReady
+	w.mu.Unlock()
+	p.current = newRun
+	oldRun.stopping = true
+	oldRun.trackMu.Unlock()
+	waitSignal(t, done, "stale idle callback did not return")
+
+	w.mu.Lock()
+	phase, ref := w.phase, w.binding.ref()
+	w.mu.Unlock()
+	if phase != workloadReady || ref != "new-id" {
+		t.Fatalf("successor after stale idle callback: phase=%v ref=%q", phase, ref)
+	}
 }
 
 func TestWorkloadStaleCompletionDoesNotChangeCurrentActivity(t *testing.T) {
@@ -1109,6 +1211,55 @@ func TestWorkloadContainerIDRefinesExistingBinding(t *testing.T) {
 	w.mu.Unlock()
 	if active != 0 || idle == nil {
 		t.Fatalf("activity after refined completion: active=%d idle=%v", active, idle)
+	}
+}
+
+func TestWorkloadOperationRefRefinesToContainerID(t *testing.T) {
+	w := &workload{}
+	w.mu.Lock()
+	w.bindContainerLocked(&docker.Service{Container: "wl-1"})
+	binding := w.binding.key
+	stop := w.newStopLocked(workloadIdleStop, binding, "wl-1")
+	w.bindContainerLocked(&docker.Service{Container: "wl-1", ContainerID: "immutable-id"})
+	w.mu.Unlock()
+
+	if got := w.callRef(stop.binding, stop.ref); got != "immutable-id" {
+		t.Fatalf("refined operation ref = %q, want immutable ID", got)
+	}
+}
+
+func TestWorkloadStopSettlementVersionsBeforeStateChange(t *testing.T) {
+	p := &dockerProvider{}
+	binding := &workloadBinding{key: 1, container: "wl-1", containerID: "immutable-id"}
+	stop := &workloadStop{binding: binding.key, issued: true}
+	stop.done = make(chan struct{})
+	w := &workload{phase: workloadStopIssued, binding: binding, stop: stop}
+	p.generationMu.Lock()
+	settled := make(chan workloadStopApply, 1)
+	go func() {
+		settled <- w.applyStopAttempt(p, stop, workloadStopAttempt{result: workloadStopSucceeded})
+	}()
+	deadline := time.Now().Add(time.Second)
+	for w.mu.TryLock() {
+		w.mu.Unlock()
+		if time.Now().After(deadline) {
+			p.generationMu.Unlock()
+			t.Fatal("stop settlement did not acquire workload lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-settled:
+		p.generationMu.Unlock()
+		t.Fatal("stop state changed before mutation version could advance")
+	default:
+	}
+	p.generationMu.Unlock()
+	if got := <-settled; got != workloadStopSettled {
+		t.Fatalf("stop settlement = %v, want settled", got)
+	}
+	if p.currentMutationVersion() != 1 || w.phaseNow() != workloadDormant {
+		t.Fatalf("settled state: version=%d phase=%v", p.currentMutationVersion(), w.phaseNow())
 	}
 }
 
@@ -1256,14 +1407,22 @@ func TestWorkloadBackoffSurvivesRecreation(t *testing.T) {
 	p, daemon, router := workloadFixture(t, policy, backend.URL, true)
 	daemon.mu.Lock()
 	daemon.failStart = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
 	containers := daemon.containers
 	oldID := containers[0].id
 	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
 
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("failed activation: %d", rec.Code)
 	}
+	waitSignal(t, stopStarted, "failed activation did not issue cleanup stop")
 
 	// The container is recreated: it leaves one listing entirely and
 	// returns under the same name. The backoff window must survive.
@@ -1283,6 +1442,7 @@ func TestWorkloadBackoffSurvivesRecreation(t *testing.T) {
 	if got := daemon.startCount("wl-1"); got != 1 {
 		t.Fatalf("start calls = %d, want 1: recreation shed the backoff", got)
 	}
+	releaseStop()
 }
 
 func TestWorkloadStaleObserveLeavesNoBackoff(t *testing.T) {
@@ -1658,8 +1818,21 @@ func TestWorkloadMutationQuarantineBypassesServingCompilation(t *testing.T) {
 	republished := p.generationChanged
 	p.generationMu.Unlock()
 
+	daemon.mu.Lock()
+	daemon.failList = true
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
 	releaseStop()
 	waitRetiredWorkloadPhase(t, w, workloadReady)
+	waitSignal(t, listStarted, "settlement did not trigger quarantine publication")
+	daemon.mu.Lock()
+	daemon.failList = false
+	daemon.listRelease = nil
+	daemon.mu.Unlock()
+	close(listRelease)
 	waitSignal(t, republished, "settled quarantine did not publish normal refusal semantics")
 	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusNotFound, "")
 	if got := fallbackCalls.Load(); got != 0 {
@@ -1795,8 +1968,8 @@ func TestWorkloadMutationQuarantineSurvivesServiceKeyReplacement(t *testing.T) {
 		{name: "container-d", ip: hostD, port: portD, labels: validD},
 	})
 	mustSync(t, p)
-	if got := p.workloadFor("a@traefik"); got != nil {
-		t.Fatal("service-key successor inherited lifecycle authority during the predecessor stop")
+	if got := p.workloadFor("a@traefik"); got == nil || got == w {
+		t.Fatal("service-key successor did not receive independent lifecycle authority")
 	}
 	assertDynamicTableShape(t, srv.dynamic.Load(), 1, 1, 0, 1)
 	assertRouteResponse(t, srv.buildRouter(), "http://d.example.com/", http.StatusOK, "container-d")
