@@ -191,7 +191,7 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (InspectState,
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return InspectState{}, fmt.Errorf("docker: inspect container: unexpected status %s", resp.Status)
+		return InspectState{}, &inspectError{status: resp.StatusCode, text: resp.Status}
 	}
 	var raw struct {
 		State struct {
@@ -234,7 +234,20 @@ func LifecycleOutcomeAmbiguous(err error) bool {
 // mutation target no longer exists.
 func LifecycleContainerMissing(err error) bool {
 	var lifecycleErr *lifecycleError
-	return errors.As(err, &lifecycleErr) && lifecycleErr.status == http.StatusNotFound
+	if errors.As(err, &lifecycleErr) && lifecycleErr.status == http.StatusNotFound {
+		return true
+	}
+	var inspectErr *inspectError
+	return errors.As(err, &inspectErr) && inspectErr.status == http.StatusNotFound
+}
+
+type inspectError struct {
+	status int
+	text   string
+}
+
+func (e *inspectError) Error() string {
+	return "docker: inspect container: unexpected status " + e.text
 }
 
 type lifecycleError struct {

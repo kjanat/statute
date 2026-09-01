@@ -285,14 +285,6 @@ func (w *workload) callRef(binding workloadBindingKey, fallback string) string {
 	return fallback
 }
 
-// ownsIssuedMutationForOtherContainer reports whether transferring the service
-// grant would detach a non-cancellable stop from its immutable container.
-func (w *workload) ownsIssuedMutationForOtherContainer(svc *docker.Service) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.ownsIssuedMutationForOtherContainerLocked(svc)
-}
-
 func (w *workload) ownsIssuedMutationForOtherContainerLocked(svc *docker.Service) bool {
 	if w.stop == nil || (w.phase != workloadStopIssued && w.phase != workloadStopUnknown) {
 		return false
@@ -381,6 +373,9 @@ func (w *workload) end(p *dockerProvider, lease workloadLease) {
 // request is in flight.
 func (w *workload) armIdleLocked(p *dockerProvider) {
 	if w.phase != workloadReady || w.binding.activity.active > 0 || w.retired {
+		return
+	}
+	if p != nil && !p.idleStopsEnabled() {
 		return
 	}
 	if w.idle != nil {
@@ -539,14 +534,76 @@ type workloadGate struct {
 	revision workloadRoutingRevision
 }
 
-// workloadRevisionGate refuses handlers from a superseded routing policy
-// before their middleware chain can run.
 type workloadRevisionGate struct {
 	p        *dockerProvider
 	service  string
 	binding  workloadBindingKey
 	revision workloadRoutingRevision
 	next     http.Handler
+}
+
+type workloadRequestState struct {
+	mu       sync.Mutex
+	p        *dockerProvider
+	w        *workload
+	lease    workloadLease
+	acquired bool
+	active   int
+	closed   bool
+	released bool
+}
+
+type workloadRequestStateKey struct{}
+
+type workloadRequestScope struct {
+	p    *dockerProvider
+	w    *workload
+	next http.Handler
+}
+
+func (s *workloadRequestScope) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	state := &workloadRequestState{p: s.p, w: s.w}
+	defer state.close()
+	ctx := context.WithValue(r.Context(), workloadRequestStateKey{}, state)
+	s.next.ServeHTTP(rw, r.WithContext(ctx))
+}
+
+func (s *workloadRequestState) beginGate() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.active++
+	return true
+}
+
+func (s *workloadRequestState) endGate() {
+	s.mu.Lock()
+	s.active--
+	lease, release := s.releaseIfFinishedLocked()
+	s.mu.Unlock()
+	if release {
+		s.w.end(s.p, lease)
+	}
+}
+
+func (s *workloadRequestState) close() {
+	s.mu.Lock()
+	s.closed = true
+	lease, release := s.releaseIfFinishedLocked()
+	s.mu.Unlock()
+	if release {
+		s.w.end(s.p, lease)
+	}
+}
+
+func (s *workloadRequestState) releaseIfFinishedLocked() (workloadLease, bool) {
+	if !s.closed || s.active != 0 || !s.acquired || s.released {
+		return workloadLease{}, false
+	}
+	s.released = true
+	return s.lease, true
 }
 
 func (g *workloadRevisionGate) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
@@ -558,11 +615,19 @@ func (g *workloadRevisionGate) ServeHTTP(rw http.ResponseWriter, r *http.Request
 }
 
 func (g *workloadGate) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	state, scoped := r.Context().Value(workloadRequestStateKey{}).(*workloadRequestState)
+	if scoped {
+		if !state.beginGate() {
+			http.Error(rw, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		defer state.endGate()
+	}
 	if !g.p.currentWorkloadRoute(g.w.service, g.binding, g.revision) {
 		http.Error(rw, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	lease, err := g.w.ensureReady(r.Context(), g.p, g.binding)
+	lease, release, err := g.requestLease(r)
 	if err != nil {
 		var unavailable workloadUnavailable
 		if errors.As(err, &unavailable) && unavailable.retryAfter > 0 {
@@ -571,14 +636,36 @@ func (g *workloadGate) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	// ensureReady registered this request in the active count.
-	defer g.w.end(g.p, lease)
+	if release {
+		defer g.w.end(g.p, lease)
+	}
 	pool := g.p.currentRoutePool(g.w.service, lease.binding, g.revision)
 	if pool == nil || !pool.isLive() {
 		http.Error(rw, "no backends available", http.StatusServiceUnavailable)
 		return
 	}
 	pool.handler.ServeHTTP(rw, r)
+}
+
+func (g *workloadGate) requestLease(r *http.Request) (workloadLease, bool, error) {
+	state, scoped := r.Context().Value(workloadRequestStateKey{}).(*workloadRequestState)
+	if scoped {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if state.acquired {
+			return state.lease, false, nil
+		}
+	}
+	lease, err := g.w.ensureReady(r.Context(), g.p, g.binding)
+	if err != nil {
+		return workloadLease{}, false, err
+	}
+	if scoped {
+		state.lease = lease
+		state.acquired = true
+		return lease, false, nil
+	}
+	return lease, true, nil
 }
 
 // beginActivationLocked starts one single-flight activation. w.mu must be
@@ -720,10 +807,17 @@ func (p *dockerProvider) probeReady(ctx context.Context, w *workload, act *workl
 // probe traffic on the same TLS policy as proxy traffic.
 func (p *dockerProvider) probeHTTP(ctx context.Context, w *workload, act *workloadActivation) bool {
 	pool := p.currentPool(w.service, act.binding)
-	if pool == nil || len(pool.handler.primary) == 0 {
+	if pool == nil {
 		return false
 	}
-	target, err := backendURL(pool.handler.primary[0].backend)
+	backends := pool.handler.primary
+	if len(backends) == 0 {
+		backends = pool.handler.backup
+	}
+	if len(backends) == 0 {
+		return false
+	}
+	target, err := backendURL(backends[0].backend)
 	if err != nil {
 		return false
 	}
@@ -733,6 +827,9 @@ func (p *dockerProvider) probeHTTP(ctx context.Context, w *workload, act *worklo
 	req, err := http.NewRequestWithContext(pctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return false
+	}
+	if pool.handler.pool.UpstreamHost == resolved.HostExplicit {
+		req.Host = pool.handler.pool.HostValue
 	}
 	resp, err := pool.handler.transport.RoundTrip(req)
 	if err != nil {
@@ -832,41 +929,70 @@ func workloadBackoff(policy resolved.Workload, failures int) time.Duration {
 // call are split: stop-pending is set here and remains revocable until
 // performStop wins the race under the workload's lock.
 func (p *dockerProvider) idleExpire(w *workload, binding workloadBindingKey, epoch uint64, run *dockerRun) {
+	if run == nil {
+		return
+	}
+	run.idleMu.RLock()
+	if run.idleOff.Load() {
+		run.idleMu.RUnlock()
+		return
+	}
+	if !w.claimIdleStop(binding, epoch) {
+		run.idleMu.RUnlock()
+		return
+	}
+	run.idleMu.RUnlock()
+	if !run.track(func(ctx context.Context) { p.performStop(ctx, w, binding, epoch, run) }) {
+		w.revokeIdleStop(binding, epoch)
+	}
+}
+
+func (w *workload) claimIdleStop(binding workloadBindingKey, epoch uint64) bool {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.phase != workloadReady || w.binding == nil || w.binding.key != binding ||
 		w.idleEpoch != epoch || w.binding.activity.active > 0 || w.retired {
-		w.mu.Unlock()
-		return
+		return false
 	}
 	w.idle = nil
 	w.toLocked(workloadStopPending)
-	w.mu.Unlock()
-	if run == nil || !run.track(func(ctx context.Context) { p.performStop(ctx, w, binding, epoch) }) {
-		w.mu.Lock()
-		if w.phase == workloadStopPending && w.binding != nil && w.binding.key == binding && w.idleEpoch == epoch {
-			w.toLocked(workloadReady)
-		}
-		w.mu.Unlock()
+	return true
+}
+
+func (w *workload) revokeIdleStop(binding workloadBindingKey, epoch uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.phase == workloadStopPending && w.binding != nil && w.binding.key == binding && w.idleEpoch == epoch {
+		w.toLocked(workloadReady)
 	}
 }
 
 // performStop issues the idle stop unless a request revoked it first. The
 // stop call survives shutdown cancellation within its own bound, so an
 // issued stop always runs to completion.
-func (p *dockerProvider) performStop(ctx context.Context, w *workload, binding workloadBindingKey, epoch uint64) {
+func (p *dockerProvider) performStop(ctx context.Context, w *workload, binding workloadBindingKey, epoch uint64, run *dockerRun) {
+	run.idleMu.RLock()
+	if run.idleOff.Load() {
+		run.idleMu.RUnlock()
+		w.revokeIdleStop(binding, epoch)
+		return
+	}
 	w.mu.Lock()
 	if w.phase != workloadStopPending || w.binding == nil || w.binding.key != binding || w.idleEpoch != epoch {
 		w.mu.Unlock()
+		run.idleMu.RUnlock()
 		return
 	}
 	if w.retired {
 		w.toLocked(workloadReady)
 		w.mu.Unlock()
+		run.idleMu.RUnlock()
 		return
 	}
 	w.toLocked(workloadStopIssued)
 	stop := w.newStopLocked(workloadIdleStop, w.binding.key, w.containerRefLocked())
 	w.mu.Unlock()
+	run.idleMu.RUnlock()
 	p.runOwnedStop(ctx, w, stop)
 }
 
@@ -902,6 +1028,9 @@ func (p *dockerProvider) attemptOwnedStop(ctx context.Context, w *workload, stop
 	if docker.LifecycleContainerMissing(err) {
 		return workloadStopAttempt{result: workloadStopSucceeded, stopErr: err}
 	}
+	if !docker.LifecycleOutcomeAmbiguous(err) {
+		return workloadStopAttempt{result: workloadStopRejected, stopErr: err}
+	}
 
 	inspectRef := w.callRef(stop.binding, stop.ref)
 	ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), workloadProbeTimeout)
@@ -910,8 +1039,8 @@ func (p *dockerProvider) attemptOwnedStop(ctx context.Context, w *workload, stop
 	if inspectErr == nil && !insp.Running {
 		return workloadStopAttempt{result: workloadStopSucceeded, stopErr: err}
 	}
-	if inspectErr == nil && !docker.LifecycleOutcomeAmbiguous(err) {
-		return workloadStopAttempt{result: workloadStopRejected, stopErr: err}
+	if docker.LifecycleContainerMissing(inspectErr) {
+		return workloadStopAttempt{result: workloadStopSucceeded, stopErr: err, inspectErr: inspectErr}
 	}
 	return workloadStopAttempt{result: workloadStopAmbiguous, stopErr: err, inspectErr: inspectErr}
 }
@@ -946,13 +1075,10 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 		w.mu.Unlock()
 		return workloadStopUnsettled
 	}
-	retired := w.retired
-	p.markMutationSettled()
+	p.markMutationSettled(w.service)
 	w.settleStopLocked(p, stop, attempt.result)
 	w.mu.Unlock()
-	if retired {
-		p.scheduleReconcile()
-	}
+	p.scheduleReconcile()
 	return workloadStopSettled
 }
 
@@ -1084,7 +1210,7 @@ func (p *dockerProvider) logStopAttempt(w *workload, stop *workloadStop, attempt
 // carries the caller's explicit container-incarnation key.
 func (p *dockerProvider) currentPool(service string, binding workloadBindingKey) *runningPool {
 	t := p.srv.dynamic.Load()
-	if t == nil || t.workloadBindings[service] != binding {
+	if t == nil || t.workloadMutations[service] != p.currentMutationVersion(service) || t.workloadBindings[service] != binding {
 		return nil
 	}
 	return t.pools[service]
@@ -1097,7 +1223,8 @@ func (p *dockerProvider) currentWorkloadRoute(service string, binding workloadBi
 
 func (p *dockerProvider) currentRoutePool(service string, binding workloadBindingKey, revision workloadRoutingRevision) *runningPool {
 	t := p.srv.dynamic.Load()
-	if t == nil || t.workloadBindings[service] != binding || t.workloadRevisions[service] != revision {
+	if t == nil || t.workloadMutations[service] != p.currentMutationVersion(service) ||
+		t.workloadBindings[service] != binding || t.workloadRevisions[service] != revision {
 		return nil
 	}
 	return t.pools[service]
@@ -1140,6 +1267,13 @@ func (p *dockerProvider) trackRunCancelable(f func(context.Context)) (context.Ca
 	return r.trackCancelable(f)
 }
 
+func (p *dockerProvider) idleStopsEnabled() bool {
+	p.lifecycleMu.Lock()
+	r := p.current
+	p.lifecycleMu.Unlock()
+	return r != nil && !r.idleOff.Load()
+}
+
 // workloadFor returns the registry entry gating the named service, or nil.
 // A retired entry holds no grant and gates nothing; it stays registered
 // only to carry its backoff bookkeeping across a recreation.
@@ -1165,19 +1299,18 @@ func (p *dockerProvider) workloadFor(service string) *workload {
 // applies only to a one-to-one service and container pair; see
 // multiServiceContainers. A retired mutation still quarantines every service
 // contributed by its container until the mutation settles.
-func (p *dockerProvider) updateWorkloads(services []docker.Service, multiService map[string]bool) retiredMutationQuarantine {
+func (p *dockerProvider) updateWorkloads(services []docker.Service, containers []docker.Container, multiService map[string]bool) retiredMutationQuarantine {
 	p.workloadMu.Lock()
 	defer p.workloadMu.Unlock()
 	eligible, seen := p.workloadEligibilityLocked(services, multiService)
 	p.retireMissingLocked(seen)
-	p.ensureEligibleWorkloadsLocked(services, eligible)
-	quarantined := p.retiredMutationQuarantineLocked()
 	for i := range services {
-		if eligible[i] && !quarantined.matchesService(&services[i]) {
-			p.observeWorkload(p.workloadEntries[services[i].Name], &services[i])
+		if eligible[i] {
+			p.prepareWorkloadObservationLocked(&services[i])
 		}
 	}
-	return quarantined
+	p.reconcileRetiredMutationObservationsLocked(containers)
+	return p.retiredMutationQuarantineLocked()
 }
 
 func (p *dockerProvider) workloadEligibilityLocked(services []docker.Service, multiService map[string]bool) ([]bool, map[string]bool) {
@@ -1193,32 +1326,39 @@ func (p *dockerProvider) workloadEligibilityLocked(services []docker.Service, mu
 	return eligible, seen
 }
 
-func (p *dockerProvider) ensureEligibleWorkloadsLocked(services []docker.Service, eligible []bool) {
-	for i := range services {
-		if !eligible[i] {
-			continue
+func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service) {
+	w := p.workloadEntries[svc.Name]
+	if w != nil {
+		w.mu.Lock()
+		if w.ownsIssuedMutationForOtherContainerLocked(svc) {
+			w = p.detachMutationOwnerHeldLocked(w, svc.Name)
+		} else if w.retired && w.hasUnsettledStopLocked() {
+			w.mu.Unlock()
+			return
+		} else {
+			w.unretireLocked()
+			p.observeWorkloadLocked(w, svc)
+			w.mu.Unlock()
+			return
 		}
-		svc := &services[i]
-		w := p.workloadEntries[svc.Name]
-		if w != nil && w.ownsIssuedMutationForOtherContainer(svc) {
-			w = p.detachMutationOwnerLocked(w, svc.Name)
-		}
-		if w == nil {
-			if p.workloadEntries == nil {
-				p.workloadEntries = map[string]*workload{}
-			}
-			w = &workload{service: svc.Name, policy: p.cfg.Workloads[svc.Name]}
-			p.workloadEntries[svc.Name] = w
-		}
-		w.unretire()
 	}
+	if w == nil {
+		if p.workloadEntries == nil {
+			p.workloadEntries = map[string]*workload{}
+		}
+		w = &workload{service: svc.Name, policy: p.cfg.Workloads[svc.Name]}
+		p.workloadEntries[svc.Name] = w
+	}
+	w.mu.Lock()
+	w.unretireLocked()
+	p.observeWorkloadLocked(w, svc)
+	w.mu.Unlock()
 }
 
 // detachMutationOwnerLocked separates an immutable predecessor mutation from
 // the current service grant. The returned successor keeps binding keys
 // monotonic so stale handlers cannot match a replacement generation.
-func (p *dockerProvider) detachMutationOwnerLocked(old *workload, service string) *workload {
-	old.mu.Lock()
+func (p *dockerProvider) detachMutationOwnerHeldLocked(old *workload, service string) *workload {
 	old.retired = true
 	old.stopIdleLocked()
 	nextBinding := old.nextBinding
@@ -1235,6 +1375,10 @@ func (p *dockerProvider) detachMutationOwnerLocked(old *workload, service string
 	}
 	p.workloadEntries[service] = fresh
 	return fresh
+}
+
+func (w *workload) hasUnsettledStopLocked() bool {
+	return w.stop != nil && (w.phase == workloadStopIssued || w.phase == workloadStopUnknown)
 }
 
 func (p *dockerProvider) workloadEligibleLocked(svc *docker.Service, multiService map[string]bool) bool {
@@ -1264,12 +1408,6 @@ type retiredMutationQuarantine struct {
 
 func (q retiredMutationQuarantine) matches(c docker.Container) bool {
 	return slices.ContainsFunc(q.containers, func(ref workloadContainerRef) bool { return ref.matches(c) })
-}
-
-func (q retiredMutationQuarantine) matchesService(svc *docker.Service) bool {
-	return slices.ContainsFunc(q.containers, func(ref workloadContainerRef) bool {
-		return ref.matchesIdentity(svc.Container, svc.ContainerID)
-	})
 }
 
 func (r workloadContainerRef) matches(c docker.Container) bool {
@@ -1312,6 +1450,35 @@ func (p *dockerProvider) retiredMutationContainerRefsLocked() []workloadContaine
 	return refs
 }
 
+func (p *dockerProvider) reconcileRetiredMutationObservationsLocked(containers []docker.Container) {
+	for _, w := range p.workloadEntries {
+		p.reconcileRetiredMutationObservationLocked(w, containers)
+	}
+	for _, w := range p.retiredMutations {
+		p.reconcileRetiredMutationObservationLocked(w, containers)
+	}
+}
+
+func (p *dockerProvider) reconcileRetiredMutationObservationLocked(w *workload, containers []docker.Container) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.retired || !w.hasUnsettledStopLocked() || w.binding == nil || w.binding.containerID == "" {
+		return
+	}
+	for _, container := range containers {
+		if container.ID == w.binding.containerID {
+			if container.Running {
+				return
+			}
+			p.markMutationSettled(w.service)
+			w.settleStopLocked(p, w.stop, workloadStopSucceeded)
+			return
+		}
+	}
+	p.markMutationSettled(w.service)
+	w.settleStopLocked(p, w.stop, workloadStopSucceeded)
+}
+
 func (p *dockerProvider) appendRetiredMutationRefLocked(refs []workloadContainerRef, w *workload) []workloadContainerRef {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1328,9 +1495,7 @@ func (p *dockerProvider) appendRetiredMutationRefLocked(refs []workloadContainer
 // nothing. A stale ready or stop-pending resets to dormant, keeping the
 // backoff bookkeeping, and the following observation re-proves readiness
 // through the observe gate and re-arms the idle timer.
-func (w *workload) unretire() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (w *workload) unretireLocked() {
 	if !w.retired {
 		return
 	}
@@ -1368,27 +1533,20 @@ func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
 // activation, observe-only, and clears any backoff: someone repaired it. An
 // externally stopped one reconciles to dormant; in-flight requests fail
 // through the normal proxy error path.
-func (p *dockerProvider) observeWorkload(w *workload, svc *docker.Service) {
-	w.mu.Lock()
-	if w.ownsIssuedMutationForOtherContainerLocked(svc) {
-		w.mu.Unlock()
-		return
-	}
+func (p *dockerProvider) observeWorkloadLocked(w *workload, svc *docker.Service) {
 	if w.bindContainerLocked(svc) {
 		log.Printf("statute: docker: workload %q: container binding replaced", w.service)
 	}
 	if svc.Running {
 		p.observeRunningWorkloadLocked(w)
-		w.mu.Unlock()
 		return
 	}
 	p.observeStoppedWorkloadLocked(w)
-	w.mu.Unlock()
 }
 
 func (p *dockerProvider) observeRunningWorkloadLocked(w *workload) {
 	switch w.phase {
-	case workloadStopUnknown:
+	case workloadStopIssued, workloadStopUnknown:
 		p.ensureStopConvergenceLocked(w, w.stop)
 	case workloadDormant, workloadFailed:
 		w.failures = 0
@@ -1396,7 +1554,7 @@ func (p *dockerProvider) observeRunningWorkloadLocked(w *workload) {
 		if _, err := p.beginActivationLocked(w, true); err == nil {
 			log.Printf("statute: docker: workload %q: found running, establishing readiness", w.service)
 		}
-	case workloadStarting, workloadReady, workloadStopPending, workloadStopIssued:
+	case workloadStarting, workloadReady, workloadStopPending:
 		// These phases already own the running observation or its in-flight
 		// lifecycle mutation.
 	}
@@ -1411,21 +1569,30 @@ func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 	case workloadStopPending:
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()
-	case workloadStopUnknown:
+	case workloadStopIssued, workloadStopUnknown:
 		if w.stop != nil {
-			p.markMutationSettled()
+			p.markMutationSettled(w.service)
 			w.settleStopLocked(p, w.stop, workloadStopSucceeded)
 		}
 	default:
-		// dormant and failed already agree; starting and stop-issued
-		// resolve through their own in-flight operations.
+		// dormant and failed already agree; starting resolves through its
+		// own in-flight operation.
 	}
 }
 
-func (p *dockerProvider) markMutationSettled() {
+func (p *dockerProvider) markMutationSettled(service string) {
 	p.generationMu.Lock()
-	p.mutationVersion++
+	if p.mutationVersions == nil {
+		p.mutationVersions = make(map[string]uint64)
+	}
+	p.mutationVersions[service]++
 	p.generationMu.Unlock()
+}
+
+func (p *dockerProvider) currentMutationVersion(service string) uint64 {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
+	return p.mutationVersions[service]
 }
 
 // resumeWorkloadLifecycles restores provider-run work cancelled by shutdown.

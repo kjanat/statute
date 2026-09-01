@@ -764,6 +764,8 @@ func (r *serverRun) shutdown(ctx context.Context) error {
 	for _, run := range r.acme {
 		run.stop()
 	}
+	// The drain must not make ready workloads idle and stop their containers.
+	r.docker.quiesceWorkloads()
 
 	var wg sync.WaitGroup
 	errs := make(chan error, r.listeners.count())

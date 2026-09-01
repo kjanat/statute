@@ -449,7 +449,7 @@ func TestDockerMutationSettlementRejectsStaleSnapshot(t *testing.T) {
 
 	changed := p.requestReconcile()
 	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
-	p.markMutationSettled()
+	p.markMutationSettled("wl")
 	close(listRelease)
 	waitSignal(t, changed, "stale Docker snapshot was not replaced")
 	if got := daemon.listCount() - before; got != 2 {
@@ -483,7 +483,7 @@ func TestDockerFailedInitialSyncStopsTrackedWork(t *testing.T) {
 		startResult <- err
 	}()
 	waitSignal(t, listStarted, "initial sync did not start Docker listing")
-	p.markMutationSettled()
+	p.markMutationSettled("wl")
 	daemon.mu.Lock()
 	daemon.failList = true
 	daemon.listRelease = nil

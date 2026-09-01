@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"statute.kjanat.dev/internal/docker"
@@ -32,6 +33,7 @@ type dynamicTable struct {
 	// handler-carried routing policy as separate compatibility dimensions.
 	workloadBindings  map[string]workloadBindingKey
 	workloadRevisions map[string]workloadRoutingRevision
+	workloadMutations map[string]uint64
 	// fingerprints allow the next generation to reuse a pool handler —
 	// keeping its health state and connection pool — when its resolved
 	// config is unchanged.
@@ -62,7 +64,7 @@ type dockerProvider struct {
 	generationChanged chan struct{}
 	reconciling       bool
 	reconcileDemanded bool
-	mutationVersion   uint64
+	mutationVersions  map[string]uint64
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
@@ -85,6 +87,8 @@ type dockerRun struct {
 	// trackMu guards stopping, so no goroutine joins wg once stop began.
 	trackMu  sync.Mutex
 	stopping bool
+	idleMu   sync.RWMutex
+	idleOff  atomic.Bool
 }
 
 // track runs f on the run's context under its WaitGroup, so stop awaits it.
@@ -144,6 +148,7 @@ func newDockerProvider(cfg *resolved.Docker, srv *server) (*dockerProvider, erro
 		srv:               srv,
 		warned:            make(map[string]bool),
 		generationChanged: make(chan struct{}),
+		mutationVersions:  make(map[string]uint64),
 	}, nil
 }
 
@@ -188,7 +193,7 @@ func (r *dockerRun) stop() {
 		r.trackMu.Lock()
 		r.stopping = true
 		r.trackMu.Unlock()
-		r.provider.stopWorkloadTimers()
+		r.quiesceWorkloads()
 		r.cancel()
 		r.wg.Wait()
 		r.provider.stopWorkloadTimers()
@@ -207,6 +212,23 @@ func (r *dockerRun) stop() {
 			}
 		}
 	})
+}
+
+func (r *dockerRun) quiesceWorkloads() {
+	if r == nil {
+		return
+	}
+	p := r.provider
+	p.lifecycleMu.Lock()
+	current := p.current == r
+	p.lifecycleMu.Unlock()
+	if !current {
+		return
+	}
+	r.idleMu.Lock()
+	r.idleOff.Store(true)
+	p.stopWorkloadTimers()
+	r.idleMu.Unlock()
 }
 
 // watchEvents follows the container event stream, kicking the sync loop on
@@ -343,14 +365,14 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
 	for {
-		version := p.currentMutationVersion()
+		versions := p.currentMutationVersions()
 		containers, err := p.client.ListContainers(ctx)
 		if err != nil {
 			return err
 		}
 		contributions := p.deriveContributions(containers)
 		observed, _ := mergeContributions(contributions, nil)
-		quarantine := p.updateWorkloads(observed, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
+		quarantine := p.updateWorkloads(observed, containers, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
 		p.publishContributionWarnings(contributions, quarantine)
 		services, tombstones := mergeContributions(contributions, quarantine.matches)
 		quarantine.routes = p.quarantineRouteClaims(containers, quarantine)
@@ -359,7 +381,8 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		// Pool health checkers deliberately outlive this sync call; they derive
 		// their own lifetime and stop on generation retirement or shutdown.
 		next, retired := p.buildTable(services, tombstones, quarantine.routes, prev) //nolint:contextcheck
-		if !p.publishGeneration(next, version) {
+		next.workloadMutations = versions
+		if !p.publishGeneration(next, versions) {
 			shutdownUnpublishedPools(next, prev)
 			continue
 		}
@@ -370,16 +393,16 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	}
 }
 
-func (p *dockerProvider) currentMutationVersion() uint64 {
+func (p *dockerProvider) currentMutationVersions() map[string]uint64 {
 	p.generationMu.Lock()
 	defer p.generationMu.Unlock()
-	return p.mutationVersion
+	return maps.Clone(p.mutationVersions)
 }
 
-func (p *dockerProvider) publishGeneration(next *dynamicTable, mutationVersion uint64) bool {
+func (p *dockerProvider) publishGeneration(next *dynamicTable, mutationVersions map[string]uint64) bool {
 	p.generationMu.Lock()
 	defer p.generationMu.Unlock()
-	if p.mutationVersion != mutationVersion {
+	if !maps.Equal(p.mutationVersions, mutationVersions) {
 		return false
 	}
 	p.srv.dynamic.Store(next)
@@ -698,6 +721,7 @@ func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, cha
 			handler = &workloadRevisionGate{
 				p: p, service: name, binding: binding, revision: revision, next: handler,
 			}
+			handler = &workloadRequestScope{p: p, w: gated, next: handler}
 		}
 		next.routes = append(next.routes, compiledRoute{
 			route: &resolved.Route{

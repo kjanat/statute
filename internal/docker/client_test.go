@@ -345,6 +345,19 @@ func TestLifecycleOutcomeAmbiguous(t *testing.T) {
 	}
 }
 
+func TestInspectContainerMissing(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	client, err := NewClient("tcp://" + strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = client.InspectContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleContainerMissing(err) {
+		t.Fatalf("missing inspect target: err=%v missing=%v, want error and true", err, LifecycleContainerMissing(err))
+	}
+}
+
 func TestEventActorName(t *testing.T) {
 	events := []string{
 		`{"Type":"container","Action":"start","Actor":{"ID":"abc123","Attributes":{"name":"web-1"}}}`,

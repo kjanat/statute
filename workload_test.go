@@ -597,7 +597,7 @@ func TestWorkloadRevokedStopServesWithoutColdStart(t *testing.T) {
 	if got := w.phaseNow(); got != workloadReady {
 		t.Fatalf("phase after revoke = %v, want ready", got)
 	}
-	p.performStop(context.Background(), w, binding, epoch)
+	p.performStop(context.Background(), w, binding, epoch, p.currentRun())
 	if got := daemon.stopCount("wl-1"); got != 0 {
 		t.Fatalf("revoked stop still issued %d stop calls", got)
 	}
@@ -698,7 +698,9 @@ func TestWorkloadContainerReplacementDoesNotInheritIssuedStop(t *testing.T) {
 		name: "wl-new", ip: host, port: port, health: "starting", labels: labels("true"),
 	}})
 	mustSync(t, p)
-	assertStatusPending(t, done)
+	if code := waitStatus(t, done, time.Second, "missing predecessor did not release its waiter"); code != http.StatusServiceUnavailable {
+		t.Fatalf("missing predecessor response = %d, want 503", code)
+	}
 	successor := requireFreshStartingSuccessor(t, p, w)
 	successorDone := make(chan int)
 	go func() {
@@ -715,13 +717,8 @@ func TestWorkloadContainerReplacementDoesNotInheritIssuedStop(t *testing.T) {
 	}
 	waitWorkloadPhase(t, p, workloadReady)
 	requireReadySuccessor(t, successor, wantRef)
-	assertStatusPending(t, done)
 
 	releaseStop()
-	if code := waitStatus(t, done, time.Second, "settled predecessor stop did not release its waiter"); code != http.StatusServiceUnavailable {
-		t.Fatalf("predecessor stop response = %d, want 503", code)
-	}
-
 	assertIssuedStopDidNotAffectSuccessor(t, daemon)
 	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
 		t.Fatalf("successor request = %d, want 200", rec.Code)
@@ -1114,6 +1111,171 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 	w.end(p, lease)
 }
 
+func TestWorkloadRetryHoldsOneOuterLease(t *testing.T) {
+	binding := &workloadBinding{key: 1, container: "wl-1", containerID: "id-1"}
+	w := &workload{service: "wl", phase: workloadReady, binding: binding, policy: resolved.Workload{IdleAfter: time.Hour}}
+	revision := workloadRoutingRevision("routes")
+	p := &dockerProvider{srv: &server{}}
+	p.srv.dynamic.Store(&dynamicTable{
+		workloadBindings:  map[string]workloadBindingKey{"wl": binding.key},
+		workloadRevisions: map[string]workloadRoutingRevision{"wl": revision},
+	})
+	gate := &workloadGate{p: p, w: w, binding: binding.key, revision: revision}
+	attempts := 0
+	inner := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		attempts++
+		if _, release, err := gate.requestLease(r); err != nil || release {
+			t.Fatalf("attempt %d lease: release=%v err=%v", attempts, release, err)
+		}
+		w.mu.Lock()
+		active := w.binding.activity.active
+		w.mu.Unlock()
+		if active != 1 {
+			t.Fatalf("attempt %d workload activity = %d, want one outer lease", attempts, active)
+		}
+		if attempts == 1 {
+			rw.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		rw.WriteHeader(http.StatusOK)
+	})
+	retry := retryHandler(resolved.Middleware{Type: resolved.MWRetry, RetryMax: 2, RetryOnStatuses: []int{http.StatusBadGateway}}, inner)
+	scope := &workloadRequestScope{p: p, w: w, next: retry}
+	rec := runRequest(t, scope, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusOK || attempts != 2 {
+		t.Fatalf("retry response = %d after %d attempts, want 200 after 2", rec.Code, attempts)
+	}
+	w.mu.Lock()
+	active := binding.activity.active
+	w.stopIdleLocked()
+	w.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("activity after retry = %d, want 0", active)
+	}
+}
+
+func TestWorkloadTimeoutHoldsLeaseUntilInnerHandlerReturns(t *testing.T) {
+	binding := &workloadBinding{key: 1, container: "wl-1", containerID: "id-1"}
+	w := &workload{service: "wl", phase: workloadReady, binding: binding, policy: resolved.Workload{IdleAfter: time.Hour}}
+	p := &dockerProvider{srv: &server{}}
+	gate := &workloadGate{p: p, w: w, binding: binding.key}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	innerDone := make(chan struct{})
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		defer close(innerDone)
+		state, ok := r.Context().Value(workloadRequestStateKey{}).(*workloadRequestState)
+		if !ok || !state.beginGate() {
+			return
+		}
+		defer state.endGate()
+		if _, _, err := gate.requestLease(r); err != nil {
+			return
+		}
+		close(started)
+		<-release
+	})
+	scope := &workloadRequestScope{p: p, w: w, next: http.TimeoutHandler(inner, 20*time.Millisecond, "timed out")}
+	done := make(chan struct{})
+	go func() {
+		scope.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+		close(done)
+	}()
+	waitSignal(t, started, "inner handler did not acquire workload lease")
+	waitSignal(t, done, "timeout did not finish outer request scope")
+	w.mu.Lock()
+	active := binding.activity.active
+	w.mu.Unlock()
+	if active != 1 {
+		t.Fatalf("activity after outer timeout = %d, want 1", active)
+	}
+	close(release)
+	waitSignal(t, innerDone, "inner handler did not finish")
+	w.mu.Lock()
+	active = binding.activity.active
+	w.stopIdleLocked()
+	w.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("activity after inner handler = %d, want 0", active)
+	}
+}
+
+func TestCurrentPoolRejectsPreMutationGeneration(t *testing.T) {
+	binding := workloadBindingKey(1)
+	pool := &runningPool{}
+	otherPool := &runningPool{}
+	p := &dockerProvider{srv: &server{}}
+	p.srv.dynamic.Store(&dynamicTable{
+		pools:            map[string]*runningPool{"wl": pool, "other": otherPool},
+		workloadBindings: map[string]workloadBindingKey{"wl": binding, "other": binding},
+	})
+	if got := p.currentPool("wl", binding); got != pool {
+		t.Fatal("current generation pool was not available")
+	}
+	p.markMutationSettled("wl")
+	if got := p.currentPool("wl", binding); got != nil {
+		t.Fatal("pre-mutation generation pool remained available")
+	}
+	if got := p.currentPool("other", binding); got != otherPool {
+		t.Fatal("one workload mutation invalidated an unrelated service pool")
+	}
+}
+
+func TestWorkloadHTTPReadinessUsesExplicitHostOnBackupBackend(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.Host != "api.internal" {
+			http.Error(rw, "wrong host", http.StatusNotFound)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(backend.Close)
+	pool := &resolved.Pool{
+		Backends:     []resolved.Backend{{Address: strings.TrimPrefix(backend.URL, "http://"), Backup: true}},
+		UpstreamHost: resolved.HostExplicit,
+		HostValue:    "api.internal",
+	}
+	handler, err := newPoolHandler(pool)
+	if err != nil {
+		t.Fatalf("newPoolHandler: %v", err)
+	}
+	t.Cleanup(handler.transport.CloseIdleConnections)
+	binding := workloadBindingKey(1)
+	p := &dockerProvider{srv: &server{}}
+	p.srv.dynamic.Store(&dynamicTable{
+		pools:            map[string]*runningPool{"wl": {handler: handler}},
+		workloadBindings: map[string]workloadBindingKey{"wl": binding},
+	})
+	w := &workload{service: "wl"}
+	act := &workloadActivation{binding: binding, policy: resolved.Workload{Readiness: resolved.WorkloadReadiness{Mode: resolved.ReadinessHTTP, Path: "/ready"}}}
+	if !p.probeHTTP(context.Background(), w, act) {
+		t.Fatal("HTTP readiness rejected explicit-Host backup backend")
+	}
+}
+
+func TestWorkloadDefinitiveStopRejectionSkipsInspect(t *testing.T) {
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, []fakeDaemonContainer{{name: "wl-1"}})
+	daemon.mu.Lock()
+	daemon.rejectStop = true
+	daemon.stallInspect = true
+	daemon.inspectStarted = make(chan struct{})
+	inspectStarted := daemon.inspectStarted
+	id := daemon.find("wl-1").id
+	daemon.mu.Unlock()
+	binding := &workloadBinding{key: 1, container: "wl-1", containerID: id}
+	w := &workload{binding: binding}
+	stop := &workloadStop{binding: binding.key, ref: id}
+	attempt := p.attemptOwnedStop(context.Background(), w, stop)
+	if attempt.result != workloadStopRejected {
+		t.Fatalf("definitive stop result = %v, want rejected", attempt.result)
+	}
+	select {
+	case <-inspectStarted:
+		t.Fatal("definitive stop rejection performed fallback inspect")
+	default:
+	}
+}
+
 func TestWorkloadStaleIdleCallbackCannotUseSuccessorRun(t *testing.T) {
 	p := &dockerProvider{}
 	oldRun := &dockerRun{provider: p, ctx: context.Background()}
@@ -1204,7 +1366,7 @@ func TestWorkloadContainerIDRefinesExistingBinding(t *testing.T) {
 	if got := p.currentPool("wl", binding.key); got != pool {
 		t.Fatal("a name-to-ID refinement detached the generation pool")
 	}
-	w.end(p, workloadLease{binding: binding.key, activity: &binding.activity})
+	w.end(nil, workloadLease{binding: binding.key, activity: &binding.activity})
 	w.mu.Lock()
 	active, idle := w.binding.activity.active, w.idle
 	w.stopIdleLocked()
@@ -1233,7 +1395,7 @@ func TestWorkloadStopSettlementVersionsBeforeStateChange(t *testing.T) {
 	binding := &workloadBinding{key: 1, container: "wl-1", containerID: "immutable-id"}
 	stop := &workloadStop{binding: binding.key, issued: true}
 	stop.done = make(chan struct{})
-	w := &workload{phase: workloadStopIssued, binding: binding, stop: stop}
+	w := &workload{service: "wl", phase: workloadStopIssued, binding: binding, stop: stop}
 	p.generationMu.Lock()
 	settled := make(chan workloadStopApply, 1)
 	go func() {
@@ -1258,8 +1420,8 @@ func TestWorkloadStopSettlementVersionsBeforeStateChange(t *testing.T) {
 	if got := <-settled; got != workloadStopSettled {
 		t.Fatalf("stop settlement = %v, want settled", got)
 	}
-	if p.currentMutationVersion() != 1 || w.phaseNow() != workloadDormant {
-		t.Fatalf("settled state: version=%d phase=%v", p.currentMutationVersion(), w.phaseNow())
+	if p.currentMutationVersion("wl") != 1 || w.phaseNow() != workloadDormant {
+		t.Fatalf("settled state: version=%d phase=%v", p.currentMutationVersion("wl"), w.phaseNow())
 	}
 }
 
@@ -1354,6 +1516,68 @@ func TestWorkloadShutdownDuringActivationIssuesNoStop(t *testing.T) {
 	}
 	if !failedUntil.IsZero() {
 		t.Fatal("abandoned activation left a backoff window")
+	}
+}
+
+func TestWorkloadShutdownQuiescesIdleStopsBeforeRequestDrain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	p := &dockerProvider{workloadEntries: make(map[string]*workload)}
+	run := &dockerRun{provider: p, ctx: ctx, cancel: cancel}
+	p.current = run
+	binding := &workloadBinding{key: 1, activity: workloadActivity{active: 1}}
+	w := &workload{
+		service: "wl",
+		phase:   workloadReady,
+		policy:  resolved.Workload{IdleAfter: time.Millisecond},
+		binding: binding,
+	}
+	p.workloadEntries[w.service] = w
+
+	run.quiesceWorkloads()
+	w.end(p, workloadLease{binding: binding.key, activity: &binding.activity})
+	time.Sleep(10 * time.Millisecond)
+	w.mu.Lock()
+	phase, idle := w.phase, w.idle
+	w.mu.Unlock()
+	if phase != workloadReady || idle != nil {
+		t.Fatalf("drained request armed shutdown idle stop: phase=%v idle=%v", phase, idle)
+	}
+}
+
+func TestWorkloadShutdownRevokesFiredIdleCallbackBeforeIssuance(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	p := &dockerProvider{workloadEntries: make(map[string]*workload)}
+	run := &dockerRun{provider: p, ctx: ctx, cancel: cancel}
+	p.current = run
+	binding := &workloadBinding{key: 1}
+	w := &workload{service: "wl", phase: workloadReady, binding: binding, idleEpoch: 1}
+	p.workloadEntries[w.service] = w
+
+	run.trackMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		p.idleExpire(w, binding.key, 1, run)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for w.phaseNow() != workloadStopPending {
+		if time.Now().After(deadline) {
+			run.trackMu.Unlock()
+			t.Fatal("fired idle callback did not become stop-pending")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	run.quiesceWorkloads()
+	run.trackMu.Unlock()
+	waitSignal(t, done, "fired idle callback did not return")
+	run.wg.Wait()
+	w.mu.Lock()
+	phase, stop := w.phase, w.stop
+	w.mu.Unlock()
+	if phase != workloadReady || stop != nil {
+		t.Fatalf("shutdown allowed fired callback to issue stop: phase=%v stop=%v", phase, stop)
 	}
 }
 
@@ -1672,7 +1896,7 @@ func TestWorkloadRetiredIssuedStopQuarantinesSiblingRoutes(t *testing.T) {
 	}
 
 	daemon.swap([]fakeDaemonContainer{{
-		name: "combo-1", ip: host, port: port, stopped: true, labels: workloadTopologyLabels(portStr, true),
+		name: "combo-1", ip: host, port: port, labels: workloadTopologyLabels(portStr, true),
 	}})
 	mustSync(t, p)
 	if got := p.workloadFor("a@traefik"); got != nil {
@@ -2049,7 +2273,7 @@ func TestWorkloadMutationQuarantineDoesNotCrossContributors(t *testing.T) {
 	releaseStop()
 }
 
-func TestWorkloadMutationQuarantineRetainsStoppedRenamedContribution(t *testing.T) {
+func TestWorkloadStoppedObservationSettlesRenamedMutation(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("unexpected"))
 	}))
@@ -2085,19 +2309,11 @@ func TestWorkloadMutationQuarantineRetainsStoppedRenamedContribution(t *testing.
 		labels: map[string]string{"statute.enable": "true", "statute.service": "b", "statute.host": "b.example.com"},
 	}})
 	mustSync(t, p)
-	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://b.example.com/", nil)); rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("stopped renamed contribution during quarantine = %d, want 503", rec.Code)
-	}
-	p.generationMu.Lock()
-	republished := p.generationChanged
-	p.generationMu.Unlock()
-
-	releaseStop()
-	waitRetiredWorkloadPhase(t, w, workloadDormant)
-	waitSignal(t, republished, "settlement did not remove renamed quarantine")
 	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://b.example.com/", nil)); rec.Code != http.StatusTeapot {
-		t.Fatalf("stopped renamed contribution after settlement = %d, want fallback 418", rec.Code)
+		t.Fatalf("stopped renamed contribution = %d, want fallback 418", rec.Code)
 	}
+	waitRetiredWorkloadPhase(t, w, workloadDormant)
+	releaseStop()
 	if got := fallbackCalls.Load(); got != 1 {
 		t.Fatalf("fallback calls = %d, want 1", got)
 	}
