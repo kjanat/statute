@@ -229,15 +229,24 @@ Docker reporting a container as running is not readiness. An activated workload
 serves no traffic until a readiness signal establishes it. Active-health semantics
 begin from healthy and do not carry over.
 
-A fresh Statute process has no trustworthy mutation history. Before its first
-Docker route publication, it fences every already-running governed one-to-one
-workload to a positively known stopped state. Candidate ownership derives from
-enabled service labels before backend extraction. Fencing and contributor counts
-include candidates missing a network, port, or other serving input. A later
-request-driven start and readiness proof may serve it. Fence failure fails provider
-startup closed.
-A provider-run restart within the same process retains mutation ownership and
-resumes convergence. Fresh-process fencing runs once per provider lifetime.
+Every issued stop has durable mutation ownership. `Docker().Storage(path)` is
+required with `Workload`; this existing persistent directory holds a write-ahead
+registry bound to the Docker endpoint. Before calling Docker, Statute persists the immutable container ID,
+mutation kind, and prepared state with atomic replacement and file and directory
+sync. Ambiguous outcomes remain recorded. Positive stopped or missing-ID evidence
+is the only terminal condition, and the record is durably removed before ordinary
+traffic can resume.
+
+A fresh process loads this registry before its first Docker route publication.
+Each record restores one retired mutation owner and quarantines only the recorded
+immutable container contribution while convergence resumes. Current labels,
+service names, contributor counts, and backend validity may determine whether a
+new mutation is eligible, but never determine historical ownership. A relabelled
+recorded container therefore remains quarantined, another contributor stays
+independently routable, and a same-name container with a different ID inherits
+nothing. Registry open, validation, endpoint-binding, or persistence failure fails
+closed at the affected startup or mutation scope. A provider-run restart within
+the same process follows the same durable contract.
 
 Activation is single-flight. Concurrent requests for one dormant workload produce
 one start operation, one readiness wait, and one outcome delivered consistently to

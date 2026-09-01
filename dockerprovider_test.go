@@ -81,7 +81,6 @@ type fakeDaemon struct {
 	failStart          bool
 	failStop           bool
 	rejectStop         bool
-	blockRejectedStop  bool
 	stopFailsAfterSide bool
 	loseStopReply      bool
 	stallInspect       bool
@@ -238,15 +237,7 @@ func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if d.rejectStop {
-		if d.blockRejectedStop {
-			c = d.stopContainerLocked(ref, c)
-			if c == nil {
-				http.NotFound(w, r)
-				return
-			}
-		} else {
-			d.stops[c.name]++
-		}
+		d.stops[c.name]++
 		http.Error(w, "rejected", http.StatusConflict)
 		return
 	}
@@ -524,15 +515,15 @@ func newFakeProviderDaemon(t *testing.T, cfg *resolved.Docker, containers []fake
 	ts := httptest.NewServer(daemon.handler())
 	t.Cleanup(ts.Close)
 
+	if cfg.Storage == "" {
+		cfg.Storage = t.TempDir()
+	}
 	cfg.Endpoint = "tcp://" + strings.TrimPrefix(ts.URL, "http://")
 	srv := &server{cfg: &resolved.Config{}, stats: newStats()}
 	p, err := newDockerProvider(cfg, srv)
 	if err != nil {
 		t.Fatalf("newDockerProvider: %v", err)
 	}
-	// Most daemon fixtures exercise an already-established provider lifetime.
-	// Fresh-process fencing tests explicitly clear this before start.
-	p.authorityEstablished = true
 	t.Cleanup(func() {
 		if tab := srv.dynamic.Load(); tab != nil {
 			for _, ph := range tab.pools {
@@ -1660,7 +1651,9 @@ func TestResolveConfigCarriesDocker(t *testing.T) {
 }
 
 func TestResolveDockerWorkloads(t *testing.T) {
+	storage := t.TempDir()
 	d, err := resolveDocker(Docker().
+		Storage(storage).
 		Workload("wl", WorkloadPolicy{}).
 		Workload("api@traefik", WorkloadPolicy{
 			IdleAfter:    "1m",
@@ -1672,6 +1665,9 @@ func TestResolveDockerWorkloads(t *testing.T) {
 		}))
 	if err != nil {
 		t.Fatalf("resolveDocker: %v", err)
+	}
+	if d.Storage != storage {
+		t.Fatalf("storage = %q, want %q", d.Storage, storage)
 	}
 
 	defaults := d.Workloads["wl"]
@@ -1695,6 +1691,13 @@ func TestResolveDockerWorkloads(t *testing.T) {
 	}
 }
 
+func TestResolveDockerWorkloadRequiresStorage(t *testing.T) {
+	_, err := resolveDocker(Docker().Workload("wl", WorkloadPolicy{}))
+	if err == nil || !strings.Contains(err.Error(), "storage") {
+		t.Fatalf("missing-storage error = %v", err)
+	}
+}
+
 func TestResolveDockerWorkloadErrors(t *testing.T) {
 	tests := map[string]WorkloadPolicy{
 		"bad idle":       {IdleAfter: "later"},
@@ -1704,7 +1707,7 @@ func TestResolveDockerWorkloadErrors(t *testing.T) {
 	}
 	for name, policy := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := resolveDocker(Docker().Workload("wl", policy))
+			_, err := resolveDocker(Docker().Storage(t.TempDir()).Workload("wl", policy))
 			if err == nil || !strings.Contains(err.Error(), `workload "wl"`) {
 				t.Fatalf("error = %v", err)
 			}

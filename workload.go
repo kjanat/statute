@@ -143,6 +143,9 @@ type workloadStop struct {
 	issued     bool
 	uncertain  bool
 	converging bool
+	persisted  bool
+	terminal   bool
+	result     workloadStopResult
 }
 
 type workloadBindingKey uint64
@@ -1062,24 +1065,36 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 	stop.issued = false
 	if attempt.result == workloadStopAmbiguous {
 		stop.uncertain = true
-		if w.phase == workloadStopIssued {
-			w.toLocked(workloadStopUnknown)
-		}
-		w.mu.Unlock()
-		return workloadStopUnsettled
+		return w.unsettleStopLocked()
 	}
-	if attempt.result == workloadStopRejected && stop.uncertain {
-		if w.phase == workloadStopIssued {
-			w.toLocked(workloadStopUnknown)
-		}
-		w.mu.Unlock()
-		return workloadStopUnsettled
+	if attempt.result == workloadStopRejected {
+		return w.unsettleStopLocked()
+	}
+	stop.terminal = true
+	stop.result = attempt.result
+	containerID := w.binding.containerID
+	registry := p.currentMutationRegistry()
+	if registry == nil {
+		return w.unsettleStopLocked()
+	}
+	if err := registry.delete(containerID); err != nil {
+		service := strconv.Quote(w.service)
+		log.Printf("statute: docker: workload %s: persist stop settlement: %s", service, strconv.Quote(err.Error()))
+		return w.unsettleStopLocked()
 	}
 	p.markMutationSettled(w.service)
 	w.settleStopLocked(p, stop, attempt.result)
 	w.mu.Unlock()
 	p.scheduleReconcile()
 	return workloadStopSettled
+}
+
+func (w *workload) unsettleStopLocked() workloadStopApply {
+	if w.phase == workloadStopIssued {
+		w.toLocked(workloadStopUnknown)
+	}
+	w.mu.Unlock()
+	return workloadStopUnsettled
 }
 
 func (w *workload) settleStopLocked(p *dockerProvider, stop *workloadStop, result workloadStopResult) {
@@ -1119,12 +1134,103 @@ func (p *dockerProvider) runOwnedStop(ctx context.Context, w *workload, stop *wo
 }
 
 func (p *dockerProvider) executeOwnedStopAttempt(ctx context.Context, w *workload, stop *workloadStop, logUnsettled bool) workloadStopApply {
+	if err := p.persistOwnedStop(w, stop); err != nil {
+		result := w.deferOwnedStop(stop)
+		if result != workloadStopObsolete {
+			service := strconv.Quote(w.service)
+			log.Printf("statute: docker: workload %s: persist stop intent: %s", service, strconv.Quote(err.Error()))
+		}
+		return result
+	}
+	terminalResult, terminal, owned := w.stopResult(stop)
+	if !owned {
+		return workloadStopObsolete
+	}
+	if terminal {
+		return w.applyStopAttempt(p, stop, workloadStopAttempt{result: terminalResult})
+	}
 	attempt := p.attemptOwnedStop(ctx, w, stop)
+	if attempt.result == workloadStopAmbiguous {
+		p.markOwnedStopUncertain(w, stop)
+	}
 	result := w.applyStopAttempt(p, stop, attempt)
 	if result != workloadStopUnsettled || logUnsettled {
 		p.logStopAttempt(w, stop, attempt, result)
 	}
 	return result
+}
+
+func (p *dockerProvider) persistOwnedStop(w *workload, stop *workloadStop) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+		return errors.New("stop is obsolete")
+	}
+	if stop.persisted {
+		return nil
+	}
+	containerID := w.binding.containerID
+	record := mutationRecord{
+		ContainerID:   containerID,
+		ContainerName: w.binding.container,
+		Service:       w.service,
+		Kind:          mutationRecordKindForStop(stop.kind),
+		State:         mutationRecordPrepared,
+	}
+	if containerID == "" {
+		return errors.New("immutable container ID is unavailable")
+	}
+	registry := p.currentMutationRegistry()
+	if registry == nil {
+		return errors.New("mutation registry is unavailable")
+	}
+	if err := registry.put(record); err != nil {
+		return err
+	}
+	stop.persisted = true
+	return nil
+}
+
+func (p *dockerProvider) markOwnedStopUncertain(w *workload, stop *workloadStop) {
+	w.mu.Lock()
+	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+		w.mu.Unlock()
+		return
+	}
+	containerID := w.binding.containerID
+	w.mu.Unlock()
+	registry := p.currentMutationRegistry()
+	if registry != nil {
+		if err := registry.markUncertain(containerID); err != nil {
+			service := strconv.Quote(w.service)
+			log.Printf("statute: docker: workload %s: persist stop uncertainty: %s", service, strconv.Quote(err.Error()))
+		}
+	}
+}
+
+func (w *workload) deferOwnedStop(stop *workloadStop) workloadStopApply {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+		return workloadStopObsolete
+	}
+	stop.issued = false
+	if w.phase == workloadStopIssued {
+		w.toLocked(workloadStopUnknown)
+	}
+	return workloadStopUnsettled
+}
+
+func (w *workload) stopResult(stop *workloadStop) (workloadStopResult, bool, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stop != stop {
+		return workloadStopSucceeded, false, false
+	}
+	if !stop.terminal {
+		return workloadStopSucceeded, false, true
+	}
+	return stop.result, true, true
 }
 
 func (p *dockerProvider) waitStopRetry(ctx context.Context, w *workload, stop *workloadStop, delay time.Duration) bool {
@@ -1188,11 +1294,15 @@ func (p *dockerProvider) logStopAttempt(w *workload, stop *workloadStop, attempt
 	}
 	service := strconv.Quote(w.service)
 	if result == workloadStopUnsettled {
-		inspect := "none"
+		stopErr := renderedNone
+		if attempt.stopErr != nil {
+			stopErr = strconv.Quote(attempt.stopErr.Error())
+		}
+		inspect := renderedNone
 		if attempt.inspectErr != nil {
 			inspect = strconv.Quote(attempt.inspectErr.Error())
 		}
-		log.Printf("statute: docker: workload %s: stop outcome unknown: stop: %s; inspect: %s", service, strconv.Quote(attempt.stopErr.Error()), inspect)
+		log.Printf("statute: docker: workload %s: stop outcome unknown: stop: %s; inspect: %s", service, stopErr, inspect)
 		return
 	}
 	if attempt.result == workloadStopRejected {
@@ -1291,6 +1401,56 @@ func (p *dockerProvider) workloadFor(service string) *workload {
 		return nil
 	}
 	return w
+}
+
+func (p *dockerProvider) restoreMutationRecords(records []mutationRecord) {
+	p.workloadMu.Lock()
+	defer p.workloadMu.Unlock()
+	for _, record := range records {
+		if p.hasMutationOwnerLocked(record.ContainerID) {
+			continue
+		}
+		binding := workloadBindingKey(1)
+		stop := &workloadStop{
+			kind:       workloadStopKindForRecord(record.Kind),
+			binding:    binding,
+			ref:        record.ContainerID,
+			uncertain:  true,
+			persisted:  true,
+			converging: false,
+		}
+		stop.done = make(chan struct{})
+		w := &workload{
+			service:     record.Service,
+			policy:      p.cfg.Workloads[record.Service],
+			phase:       workloadStopUnknown,
+			binding:     &workloadBinding{key: binding, container: record.ContainerName, containerID: record.ContainerID},
+			nextBinding: binding,
+			retired:     true,
+			stop:        stop,
+		}
+		p.retiredMutations = append(p.retiredMutations, w)
+	}
+}
+
+func (p *dockerProvider) hasMutationOwnerLocked(containerID string) bool {
+	for _, w := range p.workloadEntries {
+		if workloadOwnsContainerMutation(w, containerID) {
+			return true
+		}
+	}
+	for _, w := range p.retiredMutations {
+		if workloadOwnsContainerMutation(w, containerID) {
+			return true
+		}
+	}
+	return false
+}
+
+func workloadOwnsContainerMutation(w *workload, containerID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stop != nil && w.binding != nil && w.binding.containerID == containerID
 }
 
 // updateWorkloads reconciles the registry with one derived generation: it
@@ -1500,18 +1660,36 @@ func (p *dockerProvider) reconcileRetiredMutationObservationLocked(w *workload, 
 	if !w.retired || !w.hasUnsettledStopLocked() || w.binding == nil || w.binding.containerID == "" {
 		return
 	}
+	if w.stop.issued {
+		return
+	}
 	for _, container := range containers {
 		if container.ID == w.binding.containerID {
 			if container.Running {
 				return
 			}
-			p.markMutationSettled(w.service)
-			w.settleStopLocked(p, w.stop, workloadStopSucceeded)
+			p.settleObservedStopLocked(w)
 			return
 		}
 	}
+	p.settleObservedStopLocked(w)
+}
+
+func (p *dockerProvider) settleObservedStopLocked(w *workload) {
+	stop := w.stop
+	stop.terminal = true
+	stop.result = workloadStopSucceeded
+	registry := p.currentMutationRegistry()
+	if registry == nil {
+		return
+	}
+	if err := registry.delete(w.binding.containerID); err != nil {
+		log.Printf("statute: docker: workload %q: persist observed stop settlement: %v", w.service, err)
+		p.ensureStopConvergenceLocked(w, stop)
+		return
+	}
 	p.markMutationSettled(w.service)
-	w.settleStopLocked(p, w.stop, workloadStopSucceeded)
+	w.settleStopLocked(p, stop, workloadStopSucceeded)
 }
 
 func (p *dockerProvider) appendRetiredMutationRefLocked(refs []workloadContainerRef, w *workload) []workloadContainerRef {
@@ -1566,8 +1744,7 @@ func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
 // observeWorkload feeds one discovery observation into the state machine. Once
 // this process established lifecycle authority, an externally started container
 // enters the same readiness gate as an activation, observe-only, and clears any
-// backoff: someone repaired it. Fresh-process startup fences running governed
-// containers before this path. An externally stopped one reconciles to dormant;
+// backoff: someone repaired it. An externally stopped one reconciles to dormant;
 // in-flight requests fail through the normal proxy error path.
 func (p *dockerProvider) observeWorkloadLocked(w *workload, svc *docker.Service) {
 	if w.bindContainerLocked(svc) {
@@ -1607,8 +1784,10 @@ func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 		w.stopIdleLocked()
 	case workloadStopIssued, workloadStopUnknown:
 		if w.stop != nil {
-			p.markMutationSettled(w.service)
-			w.settleStopLocked(p, w.stop, workloadStopSucceeded)
+			if w.stop.issued {
+				return
+			}
+			p.settleObservedStopLocked(w)
 		}
 	default:
 		// dormant and failed already agree; starting resolves through its

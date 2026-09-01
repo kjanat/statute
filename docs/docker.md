@@ -34,6 +34,7 @@ statute.Main(statute.Config{
 | `ExposedByDefault()`       | Register every running container without requiring an enable label (Traefik's `exposedByDefault=true`). statute's default is opt-in.  |
 | `TraefikLabels()`          | Additionally honor `traefik.*` labels (see below).                                                                                    |
 | `Refresh(string)`          | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
+| `Storage(string)`          | Existing persistent directory for outstanding workload mutations. Required with `Workload`; must survive process/container restarts.  |
 | `Middleware(name, mw...)`  | Register a named, code-owned middleware chain that container labels may reference (see below). Re-registering a name replaces it.     |
 | `DefaultMiddleware(mw...)` | Middleware applied to every Docker-discovered route, outermost — before label-referenced chains and label hints.                      |
 | `PoolPolicy(name, policy)` | Attach code-owned transport, Host, and health policy to one exact discovered-service identity. Re-registering a name replaces it.     |
@@ -90,6 +91,7 @@ stops the container again once it has been idle:
 
 ```go
 Docker: statute.Docker().
+    Storage("/var/lib/statute/docker").
     Workload("tools", statute.WorkloadPolicy{
         IdleAfter:    "15m",
         ReadyTimeout: "2m",
@@ -104,6 +106,12 @@ owner, and a container contributing several services has no single
 controllable lifecycle, since a stop acts on all of them at once; either
 shape leaves the policy unapplied and the provider reports it. Candidate
 service claims count toward this topology even when backend validation fails.
+`Storage` is required, must already exist, and must persist across process and container restarts.
+Do not share it between concurrent Statute processes. One process must remain
+the sole lifecycle authority for its governed containers; rolling overlap is
+unsupported. Statute validates the registry and its Docker endpoint binding
+before publishing Docker routes; corruption or an endpoint mismatch fails
+startup closed.
 
 How it behaves:
 
@@ -132,20 +140,14 @@ How it behaves:
 - **External changes reconcile.** A container stopped outside statute
   becomes dormant and reactivates on the next request. A container started
   outside statute after startup enters the same readiness gate and idle policy.
-  A fresh Statute process fences every
-  already-running governed workload to known-stopped before publishing Docker
-  routes, then permits only a fresh request-driven start and readiness proof.
-  Service identity is read from enabled labels before backend validation.
-  Candidates missing a network or port remain subject to the fence. Fence failure fails startup.
-  One Statute process must be the sole lifecycle
-  authority for a governed container; rolling overlap is unsupported.
   Replacement beneath the same service supersedes
   an in-flight operation: its waiters fail closed, stale cleanup is ignored,
   a running successor proves readiness afresh, and old request completions
   remain bound to the predecessor's idle state. A label change during activation
   invalidates queued requests when route or middleware policy changes.
 - **Issued mutations stay owned.** Idle stops and failed-activation cleanup
-  stops remain non-serving lifecycle operations until their outcome settles.
+  stops are written to the persistent registry by immutable container ID before
+  Docker receives the mutation, and remain non-serving until their outcome settles.
   If a stop response is lost or Docker returns a server error, an immediate running
   inspect does not reopen traffic: Docker may still finish the stop. That uncertainty
   remains attached to the mutation and cannot be erased by a later rejected retry.

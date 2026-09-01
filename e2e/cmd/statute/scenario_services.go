@@ -74,7 +74,7 @@ func dockerDiscoveryConfig(string) statute.Config {
 func workloadConfig(string) statute.Config {
 	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
-		Docker: statute.Docker().Refresh("1s").Workload("wl", statute.WorkloadPolicy{
+		Docker: statute.Docker().Refresh("1s").Storage("/var/lib/statute/docker").Workload("wl", statute.WorkloadPolicy{
 			IdleAfter: "3s",
 		}),
 		Defaults:      e2eDefaults(),

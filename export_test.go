@@ -296,7 +296,7 @@ func TestExport_CarriesDockerWorkloads(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
 		Listeners: Listeners{HTTP(":8080")},
-		Docker: Docker().Workload("app@traefik", WorkloadPolicy{
+		Docker: Docker().Storage("/var/lib/statute/docker").Workload("app@traefik", WorkloadPolicy{
 			IdleAfter: "1m",
 			Readiness: HTTPReadiness("/healthz"),
 		}),
@@ -307,6 +307,7 @@ func TestExport_CarriesDockerWorkloads(t *testing.T) {
 	}
 	var out struct {
 		Docker struct {
+			Storage   string
 			Workloads map[string]struct {
 				IdleAfter    int64
 				ReadyTimeout int64
@@ -319,6 +320,9 @@ func TestExport_CarriesDockerWorkloads(t *testing.T) {
 	}
 	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	if out.Docker.Storage != "/var/lib/statute/docker" {
+		t.Errorf("exported storage = %q", out.Docker.Storage)
 	}
 	w, ok := out.Docker.Workloads["app@traefik"]
 	if !ok {

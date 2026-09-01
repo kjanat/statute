@@ -59,6 +59,7 @@ type DockerConfig struct {
 	exposedByDefault  bool
 	traefikLabels     bool
 	refresh           string
+	storage           string
 	middleware        map[string][]Middleware
 	defaultMiddleware []Middleware
 	poolPolicy        map[string]PoolPolicy
@@ -108,6 +109,14 @@ func (d *DockerConfig) TraefikLabels() *DockerConfig {
 // the provider already re-lists whenever the event stream reconnects.
 func (d *DockerConfig) Refresh(interval string) *DockerConfig {
 	d.refresh = interval
+	return d
+}
+
+// Storage sets the persistent directory for outstanding workload mutations.
+// It must already exist, is required when Workload is configured, and must
+// survive process and container restarts.
+func (d *DockerConfig) Storage(path string) *DockerConfig {
+	d.storage = path
 	return d
 }
 

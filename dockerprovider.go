@@ -3,7 +3,6 @@ package statute
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -66,9 +65,6 @@ type dockerProvider struct {
 	reconciling       bool
 	reconcileDemanded bool
 	mutationVersions  map[string]uint64
-	// authorityEstablished marks fresh-process fencing complete. Guarded by
-	// syncMu and retained across provider-run restarts.
-	authorityEstablished bool
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
@@ -83,6 +79,7 @@ type dockerProvider struct {
 // dynamic table. The provider keeps only reusable client and policy state.
 type dockerRun struct {
 	provider *dockerProvider
+	registry *mutationRegistry
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
@@ -179,8 +176,13 @@ func (p *dockerProvider) start() (*dockerRun, error) {
 	if err := p.client.Ping(ctx); err != nil {
 		return fail(err)
 	}
-	if err := p.establishWorkloadAuthority(ctx); err != nil {
-		return fail(err)
+	if p.cfg.Storage != "" {
+		registry, err := openMutationRegistry(p.cfg.Storage, p.cfg.Endpoint)
+		if err != nil {
+			return fail(fmt.Errorf("workload mutation registry: %w", err))
+		}
+		r.registry = registry
+		p.restoreMutationRecords(registry.list())
 	}
 	if err := p.sync(ctx); err != nil {
 		return fail(err)
@@ -190,36 +192,6 @@ func (p *dockerProvider) start() (*dockerRun, error) {
 	r.wg.Go(r.watchEvents)
 	r.wg.Go(r.reconcileLoop)
 	return r, nil
-}
-
-// establishWorkloadAuthority fences running governed containers before this
-// process publishes its first Docker generation. A fresh process cannot tell a
-// normal running container from one whose pre-crash stop may still complete.
-// The retained provider object skips this fence on later run restarts because
-// its in-memory mutation evidence remains authoritative.
-func (p *dockerProvider) establishWorkloadAuthority(ctx context.Context) error {
-	p.syncMu.Lock()
-	defer p.syncMu.Unlock()
-	if p.authorityEstablished || len(p.cfg.Workloads) == 0 {
-		p.authorityEstablished = true
-		return nil
-	}
-	containers, err := p.client.ListContainers(ctx)
-	if err != nil {
-		return fmt.Errorf("establish workload authority: %w", err)
-	}
-	for _, candidate := range p.freshWorkloadCandidates(containers) {
-		if err := p.fenceFreshWorkload(ctx, candidate.service, candidate.containerID); err != nil {
-			return err
-		}
-	}
-	p.authorityEstablished = true
-	return nil
-}
-
-type workloadAuthorityCandidate struct {
-	service     string
-	containerID string
 }
 
 // workloadCandidateTopology preserves lifecycle ownership claims before
@@ -243,49 +215,13 @@ func (t workloadCandidateTopology) servicesFor(name, id string) []string {
 	return nil
 }
 
-func (p *dockerProvider) freshWorkloadCandidates(containers []docker.Container) []workloadAuthorityCandidate {
-	topology := p.workloadCandidateTopology(containers)
-	var out []workloadAuthorityCandidate
-	for i := range containers {
-		container := &containers[i]
-		services := topology.servicesFor(container.Name, container.ID)
-		if !container.Running || len(services) != 1 {
-			continue
-		}
-		service := services[0]
-		if _, governed := p.cfg.Workloads[service]; !governed || topology.contributors[service] != 1 {
-			continue
-		}
-		out = append(out, workloadAuthorityCandidate{service: service, containerID: container.ID})
-	}
-	return out
-}
-
-func (p *dockerProvider) fenceFreshWorkload(ctx context.Context, service, containerID string) error {
-	if containerID == "" {
-		return fmt.Errorf("workload %q: fresh-process fence has no immutable container ID", service)
-	}
-	sctx, cancel := context.WithTimeout(ctx, workloadStopTimeout)
-	stopErr := p.client.StopContainer(sctx, containerID)
-	cancel()
-	if stopErr == nil || docker.LifecycleContainerMissing(stopErr) {
-		log.Printf("statute: docker: workload %q: fresh process fenced running container to stopped", service)
+func (p *dockerProvider) currentMutationRegistry() *mutationRegistry {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.current == nil {
 		return nil
 	}
-	ictx, icancel := context.WithTimeout(ctx, workloadProbeTimeout)
-	insp, inspectErr := p.client.InspectContainer(ictx, containerID)
-	icancel()
-	if docker.LifecycleContainerMissing(inspectErr) || (inspectErr == nil && !insp.Running) {
-		log.Printf("statute: docker: workload %q: fresh process confirmed container stopped after fence error", service)
-		return nil
-	}
-	if inspectErr != nil {
-		return fmt.Errorf("workload %q: fresh-process fence failed: %w", service, errors.Join(
-			fmt.Errorf("stop: %w", stopErr),
-			fmt.Errorf("inspect: %w", inspectErr),
-		))
-	}
-	return fmt.Errorf("workload %q: fresh-process fence failed: stop: %w; container remains running", service, stopErr)
+	return p.current.registry
 }
 
 func (r *dockerRun) stop() {
