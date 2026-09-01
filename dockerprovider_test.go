@@ -81,6 +81,7 @@ type fakeDaemon struct {
 	failStart          bool
 	failStop           bool
 	rejectStop         bool
+	blockRejectedStop  bool
 	stopFailsAfterSide bool
 	loseStopReply      bool
 	stallInspect       bool
@@ -237,7 +238,15 @@ func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if d.rejectStop {
-		d.stops[c.name]++
+		if d.blockRejectedStop {
+			c = d.stopContainerLocked(ref, c)
+			if c == nil {
+				http.NotFound(w, r)
+				return
+			}
+		} else {
+			d.stops[c.name]++
+		}
 		http.Error(w, "rejected", http.StatusConflict)
 		return
 	}

@@ -513,6 +513,198 @@ func TestWorkloadFailedActivationOwnsCleanupStop(t *testing.T) {
 	waitWorkloadPhase(t, p, workloadFailed)
 }
 
+func TestWorkloadRejectedCleanupPreservesBackoffAcrossSettlementReconcile(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	policy := testWorkloadPolicy()
+	policy.ReadyTimeout = 50 * time.Millisecond
+	policy.BackoffBase = 2 * time.Second
+	policy.BackoffCap = 2 * time.Second
+	policy.Readiness.Mode = resolved.ReadinessDockerHealth
+	p, daemon, router := workloadFixture(t, policy, backend.URL)
+	daemon.mu.Lock()
+	daemon.find("wl-1").health = "starting"
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+
+	first := make(chan int)
+	go func() {
+		first <- runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)).Code
+	}()
+	waitSignal(t, stopStarted, "failed activation did not issue its cleanup stop")
+	if code := waitStatus(t, first, time.Second, "failed activation waiter remained attached to cleanup"); code != http.StatusServiceUnavailable {
+		t.Fatalf("failed activation = %d, want 503", code)
+	}
+	w := p.workloadFor("wl")
+	w.mu.Lock()
+	failures, failedUntil := w.failures, w.failedUntil
+	w.mu.Unlock()
+
+	daemon.mu.Lock()
+	daemon.find("wl-1").stopped = true
+	daemon.find("wl-1").health = "healthy"
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+	var releaseListOnce sync.Once
+	releaseList := func() { releaseListOnce.Do(func() { close(listRelease) }) }
+	defer releaseList()
+	p.generationMu.Lock()
+	settled := p.generationChanged
+	p.generationMu.Unlock()
+	p.scheduleReconcile()
+	waitSignal(t, listStarted, "listing did not capture stopped state before cleanup rejection")
+	daemon.mu.Lock()
+	daemon.find("wl-1").stopped = false
+	daemon.mu.Unlock()
+	releaseStop()
+	waitWorkloadPhase(t, p, workloadFailed)
+	releaseList()
+	waitSignal(t, settled, "cleanup settlement did not reconcile the running container")
+
+	rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("request after rejected cleanup: %d (Retry-After %q), want backed-off 503", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	w.mu.Lock()
+	phase, gotFailures, gotFailedUntil, activation := w.phase, w.failures, w.failedUntil, w.activation
+	w.mu.Unlock()
+	if phase != workloadFailed || activation != nil {
+		t.Fatalf("settlement reconcile state: phase=%v activation=%v, want failed without activation", phase, activation)
+	}
+	if gotFailures != failures || !gotFailedUntil.Equal(failedUntil) {
+		t.Fatalf("settlement reconcile backoff: failures=%d until=%v, want %d until %v", gotFailures, gotFailedUntil, failures, failedUntil)
+	}
+
+	w.mu.Lock()
+	w.failedUntil = time.Now().Add(-time.Second)
+	w.mu.Unlock()
+	rec = runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readiness retry after backoff = %d, want 200", rec.Code)
+	}
+	if got := daemon.startCount("wl-1"); got != 1 {
+		t.Fatalf("start calls = %d, want original activation only", got)
+	}
+}
+
+func TestWorkloadStaleStoppedSnapshotCannotInventExternalRepair(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	policy := testWorkloadPolicy()
+	policy.ReadyTimeout = 50 * time.Millisecond
+	policy.BackoffBase = 2 * time.Second
+	policy.BackoffCap = 2 * time.Second
+	policy.Readiness.Mode = resolved.ReadinessDockerHealth
+	p, daemon, router := workloadFixture(t, policy, backend.URL)
+	daemon.mu.Lock()
+	daemon.find("wl-1").health = "starting"
+	daemon.rejectStop = true
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseList := func() { releaseOnce.Do(func() { close(listRelease) }) }
+	defer releaseList()
+
+	p.generationMu.Lock()
+	reconciled := p.generationChanged
+	p.generationMu.Unlock()
+	p.scheduleReconcile()
+	waitSignal(t, listStarted, "stale stopped listing did not start")
+
+	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed activation = %d, want 503", rec.Code)
+	}
+	w := p.workloadFor("wl")
+	waitWorkloadPhase(t, p, workloadFailed)
+	w.mu.Lock()
+	failures, failedUntil := w.failures, w.failedUntil
+	w.mu.Unlock()
+	daemon.mu.Lock()
+	daemon.find("wl-1").health = "healthy"
+	daemon.mu.Unlock()
+	releaseList()
+	waitSignal(t, reconciled, "stale stopped listing did not trigger a fresh publication")
+
+	rec = runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("request after stale stopped listing: %d (Retry-After %q), want backed-off 503", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	w.mu.Lock()
+	phase, gotFailures, gotFailedUntil, activation := w.phase, w.failures, w.failedUntil, w.activation
+	w.mu.Unlock()
+	if phase != workloadFailed || activation != nil || gotFailures != failures || !gotFailedUntil.Equal(failedUntil) {
+		t.Fatalf("state after stale stopped listing: phase=%v activation=%v failures=%d until=%v, want failed without activation and %d until %v", phase, activation, gotFailures, gotFailedUntil, failures, failedUntil)
+	}
+}
+
+func TestWorkloadRunningFailureNeedsExternalRestartToClearBackoff(t *testing.T) {
+	var healthy atomic.Bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !healthy.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	policy := testWorkloadPolicy()
+	policy.ReadyTimeout = 500 * time.Millisecond
+	policy.BackoffBase = 2 * time.Second
+	policy.BackoffCap = 2 * time.Second
+	policy.Readiness = resolved.WorkloadReadiness{Mode: resolved.ReadinessHTTP, Path: "/ready"}
+	p, daemon, _ := workloadFixtureMode(t, policy, backend.URL, false)
+	waitWorkloadPhase(t, p, workloadFailed)
+	w := p.workloadFor("wl")
+	w.mu.Lock()
+	failures, failedUntil := w.failures, w.failedUntil
+	w.mu.Unlock()
+
+	healthy.Store(true)
+	mustSync(t, p)
+	rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("unchanged running observation: %d (Retry-After %q), want backed-off 503", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	w.mu.Lock()
+	phase, gotFailures, gotFailedUntil := w.phase, w.failures, w.failedUntil
+	w.mu.Unlock()
+	if phase != workloadFailed || gotFailures != failures || !gotFailedUntil.Equal(failedUntil) {
+		t.Fatalf("unchanged running state: phase=%v failures=%d until=%v, want failed with %d until %v", phase, gotFailures, gotFailedUntil, failures, failedUntil)
+	}
+
+	daemon.mu.Lock()
+	daemon.find("wl-1").stopped = true
+	daemon.mu.Unlock()
+	mustSync(t, p)
+	daemon.mu.Lock()
+	daemon.find("wl-1").stopped = false
+	daemon.mu.Unlock()
+	mustSync(t, p)
+	waitWorkloadPhase(t, p, workloadReady)
+	if got := daemon.startCount("wl-1"); got != 0 {
+		t.Fatalf("external restart issued %d start calls, want observe-only readiness", got)
+	}
+}
+
 func TestWorkloadIdleStopAndReactivation(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))

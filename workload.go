@@ -154,6 +154,15 @@ type workloadActivity struct {
 	active int
 }
 
+// workloadFailureEvidence records whether discovery proved that the current
+// binding stopped after its latest activation failure.
+type workloadFailureEvidence uint8
+
+const (
+	workloadFailureUnproven workloadFailureEvidence = iota
+	workloadFailureStopped
+)
+
 // workloadBinding is one container incarnation behind a discovered service.
 // key is its immutable lifecycle identity. The Docker call reference is
 // metadata that may refine from name to ID without changing that key.
@@ -223,11 +232,17 @@ type workload struct {
 	stop      *workloadStop
 	idle      *time.Timer
 	idleEpoch uint64
-	// failures counts consecutive failed activations; failedUntil is the
-	// end of the current backoff window.
-	failures    int
-	failedUntil time.Time
+	// failureEvidence requires stopped evidence before same-binding running
+	// may clear the current activation backoff.
+	failures        int
+	failedUntil     time.Time
+	failureEvidence workloadFailureEvidence
+	// observationEpoch rejects Docker snapshots captured before a local
+	// lifecycle transition changed how their running state would be interpreted.
+	observationEpoch uint64
 }
+
+func (w *workload) invalidateObservationsLocked() { w.observationEpoch++ }
 
 // phaseNow returns the current phase.
 func (w *workload) phaseNow() workloadPhase {
@@ -484,9 +499,9 @@ func (w *workload) serveCurrentStateLocked(p *dockerProvider) (lease workloadLea
 		if remaining := time.Until(w.failedUntil); remaining > 0 {
 			return workloadLease{}, nil, workloadUnavailable{retryAfter: remaining}
 		}
-		return w.beginAndWait(p)
+		return w.beginAndWait(p, w.failureEvidence != workloadFailureStopped)
 	case workloadDormant:
-		return w.beginAndWait(p)
+		return w.beginAndWait(p, false)
 	case workloadStarting:
 		return w.waitForActivationLocked()
 	case workloadStopIssued:
@@ -516,8 +531,8 @@ func (w *workload) waitForStopLocked() (workloadLease, *workloadWait, error) {
 
 // beginAndWait starts a single-flight activation and hands its outcome
 // channel to the caller. w.mu must be held.
-func (w *workload) beginAndWait(p *dockerProvider) (workloadLease, *workloadWait, error) {
-	act, err := p.beginActivationLocked(w, false)
+func (w *workload) beginAndWait(p *dockerProvider, observe bool) (workloadLease, *workloadWait, error) {
+	act, err := p.beginActivationLocked(w, observe)
 	if err != nil {
 		return workloadLease{}, nil, err
 	}
@@ -889,6 +904,7 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 	if w.activation != act {
 		return activationOutcome{superseded: true}
 	}
+	w.invalidateObservationsLocked()
 	out := activationOutcome{
 		abandoned: err != nil && errors.Is(err, context.Canceled),
 		stale:     err != nil && act.observe && errors.Is(err, errWorkloadStopped),
@@ -897,14 +913,14 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 	switch {
 	case err == nil:
 		w.toLocked(workloadReady)
-		w.failures = 0
-		w.failedUntil = time.Time{}
+		w.clearFailureLocked()
 		w.armIdleLocked(p)
 	case out.abandoned || out.stale:
 		w.toLocked(workloadDormant)
 	default:
 		w.failures++
 		w.failedUntil = time.Now().Add(workloadBackoff(w.policy, w.failures))
+		w.failureEvidence = workloadFailureUnproven
 		if !act.observe && !w.retired {
 			w.toLocked(workloadStopIssued)
 			out.stop = w.newStopLocked(workloadCleanupStop, act.binding, act.ref)
@@ -916,6 +932,12 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 	close(act.done)
 	out.waiters = act.waiting
 	return out
+}
+
+func (w *workload) clearFailureLocked() {
+	w.failures = 0
+	w.failedUntil = time.Time{}
+	w.failureEvidence = workloadFailureUnproven
 }
 
 // workloadBackoff is the exponential backoff after the given number of
@@ -1000,6 +1022,7 @@ func (p *dockerProvider) performStop(ctx context.Context, w *workload, binding w
 }
 
 func (w *workload) newStopLocked(kind workloadStopKind, binding workloadBindingKey, ref string) *workloadStop {
+	w.invalidateObservationsLocked()
 	stop := &workloadStop{kind: kind, binding: binding, ref: ref, converging: true}
 	stop.done = make(chan struct{})
 	w.stop = stop
@@ -1070,6 +1093,9 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 	if attempt.result == workloadStopRejected && stop.uncertain {
 		return w.unsettleStopLocked()
 	}
+	if !stop.terminal {
+		w.invalidateObservationsLocked()
+	}
 	stop.terminal = true
 	stop.result = attempt.result
 	containerID := w.binding.containerID
@@ -1099,6 +1125,11 @@ func (w *workload) unsettleStopLocked() workloadStopApply {
 
 func (w *workload) settleStopLocked(p *dockerProvider, stop *workloadStop, result workloadStopResult) {
 	if stop.kind == workloadCleanupStop {
+		if result == workloadStopSucceeded {
+			w.failureEvidence = workloadFailureStopped
+		} else {
+			w.failureEvidence = workloadFailureUnproven
+		}
 		w.toLocked(workloadFailed)
 	} else if result == workloadStopSucceeded {
 		w.toLocked(workloadDormant)
@@ -1453,24 +1484,67 @@ func workloadOwnsContainerMutation(w *workload, containerID string) bool {
 	return w.stop != nil && w.binding != nil && w.binding.containerID == containerID
 }
 
+type workloadObservationTickets map[*workload]uint64
+
+func (p *dockerProvider) captureWorkloadObservationTickets() workloadObservationTickets {
+	p.workloadMu.Lock()
+	defer p.workloadMu.Unlock()
+	tickets := make(workloadObservationTickets, len(p.workloadEntries)+len(p.retiredMutations))
+	for _, w := range p.workloadEntries {
+		w.mu.Lock()
+		tickets[w] = w.observationEpoch
+		w.mu.Unlock()
+	}
+	for _, w := range p.retiredMutations {
+		w.mu.Lock()
+		tickets[w] = w.observationEpoch
+		w.mu.Unlock()
+	}
+	return tickets
+}
+
+func (tickets workloadObservationTickets) currentLocked(w *workload) bool {
+	epoch, captured := tickets[w]
+	return !captured || epoch == w.observationEpoch
+}
+
+func (tickets workloadObservationTickets) allCurrentLocked() bool {
+	for w, epoch := range tickets {
+		w.mu.Lock()
+		current := epoch == w.observationEpoch
+		w.mu.Unlock()
+		if !current {
+			return false
+		}
+	}
+	return true
+}
+
 // updateWorkloads reconciles the registry with one derived generation: it
 // creates entries for newly covered services, feeds each entry the observed
 // container state, and retires entries whose grant disappeared. The policy
 // applies only to a one-to-one candidate service and container pair. A retired
 // mutation still quarantines every service contributed by its container until
 // the mutation settles.
-func (p *dockerProvider) updateWorkloads(services []docker.Service, containers []docker.Container, topology workloadCandidateTopology) retiredMutationQuarantine {
+func (p *dockerProvider) updateWorkloads(services []docker.Service, containers []docker.Container, topology workloadCandidateTopology, tickets workloadObservationTickets) (retiredMutationQuarantine, bool) {
 	p.workloadMu.Lock()
 	defer p.workloadMu.Unlock()
+	if !tickets.allCurrentLocked() {
+		return retiredMutationQuarantine{}, false
+	}
 	eligible, seen := p.workloadEligibilityLocked(services, topology)
-	p.retireMissingLocked(seen)
+	if !p.retireMissingLocked(seen, tickets) {
+		return retiredMutationQuarantine{}, false
+	}
 	for i := range services {
-		if eligible[i] {
-			p.prepareWorkloadObservationLocked(&services[i])
+		if eligible[i] && !p.prepareWorkloadObservationLocked(&services[i], tickets) {
+			return retiredMutationQuarantine{}, false
 		}
 	}
-	p.reconcileRetiredMutationObservationsLocked(containers)
-	return p.retiredMutationQuarantineLocked()
+	if !p.reconcileRetiredMutationObservationsLocked(containers, tickets) || !tickets.allCurrentLocked() {
+		return retiredMutationQuarantine{}, false
+	}
+	return p.retiredMutationQuarantineLocked(), true
 }
 
 func (p *dockerProvider) workloadEligibilityLocked(services []docker.Service, topology workloadCandidateTopology) ([]bool, map[string]bool) {
@@ -1486,20 +1560,24 @@ func (p *dockerProvider) workloadEligibilityLocked(services []docker.Service, to
 	return eligible, seen
 }
 
-func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service) {
+func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service, tickets workloadObservationTickets) bool {
 	w := p.workloadEntries[svc.Name]
 	if w != nil {
 		w.mu.Lock()
+		if !tickets.currentLocked(w) {
+			w.mu.Unlock()
+			return false
+		}
 		if w.ownsIssuedMutationForOtherContainerLocked(svc) {
 			w = p.detachMutationOwnerHeldLocked(w, svc.Name)
 		} else if w.retired && w.hasUnsettledStopLocked() {
 			w.mu.Unlock()
-			return
+			return true
 		} else {
 			w.unretireLocked()
 			p.observeWorkloadLocked(w, svc)
 			w.mu.Unlock()
-			return
+			return true
 		}
 	}
 	if w == nil {
@@ -1513,6 +1591,7 @@ func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service) {
 	w.unretireLocked()
 	p.observeWorkloadLocked(w, svc)
 	w.mu.Unlock()
+	return true
 }
 
 // detachMutationOwnerHeldLocked separates an immutable predecessor mutation
@@ -1645,38 +1724,50 @@ func (p *dockerProvider) retiredMutationContainerRefsLocked() []workloadContaine
 	return refs
 }
 
-func (p *dockerProvider) reconcileRetiredMutationObservationsLocked(containers []docker.Container) {
+func (p *dockerProvider) reconcileRetiredMutationObservationsLocked(containers []docker.Container, tickets workloadObservationTickets) bool {
 	for _, w := range p.workloadEntries {
-		p.reconcileRetiredMutationObservationLocked(w, containers)
+		if !p.reconcileRetiredMutationObservationLocked(w, containers, tickets) {
+			return false
+		}
 	}
 	for _, w := range p.retiredMutations {
-		p.reconcileRetiredMutationObservationLocked(w, containers)
+		if !p.reconcileRetiredMutationObservationLocked(w, containers, tickets) {
+			return false
+		}
 	}
+	return true
 }
 
-func (p *dockerProvider) reconcileRetiredMutationObservationLocked(w *workload, containers []docker.Container) {
+func (p *dockerProvider) reconcileRetiredMutationObservationLocked(w *workload, containers []docker.Container, tickets workloadObservationTickets) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !tickets.currentLocked(w) {
+		return false
+	}
 	if !w.retired || !w.hasUnsettledStopLocked() || w.binding == nil || w.binding.containerID == "" {
-		return
+		return true
 	}
 	if w.stop.issued {
-		return
+		return true
 	}
 	for _, container := range containers {
 		if container.ID == w.binding.containerID {
 			if container.Running {
-				return
+				return true
 			}
 			p.settleObservedStopLocked(w)
-			return
+			return true
 		}
 	}
 	p.settleObservedStopLocked(w)
+	return true
 }
 
 func (p *dockerProvider) settleObservedStopLocked(w *workload) {
 	stop := w.stop
+	if !stop.terminal {
+		w.invalidateObservationsLocked()
+	}
 	stop.terminal = true
 	stop.result = workloadStopSucceeded
 	registry := p.currentMutationRegistry()
@@ -1724,12 +1815,16 @@ func (w *workload) unretireLocked() {
 // bookkeeping, so a crash-looping container recreated under the same
 // service name cannot shed its window; the registry is bounded by the
 // compiled policy map. p.workloadMu must be held.
-func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
+func (p *dockerProvider) retireMissingLocked(seen map[string]bool, tickets workloadObservationTickets) bool {
 	for name, w := range p.workloadEntries {
 		if seen[name] {
 			continue
 		}
 		w.mu.Lock()
+		if !tickets.currentLocked(w) {
+			w.mu.Unlock()
+			return false
+		}
 		alreadyRetired := w.retired
 		w.retired = true
 		w.stopIdleLocked()
@@ -1739,33 +1834,43 @@ func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
 			p.warn([]string{fmt.Sprintf("service %q: on-demand grant removed; its container is left as it is", name)})
 		}
 	}
+	return true
 }
 
 // observeWorkload feeds one discovery observation into the state machine. Once
-// this process established lifecycle authority, an externally started container
-// enters the same readiness gate as an activation, observe-only, and clears any
-// backoff: someone repaired it. An externally stopped one reconciles to dormant;
-// in-flight requests fail through the normal proxy error path.
+// this process established lifecycle authority, a replacement running container
+// or a stopped-to-running transition enters the readiness gate observe-only and
+// clears backoff. Repeated running observations prove no repair. An externally
+// stopped ready workload reconciles to dormant; in-flight requests fail through
+// the normal proxy error path.
 func (p *dockerProvider) observeWorkloadLocked(w *workload, svc *docker.Service) {
+	replaced := w.binding == nil && w.nextBinding > 0
 	if w.bindContainerLocked(svc) {
+		replaced = true
 		log.Printf("statute: docker: workload %q: container binding replaced", w.service)
 	}
 	if svc.Running {
-		p.observeRunningWorkloadLocked(w)
+		p.observeRunningWorkloadLocked(w, replaced)
 		return
 	}
 	p.observeStoppedWorkloadLocked(w)
 }
 
-func (p *dockerProvider) observeRunningWorkloadLocked(w *workload) {
+func (p *dockerProvider) observeRunningWorkloadLocked(w *workload, replaced bool) {
 	switch w.phase {
 	case workloadStopIssued, workloadStopUnknown:
 		p.ensureStopConvergenceLocked(w, w.stop)
-	case workloadDormant, workloadFailed:
-		w.failures = 0
-		w.failedUntil = time.Time{}
+	case workloadDormant:
 		if _, err := p.beginActivationLocked(w, true); err == nil {
 			log.Printf("statute: docker: workload %q: found running, establishing readiness", w.service)
+		}
+	case workloadFailed:
+		if !replaced && w.failureEvidence != workloadFailureStopped {
+			return
+		}
+		w.clearFailureLocked()
+		if _, err := p.beginActivationLocked(w, true); err == nil {
+			log.Printf("statute: docker: workload %q: external repair found, establishing readiness", w.service)
 		}
 	case workloadStarting, workloadReady, workloadStopPending:
 		// These phases already own the running observation or its in-flight
@@ -1789,9 +1894,11 @@ func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 			}
 			p.settleObservedStopLocked(w)
 		}
+	case workloadFailed:
+		w.failureEvidence = workloadFailureStopped
 	default:
-		// dormant and failed already agree; starting resolves through its
-		// own in-flight operation.
+		// Dormant already agrees; starting resolves through its own in-flight
+		// operation.
 	}
 }
 

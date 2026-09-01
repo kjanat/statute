@@ -131,7 +131,9 @@ How it behaves:
   timeout answers `503` and never continues into `Fallback`. The container
   statute started is stopped again, and an exponential backoff
   (`BackoffBase` to `BackoffCap`) spaces further attempts; requests inside
-  the window get `503` with `Retry-After`.
+  the window get `503` with `Retry-After`. If Docker definitively rejects the
+  cleanup stop, seeing that same container still running does not erase the
+  backoff. After the window, demand retries readiness without starting it again.
 - **Idle is measured from request completion.** In-flight requests, open
   WebSockets, and open streaming responses each hold the workload active;
   the `IdleAfter` timer starts when the last one finishes. A request
@@ -139,7 +141,10 @@ How it behaves:
   stop call was issued waits and triggers a fresh activation.
 - **External changes reconcile.** A container stopped outside statute
   becomes dormant and reactivates on the next request. A container started
-  outside statute after startup enters the same readiness gate and idle policy.
+  outside statute after a stopped observation enters the same readiness gate
+  and idle policy; an unchanged running snapshot is not a repair signal. Docker
+  snapshots captured before a local activation or stop transition are discarded;
+  a fresh listing observes the newer lifecycle state.
   Replacement beneath the same service supersedes
   an in-flight operation: its waiters fail closed, stale cleanup is ignored,
   a running successor proves readiness afresh, and old request completions

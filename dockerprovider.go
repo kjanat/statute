@@ -405,6 +405,7 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	defer p.syncMu.Unlock()
 	for {
 		versions := p.currentMutationVersions()
+		workloadTickets := p.captureWorkloadObservationTickets()
 		containers, err := p.client.ListContainers(ctx)
 		if err != nil {
 			return err
@@ -412,7 +413,10 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		contributions := p.deriveContributions(containers)
 		observed, _ := mergeContributions(contributions, nil)
 		topology := p.workloadCandidateTopology(containers)
-		quarantine := p.updateWorkloads(observed, containers, topology) //nolint:contextcheck // observations spawn provider-run work
+		quarantine, current := p.updateWorkloads(observed, containers, topology, workloadTickets) //nolint:contextcheck // observations spawn provider-run work
+		if !current {
+			continue
+		}
 		p.publishContributionWarnings(contributions, quarantine)
 		services, tombstones := mergeContributions(contributions, quarantine.matches)
 		quarantine.routes = p.quarantineRouteClaims(containers, quarantine)

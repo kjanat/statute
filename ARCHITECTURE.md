@@ -257,7 +257,21 @@ activation the remaining waiters still need.
 Activation failure is terminal for the request. A timeout or failure answers the
 client, `503` with `Retry-After` where meaningful, and does not continue into
 `Config.Fallback`. Operator code that never asked for the workload cannot answer
-for it. The original request survives until proxying begins.
+for it. The original request survives until proxying begins. Backoff is cleared
+early only by lifecycle evidence after the failure: the same immutable binding
+must be observed stopped and then running, or a replacement binding must be
+observed running. A running observation after a definitively rejected cleanup
+stop is the known result of that rejection and preserves the backoff. Demand
+after the window retries readiness without starting the already-running
+container again.
+
+A Docker listing is a snapshot from capture time. Each listing carries the
+process-local observation epoch of every workload owner from before Docker I/O.
+Activation settlement, stop installation, and terminal stop outcome advance
+that epoch. A mismatched snapshot mutates no later lifecycle state and forces a
+fresh listing; rejecting only its route publication would be too late because
+repair evidence, retirement, binding replacement, and mutation settlement all
+occur while the generation is derived.
 
 Idle is measured from request completion. An in-flight HTTP request, an open
 WebSocket, and an open streaming response each hold the workload active, and the
