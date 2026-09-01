@@ -1296,13 +1296,13 @@ func (p *dockerProvider) workloadFor(service string) *workload {
 // updateWorkloads reconciles the registry with one derived generation: it
 // creates entries for newly covered services, feeds each entry the observed
 // container state, and retires entries whose grant disappeared. The policy
-// applies only to a one-to-one service and container pair; see
-// multiServiceContainers. A retired mutation still quarantines every service
-// contributed by its container until the mutation settles.
-func (p *dockerProvider) updateWorkloads(services []docker.Service, containers []docker.Container, multiService map[string]bool) retiredMutationQuarantine {
+// applies only to a one-to-one candidate service and container pair. A retired
+// mutation still quarantines every service contributed by its container until
+// the mutation settles.
+func (p *dockerProvider) updateWorkloads(services []docker.Service, containers []docker.Container, topology workloadCandidateTopology) retiredMutationQuarantine {
 	p.workloadMu.Lock()
 	defer p.workloadMu.Unlock()
-	eligible, seen := p.workloadEligibilityLocked(services, multiService)
+	eligible, seen := p.workloadEligibilityLocked(services, topology)
 	p.retireMissingLocked(seen)
 	for i := range services {
 		if eligible[i] {
@@ -1313,12 +1313,12 @@ func (p *dockerProvider) updateWorkloads(services []docker.Service, containers [
 	return p.retiredMutationQuarantineLocked()
 }
 
-func (p *dockerProvider) workloadEligibilityLocked(services []docker.Service, multiService map[string]bool) ([]bool, map[string]bool) {
+func (p *dockerProvider) workloadEligibilityLocked(services []docker.Service, topology workloadCandidateTopology) ([]bool, map[string]bool) {
 	seen := make(map[string]bool, len(p.cfg.Workloads))
 	eligible := make([]bool, len(services))
 	for i := range services {
 		svc := &services[i]
-		if p.workloadEligibleLocked(svc, multiService) {
+		if p.workloadEligibleLocked(svc, topology) {
 			seen[svc.Name] = true
 			eligible[i] = true
 		}
@@ -1381,19 +1381,55 @@ func (w *workload) hasUnsettledStopLocked() bool {
 	return w.stop != nil && (w.phase == workloadStopIssued || w.phase == workloadStopUnknown)
 }
 
-func (p *dockerProvider) workloadEligibleLocked(svc *docker.Service, multiService map[string]bool) bool {
+func (p *dockerProvider) workloadEligibleLocked(svc *docker.Service, topology workloadCandidateTopology) bool {
 	if _, ok := p.cfg.Workloads[svc.Name]; !ok {
 		return false
 	}
-	if svc.Contributors > 1 {
+	if svc.Contributors != 1 {
 		p.warn([]string{fmt.Sprintf("service %q: on-demand workload policy needs one contributing container, found %d; policy not applied", svc.Name, svc.Contributors)})
 		return false
 	}
-	if multiService[svc.Container] {
+	if contributors := p.availableCandidateContributorsLocked(svc, topology); contributors != 1 {
+		p.warn([]string{fmt.Sprintf("service %q: on-demand workload policy needs one candidate container, found %d; policy not applied", svc.Name, contributors)})
+		return false
+	}
+	if len(topology.servicesFor(svc.Container, svc.ContainerID)) != 1 {
 		p.warn([]string{fmt.Sprintf("service %q: container %q contributes more than one service and a stop acts on all of them; on-demand policy not applied", svc.Name, svc.Container)})
 		return false
 	}
 	return true
+}
+
+// availableCandidateContributorsLocked excludes only an unextractable
+// predecessor whose immutable identity is already owned by an unsettled stop.
+// Successfully extracted contributors remain ambiguous even when quarantined.
+func (p *dockerProvider) availableCandidateContributorsLocked(svc *docker.Service, topology workloadCandidateTopology) int {
+	contributors := topology.contributors[svc.Name]
+	excluded := map[workloadContainerRef]bool{}
+	exclude := func(w *workload) {
+		ref, ok := mutationCandidateForOtherContainer(w, svc)
+		if !ok || excluded[ref] || !slices.Contains(topology.servicesFor(ref.name, ref.id), svc.Name) {
+			return
+		}
+		excluded[ref] = true
+		contributors--
+	}
+	for _, current := range p.workloadEntries {
+		exclude(current)
+	}
+	for _, retired := range p.retiredMutations {
+		exclude(retired)
+	}
+	return contributors
+}
+
+func mutationCandidateForOtherContainer(w *workload, svc *docker.Service) (workloadContainerRef, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.ownsIssuedMutationForOtherContainerLocked(svc) {
+		return workloadContainerRef{}, false
+	}
+	return workloadContainerRef{name: w.binding.container, id: w.binding.containerID}, true
 }
 
 type workloadContainerRef struct {
@@ -1528,11 +1564,12 @@ func (p *dockerProvider) retireMissingLocked(seen map[string]bool) {
 	}
 }
 
-// observeWorkload feeds one discovery observation into the state machine. An
-// externally started container enters the same readiness gate as an
-// activation, observe-only, and clears any backoff: someone repaired it. An
-// externally stopped one reconciles to dormant; in-flight requests fail
-// through the normal proxy error path.
+// observeWorkload feeds one discovery observation into the state machine. Once
+// this process established lifecycle authority, an externally started container
+// enters the same readiness gate as an activation, observe-only, and clears any
+// backoff: someone repaired it. Fresh-process startup fences running governed
+// containers before this path. An externally stopped one reconciles to dormant;
+// in-flight requests fail through the normal proxy error path.
 func (p *dockerProvider) observeWorkloadLocked(w *workload, svc *docker.Service) {
 	if w.bindContainerLocked(svc) {
 		log.Printf("statute: docker: workload %q: container binding replaced", w.service)

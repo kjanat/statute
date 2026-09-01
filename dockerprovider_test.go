@@ -530,6 +530,9 @@ func newFakeProviderDaemon(t *testing.T, cfg *resolved.Docker, containers []fake
 	if err != nil {
 		t.Fatalf("newDockerProvider: %v", err)
 	}
+	// Most daemon fixtures exercise an already-established provider lifetime.
+	// Fresh-process fencing tests explicitly clear this before start.
+	p.authorityEstablished = true
 	t.Cleanup(func() {
 		if tab := srv.dynamic.Load(); tab != nil {
 			for _, ph := range tab.pools {

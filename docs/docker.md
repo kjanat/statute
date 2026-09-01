@@ -67,7 +67,8 @@ statute.Main(statute.Config{
   every compiled `Routes` entry, so a container label can never shadow
   configuration you shipped in the binary.
 - Label-derived routes are ordered by specificity, not container order:
-  host-scoped before host-agnostic, longer path prefixes first.
+  host-scoped before host-agnostic, longer path prefixes first, and an exact
+  native host before the broader Traefik host matcher when both overlap.
 - Label values go through the same resolver as static config (same
   duration/rate parsing, same validation). An invalid label skips that
   service — with a warning logged once — rather than poisoning the rest.
@@ -101,7 +102,9 @@ label can never grant it. The policy requires a one-to-one service and
 container pair. A merged multi-container service has no single activation
 owner, and a container contributing several services has no single
 controllable lifecycle, since a stop acts on all of them at once; either
-shape leaves the policy unapplied and the provider reports it.
+shape leaves the policy unapplied and the provider reports it. Candidate
+service claims count even when backend validation fails, so missing network
+data cannot turn a shared service into apparent one-to-one ownership.
 
 How it behaves:
 
@@ -129,9 +132,16 @@ How it behaves:
   stop call was issued waits and triggers a fresh activation.
 - **External changes reconcile.** A container stopped outside statute
   becomes dormant and reactivates on the next request. A container started
-  outside statute is adopted through the same readiness gate, and the idle
-  policy applies to it: a manual start does not exempt a workload from its
-  own scale-to-zero policy. Replacement beneath the same service supersedes
+  outside statute after startup is adopted through the same readiness gate, and
+  the idle policy applies to it: a manual start does not exempt a workload from
+  its own scale-to-zero policy. A fresh Statute process instead fences every
+  already-running governed workload to known-stopped before publishing Docker
+  routes, then permits only a fresh request-driven start and readiness proof.
+  Service identity is read from enabled labels before backend validation, so a
+  missing network or port cannot bypass the fence. Fence failure fails startup.
+  One Statute process must be the sole lifecycle
+  authority for a governed container; rolling overlap is unsupported.
+  Replacement beneath the same service supersedes
   an in-flight operation: its waiters fail closed, stale cleanup is ignored,
   a running successor proves readiness afresh, and old request completions
   cannot affect the successor's idle timer. Queued requests also fail closed
@@ -152,8 +162,12 @@ How it behaves:
   rules, middleware, health, or transport configuration cannot replace their `503` with
   a route miss. Only the mutation-owned container contribution is excluded from ordinary
   routing. Another immutable container contributing the same service remains routable
-  through its own backend; valid routes are checked before quarantines, which are checked
-  before tombstones and fallback. Settlement itself schedules the reconcile, so removing
+  through its own backend when the same logical service has the identical host kind,
+  host, path kind, and path. Ordinary routes and quarantines otherwise share normal
+  route specificity: a broad healthy route cannot bypass a narrower quarantine, and a
+  narrower healthy route still beats a broad quarantine. Quarantines remain ahead of
+  tombstones and fallback.
+  Settlement itself schedules the reconcile, so removing
   quarantine does not depend on a Docker event or periodic refresh. Ordinary
   serving-validation results determine the published route outcome only after quarantine
   ends. A recreated container starts with fresh pool health and connections, even when its

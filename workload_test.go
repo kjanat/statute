@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -184,7 +185,15 @@ func TestWorkloadPhaseStrings(t *testing.T) {
 // workloadFixture builds a provider whose fake daemon holds one stopped,
 // policy-covered container whose backend address points at the given
 // upstream. It returns the provider, the daemon, and the compiled router.
-func workloadFixture(t *testing.T, policy resolved.Workload, backendURL string, stopped bool) (*dockerProvider, *fakeDaemon, http.Handler) {
+func workloadFixture(t *testing.T, policy resolved.Workload, backendURL string) (*dockerProvider, *fakeDaemon, http.Handler) {
+	return workloadFixtureMode(t, policy, backendURL, true, false)
+}
+
+func freshWorkloadFixture(t *testing.T, policy resolved.Workload, backendURL string) (*dockerProvider, *fakeDaemon, http.Handler) {
+	return workloadFixtureMode(t, policy, backendURL, false, true)
+}
+
+func workloadFixtureMode(t *testing.T, policy resolved.Workload, backendURL string, stopped, freshProcess bool) (*dockerProvider, *fakeDaemon, http.Handler) {
 	t.Helper()
 	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(backendURL, "http://"))
 	if err != nil {
@@ -203,6 +212,9 @@ func workloadFixture(t *testing.T, policy resolved.Workload, backendURL string, 
 			"statute.host":    "wl.example.com",
 		},
 	}})
+	if freshProcess {
+		p.authorityEstablished = false
+	}
 	run, err := p.start()
 	if err != nil {
 		t.Fatalf("provider start: %v", err)
@@ -375,7 +387,7 @@ func TestWorkloadDormantRouteActivatesAndServes(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	_, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	_, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "woken" {
@@ -392,7 +404,7 @@ func TestWorkloadConcurrentRequestsSingleStart(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	_, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	_, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 
 	const clients = 20
 	codes := make(chan int, clients)
@@ -426,7 +438,7 @@ func TestWorkloadActivationFailureIsTerminalAndBacksOff(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, _ := workloadFixture(t, policy, backend.URL, true)
+	p, daemon, _ := workloadFixture(t, policy, backend.URL)
 	daemon.mu.Lock()
 	daemon.failStart = true
 	daemon.mu.Unlock()
@@ -469,7 +481,7 @@ func TestWorkloadFailedActivationOwnsCleanupStop(t *testing.T) {
 	policy := testWorkloadPolicy()
 	policy.ReadyTimeout = 50 * time.Millisecond
 	policy.Readiness.Mode = resolved.ReadinessDockerHealth
-	p, daemon, router := workloadFixture(t, policy, backend.URL, true)
+	p, daemon, router := workloadFixture(t, policy, backend.URL)
 	daemon.mu.Lock()
 	daemon.find("wl-1").health = "starting"
 	daemon.stopStarted = make(chan struct{})
@@ -513,7 +525,7 @@ func TestWorkloadIdleStopAndReactivation(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
@@ -541,7 +553,7 @@ func TestWorkloadInFlightRequestHoldsIdleStop(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 
 	done := make(chan int)
 	go func() {
@@ -573,7 +585,7 @@ func TestWorkloadRevokedStopServesWithoutColdStart(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
@@ -611,7 +623,7 @@ func TestWorkloadRequestWaitsForIssuedStopAndReactivates(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	daemon.mu.Lock()
 	daemon.stopStarted = make(chan struct{})
 	daemon.stopRelease = make(chan struct{})
@@ -757,7 +769,7 @@ func TestWorkloadStopInspectFailureHoldsUnknownState(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, false)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
 		t.Fatalf("initial request = %d, want 200", rec.Code)
 	}
@@ -773,8 +785,8 @@ func TestWorkloadStopInspectFailureHoldsUnknownState(t *testing.T) {
 	if rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("request while stop outcome is unknown = %d, want 503", rec.Code)
 	}
-	if got := daemon.startCount("wl-1"); got != 0 {
-		t.Fatalf("unknown stop outcome issued %d starts", got)
+	if got := daemon.startCount("wl-1"); got != 1 {
+		t.Fatalf("unknown stop outcome changed start count to %d, want 1", got)
 	}
 
 	daemon.mu.Lock()
@@ -792,7 +804,7 @@ func TestWorkloadStopConvergenceRestartsWithProviderRun(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, false)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
 		t.Fatalf("initial request = %d, want 200", rec.Code)
 	}
@@ -838,7 +850,10 @@ func TestWorkloadIdleTimerRestartsWithProviderRun(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, _ := workloadFixture(t, policy, backend.URL, false)
+	p, daemon, router := workloadFixture(t, policy, backend.URL)
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("cold start = %d, want 200", rec.Code)
+	}
 	waitWorkloadPhase(t, p, workloadReady)
 
 	p.lifecycleMu.Lock()
@@ -863,7 +878,7 @@ func TestWorkloadLostStopResponseNeverReopensServing(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	daemon.mu.Lock()
 	daemon.loseStopReply = true
 	daemon.stopStarted = make(chan struct{})
@@ -896,7 +911,7 @@ func TestWorkloadStop500AfterSideEffectNeverReopensServing(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	daemon.mu.Lock()
 	daemon.stopFailsAfterSide = true
 	daemon.stopStarted = make(chan struct{})
@@ -926,7 +941,7 @@ func TestWorkloadRejectedRetryDoesNotEraseStopUncertainty(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	daemon.mu.Lock()
 	daemon.loseStopReply = true
 	daemon.stopStarted = make(chan struct{})
@@ -961,7 +976,7 @@ func TestWorkloadExternalStopReconcilesAndReactivates(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
@@ -984,23 +999,153 @@ func TestWorkloadExternalStopReconcilesAndReactivates(t *testing.T) {
 	}
 }
 
-func TestWorkloadAdoptsExternallyStartedContainer(t *testing.T) {
+func TestFreshProviderFencesRunningWorkloadBeforeServing(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
 
-	// The container is already running at boot: readiness is established
-	// observe-only, without a start call, and the idle policy applies.
-	p, daemon, _ := workloadFixture(t, testWorkloadPolicy(), backend.URL, false)
-
-	waitWorkloadPhase(t, p, workloadReady)
-	if got := daemon.startCount("wl-1"); got != 0 {
-		t.Fatalf("adoption issued %d start calls, want 0", got)
-	}
+	p, daemon, router := freshWorkloadFixture(t, testWorkloadPolicy(), backend.URL)
 	waitWorkloadPhase(t, p, workloadDormant)
 	if got := daemon.stopCount("wl-1"); got != 1 {
-		t.Fatalf("idle stop after adoption = %d calls, want 1", got)
+		t.Fatalf("fresh-process fence stops = %d, want 1", got)
+	}
+	if got := daemon.startCount("wl-1"); got != 0 {
+		t.Fatalf("fresh-process fence issued %d starts, want 0", got)
+	}
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("fresh activation = %d, want 200", rec.Code)
+	}
+	if got := daemon.startCount("wl-1"); got != 1 {
+		t.Fatalf("fresh activation starts = %d, want 1", got)
+	}
+}
+
+func TestFreshProviderFenceFailurePublishesNoRoutes(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{
+		name: "wl-1", ip: host, port: port,
+		labels: map[string]string{"statute.enable": "true", "statute.service": "wl", "statute.host": "wl.example.com"},
+	}})
+	p.authorityEstablished = false
+	daemon.rejectStop = true
+	if _, err := p.start(); err == nil {
+		t.Fatal("fresh-process fence rejection allowed provider startup")
+	}
+	if srv.dynamic.Load() != nil {
+		t.Fatal("failed fresh-process fence published Docker routes")
+	}
+
+	daemon.mu.Lock()
+	daemon.rejectStop = false
+	daemon.mu.Unlock()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider retry after fence rejection: %v", err)
+	}
+	t.Cleanup(run.stop)
+	waitWorkloadPhase(t, p, workloadDormant)
+}
+
+func TestFreshProviderFencesGovernedCandidateWithoutBackend(t *testing.T) {
+	cfg := &resolved.Docker{Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()}}
+	p, srv, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "wl-1", port: 8080,
+		labels: map[string]string{"statute.enable": "true", "statute.service": "wl", "statute.host": "wl.example.com"},
+	}})
+	p.authorityEstablished = false
+	daemon.rejectStop = true
+	if _, err := p.start(); err == nil {
+		t.Fatal("running governed candidate without a backend bypassed fresh-process fence")
+	}
+	if got := daemon.stopCount("wl-1"); got != 1 {
+		t.Fatalf("fresh-process candidate fence stops = %d, want 1", got)
+	}
+	if srv.dynamic.Load() != nil {
+		t.Fatal("failed candidate fence published Docker routes")
+	}
+}
+
+func TestFreshProviderDoesNotAdoptPredecessorAmbiguousStop(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	cfg := &resolved.Docker{Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()}}
+	p1, _, daemon := newFakeProviderDaemon(t, cfg, []fakeDaemonContainer{{
+		name: "wl-1", ip: host, port: port, stopped: true,
+		labels: map[string]string{"statute.enable": "true", "statute.service": "wl", "statute.host": "wl.example.com"},
+	}})
+	p1.authorityEstablished = false
+	run1, err := p1.start()
+	if err != nil {
+		t.Fatalf("first provider start: %v", err)
+	}
+	daemon.mu.Lock()
+	daemon.loseStopReply = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	if rec := runRequest(t, p1.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("first provider activation = %d, want 200", rec.Code)
+	}
+	waitSignal(t, stopStarted, "predecessor stop was not accepted")
+	waitWorkloadPhase(t, p1, workloadStopUnknown)
+	run1.stop()
+
+	srv2 := &server{cfg: &resolved.Config{}, stats: newStats()}
+	p2, err := newDockerProvider(cfg, srv2)
+	if err != nil {
+		t.Fatalf("second provider: %v", err)
+	}
+	if _, err := p2.start(); err == nil {
+		t.Fatal("fresh provider adopted container with predecessor stop still pending")
+	}
+	if srv2.dynamic.Load() != nil {
+		t.Fatal("fresh provider published routes before predecessor stop settled")
+	}
+
+	releaseStop()
+	daemon.mu.Lock()
+	daemon.loseStopReply = false
+	daemon.stopRelease = nil
+	daemon.mu.Unlock()
+	run2, err := p2.start()
+	if err != nil {
+		t.Fatalf("second provider retry after fence settlement: %v", err)
+	}
+	t.Cleanup(run2.stop)
+	if rec := runRequest(t, srv2.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("fresh activation after fence = %d, want 200", rec.Code)
+	}
+	if got := daemon.startCount("wl-1"); got != 2 {
+		t.Fatalf("request-driven starts across process generations = %d, want 2", got)
+	}
+}
+
+func TestEstablishedProviderAdoptsExternallyStartedContainer(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, _ := workloadFixtureMode(t, testWorkloadPolicy(), backend.URL, false, false)
+	waitWorkloadPhase(t, p, workloadReady)
+	if got := daemon.startCount("wl-1"); got != 0 {
+		t.Fatalf("same-process adoption issued %d starts, want 0", got)
 	}
 }
 
@@ -1024,7 +1169,12 @@ func TestWorkloadMultiContributorServiceIsNotGated(t *testing.T) {
 		{name: "wl-1", ip: host, port: port, labels: labels()},
 		{name: "wl-2", ip: host, port: port, labels: labels()},
 	})
-	mustSync(t, p)
+	p.authorityEstablished = false
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("fresh provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
 
 	if w := p.workloadFor("wl"); w != nil {
 		t.Fatal("multi-contributor service got a workload entry")
@@ -1041,13 +1191,51 @@ func TestWorkloadMultiContributorServiceIsNotGated(t *testing.T) {
 	}
 }
 
+func TestWorkloadUnextractableCandidatePreventsLifecycleAuthority(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	labels := func() map[string]string {
+		return map[string]string{
+			"statute.enable":  "true",
+			"statute.service": "wl",
+			"statute.host":    "wl.example.com",
+		}
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{
+		{name: "wl-1", ip: host, port: port, labels: labels()},
+		{name: "wl-2", port: port, labels: labels()},
+	})
+	p.authorityEstablished = false
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("fresh provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+
+	if w := p.workloadFor("wl"); w != nil {
+		t.Fatal("unextractable second candidate collapsed into one-to-one lifecycle authority")
+	}
+	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("valid contributor route = %d, want 200", rec.Code)
+	}
+	if got := daemon.startCount("wl-1") + daemon.startCount("wl-2") + daemon.stopCount("wl-1") + daemon.stopCount("wl-2"); got != 0 {
+		t.Fatalf("provider issued %d lifecycle calls for ambiguous candidate topology", got)
+	}
+}
+
 func TestWorkloadGrantRemovalLeavesContainerRunning(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
@@ -1077,7 +1265,7 @@ func TestWorkloadReadyRequestExcludesIdleStop(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cold start: %d", rec.Code)
@@ -1486,7 +1674,7 @@ func TestWorkloadShutdownDuringActivationIssuesNoStop(t *testing.T) {
 
 	// Port 1 answers nothing; the activation is still in flight when
 	// the provider run stops.
-	p, daemon, router := workloadFixture(t, policy, "http://127.0.0.1:1", true)
+	p, daemon, router := workloadFixture(t, policy, "http://127.0.0.1:1")
 
 	done := make(chan int)
 	go func() {
@@ -1628,7 +1816,7 @@ func TestWorkloadBackoffSurvivesRecreation(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, policy, backend.URL, true)
+	p, daemon, router := workloadFixture(t, policy, backend.URL)
 	daemon.mu.Lock()
 	daemon.failStart = true
 	daemon.stopStarted = make(chan struct{})
@@ -1675,7 +1863,7 @@ func TestWorkloadStaleObserveLeavesNoBackoff(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, _ := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, _ := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	w := p.workloadFor("wl")
 
 	// An observe-only activation whose container turns out stopped, the
@@ -1706,7 +1894,7 @@ func TestWorkloadRecreationRequiresFreshReadiness(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	p, daemon, router := workloadFixture(t, policy, backend.URL, true)
+	p, daemon, router := workloadFixture(t, policy, backend.URL)
 	rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cold start: %d", rec.Code)
@@ -1779,7 +1967,12 @@ func TestWorkloadMultiServiceContainerIsNotGated(t *testing.T) {
 			"traefik.http.services.b.loadbalancer.server.port": portStr,
 		},
 	}})
-	mustSync(t, p)
+	p.authorityEstablished = false
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("fresh provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
 
 	if w := p.workloadFor("a@traefik"); w != nil {
 		t.Fatal("multi-service container got a workload entry")
@@ -2212,6 +2405,61 @@ func TestWorkloadMutationQuarantineSurvivesServiceKeyReplacement(t *testing.T) {
 	}
 }
 
+func TestWorkloadRenamedMutationOwnerDoesNotBlockSuccessorAuthority(t *testing.T) {
+	backendC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("container-c"))
+	}))
+	t.Cleanup(backendC.Close)
+	backendD := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("container-d"))
+	}))
+	t.Cleanup(backendD.Close)
+	hostC, portCStr, _ := net.SplitHostPort(strings.TrimPrefix(backendC.URL, "http://"))
+	portC, _ := strconv.Atoi(portCStr)
+	hostD, portDStr, _ := net.SplitHostPort(strings.TrimPrefix(backendD.URL, "http://"))
+	portD, _ := strconv.Atoi(portDStr)
+	labels := func(service, host string) map[string]string {
+		return map[string]string{
+			"statute.enable":  "true",
+			"statute.service": service,
+			"statute.host":    host,
+		}
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{
+			"a": testWorkloadPolicy(),
+			"b": testWorkloadPolicy(),
+		},
+	}, []fakeDaemonContainer{{name: "container-c", ip: hostC, port: portC, labels: labels("a", "a.example.com")}})
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	w := p.workloadFor("a")
+	waitSignal(t, stopStarted, "old-service idle stop was not issued")
+
+	daemon.swap([]fakeDaemonContainer{
+		{name: "container-c", port: portC, labels: labels("b", "old-b.example.com")},
+		{name: "container-d", ip: hostD, port: portD, labels: labels("b", "new-b.example.com")},
+	})
+	mustSync(t, p)
+	if got := p.workloadFor("b"); got == nil || got == w {
+		t.Fatal("renamed mutation owner blocked independent successor authority")
+	}
+	assertRouteResponse(t, srv.buildRouter(), "http://new-b.example.com/", http.StatusOK, "container-d")
+	assertRouteResponse(t, srv.buildRouter(), "http://old-b.example.com/", http.StatusServiceUnavailable, "")
+}
+
 func TestWorkloadMutationQuarantineDoesNotCrossContributors(t *testing.T) {
 	backendC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("container-c"))
@@ -2268,6 +2516,67 @@ func TestWorkloadMutationQuarantineDoesNotCrossContributors(t *testing.T) {
 	rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://shared.example.com/", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "container-d" {
 		t.Fatalf("independent contributor response = %d %q, want 200 container-d", rec.Code, rec.Body.String())
+	}
+
+	releaseStop()
+}
+
+func TestWorkloadSpecificQuarantineBlocksBroadHealthyContributor(t *testing.T) {
+	backendC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("container-c"))
+	}))
+	t.Cleanup(backendC.Close)
+	var backendDHits atomic.Int32
+	backendD := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendDHits.Add(1)
+		_, _ = w.Write([]byte("container-d"))
+	}))
+	t.Cleanup(backendD.Close)
+	hostC, portCStr, _ := net.SplitHostPort(strings.TrimPrefix(backendC.URL, "http://"))
+	portC, _ := strconv.Atoi(portCStr)
+	hostD, portDStr, _ := net.SplitHostPort(strings.TrimPrefix(backendD.URL, "http://"))
+	portD, _ := strconv.Atoi(portDStr)
+	labels := func(path string) map[string]string {
+		return map[string]string{
+			"statute.enable":  "true",
+			"statute.service": "shared",
+			"statute.host":    "app.example.com",
+			"statute.path":    path,
+		}
+	}
+	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"shared": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{name: "container-c", ip: hostC, port: portC, labels: labels("/admin/*")}})
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	var releaseOnce sync.Once
+	releaseStop := func() { releaseOnce.Do(func() { close(stopRelease) }) }
+	defer releaseStop()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	waitSignal(t, stopStarted, "idle stop was not issued")
+
+	daemon.swap([]fakeDaemonContainer{
+		{name: "container-c", ip: hostC, port: portC, labels: labels("/admin/*")},
+		{name: "container-d", ip: hostD, port: portD, labels: labels("/*")},
+	})
+	mustSync(t, p)
+	assertDynamicTableShape(t, srv.dynamic.Load(), 1, 1, 0, 1)
+	router := srv.buildRouter()
+	assertRouteResponse(t, router, "http://app.example.com/admin/users", http.StatusServiceUnavailable, "")
+	if got := backendDHits.Load(); got != 0 {
+		t.Fatalf("specific quarantine reached broad backend %d times", got)
+	}
+	assertRouteResponse(t, router, "http://app.example.com/public", http.StatusOK, "container-d")
+	if got := backendDHits.Load(); got != 1 {
+		t.Fatalf("broad healthy route hits = %d, want 1", got)
 	}
 
 	releaseStop()
@@ -2508,7 +2817,7 @@ func TestWorkloadReplacementStartsFreshPoolRuntime(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
 		t.Fatalf("initial request = %d, want 200", rec.Code)
 	}
@@ -2553,7 +2862,7 @@ func TestWorkloadStreamingResponseHoldsIdleStop(t *testing.T) {
 		_, _ = w.Write([]byte("b"))
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	proxy := httptest.NewServer(router)
 	t.Cleanup(proxy.Close)
 
@@ -2677,7 +2986,7 @@ func TestWorkloadWebSocketHoldsIdleStop(t *testing.T) {
 		<-release
 	}))
 	t.Cleanup(backend.Close)
-	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL, true)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
 	proxy := httptest.NewServer(router)
 	t.Cleanup(proxy.Close)
 

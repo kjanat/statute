@@ -3,6 +3,7 @@ package statute
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -65,6 +66,10 @@ type dockerProvider struct {
 	reconciling       bool
 	reconcileDemanded bool
 	mutationVersions  map[string]uint64
+	// authorityEstablished records that this process fenced every governed
+	// workload observed at first startup to a known-stopped state. Guarded by
+	// syncMu and retained across provider-run restarts.
+	authorityEstablished bool
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
@@ -175,6 +180,9 @@ func (p *dockerProvider) start() (*dockerRun, error) {
 	if err := p.client.Ping(ctx); err != nil {
 		return fail(err)
 	}
+	if err := p.establishWorkloadAuthority(ctx); err != nil {
+		return fail(err)
+	}
 	if err := p.sync(ctx); err != nil {
 		return fail(err)
 	}
@@ -183,6 +191,102 @@ func (p *dockerProvider) start() (*dockerRun, error) {
 	r.wg.Go(r.watchEvents)
 	r.wg.Go(r.reconcileLoop)
 	return r, nil
+}
+
+// establishWorkloadAuthority fences running governed containers before this
+// process publishes its first Docker generation. A fresh process cannot tell a
+// normal running container from one whose pre-crash stop may still complete.
+// The retained provider object skips this fence on later run restarts because
+// its in-memory mutation evidence remains authoritative.
+func (p *dockerProvider) establishWorkloadAuthority(ctx context.Context) error {
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
+	if p.authorityEstablished || len(p.cfg.Workloads) == 0 {
+		p.authorityEstablished = true
+		return nil
+	}
+	containers, err := p.client.ListContainers(ctx)
+	if err != nil {
+		return fmt.Errorf("establish workload authority: %w", err)
+	}
+	for _, candidate := range p.freshWorkloadCandidates(containers) {
+		if err := p.fenceFreshWorkload(ctx, candidate.service, candidate.containerID); err != nil {
+			return err
+		}
+	}
+	p.authorityEstablished = true
+	return nil
+}
+
+type workloadAuthorityCandidate struct {
+	service     string
+	containerID string
+}
+
+// workloadCandidateTopology preserves lifecycle ownership claims before
+// backend extraction can discard an unusable contributor.
+type workloadCandidateTopology struct {
+	registrations []workloadCandidateRegistration
+	contributors  map[string]int
+}
+
+type workloadCandidateRegistration struct {
+	container workloadContainerRef
+	services  []string
+}
+
+func (t workloadCandidateTopology) servicesFor(name, id string) []string {
+	for _, registration := range t.registrations {
+		if registration.container.matchesIdentity(name, id) {
+			return registration.services
+		}
+	}
+	return nil
+}
+
+func (p *dockerProvider) freshWorkloadCandidates(containers []docker.Container) []workloadAuthorityCandidate {
+	topology := p.workloadCandidateTopology(containers)
+	var out []workloadAuthorityCandidate
+	for i := range containers {
+		container := &containers[i]
+		services := topology.servicesFor(container.Name, container.ID)
+		if !container.Running || len(services) != 1 {
+			continue
+		}
+		service := services[0]
+		if _, governed := p.cfg.Workloads[service]; !governed || topology.contributors[service] != 1 {
+			continue
+		}
+		out = append(out, workloadAuthorityCandidate{service: service, containerID: container.ID})
+	}
+	return out
+}
+
+func (p *dockerProvider) fenceFreshWorkload(ctx context.Context, service, containerID string) error {
+	if containerID == "" {
+		return fmt.Errorf("workload %q: fresh-process fence has no immutable container ID", service)
+	}
+	sctx, cancel := context.WithTimeout(ctx, workloadStopTimeout)
+	stopErr := p.client.StopContainer(sctx, containerID)
+	cancel()
+	if stopErr == nil || docker.LifecycleContainerMissing(stopErr) {
+		log.Printf("statute: docker: workload %q: fresh process fenced running container to stopped", service)
+		return nil
+	}
+	ictx, icancel := context.WithTimeout(ctx, workloadProbeTimeout)
+	insp, inspectErr := p.client.InspectContainer(ictx, containerID)
+	icancel()
+	if docker.LifecycleContainerMissing(inspectErr) || (inspectErr == nil && !insp.Running) {
+		log.Printf("statute: docker: workload %q: fresh process confirmed container stopped after fence error", service)
+		return nil
+	}
+	if inspectErr != nil {
+		return fmt.Errorf("workload %q: fresh-process fence failed: %w", service, errors.Join(
+			fmt.Errorf("stop: %w", stopErr),
+			fmt.Errorf("inspect: %w", inspectErr),
+		))
+	}
+	return fmt.Errorf("workload %q: fresh-process fence failed: stop: %w; container remains running", service, stopErr)
 }
 
 func (r *dockerRun) stop() {
@@ -372,7 +476,8 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		}
 		contributions := p.deriveContributions(containers)
 		observed, _ := mergeContributions(contributions, nil)
-		quarantine := p.updateWorkloads(observed, containers, p.multiServiceContainers(containers)) //nolint:contextcheck // observations spawn provider-run work
+		topology := p.workloadCandidateTopology(containers)
+		quarantine := p.updateWorkloads(observed, containers, topology) //nolint:contextcheck // observations spawn provider-run work
 		p.publishContributionWarnings(contributions, quarantine)
 		services, tombstones := mergeContributions(contributions, quarantine.matches)
 		quarantine.routes = p.quarantineRouteClaims(containers, quarantine)
@@ -588,23 +693,26 @@ func (p *dockerProvider) workloadIntended(c docker.Container, opts docker.Extrac
 	return false
 }
 
-// multiServiceContainers names every container whose labels could register
-// more than one service. Start and stop act on the whole container, so a
-// container beneath several services has no single controllable lifecycle
-// owner: one service's idle timer could stop it while another service still
-// carries traffic the workload never counted.
-func (p *dockerProvider) multiServiceContainers(containers []docker.Container) map[string]bool {
+// workloadCandidateTopology derives service/container ownership independently
+// from backend validity. Start and stop act on the whole container, so both
+// multi-container services and multi-service containers remain ineligible.
+func (p *dockerProvider) workloadCandidateTopology(containers []docker.Container) workloadCandidateTopology {
 	opts := p.extractOptions()
-	var out map[string]bool
+	topology := workloadCandidateTopology{
+		registrations: make([]workloadCandidateRegistration, 0, len(containers)),
+		contributors:  make(map[string]int),
+	}
 	for _, c := range containers {
-		if len(docker.CandidateServices(c, opts)) > 1 {
-			if out == nil {
-				out = map[string]bool{}
-			}
-			out[c.Name] = true
+		services := docker.CandidateServices(c, opts)
+		topology.registrations = append(topology.registrations, workloadCandidateRegistration{
+			container: workloadContainerRef{name: c.Name, id: c.ID},
+			services:  services,
+		})
+		for _, service := range services {
+			topology.contributors[service]++
 		}
 	}
-	return out
+	return topology
 }
 
 // buildTable turns derived services into the next dynamic generation,
@@ -1028,29 +1136,48 @@ func poolFingerprint(rp *resolved.Pool) string {
 // then lexicographic as the tiebreak.
 func sortDynamicRoutes(routes []compiledRoute) {
 	sort.SliceStable(routes, func(i, j int) bool {
-		a, b := routes[i].matcher, routes[j].matcher
-		if (a.Host != "") != (b.Host != "") {
-			return a.Host != ""
-		}
-		aExact, aLen, aKind := dynamicPatternSpecificity(a)
-		bExact, bLen, bKind := dynamicPatternSpecificity(b)
-		if aExact != bExact {
-			return aExact
-		}
-		if aLen != bLen {
-			return aLen > bLen
-		}
-		if aKind != bKind {
-			return aKind > bKind
-		}
-		if a.Host != b.Host {
-			return a.Host < b.Host
-		}
-		if a.Path != b.Path {
-			return a.Path < b.Path
-		}
-		return routes[i].service < routes[j].service
+		return dynamicRoutePrecedes(routes[i], routes[j])
 	})
+}
+
+func dynamicRoutePrecedes(aRoute, bRoute compiledRoute) bool {
+	a, b := aRoute.matcher, bRoute.matcher
+	if (a.Host != "") != (b.Host != "") {
+		return a.Host != ""
+	}
+	aExact, aLen, aKind := dynamicPatternSpecificity(a)
+	bExact, bLen, bKind := dynamicPatternSpecificity(b)
+	if aExact != bExact {
+		return aExact
+	}
+	if aLen != bLen {
+		return aLen > bLen
+	}
+	if aKind != bKind {
+		return aKind > bKind
+	}
+	aHost, bHost := dynamicHostSpecificity(a), dynamicHostSpecificity(b)
+	if aHost != bHost {
+		return aHost > bHost
+	}
+	if a.Host != b.Host {
+		return a.Host < b.Host
+	}
+	if a.Path != b.Path {
+		return a.Path < b.Path
+	}
+	return aRoute.service < bRoute.service
+}
+
+func dynamicHostSpecificity(m docker.Matcher) int {
+	if m.HostKind == docker.HostExact {
+		return 1
+	}
+	return 0
+}
+
+func sameDynamicTraffic(a, b docker.Matcher) bool {
+	return a.Host == b.Host && a.HostKind == b.HostKind && a.Path == b.Path && a.PathKind == b.PathKind
 }
 
 // dynamicPatternSpecificity returns the precedence dimensions for one

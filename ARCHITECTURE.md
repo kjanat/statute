@@ -191,6 +191,9 @@ stop it again after an idle period. The scope is narrow on purpose:
 - no placement, scheduling, replicas, leader election, cluster membership, or
   storage provisioning;
 - no jobs, deployment pipelines, canaries, or image promotion.
+- one Statute process is the sole lifecycle authority for its governed
+  containers; overlapping or rolling authorities for the same workload are not
+  supported.
 
 Routing remains the primary concern and lifecycle exists to make a routed service
 available. A requirement that needs any of the excluded capabilities belongs
@@ -225,6 +228,17 @@ fall through to the next dispatch tier, and does not reach `Config.Fallback`.
 Docker reporting a container as running is not readiness. An activated workload
 serves no traffic until a readiness signal establishes it. Active-health semantics
 begin from healthy and do not carry over.
+
+A fresh Statute process has no trustworthy mutation history. Before its first
+Docker route publication, it fences every already-running governed one-to-one
+workload to a positively known stopped state. Candidate ownership is derived from
+enabled service labels before backend extraction, so a missing network, port, or
+other serving input cannot bypass the fence or make multiple candidate contributors
+look like a one-to-one grant during reconciliation. Only a later request-driven
+start and readiness proof may serve it. Fence failure fails provider startup closed.
+Restarting a provider run within the same process is different: the retained
+provider object still owns mutation uncertainty and resumes convergence without
+fencing known workload state again.
 
 Activation is single-flight. Concurrent requests for one dormant workload produce
 one start operation, one readiness wait, and one outcome delivered consistently to
@@ -291,9 +305,16 @@ registration envelope, including one whose ordinary matcher extraction or
 serving configuration is invalid. Container provenance remains attached before
 service merging: the quarantined contribution is excluded from ordinary pools,
 while a different immutable container contributing the same service remains
-routable. Valid routes precede the quarantine tier, so an independent contributor
-with the same matcher is not shadowed; unmatched quarantined claims precede
-tombstones and answer `503`. Terminal settlement schedules a coalesced reconcile
+routable. An unextractable predecessor already owned by an unsettled stop does
+not make its independently extractable service-key successor lose one-to-one
+authority; an additional successfully extracted contributor still does. Ordinary
+routes and quarantine claims share one specificity order;
+an independent healthy contributor to the same logical service wins only the tie
+between identical `Host`, `HostKind`, `Path`, and `PathKind` predicates. A narrower
+quarantine therefore cannot fall through to a broader healthy route, while a
+narrower healthy route still precedes a broader quarantine. Matched quarantined
+claims precede tombstones and answer `503`. Terminal
+settlement schedules a coalesced reconcile
 that publishes the quarantine's removal without relying on a Docker event or
 periodic refresh; only that later generation lets ordinary serving-validation
 results and refusal semantics determine the published route outcome.

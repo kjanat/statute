@@ -829,10 +829,18 @@ type compiledRoute struct {
 // a client that cannot be parsed never matches a constrained route and
 // falls through like any other mismatch.
 func findHandler(routes []compiledRoute, host string, req *http.Request) http.Handler {
+	if route := findCompiledRoute(routes, host, req); route != nil {
+		return route.handler
+	}
+	return nil
+}
+
+func findCompiledRoute(routes []compiledRoute, host string, req *http.Request) *compiledRoute {
 	var clientAddr netip.Addr
 	var clientResolved, clientOK bool
-	for _, c := range routes {
-		if !routeMatchesRequest(c, host, req.URL.Path) {
+	for i := range routes {
+		c := &routes[i]
+		if !routeMatchesRequest(*c, host, req.URL.Path) {
 			continue
 		}
 		if len(c.clientPrefixes) > 0 {
@@ -844,7 +852,7 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 				continue
 			}
 		}
-		return c.handler
+		return c
 	}
 	return nil
 }
@@ -854,13 +862,24 @@ func routeMatchesRequest(c compiledRoute, host, path string) bool {
 }
 
 func findDynamicHandler(table *dynamicTable, host string, req *http.Request) http.Handler {
-	if handler := findHandler(table.routes, host, req); handler != nil {
-		return handler
+	route := findCompiledRoute(table.routes, host, req)
+	quarantine := findCompiledRoute(table.quarantines, host, req)
+	switch {
+	case route == nil && quarantine == nil:
+		return findHandler(table.tombstones, host, req)
+	case route == nil:
+		return quarantine.handler
+	case quarantine == nil:
+		return route.handler
+	case route.service == quarantine.service && sameDynamicTraffic(route.matcher, quarantine.matcher):
+		return route.handler
+	case sameDynamicTraffic(route.matcher, quarantine.matcher):
+		return quarantine.handler
+	case dynamicRoutePrecedes(*quarantine, *route):
+		return quarantine.handler
+	default:
+		return route.handler
 	}
-	if handler := findHandler(table.quarantines, host, req); handler != nil {
-		return handler
-	}
-	return findHandler(table.tombstones, host, req)
 }
 
 // tombstoneHandler is the one fixed refusal every tombstone serves: the

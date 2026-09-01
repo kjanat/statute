@@ -59,6 +59,94 @@ func TestCompiledRouteDispatchesItsMatcherIR(t *testing.T) {
 	}
 }
 
+func TestDynamicDispatchOrdersRoutesAndQuarantinesTogether(t *testing.T) {
+	t.Parallel()
+	healthy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cases := []struct {
+		name              string
+		route             docker.Matcher
+		quarantine        docker.Matcher
+		routeService      string
+		quarantineService string
+		requestPath       string
+		want              int
+	}{
+		{
+			name:       "specific quarantine beats broad route",
+			route:      docker.CompileNative("app.example.com", "/*"),
+			quarantine: docker.CompileNative("app.example.com", "/admin/*"),
+			want:       http.StatusServiceUnavailable,
+		},
+		{
+			name:       "identical healthy contributor wins tie",
+			route:      docker.CompileNative("app.example.com", "/admin/*"),
+			quarantine: docker.CompileNative("app.example.com", "/admin/*"),
+			want:       http.StatusNoContent,
+		},
+		{
+			name:         "identical route from another service cannot bypass quarantine",
+			route:        docker.CompileNative("app.example.com", "/admin/*"),
+			quarantine:   docker.CompileNative("app.example.com", "/admin/*"),
+			routeService: "other",
+			want:         http.StatusServiceUnavailable,
+		},
+		{
+			name:       "specific healthy route beats broad quarantine",
+			route:      docker.CompileNative("app.example.com", "/admin/*"),
+			quarantine: docker.CompileNative("app.example.com", "/*"),
+			want:       http.StatusNoContent,
+		},
+		{
+			name:              "exact-host quarantine beats broader Traefik host despite service order",
+			route:             docker.Matcher{Host: "app.example.com", HostKind: docker.HostTraefik, Path: "/admin", PathKind: docker.PathExact},
+			quarantine:        docker.CompileNative("app.example.com", "/admin"),
+			routeService:      "aaa",
+			quarantineService: "zzz",
+			requestPath:       "/admin",
+			want:              http.StatusServiceUnavailable,
+		},
+		{
+			name:              "exact-host route beats broader Traefik quarantine despite service order",
+			route:             docker.CompileNative("app.example.com", "/admin"),
+			quarantine:        docker.Matcher{Host: "app.example.com", HostKind: docker.HostTraefik, Path: "/admin", PathKind: docker.PathExact},
+			routeService:      "zzz",
+			quarantineService: "aaa",
+			requestPath:       "/admin",
+			want:              http.StatusNoContent,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.routeService == "" {
+				tc.routeService = "app"
+			}
+			if tc.quarantineService == "" {
+				tc.quarantineService = "app"
+			}
+			if tc.requestPath == "" {
+				tc.requestPath = "/admin/users"
+			}
+			table := &dynamicTable{
+				routes:      []compiledRoute{{handler: healthy, service: tc.routeService, matcher: tc.route}},
+				quarantines: []compiledRoute{{handler: workloadMutationQuarantine{}, service: tc.quarantineService, matcher: tc.quarantine}},
+			}
+			req := httptest.NewRequest(http.MethodGet, "http://app.example.com"+tc.requestPath, nil)
+			handler := findDynamicHandler(table, "app.example.com", req)
+			if handler == nil {
+				t.Fatal("dynamic dispatch returned no handler")
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.want)
+			}
+		})
+	}
+}
+
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
 // matches in declaration order; the first hit wins.
 func TestRouterHostAndPath(t *testing.T) {
