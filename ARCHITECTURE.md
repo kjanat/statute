@@ -231,14 +231,13 @@ begin from healthy and do not carry over.
 
 A fresh Statute process has no trustworthy mutation history. Before its first
 Docker route publication, it fences every already-running governed one-to-one
-workload to a positively known stopped state. Candidate ownership is derived from
-enabled service labels before backend extraction, so a missing network, port, or
-other serving input cannot bypass the fence or make multiple candidate contributors
-look like a one-to-one grant during reconciliation. Only a later request-driven
-start and readiness proof may serve it. Fence failure fails provider startup closed.
-Restarting a provider run within the same process is different: the retained
-provider object still owns mutation uncertainty and resumes convergence without
-fencing known workload state again.
+workload to a positively known stopped state. Candidate ownership derives from
+enabled service labels before backend extraction. Fencing and contributor counts
+include candidates missing a network, port, or other serving input. A later
+request-driven start and readiness proof may serve it. Fence failure fails provider
+startup closed.
+A provider-run restart within the same process retains mutation ownership and
+resumes convergence. Fresh-process fencing runs once per provider lifetime.
 
 Activation is single-flight. Concurrent requests for one dormant workload produce
 one start operation, one readiness wait, and one outcome delivered consistently to

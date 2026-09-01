@@ -66,8 +66,7 @@ type dockerProvider struct {
 	reconciling       bool
 	reconcileDemanded bool
 	mutationVersions  map[string]uint64
-	// authorityEstablished records that this process fenced every governed
-	// workload observed at first startup to a known-stopped state. Guarded by
+	// authorityEstablished marks fresh-process fencing complete. Guarded by
 	// syncMu and retained across provider-run restarts.
 	authorityEstablished bool
 
@@ -451,8 +450,8 @@ func (r *dockerRun) debounce() {
 	}
 }
 
-// syncLogged runs a reconcile, logging instead of propagating errors. It
-// reports whether a new generation was published.
+// syncLogged runs a reconcile, logs failures, and reports successful
+// generation publication.
 func (p *dockerProvider) syncLogged(ctx context.Context) bool {
 	if err := p.sync(ctx); err != nil {
 		log.Printf("statute: docker: sync failed, keeping previous routes: %v", err)

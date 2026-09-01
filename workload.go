@@ -1355,9 +1355,8 @@ func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service) {
 	w.mu.Unlock()
 }
 
-// detachMutationOwnerLocked separates an immutable predecessor mutation from
-// the current service grant. The returned successor keeps binding keys
-// monotonic so stale handlers cannot match a replacement generation.
+// detachMutationOwnerHeldLocked separates an immutable predecessor mutation
+// from the current grant. The successor inherits binding sequence and backoff.
 func (p *dockerProvider) detachMutationOwnerHeldLocked(old *workload, service string) *workload {
 	old.retired = true
 	old.stopIdleLocked()

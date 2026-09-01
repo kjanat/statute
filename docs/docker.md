@@ -103,8 +103,7 @@ container pair. A merged multi-container service has no single activation
 owner, and a container contributing several services has no single
 controllable lifecycle, since a stop acts on all of them at once; either
 shape leaves the policy unapplied and the provider reports it. Candidate
-service claims count even when backend validation fails, so missing network
-data cannot turn a shared service into apparent one-to-one ownership.
+service claims count toward this topology even when backend validation fails.
 
 How it behaves:
 
@@ -132,20 +131,19 @@ How it behaves:
   stop call was issued waits and triggers a fresh activation.
 - **External changes reconcile.** A container stopped outside statute
   becomes dormant and reactivates on the next request. A container started
-  outside statute after startup is adopted through the same readiness gate, and
-  the idle policy applies to it: a manual start does not exempt a workload from
-  its own scale-to-zero policy. A fresh Statute process instead fences every
+  outside statute after startup enters the same readiness gate and idle policy.
+  A fresh Statute process fences every
   already-running governed workload to known-stopped before publishing Docker
   routes, then permits only a fresh request-driven start and readiness proof.
-  Service identity is read from enabled labels before backend validation, so a
-  missing network or port cannot bypass the fence. Fence failure fails startup.
+  Service identity is read from enabled labels before backend validation.
+  Candidates missing a network or port remain subject to the fence. Fence failure fails startup.
   One Statute process must be the sole lifecycle
   authority for a governed container; rolling overlap is unsupported.
   Replacement beneath the same service supersedes
   an in-flight operation: its waiters fail closed, stale cleanup is ignored,
   a running successor proves readiness afresh, and old request completions
-  cannot affect the successor's idle timer. Queued requests also fail closed
-  when labels change their route or middleware policy during activation.
+  remain bound to the predecessor's idle state. A label change during activation
+  invalidates queued requests when route or middleware policy changes.
 - **Issued mutations stay owned.** Idle stops and failed-activation cleanup
   stops remain non-serving lifecycle operations until their outcome settles.
   If a stop response is lost or Docker returns a server error, an immediate running
