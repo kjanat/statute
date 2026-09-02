@@ -48,9 +48,10 @@ current dynamic generation. Dynamic discovery must not shadow compiled static
 configuration.
 
 A configured `Fallback` handler is the router's terminal stage, reached only
-after both tables and the current generation's Docker tombstones miss; unset, the
-terminal behavior stays `http.NotFound`. It is not a route: it has no matcher and
-no route middleware. It lives inside the content router, so everything wrapping the router keeps its precedence over it:
+after both tables, the current generation's mutation quarantines, and its Docker
+tombstones miss; unset, the terminal behavior stays `http.NotFound`. It is not a
+route: it has no matcher and no route middleware. It lives inside the content
+router, so everything wrapping the router keeps its precedence over it:
 pending HTTP-01 challenge responses on a plain HTTP listener, Alt-Svc, and
 listener observability all sit outside it, and a redirect-only listener never
 reaches it. What each ACME source claims differs: an automatic source absorbs
@@ -118,7 +119,8 @@ middleware.
 
 A discarded registration leaves a **tombstone**: a matcher carrying no upstream,
 no middleware, and one fixed 404 refusal. Dispatch is static routes, then valid
-Docker routes, then tombstones, then `Config.Fallback`. Tombstones exist because
+Docker routes, container-mutation quarantines, tombstones, and `Config.Fallback`.
+Tombstones exist because
 a dropped registration used to end in the terminal 404; with a fallback
 configured it would instead fall through into operator code that does not know
 the registration asked for a policy statute could not supply. A registration is
@@ -189,6 +191,9 @@ stop it again after an idle period. The scope is narrow on purpose:
 - no placement, scheduling, replicas, leader election, cluster membership, or
   storage provisioning;
 - no jobs, deployment pipelines, canaries, or image promotion.
+- one Statute process is the sole lifecycle authority for its governed
+  containers; overlapping or rolling authorities for the same workload are not
+  supported.
 
 Routing remains the primary concern and lifecycle exists to make a routed service
 available. A requirement that needs any of the excluded capabilities belongs
@@ -224,6 +229,30 @@ Docker reporting a container as running is not readiness. An activated workload
 serves no traffic until a readiness signal establishes it. Active-health semantics
 begin from healthy and do not carry over.
 
+Every issued stop has durable mutation ownership. `Docker().Storage(path)` is
+required with `Workload`; this existing persistent directory holds a write-ahead
+registry bound to the Docker endpoint. Before calling Docker, Statute persists the immutable container ID,
+mutation kind, and prepared state with atomic replacement and file and directory
+sync. A definitive rejection before any ambiguity proves non-application and
+settles the mutation. Ambiguous outcomes remain recorded, and a later rejection
+does not erase them; only positive stopped or missing-ID evidence then settles the
+mutation. The record is durably removed before ordinary traffic can resume.
+Registry I/O holds only the registry mutex. Lifecycle captures the exact stop,
+binding pointer/key, and immutable ID, performs durable I/O unlocked, then
+revalidates that owner before committing state. Reconcile records stopped evidence
+and delegates deletion to tracked convergence after releasing its workload locks.
+
+A fresh process loads this registry before its first Docker route publication.
+Each record restores one retired mutation owner and quarantines only the recorded
+immutable container contribution while convergence resumes. Current labels,
+service names, contributor counts, and backend validity may determine whether a
+new mutation is eligible, but never determine historical ownership. A relabelled
+recorded container therefore remains quarantined, another contributor stays
+independently routable, and a same-name container with a different ID inherits
+nothing. Registry open, validation, endpoint-binding, or persistence failure fails
+closed at the affected startup or mutation scope. A provider-run restart within
+the same process follows the same durable contract.
+
 Activation is single-flight. Concurrent requests for one dormant workload produce
 one start operation, one readiness wait, and one outcome delivered consistently to
 every waiter. Cancellation is explicit: one client disconnecting does not cancel an
@@ -232,19 +261,97 @@ activation the remaining waiters still need.
 Activation failure is terminal for the request. A timeout or failure answers the
 client, `503` with `Retry-After` where meaningful, and does not continue into
 `Config.Fallback`. Operator code that never asked for the workload cannot answer
-for it. The original request survives until proxying begins.
+for it. The original request survives until proxying begins. Backoff is cleared
+early only by lifecycle evidence after the failure: the same immutable binding
+must be observed stopped and then running, or a replacement binding must be
+observed running. A running observation after a definitively rejected cleanup
+stop is the known result of that rejection and preserves the backoff. Demand
+after the window retries readiness without starting the already-running
+container again.
+
+A Docker listing is a snapshot from capture time. Each listing carries the
+process-local observation epoch of every workload owner from before Docker I/O.
+Activation settlement, stop installation, and terminal stop outcome advance
+that epoch. A mismatched snapshot mutates no later lifecycle state and forces a
+fresh listing; rejecting only its route publication would be too late because
+repair evidence, retirement, binding replacement, and mutation settlement all
+occur while the generation is derived. Final publication is also fenced by one
+provider-wide observation revision, checked atomically with mutation revisions
+and the table swap. A lifecycle transition after observation validation therefore
+cannot publish a generation derived from its predecessor state.
 
 Idle is measured from request completion. An in-flight HTTP request, an open
 WebSocket, and an open streaming response each hold the workload active, and the
 idle timer starts when the last of them finishes. A request arriving while the
 workload is stopping has one defined outcome and never proxies into a container
-being torn down.
+being torn down. Activation success and definitive stop rejection reserve one
+binding-scoped activity lease per waiter before idle may arm.
 
 Lifecycle state belongs to the generation that owns it. Docker generations are
 replaced atomically, and a retired generation may not mutate or cancel its
 successor's state. That holds while a workload is starting, while labels change
 during activation, while Statute shuts down mid-activation, and when Docker
 reports a stop from outside.
+
+An activation or issued stop is bound to one immutable container identity. If a
+reconcile replaces that container beneath the same service, waiters on the stale
+operation fail closed, its eventual result is ignored, and a running successor
+enters a fresh observe-only readiness attempt. Stale work neither establishes
+readiness nor issues cleanup for the successor. Request activity and completion
+carry the same identity: an old stream may finish, but cannot hold or arm the
+successor's idle lifecycle. Its binding token remains stable when the Docker call
+target is refined from a known container's name to its ID.
+
+Three lifetimes remain distinct. The provider allocates an explicit,
+provider-lifetime-unique container-incarnation key and keeps request activity
+with that binding. The
+dynamic table owns a routing revision derived from handler-carried matcher and
+middleware semantics; it stays stable while a stopped container materialises its
+backend, while a label or middleware change invalidates queued handlers before
+they can proxy. A `runningPool` owns health state and transport connections and is
+reused only when both its resolved fingerprint and, for a gated workload, its
+container-incarnation key remain equal.
+
+Docker call references refine monotonically. Discovery may add an immutable ID to
+a name-only binding, and a later observation without that ID cannot erase it. A
+Docker mutation remains represented by binding-owned workload state until its
+outcome settles. This includes the cleanup stop after a failed activation. A lost
+stop response or server error enters a non-serving unknown state even when an
+immediate inspect still reports running, because the server-side stop may still
+complete. Uncertainty belongs to the whole mutation and is monotonic: a later
+rejected retry cannot erase an earlier attempt whose outcome was ambiguous. The
+operation owns backed-off retries of bounded calls and coalesced reconciliation
+until a successful or already-stopped response, a missing immutable container ID,
+or a stopped observation resolves it. Readiness uses the same provider-owned
+publication edge and remains probe-paced after publication, keeping global rebuild
+work out of per-activation polling.
+
+Lifecycle authority and mutation quarantine have separate lifetimes. If a
+one-to-one grant becomes invalid while its stop is already issued, the grant is
+revoked immediately and can authorize no new mutation. The existing stop still
+owns its retries and a container-wide non-serving quarantine: every service
+contributed by that immutable container answers `503` until terminal evidence
+settles the stop, including generations where the stopped container has no
+materialised backend. Quarantine compiles directly from the already-derived
+registration envelope, including one whose ordinary matcher extraction or
+serving configuration is invalid. Container provenance remains attached before
+service merging: the quarantined contribution is excluded from ordinary pools,
+while a different immutable container contributing the same service remains
+routable. An unextractable predecessor already owned by an unsettled stop does
+not make its independently extractable service-key successor lose one-to-one
+authority; an additional successfully extracted contributor still does. Ordinary
+routes and quarantine claims share one specificity order;
+an independent healthy contributor to the same logical service wins only the tie
+between identical `Host`, `HostKind`, `Path`, and `PathKind` predicates. Every
+matching tied quarantine requires its own same-service healthy contributor; proof
+for one quarantined service cannot neutralize another. A narrower
+quarantine therefore cannot fall through to a broader healthy route, while a
+narrower healthy route still precedes a broader quarantine. Matched quarantined
+claims precede tombstones and answer `503`. Terminal
+settlement schedules a coalesced reconcile
+that publishes the quarantine's removal without relying on a Docker event or
+periodic refresh; only that later generation lets ordinary serving-validation
+results and refusal semantics determine the published route outcome.
 
 Authority is code-owned. A container label may select or parameterize an activation
 policy the binary already grants. A label alone never grants Statute authority to
@@ -327,6 +434,10 @@ TCP listeners, UDP packet connections, `http.Server` / HTTP/3 server objects, AC
 manager state, Docker reconciliation, and dynamic pool handlers are different
 resources. Closing an owned socket and permanently closing a reusable server control
 object are not interchangeable operations.
+
+The server shutdown grace period cancels provider-run stop and inspect calls. An
+issued mutation cancelled before confirmation remains durably uncertain and
+non-serving; the next provider run resumes convergence before route publication.
 
 If a PR claims transactional or retryable startup, tests must prove both resource
 release after failure and successful serving after retry. A nil return from the

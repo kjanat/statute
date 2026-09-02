@@ -34,6 +34,7 @@ statute.Main(statute.Config{
 | `ExposedByDefault()`       | Register every running container without requiring an enable label (Traefik's `exposedByDefault=true`). statute's default is opt-in.  |
 | `TraefikLabels()`          | Additionally honor `traefik.*` labels (see below).                                                                                    |
 | `Refresh(string)`          | Periodic full resync interval, e.g. `"30s"`. Default: events only; the provider already resyncs whenever the event stream reconnects. |
+| `Storage(string)`          | Existing persistent directory for outstanding workload mutations. Required with `Workload`; must survive process/container restarts.  |
 | `Middleware(name, mw...)`  | Register a named, code-owned middleware chain that container labels may reference (see below). Re-registering a name replaces it.     |
 | `DefaultMiddleware(mw...)` | Middleware applied to every Docker-discovered route, outermost — before label-referenced chains and label hints.                      |
 | `PoolPolicy(name, policy)` | Attach code-owned transport, Host, and health policy to one exact discovered-service identity. Re-registering a name replaces it.     |
@@ -56,7 +57,9 @@ statute.Main(statute.Config{
   failed reconcile logs and keeps the previous routing generation serving.
 - The provider follows the Docker event stream (with reconnect + backoff)
   and coalesces bursts — a `docker compose up` starting ten containers
-  reconciles once.
+  reconciles once. Activation demand arriving during an in-flight listing
+  joins that publication edge; readiness waits one probe interval after
+  publication before checking again.
 - Route tables swap atomically per generation. Requests in flight finish
   against the generation they started with. Pool handlers whose resolved
   config is unchanged are carried over, keeping health-check state and
@@ -65,7 +68,8 @@ statute.Main(statute.Config{
   every compiled `Routes` entry, so a container label can never shadow
   configuration you shipped in the binary.
 - Label-derived routes are ordered by specificity, not container order:
-  host-scoped before host-agnostic, longer path prefixes first.
+  host-scoped before host-agnostic, longer path prefixes first, and an exact
+  native host before the broader Traefik host matcher when both overlap.
 - Label values go through the same resolver as static config (same
   duration/rate parsing, same validation). An invalid label skips that
   service — with a warning logged once — rather than poisoning the rest.
@@ -87,6 +91,7 @@ stops the container again once it has been idle:
 
 ```go
 Docker: statute.Docker().
+    Storage("/var/lib/statute/docker").
     Workload("tools", statute.WorkloadPolicy{
         IdleAfter:    "15m",
         ReadyTimeout: "2m",
@@ -99,7 +104,14 @@ label can never grant it. The policy requires a one-to-one service and
 container pair. A merged multi-container service has no single activation
 owner, and a container contributing several services has no single
 controllable lifecycle, since a stop acts on all of them at once; either
-shape leaves the policy unapplied and the provider reports it.
+shape leaves the policy unapplied and the provider reports it. Candidate
+service claims count toward this topology even when backend validation fails.
+`Storage` is required, must already exist, and must persist across process and container restarts.
+Do not share it between concurrent Statute processes. One process must remain
+the sole lifecycle authority for its governed containers; rolling overlap is
+unsupported. Statute validates the registry and its Docker endpoint binding
+before publishing Docker routes; corruption or an endpoint mismatch fails
+startup closed.
 
 How it behaves:
 
@@ -119,18 +131,65 @@ How it behaves:
   timeout answers `503` and never continues into `Fallback`. The container
   statute started is stopped again, and an exponential backoff
   (`BackoffBase` to `BackoffCap`) spaces further attempts; requests inside
-  the window get `503` with `Retry-After`.
+  the window get `503` with `Retry-After`. If Docker definitively rejects the
+  cleanup stop, seeing that same container still running does not erase the
+  backoff. After the window, demand retries readiness without starting it again.
 - **Idle is measured from request completion.** In-flight requests, open
   WebSockets, and open streaming responses each hold the workload active;
   the `IdleAfter` timer starts when the last one finishes. A request
   arriving while the stop is pending revokes it; one arriving after the
-  stop call was issued waits and triggers a fresh activation.
+  stop call was issued waits and triggers a fresh activation. Waiters reserve
+  activity before a successful activation or rejected stop can arm idle, so
+  scheduler delay while they wake does not consume their idle window.
 - **External changes reconcile.** A container stopped outside statute
   becomes dormant and reactivates on the next request. A container started
-  outside statute is adopted through the same readiness gate, and the idle
-  policy applies to it: a manual start does not exempt a workload from its
-  own scale-to-zero policy. Statute's own shutdown leaves workloads as they
-  are.
+  outside statute after a stopped observation enters the same readiness gate
+  and idle policy; an unchanged running snapshot is not a repair signal. Docker
+  snapshots captured before a local activation or stop transition are discarded;
+  a fresh listing observes the newer lifecycle state. Publication rechecks a
+  provider-wide lifecycle revision atomically with the route-table swap, preventing
+  a transition after snapshot validation from publishing its predecessor state.
+  Replacement beneath the same service supersedes
+  an in-flight operation: its waiters fail closed, stale cleanup is ignored,
+  a running successor proves readiness afresh, and old request completions
+  remain bound to the predecessor's idle state. A label change during activation
+  invalidates queued requests when route or middleware policy changes.
+- **Issued mutations stay owned.** Idle stops and failed-activation cleanup
+  stops are written to the persistent registry by immutable container ID before
+  Docker receives the mutation, and remain non-serving until their outcome settles.
+  Registry synchronisation holds no workload or reconciliation lock; the exact
+  mutation owner is revalidated after each durable write.
+  If a stop response is lost or Docker returns a server error, an immediate running
+  inspect does not reopen traffic: Docker may still finish the stop. That uncertainty
+  remains attached to the mutation and cannot be erased by a later rejected retry.
+  A definitive rejection with no earlier ambiguity instead proves the stop was not
+  applied, clears the prepared record, and restores the pre-stop lifecycle state.
+  Statute coalesces discovery and retries the bounded call until positive stopped or
+  missing-container evidence resolves the operation, including when periodic refresh
+  is disabled. If the service-to-container topology stops being one-to-one during an
+  issued stop, lifecycle authority is revoked immediately, but every route contributed
+  by that immutable container stays quarantined with `503` until the stop settles and a
+  later reconcile removes quarantine. Ordinary pool rules then apply. Quarantine routes
+  compile from a fail-closed registration envelope before service contributions merge:
+  they remain present when the stopped container has no backend address, and invalid
+  rules, middleware, health, or transport configuration cannot replace their `503` with
+  a route miss. Only the mutation-owned container contribution is excluded from ordinary
+  routing. Another immutable container contributing the same service remains routable
+  through its own backend when the same logical service has the identical host kind,
+  host, path kind, and path. Each matching tied quarantine requires that proof from
+  its own service; one healthy service cannot neutralize another service's quarantine.
+  Ordinary routes and quarantines otherwise share normal
+  route specificity: a broad healthy route cannot bypass a narrower quarantine, and a
+  narrower healthy route still beats a broad quarantine. Quarantines remain ahead of
+  tombstones and fallback.
+  Settlement itself schedules the reconcile, so removing
+  quarantine does not depend on a Docker event or periodic refresh. Ordinary
+  serving-validation results determine the published route outcome only after quarantine
+  ends. A recreated container starts with fresh pool health and connections, even when its
+  name and backend address are unchanged. Statute's own shutdown leaves workloads as they
+  are. The shutdown grace period cancels any outstanding stop or confirmation request;
+  because Docker may still apply an issued stop, its durable record remains uncertain and
+  is recovered by the next provider run before serving resumes.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.

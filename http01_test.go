@@ -813,7 +813,12 @@ func TestStopCancelledIssuanceDoesNotCooldown(t *testing.T) {
 // ACME managers it started: no renewal loop outlives a failed Start, and
 // a retried Start restarts them cleanly and issues end-to-end.
 func TestStartFailureStopsACMEManagers(t *testing.T) {
-	httpAddr := reserveAddr(t)
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
+	httpAddr := busy.Addr().String()
 	src, srv := newHTTP01LifecycleServer(t, httpAddr)
 	mgr := srv.acmeManagers[src]
 	if mgr == nil {
@@ -825,10 +830,6 @@ func TestStartFailureStopsACMEManagers(t *testing.T) {
 
 	// Hold the plain HTTP listener's port, so Start fails at the bind
 	// phase — after the managers have started.
-	busy, err := net.Listen("tcp", httpAddr)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := srv.Start(); err == nil {
 		t.Fatal("Start succeeded despite a conflicting listener address")
 	}

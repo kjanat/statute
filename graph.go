@@ -9,6 +9,8 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
+const renderedNone = "none"
+
 // GraphDOT writes a Graphviz DOT representation of the resolved config to w.
 // Render with `dot -Tsvg < input.dot > topology.svg` (or any DOT-capable
 // renderer).
@@ -86,8 +88,8 @@ func graphDockerWorkloads(d *dotWriter, r *resolved.Config) {
 	d.printf("\n  // docker on-demand workloads\n")
 	for i, name := range names {
 		w := r.Docker.Workloads[name]
-		label := fmt.Sprintf("%s\\nDocker workload\\nidle_after=%s\\nready_timeout=%s\\nreadiness=%s",
-			name, w.IdleAfter, w.ReadyTimeout, readinessPolicyString(w.Readiness))
+		label := fmt.Sprintf("%s\\nDocker workload\\nregistry=%s\\nidle_after=%s\\nready_timeout=%s\\nreadiness=%s",
+			name, r.Docker.Storage, w.IdleAfter, w.ReadyTimeout, readinessPolicyString(w.Readiness))
 		d.printf("  DW_%d [shape=ellipse, style=\"filled,dashed\", fillcolor=\"#fff3cd\", label=%q];\n", i, label)
 	}
 }
@@ -151,7 +153,7 @@ func healthPolicyString(active resolved.HealthCheck, passive resolved.PassiveHea
 		parts = append(parts, fmt.Sprintf("passive(window=%s,max=%d)", passive.FailureWindow, passive.MaxFailures))
 	}
 	if len(parts) == 0 {
-		return "none"
+		return renderedNone
 	}
 	return strings.Join(parts, "+")
 }

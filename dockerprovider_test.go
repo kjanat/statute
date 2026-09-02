@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 // fakeDaemonContainer is the wire shape /containers/json responses are
 // built from in these tests.
 type fakeDaemonContainer struct {
+	id      string
 	name    string
 	ip      string
 	port    int
@@ -36,7 +38,7 @@ func daemonJSON(t *testing.T, containers []fakeDaemonContainer) string {
 		IPAddress string `json:"IPAddress"`
 	}
 	out := make([]map[string]any, 0, len(containers))
-	for i, c := range containers {
+	for _, c := range containers {
 		state := "running"
 		ports := []map[string]any{{"PrivatePort": c.port, "Type": "tcp"}}
 		networks := map[string]netJSON{"bridge": {IPAddress: c.ip}}
@@ -46,7 +48,7 @@ func daemonJSON(t *testing.T, containers []fakeDaemonContainer) string {
 			networks = nil
 		}
 		out = append(out, map[string]any{
-			"Id":     fmt.Sprintf("id-%d", i),
+			"Id":     c.id,
 			"Names":  []string{"/" + c.name},
 			"State":  state,
 			"Labels": c.labels,
@@ -70,21 +72,64 @@ type fakeDaemon struct {
 	mu sync.Mutex
 
 	containers []fakeDaemonContainer
+	nextID     int
+	lists      int
 	starts     map[string]int
 	stops      map[string]int
-	// failStart makes every start call answer 500.
-	failStart bool
+	// failStart and failStop make their lifecycle calls answer 500.
+	failList           bool
+	failStart          bool
+	failStop           bool
+	rejectStop         bool
+	blockRejectedStop  bool
+	stopFailsAfterSide bool
+	loseStopReply      bool
+	stallInspect       bool
+	inspectStarted     chan struct{}
+	listStarted        chan struct{}
+	listRelease        chan struct{}
+	stopStarted        chan struct{}
+	stopRelease        chan struct{}
 }
 
 func (d *fakeDaemon) swap(cs []fakeDaemonContainer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.containers = cs
+	ids := make(map[string]string, len(d.containers))
+	for _, c := range d.containers {
+		ids[c.name] = c.id
+	}
+	next := make([]fakeDaemonContainer, len(cs))
+	copy(next, cs)
+	for i := range next {
+		if next[i].id != "" {
+			continue
+		}
+		if id := ids[next[i].name]; id != "" {
+			next[i].id = id
+			continue
+		}
+		next[i].id = d.nextContainerIDLocked()
+	}
+	d.containers = next
+}
+
+func (d *fakeDaemon) recreate(c fakeDaemonContainer) fakeDaemonContainer {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	c.id = d.nextContainerIDLocked()
+	return c
+}
+
+func (d *fakeDaemon) nextContainerIDLocked() string {
+	id := fmt.Sprintf("id-%d", d.nextID)
+	d.nextID++
+	return id
 }
 
 func (d *fakeDaemon) find(ref string) *fakeDaemonContainer {
 	for i := range d.containers {
-		if d.containers[i].name == ref || fmt.Sprintf("id-%d", i) == ref {
+		if d.containers[i].name == ref || d.containers[i].id == ref {
 			return &d.containers[i]
 		}
 	}
@@ -103,6 +148,147 @@ func (d *fakeDaemon) stopCount(name string) int {
 	return d.stops[name]
 }
 
+func (d *fakeDaemon) listCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lists
+}
+
+func (d *fakeDaemon) stopContainerLocked(ref string, c *fakeDaemonContainer) *fakeDaemonContainer {
+	d.stops[c.name]++
+	if d.stopStarted != nil {
+		close(d.stopStarted)
+		d.stopStarted = nil
+	}
+	if release := d.stopRelease; release != nil {
+		d.mu.Unlock()
+		<-release
+		d.mu.Lock()
+		return d.find(ref)
+	}
+	return c
+}
+
+func (d *fakeDaemon) stallInspectLocked(w http.ResponseWriter, r *http.Request) bool {
+	if !d.stallInspect {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	if d.inspectStarted != nil {
+		close(d.inspectStarted)
+		d.inspectStarted = nil
+	}
+	d.mu.Unlock()
+	<-r.Context().Done()
+	d.mu.Lock()
+	return true
+}
+
+func (d *fakeDaemon) signalStopStartedLocked() {
+	if d.stopStarted != nil {
+		close(d.stopStarted)
+		d.stopStarted = nil
+	}
+}
+
+func (d *fakeDaemon) loseStopResponseLocked(w http.ResponseWriter, ref string, c *fakeDaemonContainer) {
+	d.stops[c.name]++
+	d.signalStopStartedLocked()
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		d.t.Errorf("hijack lost stop response: %v", err)
+		return
+	}
+	_ = conn.Close()
+	release := d.stopRelease
+	d.mu.Unlock()
+	if release != nil {
+		<-release
+	}
+	d.mu.Lock()
+	if current := d.find(ref); current != nil {
+		current.stopped = true
+	}
+}
+
+func (d *fakeDaemon) failStopAfterSideEffectLocked(w http.ResponseWriter, ref string, c *fakeDaemonContainer) {
+	d.stops[c.name]++
+	d.signalStopStartedLocked()
+	release := d.stopRelease
+	go func() {
+		if release != nil {
+			<-release
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if current := d.find(ref); current != nil {
+			current.stopped = true
+		}
+	}()
+	http.Error(w, "stop confirmation failed", http.StatusInternalServerError)
+}
+
+func (d *fakeDaemon) stopResponseLocked(w http.ResponseWriter, r *http.Request, ref string, c *fakeDaemonContainer) {
+	if d.loseStopReply {
+		d.loseStopResponseLocked(w, ref, c)
+		return
+	}
+	if d.rejectStop {
+		if d.blockRejectedStop {
+			c = d.stopContainerLocked(ref, c)
+			if c == nil {
+				http.NotFound(w, r)
+				return
+			}
+		} else {
+			d.stops[c.name]++
+		}
+		http.Error(w, "rejected", http.StatusConflict)
+		return
+	}
+	if d.stopFailsAfterSide {
+		d.failStopAfterSideEffectLocked(w, ref, c)
+		return
+	}
+	c = d.stopContainerLocked(ref, c)
+	if c == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if d.failStop {
+		http.Error(w, "boom", http.StatusInternalServerError)
+		return
+	}
+	c.stopped = true
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (d *fakeDaemon) listContainers(w http.ResponseWriter) {
+	d.mu.Lock()
+	d.lists++
+	if d.listStarted != nil {
+		close(d.listStarted)
+		d.listStarted = nil
+	}
+	release := d.listRelease
+	fail := d.failList
+	body := daemonJSON(d.t, d.containers)
+	d.mu.Unlock()
+	if release != nil {
+		<-release
+	}
+	if fail {
+		http.Error(w, "boom", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(body))
+}
+
 func (d *fakeDaemon) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
@@ -114,13 +300,7 @@ func (d *fakeDaemon) handler() http.Handler {
 		}
 		<-r.Context().Done()
 	})
-	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) {
-		d.mu.Lock()
-		body := daemonJSON(d.t, d.containers)
-		d.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	})
+	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) { d.listContainers(w) })
 	mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/containers/"), "/")
 		if len(parts) != 2 {
@@ -137,6 +317,9 @@ func (d *fakeDaemon) handler() http.Handler {
 		}
 		switch action {
 		case "json":
+			if d.stallInspectLocked(w, r) {
+				return
+			}
 			var health any
 			if c.health != "" {
 				health = map[string]any{"Status": c.health}
@@ -154,14 +337,199 @@ func (d *fakeDaemon) handler() http.Handler {
 			c.stopped = false
 			w.WriteHeader(http.StatusNoContent)
 		case "stop":
-			d.stops[c.name]++
-			c.stopped = true
-			w.WriteHeader(http.StatusNoContent)
+			d.stopResponseLocked(w, r, ref, c)
 		default:
 			http.NotFound(w, r)
 		}
 	})
 	return mux
+}
+
+func TestDockerActivationReconcilesAreCoalesced(t *testing.T) {
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, nil)
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	before := daemon.listCount()
+	daemon.mu.Lock()
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseList := func() { releaseOnce.Do(func() { close(listRelease) }) }
+	t.Cleanup(releaseList)
+
+	changed := p.requestReconcile()
+	if changed == nil {
+		t.Fatal("running provider rejected a reconcile request")
+	}
+	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
+	for range 99 {
+		got := p.requestReconcile()
+		if got == nil {
+			t.Fatal("running provider rejected a reconcile request")
+		}
+		if got != changed {
+			t.Fatal("one reconcile burst returned multiple publication edges")
+		}
+	}
+	daemon.mu.Lock()
+	secondListStarted := make(chan struct{})
+	daemon.listStarted = secondListStarted
+	daemon.mu.Unlock()
+	releaseList()
+	waitSignal(t, changed, "coalesced reconcile did not publish a generation")
+	select {
+	case <-secondListStarted:
+		t.Fatal("reconcile demand queued during a listing triggered a second listing")
+	case <-time.After(dockerDebounce + 100*time.Millisecond):
+	}
+	if got := daemon.listCount() - before; got != 1 {
+		t.Fatalf("100 reconcile requests performed %d Docker listings, want 1", got)
+	}
+}
+
+func TestDockerReconcileRetriesUntilPublication(t *testing.T) {
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, nil)
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	before := daemon.listCount()
+	daemon.mu.Lock()
+	daemon.failList = true
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+	var releaseOnce sync.Once
+	releaseList := func() { releaseOnce.Do(func() { close(listRelease) }) }
+	t.Cleanup(releaseList)
+
+	changed := p.requestReconcile()
+	if changed == nil {
+		t.Fatal("running provider rejected a reconcile request")
+	}
+	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
+	daemon.mu.Lock()
+	daemon.failList = false
+	daemon.listRelease = nil
+	daemon.mu.Unlock()
+	releaseList()
+	select {
+	case <-changed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed reconcile lost activation demand")
+	}
+	if got := daemon.listCount() - before; got != 2 {
+		t.Fatalf("failed reconcile performed %d Docker listings, want failure plus retry", got)
+	}
+}
+
+func TestDockerMutationSettlementRejectsStaleSnapshot(t *testing.T) {
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{}, nil)
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider start: %v", err)
+	}
+	t.Cleanup(run.stop)
+	before := daemon.listCount()
+	daemon.mu.Lock()
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+
+	changed := p.requestReconcile()
+	waitSignal(t, listStarted, "requested reconcile did not start a Docker listing")
+	p.markMutationSettled("wl")
+	close(listRelease)
+	waitSignal(t, changed, "stale Docker snapshot was not replaced")
+	if got := daemon.listCount() - before; got != 2 {
+		t.Fatalf("mutation settlement performed %d listings, want stale snapshot plus retry", got)
+	}
+}
+
+func TestDockerLifecycleTransitionRejectsStalePublication(t *testing.T) {
+	p := &dockerProvider{srv: &server{}, generationChanged: make(chan struct{})}
+	versions := p.currentGenerationVersions()
+	w := &workload{}
+	w.mu.Lock()
+	p.invalidateWorkloadObservationsLocked(w)
+	w.mu.Unlock()
+
+	stale := &dynamicTable{}
+	if p.publishGeneration(stale, versions) {
+		t.Fatal("publication accepted an observation version invalidated after derivation")
+	}
+	if got := p.srv.dynamic.Load(); got != nil {
+		t.Fatal("rejected publication changed the dynamic table")
+	}
+
+	fresh := &dynamicTable{}
+	if !p.publishGeneration(fresh, p.currentGenerationVersions()) {
+		t.Fatal("publication rejected current observation version")
+	}
+	if got := p.srv.dynamic.Load(); got != fresh {
+		t.Fatal("current publication did not install the dynamic table")
+	}
+}
+
+func TestDockerFailedInitialSyncStopsTrackedWork(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	p, _, daemon := newFakeProviderDaemon(t, &resolved.Docker{
+		Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()},
+	}, []fakeDaemonContainer{{
+		name: "wl-1", ip: host, port: port, health: "starting",
+		labels: map[string]string{"statute.enable": "true", "statute.service": "wl"},
+	}})
+	daemon.mu.Lock()
+	daemon.listStarted = make(chan struct{})
+	daemon.listRelease = make(chan struct{})
+	listStarted := daemon.listStarted
+	listRelease := daemon.listRelease
+	daemon.mu.Unlock()
+
+	startResult := make(chan error, 1)
+	go func() {
+		_, err := p.start()
+		startResult <- err
+	}()
+	waitSignal(t, listStarted, "initial sync did not start Docker listing")
+	p.markMutationSettled("wl")
+	daemon.mu.Lock()
+	daemon.failList = true
+	daemon.listRelease = nil
+	daemon.mu.Unlock()
+	close(listRelease)
+	if err := <-startResult; err == nil {
+		t.Fatal("failed retrying initial sync returned nil")
+	}
+	if got := p.workloadFor("wl"); got == nil || got.phaseNow() != workloadDormant {
+		t.Fatalf("failed initial sync workload = %+v, want dormant retained entry", got)
+	}
+
+	daemon.mu.Lock()
+	daemon.failList = false
+	daemon.find("wl-1").health = "healthy"
+	daemon.mu.Unlock()
+	run, err := p.start()
+	if err != nil {
+		t.Fatalf("provider retry: %v", err)
+	}
+	t.Cleanup(run.stop)
 }
 
 // newFakeProvider builds a dockerProvider wired to a fake daemon serving
@@ -176,10 +544,14 @@ func newFakeProvider(t *testing.T, cfg *resolved.Docker, containers []fakeDaemon
 // tests that drive the lifecycle endpoints.
 func newFakeProviderDaemon(t *testing.T, cfg *resolved.Docker, containers []fakeDaemonContainer) (*dockerProvider, *server, *fakeDaemon) {
 	t.Helper()
-	daemon := &fakeDaemon{t: t, containers: containers, starts: map[string]int{}, stops: map[string]int{}}
+	daemon := &fakeDaemon{t: t, starts: map[string]int{}, stops: map[string]int{}}
+	daemon.swap(containers)
 	ts := httptest.NewServer(daemon.handler())
 	t.Cleanup(ts.Close)
 
+	if cfg.Storage == "" {
+		cfg.Storage = t.TempDir()
+	}
 	cfg.Endpoint = "tcp://" + strings.TrimPrefix(ts.URL, "http://")
 	srv := &server{cfg: &resolved.Config{}, stats: newStats()}
 	p, err := newDockerProvider(cfg, srv)
@@ -552,6 +924,36 @@ func TestDockerReconcileReusesUnchangedPools(t *testing.T) {
 	if len(tab.routes) != 0 || len(tab.pools) != 0 {
 		t.Errorf("table not emptied: %+v", tab)
 	}
+}
+
+func TestDockerPoolReuseDoesNotCrossWorkloadBoundary(t *testing.T) {
+	rp, err := resolvePool("shared", Pool{Backends: []Backend{{Address: "127.0.0.1:8080"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph, err := newPoolHandler(rp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousPool := ph.start()
+	t.Cleanup(previousPool.shutdown)
+	fingerprint := poolFingerprint(rp)
+	prev := &dynamicTable{
+		pools:            map[string]*runningPool{"shared": previousPool},
+		fingerprints:     map[string]string{"shared": fingerprint},
+		workloadBindings: map[string]workloadBindingKey{"shared": 1},
+	}
+	next := &dynamicTable{
+		pools:            map[string]*runningPool{},
+		fingerprints:     map[string]string{},
+		workloadBindings: map[string]workloadBindingKey{},
+	}
+	p := &dockerProvider{warned: map[string]bool{}}
+	currentPool := p.servicePoolHandler("shared", rp, 0, prev, next)
+	if currentPool == previousPool {
+		t.Fatal("ungated successor reused the gated predecessor pool")
+	}
+	t.Cleanup(currentPool.shutdown)
 }
 
 // TestPoolFingerprintChangesWithPoolPolicy verifies that generation reuse
@@ -1283,7 +1685,9 @@ func TestResolveConfigCarriesDocker(t *testing.T) {
 }
 
 func TestResolveDockerWorkloads(t *testing.T) {
+	storage := t.TempDir()
 	d, err := resolveDocker(Docker().
+		Storage(storage).
 		Workload("wl", WorkloadPolicy{}).
 		Workload("api@traefik", WorkloadPolicy{
 			IdleAfter:    "1m",
@@ -1295,6 +1699,9 @@ func TestResolveDockerWorkloads(t *testing.T) {
 		}))
 	if err != nil {
 		t.Fatalf("resolveDocker: %v", err)
+	}
+	if d.Storage != storage {
+		t.Fatalf("storage = %q, want %q", d.Storage, storage)
 	}
 
 	defaults := d.Workloads["wl"]
@@ -1318,6 +1725,13 @@ func TestResolveDockerWorkloads(t *testing.T) {
 	}
 }
 
+func TestResolveDockerWorkloadRequiresStorage(t *testing.T) {
+	_, err := resolveDocker(Docker().Workload("wl", WorkloadPolicy{}))
+	if err == nil || !strings.Contains(err.Error(), "storage") {
+		t.Fatalf("missing-storage error = %v", err)
+	}
+}
+
 func TestResolveDockerWorkloadErrors(t *testing.T) {
 	tests := map[string]WorkloadPolicy{
 		"bad idle":       {IdleAfter: "later"},
@@ -1327,7 +1741,7 @@ func TestResolveDockerWorkloadErrors(t *testing.T) {
 	}
 	for name, policy := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := resolveDocker(Docker().Workload("wl", policy))
+			_, err := resolveDocker(Docker().Storage(t.TempDir()).Workload("wl", policy))
 			if err == nil || !strings.Contains(err.Error(), `workload "wl"`) {
 				t.Fatalf("error = %v", err)
 			}

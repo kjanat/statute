@@ -3,12 +3,14 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -298,6 +300,61 @@ func TestStartAndStopContainer(t *testing.T) {
 	want := []string{"start abc123", "stop abc123"}
 	if !reflect.DeepEqual(*calls, want) {
 		t.Fatalf("calls = %v, want %v", *calls, want)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestLifecycleOutcomeAmbiguous(t *testing.T) {
+	client := &Client{
+		baseURL: "http://docker",
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, io.ErrUnexpectedEOF
+		})},
+	}
+	err := client.StopContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleOutcomeAmbiguous(err) {
+		t.Fatalf("transport failure: err=%v ambiguous=%v, want error and true", err, LifecycleOutcomeAmbiguous(err))
+	}
+
+	var status atomic.Int64
+	status.Store(http.StatusInternalServerError)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rejected", int(status.Load()))
+	}))
+	t.Cleanup(ts.Close)
+	client, err = NewClient("tcp://" + strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	err = client.StopContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleOutcomeAmbiguous(err) {
+		t.Fatalf("daemon 500: err=%v ambiguous=%v, want error and true", err, LifecycleOutcomeAmbiguous(err))
+	}
+	status.Store(http.StatusConflict)
+	err = client.StopContainer(context.Background(), "abc123")
+	if err == nil || LifecycleOutcomeAmbiguous(err) {
+		t.Fatalf("daemon rejection: err=%v ambiguous=%v, want error and false", err, LifecycleOutcomeAmbiguous(err))
+	}
+	status.Store(http.StatusNotFound)
+	err = client.StopContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleContainerMissing(err) {
+		t.Fatalf("missing container: err=%v missing=%v, want error and true", err, LifecycleContainerMissing(err))
+	}
+}
+
+func TestInspectContainerMissing(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	client, err := NewClient("tcp://" + strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = client.InspectContainer(context.Background(), "abc123")
+	if err == nil || !LifecycleContainerMissing(err) {
+		t.Fatalf("missing inspect target: err=%v missing=%v, want error and true", err, LifecycleContainerMissing(err))
 	}
 }
 

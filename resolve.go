@@ -509,12 +509,9 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 	if d == nil {
 		return nil, nil
 	}
-	endpoint := d.endpoint
-	if endpoint == "" {
-		endpoint = "unix:///var/run/docker.sock"
-	}
-	if !strings.HasPrefix(endpoint, "unix://") && !strings.HasPrefix(endpoint, "tcp://") && !strings.HasPrefix(endpoint, "http://") {
-		return nil, fmt.Errorf("endpoint %q: must be unix:// or tcp://", endpoint)
+	endpoint, err := resolveDockerEndpoint(d.endpoint)
+	if err != nil {
+		return nil, err
 	}
 	refresh, err := parse.DurationOr(d.refresh, 0)
 	if err != nil {
@@ -532,17 +529,32 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 	if err != nil {
 		return nil, err
 	}
+	storage := strings.TrimSpace(d.storage)
+	if len(workloads) > 0 && storage == "" {
+		return nil, errors.New("storage: required when workloads are configured")
+	}
 	return &resolved.Docker{
 		Endpoint:          endpoint,
 		Network:           d.network,
 		ExposedByDefault:  d.exposedByDefault,
 		TraefikLabels:     d.traefikLabels,
 		Refresh:           refresh,
+		Storage:           storage,
 		Middleware:        registry,
 		DefaultMiddleware: defaults,
 		PoolPolicy:        poolPolicy,
 		Workloads:         workloads,
 	}, nil
+}
+
+func resolveDockerEndpoint(endpoint string) (string, error) {
+	if endpoint == "" {
+		return "unix:///var/run/docker.sock", nil
+	}
+	if !strings.HasPrefix(endpoint, "unix://") && !strings.HasPrefix(endpoint, "tcp://") && !strings.HasPrefix(endpoint, "http://") {
+		return "", fmt.Errorf("endpoint %q: must be unix:// or tcp://", endpoint)
+	}
+	return endpoint, nil
 }
 
 // Workload policy defaults; every field of WorkloadPolicy may override its own.

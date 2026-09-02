@@ -129,7 +129,7 @@ func TestGraphDOT_ShowsDockerWorkload(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
 		Listeners: Listeners{HTTP(":8080")},
-		Docker: Docker().Workload("app@traefik", WorkloadPolicy{
+		Docker: Docker().Storage("/var/lib/statute/docker").Workload("app@traefik", WorkloadPolicy{
 			IdleAfter: "10m",
 			Readiness: HTTPReadiness("/healthz"),
 		}),
@@ -139,7 +139,7 @@ func TestGraphDOT_ShowsDockerWorkload(t *testing.T) {
 		t.Fatalf("GraphDOT: %v", err)
 	}
 	dot := buf.String()
-	for _, want := range []string{"DW_0", "Docker workload", "app@traefik", "idle_after=10m", "readiness=http:/healthz"} {
+	for _, want := range []string{"DW_0", "Docker workload", "app@traefik", "registry=/var/lib/statute/docker", "idle_after=10m", "readiness=http:/healthz"} {
 		if !strings.Contains(dot, want) {
 			t.Errorf("DOT output misses %q:\n%s", want, dot)
 		}

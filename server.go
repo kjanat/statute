@@ -764,6 +764,8 @@ func (r *serverRun) shutdown(ctx context.Context) error {
 	for _, run := range r.acme {
 		run.stop()
 	}
+	// The drain must not make ready workloads idle and stop their containers.
+	r.docker.quiesceWorkloads()
 
 	var wg sync.WaitGroup
 	errs := make(chan error, r.listeners.count())
@@ -809,6 +811,9 @@ func joinErrors(ch <-chan error) error {
 type compiledRoute struct {
 	route   *resolved.Route
 	handler http.Handler
+	// service is the Docker service identity used to order otherwise-equal
+	// dynamic matchers. Static routes and tombstones do not need it.
+	service string
 	// matcher is the compiled host/path IR used directly by the dispatcher.
 	matcher docker.Matcher
 	// clientPrefixes is the parsed form of the route's ClientIPCIDRs; empty
@@ -824,10 +829,18 @@ type compiledRoute struct {
 // a client that cannot be parsed never matches a constrained route and
 // falls through like any other mismatch.
 func findHandler(routes []compiledRoute, host string, req *http.Request) http.Handler {
+	if route := findCompiledRoute(routes, host, req); route != nil {
+		return route.handler
+	}
+	return nil
+}
+
+func findCompiledRoute(routes []compiledRoute, host string, req *http.Request) *compiledRoute {
 	var clientAddr netip.Addr
 	var clientResolved, clientOK bool
-	for _, c := range routes {
-		if !routeMatchesRequest(c, host, req.URL.Path) {
+	for i := range routes {
+		c := &routes[i]
+		if !routeMatchesRequest(*c, host, req.URL.Path) {
 			continue
 		}
 		if len(c.clientPrefixes) > 0 {
@@ -839,13 +852,55 @@ func findHandler(routes []compiledRoute, host string, req *http.Request) http.Ha
 				continue
 			}
 		}
-		return c.handler
+		return c
 	}
 	return nil
 }
 
 func routeMatchesRequest(c compiledRoute, host, path string) bool {
 	return c.matcher.Match(host, path)
+}
+
+func findDynamicHandler(table *dynamicTable, host string, req *http.Request) http.Handler {
+	route := findCompiledRoute(table.routes, host, req)
+	if route == nil {
+		if quarantine := findCompiledRoute(table.quarantines, host, req); quarantine != nil {
+			return quarantine.handler
+		}
+		return findHandler(table.tombstones, host, req)
+	}
+	for i := range table.quarantines {
+		quarantine := &table.quarantines[i]
+		if findCompiledRoute(table.quarantines[i:i+1], host, req) == nil {
+			continue
+		}
+		if sameDynamicTraffic(route.matcher, quarantine.matcher) {
+			sameService := findSameServiceDynamicRoute(table.routes, host, req, quarantine)
+			if sameService == nil {
+				return quarantine.handler
+			}
+			route = sameService
+			continue
+		}
+		if dynamicRoutePrecedes(*quarantine, *route) {
+			return quarantine.handler
+		}
+		break
+	}
+	return route.handler
+}
+
+func findSameServiceDynamicRoute(routes []compiledRoute, host string, req *http.Request, quarantine *compiledRoute) *compiledRoute {
+	for i := range routes {
+		route := &routes[i]
+		if route.service != quarantine.service || !sameDynamicTraffic(route.matcher, quarantine.matcher) {
+			continue
+		}
+		if findCompiledRoute(routes[i:i+1], host, req) != nil {
+			return route
+		}
+	}
+	return nil
 }
 
 // tombstoneHandler is the one fixed refusal every tombstone serves: the
@@ -865,8 +920,8 @@ func (s *server) fallbackHandler() http.Handler {
 
 // buildRouter returns an http.Handler that dispatches to the matching
 // static route in declaration order, then to the docker provider's dynamic
-// routes when one is configured, then to that generation's tombstones, then
-// to the fallback handler.
+// routes when one is configured, then its container-mutation quarantines,
+// then that generation's tombstones, then the fallback handler.
 //
 // INVARIANT: the tombstone tier sits between discovered routes and the
 // fallback. A Docker registration whose routes were discarded must not
@@ -905,11 +960,7 @@ func (s *server) buildRouter() http.Handler {
 			return
 		}
 		if t := s.dynamic.Load(); t != nil {
-			if h := findHandler(t.routes, host, req); h != nil {
-				h.ServeHTTP(w, req)
-				return
-			}
-			if h := findHandler(t.tombstones, host, req); h != nil {
+			if h := findDynamicHandler(t, host, req); h != nil {
 				h.ServeHTTP(w, req)
 				return
 			}

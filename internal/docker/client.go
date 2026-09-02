@@ -8,6 +8,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -190,7 +191,7 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (InspectState,
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return InspectState{}, fmt.Errorf("docker: inspect container: unexpected status %s", resp.Status)
+		return InspectState{}, &inspectError{status: resp.StatusCode, text: resp.Status}
 	}
 	var raw struct {
 		State struct {
@@ -222,6 +223,46 @@ func (c *Client) StopContainer(ctx context.Context, id string) error {
 	return c.lifecyclePost(ctx, id, "stop")
 }
 
+// LifecycleOutcomeAmbiguous reports whether Docker may have applied a
+// lifecycle mutation without returning terminal evidence to the client.
+func LifecycleOutcomeAmbiguous(err error) bool {
+	var lifecycleErr *lifecycleError
+	return errors.As(err, &lifecycleErr) && lifecycleErr.ambiguous
+}
+
+// LifecycleContainerMissing reports a definitive Docker response that the
+// mutation target no longer exists.
+func LifecycleContainerMissing(err error) bool {
+	var lifecycleErr *lifecycleError
+	if errors.As(err, &lifecycleErr) && lifecycleErr.status == http.StatusNotFound {
+		return true
+	}
+	var inspectErr *inspectError
+	return errors.As(err, &inspectErr) && inspectErr.status == http.StatusNotFound
+}
+
+type inspectError struct {
+	status int
+	text   string
+}
+
+func (e *inspectError) Error() string {
+	return "docker: inspect container: unexpected status " + e.text
+}
+
+type lifecycleError struct {
+	action    string
+	err       error
+	ambiguous bool
+	status    int
+}
+
+func (e *lifecycleError) Error() string {
+	return fmt.Sprintf("docker: %s container: %v", e.action, e.err)
+}
+
+func (e *lifecycleError) Unwrap() error { return e.err }
+
 // lifecyclePost issues one container lifecycle POST. 204 is success and
 // 304 means the container is already in the requested state.
 func (c *Client) lifecyclePost(ctx context.Context, id, action string) error {
@@ -231,11 +272,16 @@ func (c *Client) lifecyclePost(ctx context.Context, id, action string) error {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("docker: %s container: %w", action, err)
+		return &lifecycleError{action: action, err: err, ambiguous: true}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
-		return fmt.Errorf("docker: %s container: unexpected status %s", action, resp.Status)
+		return &lifecycleError{
+			action:    action,
+			err:       fmt.Errorf("unexpected status %s", resp.Status),
+			ambiguous: resp.StatusCode >= http.StatusInternalServerError,
+			status:    resp.StatusCode,
+		}
 	}
 	return nil
 }

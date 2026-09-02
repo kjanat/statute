@@ -49,6 +49,8 @@ type Docker struct {
 	TraefikLabels    bool
 	// Refresh is the periodic full-resync interval; zero means events only.
 	Refresh time.Duration
+	// Storage is the persistent root for outstanding workload mutations.
+	Storage string
 	// Middleware is the code-owned registry of named middleware chains that
 	// container label references (traefik.http.routers.<r>.middlewares)
 	// resolve against. Labels select these compiled policies by exact name;

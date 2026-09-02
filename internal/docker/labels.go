@@ -72,6 +72,65 @@ type ExtractOptions struct {
 	TraefikLabels bool
 }
 
+// RouteClaim is one fail-closed matcher from a container registration. It is
+// derived without validating backend, middleware, health, or transport state.
+type RouteClaim struct {
+	Service string
+	Matcher Matcher
+}
+
+// RouteClaims returns an envelope for every HTTP route the container labels
+// claim. Lifecycle quarantine uses it when serving configuration is irrelevant
+// or invalid but the current traffic boundary must remain identifiable.
+func RouteClaims(c Container, opts ExtractOptions) []RouteClaim {
+	out := nativeRouteClaims(c, opts)
+	return append(out, traefikRouteClaims(c, opts)...)
+}
+
+func nativeRouteClaims(c Container, opts ExtractOptions) []RouteClaim {
+	nativeOn, nativeWarn := nativeEnabled(c, opts)
+	if !nativeApplies(c.Labels, opts) || (!nativeOn && nativeWarn == "") {
+		return nil
+	}
+	service := defaultServiceName(c)
+	if name := c.Labels["statute.service"]; name != "" {
+		service = name
+	}
+	routes, _ := nativeRoutes(c, c.Labels)
+	return routeClaims(service, routes)
+}
+
+func traefikRouteClaims(c Container, opts ExtractOptions) []RouteClaim {
+	if !opts.TraefikLabels || !hasPrefixedLabels(c.Labels, traefikPrefix) {
+		return nil
+	}
+	traefikOn, traefikWarn := traefikEnabled(c, opts)
+	if !traefikOn && traefikWarn == "" {
+		return nil
+	}
+	routers, services, _ := collectTraefikLabels(c)
+	serviceNames := sortedKeys(services)
+	var out []RouteClaim
+	for _, name := range sortedKeys(routers) {
+		router := routers[name]
+		service, _ := traefikServiceName(c, router, serviceNames)
+		if service == "" {
+			service = defaultServiceName(c)
+		}
+		out = append(out, routeClaims(service+"@traefik", RuleEnvelope(router.rule))...)
+	}
+	return out
+}
+
+func routeClaims(service string, matchers []Matcher) []RouteClaim {
+	envelope := EnvelopeOf(matchers)
+	out := make([]RouteClaim, 0, len(envelope))
+	for _, matcher := range envelope {
+		out = append(out, RouteClaim{Service: service, Matcher: matcher})
+	}
+	return out
+}
+
 // Extract derives the services one container registers. No relevant labels
 // (and ExposedByDefault off) yields no services.
 //
