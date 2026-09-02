@@ -120,11 +120,12 @@ For Kubernetes, use a `PersistentVolumeClaim`. Don't use an `emptyDir` — it di
 statute installs handlers for `SIGINT` and `SIGTERM`. On either signal:
 
 1. The signal context cancels.
-2. Each `http.Server` is given a context with `Shutdown.GracePeriod` deadline and asked to `Shutdown(ctx)`.
-3. HTTP/3 servers are asked to `Shutdown(ctx)` in parallel.
-4. Once listeners drain, health checkers stop and idle upstream connections close.
-5. The OTel TracerProvider flushes pending spans.
-6. The process exits.
+2. Readiness turns off and one `Shutdown.GracePeriod` deadline begins.
+3. Workload idle stops are disabled; HTTP and HTTP/3 listeners drain in parallel under that deadline.
+4. The Docker provider cancels and awaits its watcher, reconcile work, and lifecycle HTTP calls without adding a second timeout. Any issued mutation whose response was interrupted stays durably uncertain for restart recovery.
+5. Health checkers stop, idle upstream connections close, and the health listener closes last.
+6. The OTel TracerProvider flushes pending spans under the same deadline.
+7. The process exits.
 
 Any outstanding request gets up to `GracePeriod` to complete. Requests that don't complete in time have their connections force-closed. The default is `30s`, which is fine for typical web traffic; tune up for long-running endpoints (file uploads, server-sent events, video streaming) or down for fast-deploy environments where you want pods to terminate quickly.
 

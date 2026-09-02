@@ -271,13 +271,17 @@ Activation settlement, stop installation, and terminal stop outcome advance
 that epoch. A mismatched snapshot mutates no later lifecycle state and forces a
 fresh listing; rejecting only its route publication would be too late because
 repair evidence, retirement, binding replacement, and mutation settlement all
-occur while the generation is derived.
+occur while the generation is derived. Final publication is also fenced by one
+provider-wide observation revision, checked atomically with mutation revisions
+and the table swap. A lifecycle transition after observation validation therefore
+cannot publish a generation derived from its predecessor state.
 
 Idle is measured from request completion. An in-flight HTTP request, an open
 WebSocket, and an open streaming response each hold the workload active, and the
 idle timer starts when the last of them finishes. A request arriving while the
 workload is stopping has one defined outcome and never proxies into a container
-being torn down.
+being torn down. Activation success and definitive stop rejection reserve one
+binding-scoped activity lease per waiter before idle may arm.
 
 Lifecycle state belongs to the generation that owns it. Docker generations are
 replaced atomically, and a retired generation may not mutate or cancel its
@@ -333,7 +337,9 @@ not make its independently extractable service-key successor lose one-to-one
 authority; an additional successfully extracted contributor still does. Ordinary
 routes and quarantine claims share one specificity order;
 an independent healthy contributor to the same logical service wins only the tie
-between identical `Host`, `HostKind`, `Path`, and `PathKind` predicates. A narrower
+between identical `Host`, `HostKind`, `Path`, and `PathKind` predicates. Every
+matching tied quarantine requires its own same-service healthy contributor; proof
+for one quarantined service cannot neutralize another. A narrower
 quarantine therefore cannot fall through to a broader healthy route, while a
 narrower healthy route still precedes a broader quarantine. Matched quarantined
 claims precede tombstones and answer `503`. Terminal
@@ -423,6 +429,10 @@ TCP listeners, UDP packet connections, `http.Server` / HTTP/3 server objects, AC
 manager state, Docker reconciliation, and dynamic pool handlers are different
 resources. Closing an owned socket and permanently closing a reusable server control
 object are not interchangeable operations.
+
+The server shutdown grace period cancels provider-run stop and inspect calls. An
+issued mutation canceled before confirmation remains durably uncertain and
+non-serving; the next provider run resumes convergence before route publication.
 
 If a PR claims transactional or retryable startup, tests must prove both resource
 release after failure and successful serving after retry. A nil return from the

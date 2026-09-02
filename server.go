@@ -863,24 +863,31 @@ func routeMatchesRequest(c compiledRoute, host, path string) bool {
 
 func findDynamicHandler(table *dynamicTable, host string, req *http.Request) http.Handler {
 	route := findCompiledRoute(table.routes, host, req)
-	quarantine := findCompiledRoute(table.quarantines, host, req)
-	switch {
-	case route == nil && quarantine == nil:
-		return findHandler(table.tombstones, host, req)
-	case route == nil:
-		return quarantine.handler
-	case quarantine == nil:
-		return route.handler
-	case sameDynamicTraffic(route.matcher, quarantine.matcher):
-		if sameService := findSameServiceDynamicRoute(table.routes, host, req, quarantine); sameService != nil {
-			return sameService.handler
+	if route == nil {
+		if quarantine := findCompiledRoute(table.quarantines, host, req); quarantine != nil {
+			return quarantine.handler
 		}
-		return quarantine.handler
-	case dynamicRoutePrecedes(*quarantine, *route):
-		return quarantine.handler
-	default:
-		return route.handler
+		return findHandler(table.tombstones, host, req)
 	}
+	for i := range table.quarantines {
+		quarantine := &table.quarantines[i]
+		if findCompiledRoute(table.quarantines[i:i+1], host, req) == nil {
+			continue
+		}
+		if sameDynamicTraffic(route.matcher, quarantine.matcher) {
+			sameService := findSameServiceDynamicRoute(table.routes, host, req, quarantine)
+			if sameService == nil {
+				return quarantine.handler
+			}
+			route = sameService
+			continue
+		}
+		if dynamicRoutePrecedes(*quarantine, *route) {
+			return quarantine.handler
+		}
+		break
+	}
+	return route.handler
 }
 
 func findSameServiceDynamicRoute(routes []compiledRoute, host string, req *http.Request, quarantine *compiledRoute) *compiledRoute {

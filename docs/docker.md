@@ -138,13 +138,17 @@ How it behaves:
   WebSockets, and open streaming responses each hold the workload active;
   the `IdleAfter` timer starts when the last one finishes. A request
   arriving while the stop is pending revokes it; one arriving after the
-  stop call was issued waits and triggers a fresh activation.
+  stop call was issued waits and triggers a fresh activation. Waiters reserve
+  activity before a successful activation or rejected stop can arm idle, so
+  scheduler delay while they wake does not consume their idle window.
 - **External changes reconcile.** A container stopped outside statute
   becomes dormant and reactivates on the next request. A container started
   outside statute after a stopped observation enters the same readiness gate
   and idle policy; an unchanged running snapshot is not a repair signal. Docker
   snapshots captured before a local activation or stop transition are discarded;
-  a fresh listing observes the newer lifecycle state.
+  a fresh listing observes the newer lifecycle state. Publication rechecks a
+  provider-wide lifecycle revision atomically with the route-table swap, preventing
+  a transition after snapshot validation from publishing its predecessor state.
   Replacement beneath the same service supersedes
   an in-flight operation: its waiters fail closed, stale cleanup is ignored,
   a running successor proves readiness afresh, and old request completions
@@ -170,7 +174,9 @@ How it behaves:
   a route miss. Only the mutation-owned container contribution is excluded from ordinary
   routing. Another immutable container contributing the same service remains routable
   through its own backend when the same logical service has the identical host kind,
-  host, path kind, and path. Ordinary routes and quarantines otherwise share normal
+  host, path kind, and path. Each matching tied quarantine requires that proof from
+  its own service; one healthy service cannot neutralize another service's quarantine.
+  Ordinary routes and quarantines otherwise share normal
   route specificity: a broad healthy route cannot bypass a narrower quarantine, and a
   narrower healthy route still beats a broad quarantine. Quarantines remain ahead of
   tombstones and fallback.
@@ -179,7 +185,9 @@ How it behaves:
   serving-validation results determine the published route outcome only after quarantine
   ends. A recreated container starts with fresh pool health and connections, even when its
   name and backend address are unchanged. Statute's own shutdown leaves workloads as they
-  are.
+  are. The shutdown grace period cancels any outstanding stop or confirmation request;
+  because Docker may still apply an issued stop, its durable record remains uncertain and
+  is recovered by the next provider run before serving resumes.
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.

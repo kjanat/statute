@@ -108,6 +108,8 @@ type workloadWait struct {
 	superseded bool
 	failed     bool
 	waiting    int
+	reserved   int
+	lease      workloadLease
 }
 
 // workloadActivation is one single-flight activation attempt. Every request
@@ -242,7 +244,15 @@ type workload struct {
 	observationEpoch uint64
 }
 
-func (w *workload) invalidateObservationsLocked() { w.observationEpoch++ }
+func (p *dockerProvider) invalidateWorkloadObservationsLocked(w *workload) {
+	w.observationEpoch++
+	if p == nil {
+		return
+	}
+	p.generationMu.Lock()
+	p.observationVersion++
+	p.generationMu.Unlock()
+}
 
 // phaseNow returns the current phase.
 func (w *workload) phaseNow() workloadPhase {
@@ -454,22 +464,48 @@ func (w *workload) ensureReady(ctx context.Context, p *dockerProvider, expectedB
 		}
 		select {
 		case <-wait.done:
-			w.finishWaiting(wait)
-			if wait.superseded || wait.failed {
+			lease, failed := w.finishWaiting(p, wait, true)
+			if lease.binding != 0 {
+				return lease, nil
+			}
+			if failed {
 				return workloadLease{}, workloadUnavailable{}
 			}
 		case <-ctx.Done():
-			w.finishWaiting(wait)
+			_, _ = w.finishWaiting(p, wait, false)
 			return workloadLease{}, workloadUnavailable{}
 		}
 	}
 }
 
-// finishWaiting releases this request's claim on one exact outcome.
-func (w *workload) finishWaiting(wait *workloadWait) {
+// finishWaiting settles this request's claim on one exact outcome.
+func (w *workload) finishWaiting(p *dockerProvider, wait *workloadWait, claim bool) (workloadLease, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	wait.waiting--
+	failed := wait.superseded || wait.failed
+	if wait.reserved == 0 {
+		return workloadLease{}, failed
+	}
+	wait.reserved--
+	lease := wait.lease
+	if failed || !claim || w.binding == nil || w.binding.key != lease.binding {
+		lease.activity.active--
+		if w.binding != nil && w.binding.key == lease.binding {
+			w.armIdleLocked(p)
+		}
+		return workloadLease{}, failed || claim
+	}
+	return lease, false
+}
+
+func (w *workload) reserveWaitersLocked(wait *workloadWait) {
+	if wait.waiting == 0 {
+		return
+	}
+	w.binding.activity.active += wait.waiting
+	wait.reserved = wait.waiting
+	wait.lease = workloadLease{binding: w.binding.key, activity: &w.binding.activity}
 }
 
 // serveState reads the phase under the lock and decides what this request
@@ -904,7 +940,7 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 	if w.activation != act {
 		return activationOutcome{superseded: true}
 	}
-	w.invalidateObservationsLocked()
+	p.invalidateWorkloadObservationsLocked(w)
 	out := activationOutcome{
 		abandoned: err != nil && errors.Is(err, context.Canceled),
 		stale:     err != nil && act.observe && errors.Is(err, errWorkloadStopped),
@@ -914,6 +950,7 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 	case err == nil:
 		w.toLocked(workloadReady)
 		w.clearFailureLocked()
+		w.reserveWaitersLocked(&act.workloadWait)
 		w.armIdleLocked(p)
 	case out.abandoned || out.stale:
 		w.toLocked(workloadDormant)
@@ -923,7 +960,7 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 		w.failureEvidence = workloadFailureUnproven
 		if !act.observe && !w.retired {
 			w.toLocked(workloadStopIssued)
-			out.stop = w.newStopLocked(workloadCleanupStop, act.binding, act.ref)
+			out.stop = w.newStopLocked(p, workloadCleanupStop, act.binding, act.ref)
 		} else {
 			w.toLocked(workloadFailed)
 		}
@@ -992,9 +1029,8 @@ func (w *workload) revokeIdleStop(binding workloadBindingKey, epoch uint64) {
 	}
 }
 
-// performStop issues the idle stop unless a request revoked it first. The
-// stop call survives shutdown cancellation within its own bound, so an
-// issued stop always runs to completion.
+// performStop issues the idle stop unless a request revoked it first. Durable
+// ownership survives cancellation; restart resumes an interrupted attempt.
 func (p *dockerProvider) performStop(ctx context.Context, w *workload, binding workloadBindingKey, epoch uint64, run *dockerRun) {
 	run.idleMu.RLock()
 	if run.idleOff.Load() {
@@ -1015,14 +1051,14 @@ func (p *dockerProvider) performStop(ctx context.Context, w *workload, binding w
 		return
 	}
 	w.toLocked(workloadStopIssued)
-	stop := w.newStopLocked(workloadIdleStop, w.binding.key, w.containerRefLocked())
+	stop := w.newStopLocked(p, workloadIdleStop, w.binding.key, w.containerRefLocked())
 	w.mu.Unlock()
 	run.idleMu.RUnlock()
 	p.runOwnedStop(ctx, w, stop)
 }
 
-func (w *workload) newStopLocked(kind workloadStopKind, binding workloadBindingKey, ref string) *workloadStop {
-	w.invalidateObservationsLocked()
+func (w *workload) newStopLocked(p *dockerProvider, kind workloadStopKind, binding workloadBindingKey, ref string) *workloadStop {
+	p.invalidateWorkloadObservationsLocked(w)
 	stop := &workloadStop{kind: kind, binding: binding, ref: ref, converging: true}
 	stop.done = make(chan struct{})
 	w.stop = stop
@@ -1045,7 +1081,7 @@ type workloadStopAttempt struct {
 
 func (p *dockerProvider) attemptOwnedStop(ctx context.Context, w *workload, stop *workloadStop) workloadStopAttempt {
 	stopRef := w.callRef(stop.binding, stop.ref)
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workloadStopTimeout)
+	sctx, cancel := context.WithTimeout(ctx, workloadStopTimeout)
 	err := p.client.StopContainer(sctx, stopRef)
 	cancel()
 	if err == nil {
@@ -1059,7 +1095,7 @@ func (p *dockerProvider) attemptOwnedStop(ctx context.Context, w *workload, stop
 	}
 
 	inspectRef := w.callRef(stop.binding, stop.ref)
-	ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), workloadProbeTimeout)
+	ictx, icancel := context.WithTimeout(ctx, workloadProbeTimeout)
 	insp, inspectErr := p.client.InspectContainer(ictx, inspectRef)
 	icancel()
 	if inspectErr == nil && !insp.Running {
@@ -1094,7 +1130,7 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 		return w.unsettleStopLocked()
 	}
 	if !stop.terminal {
-		w.invalidateObservationsLocked()
+		p.invalidateWorkloadObservationsLocked(w)
 	}
 	stop.terminal = true
 	stop.result = attempt.result
@@ -1108,7 +1144,7 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 		log.Printf("statute: docker: workload %s: persist stop settlement: %s", service, strconv.Quote(err.Error()))
 		return w.unsettleStopLocked()
 	}
-	p.markMutationSettled(w.service)
+	p.invalidateStoppedGeneration(w.service, attempt.result)
 	w.settleStopLocked(p, stop, attempt.result)
 	w.mu.Unlock()
 	p.scheduleReconcile()
@@ -1135,6 +1171,7 @@ func (w *workload) settleStopLocked(p *dockerProvider, stop *workloadStop, resul
 		w.toLocked(workloadDormant)
 	} else {
 		w.toLocked(workloadReady)
+		w.reserveWaitersLocked(&stop.workloadWait)
 		w.armIdleLocked(p)
 	}
 	w.stop = nil
@@ -1766,7 +1803,7 @@ func (p *dockerProvider) reconcileRetiredMutationObservationLocked(w *workload, 
 func (p *dockerProvider) settleObservedStopLocked(w *workload) {
 	stop := w.stop
 	if !stop.terminal {
-		w.invalidateObservationsLocked()
+		p.invalidateWorkloadObservationsLocked(w)
 	}
 	stop.terminal = true
 	stop.result = workloadStopSucceeded
@@ -1909,6 +1946,14 @@ func (p *dockerProvider) markMutationSettled(service string) {
 	}
 	p.mutationVersions[service]++
 	p.generationMu.Unlock()
+}
+
+func (p *dockerProvider) invalidateStoppedGeneration(service string, result workloadStopResult) {
+	// Rejection leaves the running pool valid. Observation revisions still
+	// fence generations derived before settlement.
+	if result == workloadStopSucceeded {
+		p.markMutationSettled(service)
+	}
 }
 
 func (p *dockerProvider) currentMutationVersion(service string) uint64 {

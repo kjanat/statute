@@ -457,6 +457,31 @@ func TestDockerMutationSettlementRejectsStaleSnapshot(t *testing.T) {
 	}
 }
 
+func TestDockerLifecycleTransitionRejectsStalePublication(t *testing.T) {
+	p := &dockerProvider{srv: &server{}, generationChanged: make(chan struct{})}
+	versions := p.currentGenerationVersions()
+	w := &workload{}
+	w.mu.Lock()
+	p.invalidateWorkloadObservationsLocked(w)
+	w.mu.Unlock()
+
+	stale := &dynamicTable{}
+	if p.publishGeneration(stale, versions) {
+		t.Fatal("publication accepted an observation version invalidated after derivation")
+	}
+	if got := p.srv.dynamic.Load(); got != nil {
+		t.Fatal("rejected publication changed the dynamic table")
+	}
+
+	fresh := &dynamicTable{}
+	if !p.publishGeneration(fresh, p.currentGenerationVersions()) {
+		t.Fatal("publication rejected current observation version")
+	}
+	if got := p.srv.dynamic.Load(); got != fresh {
+		t.Fatal("current publication did not install the dynamic table")
+	}
+}
+
 func TestDockerFailedInitialSyncStopsTrackedWork(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))

@@ -846,6 +846,45 @@ func TestWorkloadRequestWaitsForIssuedStopAndReactivates(t *testing.T) {
 	}
 }
 
+func TestWorkloadRequestWaitsForRejectedStopAndServes(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	p, daemon, router := workloadFixture(t, testWorkloadPolicy(), backend.URL)
+	daemon.mu.Lock()
+	daemon.rejectStop = true
+	daemon.blockRejectedStop = true
+	daemon.stopStarted = make(chan struct{})
+	daemon.stopRelease = make(chan struct{})
+	stopStarted := daemon.stopStarted
+	stopRelease := daemon.stopRelease
+	daemon.mu.Unlock()
+	releaseStop := sync.OnceFunc(func() { close(stopRelease) })
+	defer releaseStop()
+
+	if rec := runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("cold start = %d, want 200", rec.Code)
+	}
+	waitSignal(t, stopStarted, "idle stop was not issued")
+	waitWorkloadPhase(t, p, workloadStopIssued)
+
+	done := make(chan int)
+	go func() {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
+		done <- rec.Code
+	}()
+	assertStatusPending(t, done)
+	releaseStop()
+	if code := waitStatus(t, done, time.Second, "request did not resume after rejected stop"); code != http.StatusOK {
+		t.Fatalf("request after rejected stop = %d, want 200", code)
+	}
+	if got := daemon.startCount("wl-1"); got != 1 {
+		t.Fatalf("start calls = %d, want 1", got)
+	}
+}
+
 func TestWorkloadContainerReplacementDoesNotInheritIssuedStop(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -1832,6 +1871,78 @@ func TestWorkloadStaleCompletionDoesNotChangeCurrentActivity(t *testing.T) {
 	}
 }
 
+func TestWorkloadSuccessfulActivationReservesWaitingRequestActivity(t *testing.T) {
+	binding := &workloadBinding{key: 1}
+	act := &workloadActivation{binding: binding.key}
+	act.done = make(chan struct{})
+	act.waiting = 1
+	w := &workload{
+		phase:      workloadStarting,
+		policy:     resolved.Workload{IdleAfter: time.Millisecond},
+		binding:    binding,
+		activation: act,
+	}
+
+	w.settleActivation(nil, act, nil)
+	time.Sleep(5 * time.Millisecond)
+	w.mu.Lock()
+	phase, active, idle := w.phase, binding.activity.active, w.idle
+	w.mu.Unlock()
+	if phase != workloadReady || active != 1 || idle != nil {
+		t.Fatalf("settled waiter: phase=%v active=%d idle=%v, want ready with reserved activity", phase, active, idle)
+	}
+
+	lease, failed := w.finishWaiting(nil, &act.workloadWait, true)
+	if failed || lease.binding != binding.key {
+		t.Fatalf("reserved waiter claim: lease=%+v failed=%v", lease, failed)
+	}
+	w.end(nil, lease)
+	w.mu.Lock()
+	active, idle = binding.activity.active, w.idle
+	w.stopIdleLocked()
+	w.mu.Unlock()
+	if active != 0 || idle == nil {
+		t.Fatalf("completed waiter: active=%d idle=%v, want idle countdown", active, idle)
+	}
+}
+
+func TestWorkloadRejectedIdleStopReservesWaitingRequestActivity(t *testing.T) {
+	binding := &workloadBinding{key: 1}
+	stop := &workloadStop{kind: workloadIdleStop, binding: binding.key}
+	stop.done = make(chan struct{})
+	stop.waiting = 1
+	w := &workload{
+		phase:   workloadStopIssued,
+		policy:  resolved.Workload{IdleAfter: time.Millisecond},
+		binding: binding,
+		stop:    stop,
+	}
+
+	w.mu.Lock()
+	w.settleStopLocked(nil, stop, workloadStopRejected)
+	w.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	w.mu.Lock()
+	phase, active, idle := w.phase, binding.activity.active, w.idle
+	w.mu.Unlock()
+	if phase != workloadReady || active != 1 || idle != nil {
+		t.Fatalf("settled stop waiter: phase=%v active=%d idle=%v, want ready with reserved activity", phase, active, idle)
+	}
+
+	lease, failed := w.finishWaiting(nil, &stop.workloadWait, true)
+	if failed || lease.binding != binding.key {
+		t.Fatalf("reserved stop waiter claim: lease=%+v failed=%v", lease, failed)
+	}
+	w.end(nil, lease)
+	w.mu.Lock()
+	active, idle = binding.activity.active, w.idle
+	w.stopIdleLocked()
+	w.mu.Unlock()
+	if active != 0 || idle == nil {
+		t.Fatalf("completed stop waiter: active=%d idle=%v, want idle countdown", active, idle)
+	}
+}
+
 func TestWorkloadContainerIDRefinesExistingBinding(t *testing.T) {
 	binding := &workloadBinding{key: 1, container: "wl-1", activity: workloadActivity{active: 1}}
 	w := workload{
@@ -1873,7 +1984,7 @@ func TestWorkloadOperationRefRefinesToContainerID(t *testing.T) {
 	w.mu.Lock()
 	w.bindContainerLocked(&docker.Service{Container: "wl-1"})
 	binding := w.binding.key
-	stop := w.newStopLocked(workloadIdleStop, binding, "wl-1")
+	stop := w.newStopLocked(nil, workloadIdleStop, binding, "wl-1")
 	w.bindContainerLocked(&docker.Service{Container: "wl-1", ContainerID: "immutable-id"})
 	w.mu.Unlock()
 
@@ -2013,8 +2124,8 @@ func TestWorkloadWaitersBelongToTheirOutcome(t *testing.T) {
 	if out.waiters != 1 || oldWait.waiting != 1 {
 		t.Fatalf("successor settlement: logged=%d old=%d, want 1 and 1", out.waiters, oldWait.waiting)
 	}
-	w.finishWaiting(oldWait)
-	w.finishWaiting(newWait)
+	_, _ = w.finishWaiting(nil, oldWait, false)
+	_, _ = w.finishWaiting(nil, newWait, false)
 }
 
 func TestWorkloadShutdownDuringActivationIssuesNoStop(t *testing.T) {

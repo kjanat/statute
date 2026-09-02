@@ -60,11 +60,12 @@ type dockerProvider struct {
 	refusal string
 	// generationChanged closes after each successful dynamic-table
 	// publication. Activations use it to await a coalesced reconcile.
-	generationMu      sync.Mutex
-	generationChanged chan struct{}
-	reconciling       bool
-	reconcileDemanded bool
-	mutationVersions  map[string]uint64
+	generationMu       sync.Mutex
+	generationChanged  chan struct{}
+	reconciling        bool
+	reconcileDemanded  bool
+	mutationVersions   map[string]uint64
+	observationVersion uint64
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
@@ -404,7 +405,7 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
 	for {
-		versions := p.currentMutationVersions()
+		versions := p.currentGenerationVersions()
 		workloadTickets := p.captureWorkloadObservationTickets()
 		containers, err := p.client.ListContainers(ctx)
 		if err != nil {
@@ -425,7 +426,7 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		// Pool health checkers deliberately outlive this sync call; they derive
 		// their own lifetime and stop on generation retirement or shutdown.
 		next, retired := p.buildTable(services, tombstones, quarantine.routes, prev) //nolint:contextcheck
-		next.workloadMutations = versions
+		next.workloadMutations = versions.mutations
 		if !p.publishGeneration(next, versions) {
 			shutdownUnpublishedPools(next, prev)
 			continue
@@ -437,16 +438,24 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 	}
 }
 
-func (p *dockerProvider) currentMutationVersions() map[string]uint64 {
-	p.generationMu.Lock()
-	defer p.generationMu.Unlock()
-	return maps.Clone(p.mutationVersions)
+type dockerGenerationVersions struct {
+	mutations    map[string]uint64
+	observations uint64
 }
 
-func (p *dockerProvider) publishGeneration(next *dynamicTable, mutationVersions map[string]uint64) bool {
+func (p *dockerProvider) currentGenerationVersions() dockerGenerationVersions {
 	p.generationMu.Lock()
 	defer p.generationMu.Unlock()
-	if !maps.Equal(p.mutationVersions, mutationVersions) {
+	return dockerGenerationVersions{
+		mutations:    maps.Clone(p.mutationVersions),
+		observations: p.observationVersion,
+	}
+}
+
+func (p *dockerProvider) publishGeneration(next *dynamicTable, versions dockerGenerationVersions) bool {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
+	if !maps.Equal(p.mutationVersions, versions.mutations) || p.observationVersion != versions.observations {
 		return false
 	}
 	p.srv.dynamic.Store(next)

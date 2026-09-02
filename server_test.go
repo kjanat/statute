@@ -175,6 +175,50 @@ func TestDynamicDispatchFindsSameServiceHealthyTieBehindThirdRoute(t *testing.T)
 	}
 }
 
+func TestDynamicDispatchRequiresEveryQuarantineTieToBeHealthy(t *testing.T) {
+	t.Parallel()
+	matcher := docker.CompileNative("app.example.com", "/foo")
+	healthy := func(status int) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/foo", nil)
+
+	t.Run("sibling quarantine blocks", func(t *testing.T) {
+		t.Parallel()
+		table := &dynamicTable{
+			routes: []compiledRoute{{handler: healthy(http.StatusNoContent), service: "a", matcher: matcher}},
+			quarantines: []compiledRoute{
+				{handler: workloadMutationQuarantine{}, service: "a", matcher: matcher},
+				{handler: workloadMutationQuarantine{}, service: "z", matcher: matcher},
+			},
+		}
+		rec := httptest.NewRecorder()
+		findDynamicHandler(table, "app.example.com", req).ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want sibling quarantine %d", rec.Code, http.StatusServiceUnavailable)
+		}
+	})
+
+	t.Run("each quarantine has healthy contributor", func(t *testing.T) {
+		t.Parallel()
+		table := &dynamicTable{
+			routes: []compiledRoute{
+				{handler: healthy(http.StatusNoContent), service: "a", matcher: matcher},
+				{handler: healthy(http.StatusAccepted), service: "z", matcher: matcher},
+			},
+			quarantines: []compiledRoute{
+				{handler: workloadMutationQuarantine{}, service: "a", matcher: matcher},
+				{handler: workloadMutationQuarantine{}, service: "z", matcher: matcher},
+			},
+		}
+		rec := httptest.NewRecorder()
+		findDynamicHandler(table, "app.example.com", req).ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want final same-service healthy route %d", rec.Code, http.StatusAccepted)
+		}
+	})
+}
+
 // TestRouterHostAndPath walks the host-and-path matching matrix. The router
 // matches in declaration order; the first hit wins.
 func TestRouterHostAndPath(t *testing.T) {
@@ -1481,6 +1525,117 @@ func TestServerShutdownWithoutStart(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Shutdown did not return within 1s")
 	}
+}
+
+type shutdownDockerFixture struct {
+	srv         *server
+	registry    *mutationRegistry
+	stopStarted <-chan struct{}
+	releaseStop func()
+}
+
+func newShutdownDockerFixture(t *testing.T) shutdownDockerFixture {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(backend.Close)
+	host, portText, err := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stopStarted := make(chan struct{})
+	stopRelease := make(chan struct{})
+	releaseStop := sync.OnceFunc(func() { close(stopRelease) })
+	t.Cleanup(releaseStop)
+	daemon := &fakeDaemon{
+		t:           t,
+		starts:      map[string]int{},
+		stops:       map[string]int{},
+		stopStarted: stopStarted,
+		stopRelease: stopRelease,
+	}
+	daemon.swap([]fakeDaemonContainer{{
+		name: "wl-1", ip: host, port: port, stopped: true,
+		labels: map[string]string{
+			"statute.enable":  "true",
+			"statute.service": "wl",
+			"statute.host":    "wl.example.com",
+		},
+	}})
+	dockerAPI := httptest.NewServer(daemon.handler())
+	t.Cleanup(dockerAPI.Close)
+
+	r := mustResolve(t, Config{
+		Listeners: Listeners{HTTP("127.0.0.1:0")},
+		Docker: Docker().
+			Endpoint("tcp://"+strings.TrimPrefix(dockerAPI.URL, "http://")).
+			Storage(t.TempDir()).
+			Workload("wl", WorkloadPolicy{
+				IdleAfter: "50ms", StartTimeout: "1s", ReadyTimeout: "1s",
+				BackoffBase: "100ms", BackoffCap: "1s",
+			}),
+		Shutdown: Shutdown{GracePeriod: "100ms"},
+	})
+	srv, err := newServer(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	registry := srv.docker.currentMutationRegistry()
+	if registry == nil {
+		t.Fatal("workload mutation registry is unavailable")
+	}
+	return shutdownDockerFixture{
+		srv:         srv,
+		registry:    registry,
+		stopStarted: stopStarted,
+		releaseStop: releaseStop,
+	}
+}
+
+func TestServerShutdownCancelsOutstandingDockerStop(t *testing.T) {
+	fixture := newShutdownDockerFixture(t)
+	shutdownComplete := false
+	t.Cleanup(func() {
+		if !shutdownComplete {
+			fixture.releaseStop()
+			_ = fixture.srv.Shutdown()
+		}
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)
+	if rec := runRequest(t, fixture.srv.buildRouter(), request); rec.Code != http.StatusOK {
+		t.Fatalf("workload request = %d, want 200", rec.Code)
+	}
+	waitSignal(t, fixture.stopStarted, "idle stop did not reach Docker")
+
+	done := make(chan error, 1)
+	go func() { done <- fixture.srv.Shutdown() }()
+	select {
+	case err := <-done:
+		shutdownComplete = true
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		fixture.releaseStop()
+		<-done
+		shutdownComplete = true
+		t.Fatal("Shutdown exceeded its Docker stop cancellation budget")
+	}
+	records := fixture.registry.list()
+	if len(records) != 1 || records[0].State != mutationRecordUncertain {
+		t.Fatalf("outstanding mutation = %+v, want one uncertain record", records)
+	}
+	fixture.releaseStop()
 }
 
 // waitForListen polls addr until a TCP Dial succeeds, for up to two
