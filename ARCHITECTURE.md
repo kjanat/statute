@@ -436,7 +436,7 @@ resources. Closing an owned socket and permanently closing a reusable server con
 object are not interchangeable operations.
 
 The server shutdown grace period cancels provider-run stop and inspect calls. An
-issued mutation canceled before confirmation remains durably uncertain and
+issued mutation cancelled before confirmation remains durably uncertain and
 non-serving; the next provider run resumes convergence before route publication.
 
 If a PR claims transactional or retryable startup, tests must prove both resource
