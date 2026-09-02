@@ -237,6 +237,10 @@ sync. A definitive rejection before any ambiguity proves non-application and
 settles the mutation. Ambiguous outcomes remain recorded, and a later rejection
 does not erase them; only positive stopped or missing-ID evidence then settles the
 mutation. The record is durably removed before ordinary traffic can resume.
+Registry I/O holds only the registry mutex. Lifecycle captures the exact stop,
+binding pointer/key, and immutable ID, performs durable I/O unlocked, then
+revalidates that owner before committing state. Reconcile records stopped evidence
+and delegates deletion to tracked convergence after releasing its workload locks.
 
 A fresh process loads this registry before its first Docker route publication.
 Each record restores one retired mutation owner and quarantines only the recorded
@@ -298,8 +302,9 @@ carry the same identity: an old stream may finish, but cannot hold or arm the
 successor's idle lifecycle. Its binding token remains stable when the Docker call
 target is refined from a known container's name to its ID.
 
-Three lifetimes remain distinct. A workload registry allocates an explicit
-container-incarnation key and keeps request activity with that binding. The
+Three lifetimes remain distinct. The provider allocates an explicit,
+provider-lifetime-unique container-incarnation key and keeps request activity
+with that binding. The
 dynamic table owns a routing revision derived from handler-carried matcher and
 middleware semantics; it stays stable while a stopped container materialises its
 backend, while a label or middleware change invalidates queued handlers before

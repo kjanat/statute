@@ -175,6 +175,17 @@ type workloadBinding struct {
 	activity    workloadActivity
 }
 
+// workloadStopOwnership is the exact owner captured around unlocked WAL I/O.
+// Pointer, binding key, and immutable ID must all still match before commit.
+type workloadStopOwnership struct {
+	stop          *workloadStop
+	binding       *workloadBinding
+	bindingKey    workloadBindingKey
+	containerID   string
+	containerName string
+	service       string
+}
+
 func (b *workloadBinding) ref() string {
 	if b == nil {
 		return ""
@@ -183,6 +194,25 @@ func (b *workloadBinding) ref() string {
 		return b.containerID
 	}
 	return b.container
+}
+
+func (w *workload) stopOwnershipLocked(stop *workloadStop) (workloadStopOwnership, bool) {
+	if stop == nil || w.stop != stop || w.binding == nil || w.binding.key != stop.binding || w.binding.containerID == "" {
+		return workloadStopOwnership{}, false
+	}
+	return workloadStopOwnership{
+		stop:          stop,
+		binding:       w.binding,
+		bindingKey:    w.binding.key,
+		containerID:   w.binding.containerID,
+		containerName: w.binding.container,
+		service:       w.service,
+	}, true
+}
+
+func (o workloadStopOwnership) currentLocked(w *workload) bool {
+	return w.stop == o.stop && w.binding == o.binding && o.binding.key == o.bindingKey &&
+		o.stop.binding == o.bindingKey && o.binding.containerID == o.containerID
 }
 
 func (b *workloadBinding) sameContainer(svc *docker.Service) bool {
@@ -223,8 +253,9 @@ type workload struct {
 	mu      sync.Mutex
 	phase   workloadPhase
 	binding *workloadBinding
-	// nextBinding allocates explicit incarnation keys within this service.
-	nextBinding workloadBindingKey
+	// hadBinding distinguishes a fresh entry from one whose container was
+	// replaced while the binding itself was detached.
+	hadBinding bool
 	// retired means the current generation no longer grants on-demand
 	// authority; no Docker start or stop may be issued any more.
 	retired    bool
@@ -320,25 +351,33 @@ func (w *workload) ownsIssuedMutationForOtherContainerLocked(svc *docker.Service
 	return w.binding != nil && !w.binding.sameContainer(svc)
 }
 
-func (w *workload) newBindingLocked(svc *docker.Service) {
-	w.nextBinding++
+// nextWorkloadBindingLocked allocates one provider-lifetime incarnation key.
+// p.workloadMu must be held.
+func (p *dockerProvider) nextWorkloadBindingLocked() workloadBindingKey {
+	p.nextWorkloadBinding++
+	return p.nextWorkloadBinding
+}
+
+func (p *dockerProvider) newWorkloadBindingLocked(w *workload, svc *docker.Service) {
 	w.binding = &workloadBinding{
-		key:         w.nextBinding,
+		key:         p.nextWorkloadBindingLocked(),
 		container:   svc.Container,
 		containerID: svc.ContainerID,
 	}
+	w.hadBinding = true
 }
 
-// bindContainerLocked moves the registry entry to one observation. A new
+// bindWorkloadContainerLocked moves an entry to one observation. A new
 // container invalidates in-flight work owned by the preceding binding.
-func (w *workload) bindContainerLocked(svc *docker.Service) bool {
+// p.workloadMu and w.mu must be held.
+func (p *dockerProvider) bindWorkloadContainerLocked(w *workload, svc *docker.Service) bool {
 	if w.binding == nil {
-		w.newBindingLocked(svc)
+		p.newWorkloadBindingLocked(w, svc)
 		return false
 	}
 	if !w.sameContainerLocked(svc) {
 		w.supersedeBindingLocked()
-		w.newBindingLocked(svc)
+		p.newWorkloadBindingLocked(w, svc)
 		return true
 	}
 	w.binding.observe(svc)
@@ -1117,35 +1156,59 @@ const (
 
 func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attempt workloadStopAttempt) workloadStopApply {
 	w.mu.Lock()
-	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+	owner, owned := w.stopOwnershipLocked(stop)
+	if !owned {
 		w.mu.Unlock()
 		return workloadStopObsolete
 	}
-	stop.issued = false
 	if attempt.result == workloadStopAmbiguous {
+		stop.issued = false
 		stop.uncertain = true
-		return w.unsettleStopLocked()
+		result := w.unsettleStopLocked()
+		w.mu.Unlock()
+		return result
 	}
 	if attempt.result == workloadStopRejected && stop.uncertain {
-		return w.unsettleStopLocked()
+		stop.issued = false
+		result := w.unsettleStopLocked()
+		w.mu.Unlock()
+		return result
 	}
 	if !stop.terminal {
 		p.invalidateWorkloadObservationsLocked(w)
+		stop.terminal = true
+		stop.result = attempt.result
 	}
-	stop.terminal = true
-	stop.result = attempt.result
-	containerID := w.binding.containerID
+	result := stop.result
+	w.mu.Unlock()
+
 	registry := p.currentMutationRegistry()
+	var persistErr error
 	if registry == nil {
-		return w.unsettleStopLocked()
+		persistErr = errors.New("mutation registry is unavailable")
+	} else {
+		persistErr = registry.delete(owner.containerID)
 	}
-	if err := registry.delete(containerID); err != nil {
-		service := strconv.Quote(w.service)
-		log.Printf("statute: docker: workload %s: persist stop settlement: %s", service, strconv.Quote(err.Error()))
-		return w.unsettleStopLocked()
+
+	w.mu.Lock()
+	if !owner.currentLocked(w) {
+		w.mu.Unlock()
+		return workloadStopObsolete
 	}
-	p.invalidateStoppedGeneration(w.service, attempt.result)
-	w.settleStopLocked(p, stop, attempt.result)
+	if persistErr != nil {
+		stop.issued = false
+		apply := w.unsettleStopLocked()
+		w.mu.Unlock()
+		service := strconv.Quote(owner.service)
+		log.Printf("statute: docker: workload %s: persist stop settlement: %s", service, strconv.Quote(persistErr.Error()))
+		return apply
+	}
+	stop.issued = false
+	// Terminal evidence and durable settlement are separate transitions. Fence
+	// generations derived while the WAL deletion was in flight.
+	p.invalidateWorkloadObservationsLocked(w)
+	p.invalidateStoppedGeneration(owner.service, owner.bindingKey, result)
+	w.settleStopLocked(p, stop, result)
 	w.mu.Unlock()
 	p.scheduleReconcile()
 	return workloadStopSettled
@@ -1155,7 +1218,6 @@ func (w *workload) unsettleStopLocked() workloadStopApply {
 	if w.phase == workloadStopIssued {
 		w.toLocked(workloadStopUnknown)
 	}
-	w.mu.Unlock()
 	return workloadStopUnsettled
 }
 
@@ -1230,30 +1292,35 @@ func (p *dockerProvider) executeOwnedStopAttempt(ctx context.Context, w *workloa
 
 func (p *dockerProvider) persistOwnedStop(w *workload, stop *workloadStop) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.stop != stop || w.binding == nil || w.binding.key != stop.binding {
+	owner, owned := w.stopOwnershipLocked(stop)
+	if !owned {
+		w.mu.Unlock()
 		return errors.New("stop is obsolete")
 	}
 	if stop.persisted {
+		w.mu.Unlock()
 		return nil
 	}
-	containerID := w.binding.containerID
 	record := mutationRecord{
-		ContainerID:   containerID,
-		ContainerName: w.binding.container,
-		Service:       w.service,
+		ContainerID:   owner.containerID,
+		ContainerName: owner.containerName,
+		Service:       owner.service,
 		Kind:          mutationRecordKindForStop(stop.kind),
 		State:         mutationRecordPrepared,
 	}
-	if containerID == "" {
-		return errors.New("immutable container ID is unavailable")
-	}
+	w.mu.Unlock()
+
 	registry := p.currentMutationRegistry()
 	if registry == nil {
 		return errors.New("mutation registry is unavailable")
 	}
 	if err := registry.put(record); err != nil {
 		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !owner.currentLocked(w) {
+		return errors.New("stop is obsolete")
 	}
 	stop.persisted = true
 	return nil
@@ -1478,7 +1545,7 @@ func (p *dockerProvider) restoreMutationRecords(records []mutationRecord) {
 		if p.hasMutationOwnerLocked(record.ContainerID) {
 			continue
 		}
-		binding := workloadBindingKey(1)
+		binding := p.nextWorkloadBindingLocked()
 		stop := &workloadStop{
 			kind:       workloadStopKindForRecord(record.Kind),
 			binding:    binding,
@@ -1489,13 +1556,13 @@ func (p *dockerProvider) restoreMutationRecords(records []mutationRecord) {
 		}
 		stop.done = make(chan struct{})
 		w := &workload{
-			service:     record.Service,
-			policy:      p.cfg.Workloads[record.Service],
-			phase:       workloadStopUnknown,
-			binding:     &workloadBinding{key: binding, container: record.ContainerName, containerID: record.ContainerID},
-			nextBinding: binding,
-			retired:     true,
-			stop:        stop,
+			service:    record.Service,
+			policy:     p.cfg.Workloads[record.Service],
+			phase:      workloadStopUnknown,
+			binding:    &workloadBinding{key: binding, container: record.ContainerName, containerID: record.ContainerID},
+			hadBinding: true,
+			retired:    true,
+			stop:       stop,
 		}
 		p.retiredMutations = append(p.retiredMutations, w)
 	}
@@ -1632,17 +1699,16 @@ func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service, t
 }
 
 // detachMutationOwnerHeldLocked separates an immutable predecessor mutation
-// from the current grant. The successor inherits binding sequence and backoff.
+// from the current grant. The successor inherits replacement history and backoff.
 func (p *dockerProvider) detachMutationOwnerHeldLocked(old *workload, service string) *workload {
 	old.retired = true
 	old.stopIdleLocked()
-	nextBinding := old.nextBinding
 	failures := old.failures
 	failedUntil := old.failedUntil
 	old.mu.Unlock()
 	p.retiredMutations = append(p.retiredMutations, old)
 	fresh := &workload{
-		service: service, policy: p.cfg.Workloads[service], nextBinding: nextBinding,
+		service: service, policy: p.cfg.Workloads[service], hadBinding: old.hadBinding,
 		failures: failures, failedUntil: failedUntil,
 	}
 	if failures > 0 {
@@ -1792,32 +1858,22 @@ func (p *dockerProvider) reconcileRetiredMutationObservationLocked(w *workload, 
 			if container.Running {
 				return true
 			}
-			p.settleObservedStopLocked(w)
+			p.recordObservedStopLocked(w)
 			return true
 		}
 	}
-	p.settleObservedStopLocked(w)
+	p.recordObservedStopLocked(w)
 	return true
 }
 
-func (p *dockerProvider) settleObservedStopLocked(w *workload) {
+func (p *dockerProvider) recordObservedStopLocked(w *workload) {
 	stop := w.stop
 	if !stop.terminal {
 		p.invalidateWorkloadObservationsLocked(w)
 	}
 	stop.terminal = true
 	stop.result = workloadStopSucceeded
-	registry := p.currentMutationRegistry()
-	if registry == nil {
-		return
-	}
-	if err := registry.delete(w.binding.containerID); err != nil {
-		log.Printf("statute: docker: workload %q: persist observed stop settlement: %v", w.service, err)
-		p.ensureStopConvergenceLocked(w, stop)
-		return
-	}
-	p.markMutationSettled(w.service)
-	w.settleStopLocked(p, stop, workloadStopSucceeded)
+	p.ensureStopConvergenceLocked(w, stop)
 }
 
 func (p *dockerProvider) appendRetiredMutationRefLocked(refs []workloadContainerRef, w *workload) []workloadContainerRef {
@@ -1881,8 +1937,8 @@ func (p *dockerProvider) retireMissingLocked(seen map[string]bool, tickets workl
 // stopped ready workload reconciles to dormant; in-flight requests fail through
 // the normal proxy error path.
 func (p *dockerProvider) observeWorkloadLocked(w *workload, svc *docker.Service) {
-	replaced := w.binding == nil && w.nextBinding > 0
-	if w.bindContainerLocked(svc) {
+	replaced := w.binding == nil && w.hadBinding
+	if p.bindWorkloadContainerLocked(w, svc) {
 		replaced = true
 		log.Printf("statute: docker: workload %q: container binding replaced", w.service)
 	}
@@ -1929,7 +1985,7 @@ func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 			if w.stop.issued {
 				return
 			}
-			p.settleObservedStopLocked(w)
+			p.recordObservedStopLocked(w)
 		}
 	case workloadFailed:
 		w.failureEvidence = workloadFailureStopped
@@ -1941,19 +1997,34 @@ func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 
 func (p *dockerProvider) markMutationSettled(service string) {
 	p.generationMu.Lock()
+	p.markMutationSettledLocked(service)
+	p.generationMu.Unlock()
+}
+
+func (p *dockerProvider) markMutationSettledLocked(service string) {
 	if p.mutationVersions == nil {
 		p.mutationVersions = make(map[string]uint64)
 	}
 	p.mutationVersions[service]++
-	p.generationMu.Unlock()
 }
 
-func (p *dockerProvider) invalidateStoppedGeneration(service string, result workloadStopResult) {
+func (p *dockerProvider) invalidateStoppedGeneration(service string, binding workloadBindingKey, result workloadStopResult) {
 	// Rejection leaves the running pool valid. Observation revisions still
 	// fence generations derived before settlement.
-	if result == workloadStopSucceeded {
-		p.markMutationSettled(service)
+	if result != workloadStopSucceeded {
+		return
 	}
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
+	if p.srv != nil {
+		table := p.srv.dynamic.Load()
+		if table != nil {
+			if current, exists := table.workloadBindings[service]; exists && current != binding {
+				return
+			}
+		}
+	}
+	p.markMutationSettledLocked(service)
 }
 
 func (p *dockerProvider) currentMutationVersion(service string) uint64 {

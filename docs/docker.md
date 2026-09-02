@@ -157,6 +157,8 @@ How it behaves:
 - **Issued mutations stay owned.** Idle stops and failed-activation cleanup
   stops are written to the persistent registry by immutable container ID before
   Docker receives the mutation, and remain non-serving until their outcome settles.
+  Registry synchronisation holds no workload or reconciliation lock; the exact
+  mutation owner is revalidated after each durable write.
   If a stop response is lost or Docker returns a server error, an immediate running
   inspect does not reopen traffic: Docker may still finish the stop. That uncertainty
   remains attached to the mutation and cannot be erased by a later rejected retry.

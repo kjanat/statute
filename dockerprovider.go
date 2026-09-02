@@ -69,8 +69,9 @@ type dockerProvider struct {
 
 	// workloadEntries is the on-demand lifecycle registry, keyed by
 	// discovered-service identity; entries outlive generation swaps.
-	workloadMu      sync.Mutex
-	workloadEntries map[string]*workload
+	workloadMu          sync.Mutex
+	nextWorkloadBinding workloadBindingKey
+	workloadEntries     map[string]*workload
 	// retiredMutations keep predecessor workloads alive while their issued
 	// stops settle independently from a successor using the same service key.
 	retiredMutations []*workload

@@ -1482,6 +1482,31 @@ func TestRecoveredMutationDoesNotAttachToSameNameSuccessor(t *testing.T) {
 	}
 }
 
+func TestRecoveredMutationAndSuccessorBindingsAreDistinct(t *testing.T) {
+	p := &dockerProvider{
+		cfg:             &resolved.Docker{Workloads: map[string]resolved.Workload{"wl": testWorkloadPolicy()}},
+		workloadEntries: map[string]*workload{},
+	}
+	p.restoreMutationRecords([]mutationRecord{{
+		ContainerID: "old-id", ContainerName: "wl-old", Service: "wl",
+		Kind: mutationRecordIdleStop, State: mutationRecordUncertain,
+	}})
+	old := p.retiredMutations[0]
+
+	p.workloadMu.Lock()
+	current := p.prepareWorkloadObservationLocked(&docker.Service{
+		Name: "wl", Container: "wl-new", ContainerID: "new-id",
+	}, workloadObservationTickets{})
+	successor := p.workloadEntries["wl"]
+	p.workloadMu.Unlock()
+	if !current {
+		t.Fatal("successor observation was rejected")
+	}
+	if old.currentBinding() == successor.currentBinding() {
+		t.Fatalf("recovered predecessor and successor share binding %d", old.currentBinding())
+	}
+}
+
 func TestEstablishedProviderAdoptsExternallyStartedContainer(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -1808,7 +1833,7 @@ func TestWorkloadDefinitiveStopRejectionSkipsInspect(t *testing.T) {
 }
 
 func TestWorkloadStaleIdleCallbackCannotUseSuccessorRun(t *testing.T) {
-	p := &dockerProvider{}
+	p := &dockerProvider{nextWorkloadBinding: 1}
 	oldRun := &dockerRun{provider: p, ctx: context.Background()}
 	newRun := &dockerRun{provider: p, ctx: context.Background()}
 	p.current = oldRun
@@ -1818,8 +1843,8 @@ func TestWorkloadStaleIdleCallbackCannotUseSuccessorRun(t *testing.T) {
 			key:       1,
 			container: "old",
 		},
-		nextBinding: 1,
-		idleEpoch:   1,
+		hadBinding: true,
+		idleEpoch:  1,
 	}
 
 	oldRun.trackMu.Lock()
@@ -1837,11 +1862,13 @@ func TestWorkloadStaleIdleCallbackCannotUseSuccessorRun(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
+	p.workloadMu.Lock()
 	w.mu.Lock()
 	w.stopIdleLocked()
-	w.bindContainerLocked(&docker.Service{Container: "new", ContainerID: "new-id"})
+	p.bindWorkloadContainerLocked(w, &docker.Service{Container: "new", ContainerID: "new-id"})
 	w.phase = workloadReady
 	w.mu.Unlock()
+	p.workloadMu.Unlock()
 	p.current = newRun
 	oldRun.stopping = true
 	oldRun.trackMu.Unlock()
@@ -1945,15 +1972,18 @@ func TestWorkloadRejectedIdleStopReservesWaitingRequestActivity(t *testing.T) {
 
 func TestWorkloadContainerIDRefinesExistingBinding(t *testing.T) {
 	binding := &workloadBinding{key: 1, container: "wl-1", activity: workloadActivity{active: 1}}
+	p := &dockerProvider{srv: &server{}, nextWorkloadBinding: binding.key}
 	w := workload{
-		phase:       workloadReady,
-		policy:      resolved.Workload{IdleAfter: time.Hour},
-		binding:     binding,
-		nextBinding: binding.key,
+		phase:      workloadReady,
+		policy:     resolved.Workload{IdleAfter: time.Hour},
+		binding:    binding,
+		hadBinding: true,
 	}
+	p.workloadMu.Lock()
 	w.mu.Lock()
-	changed := w.bindContainerLocked(&docker.Service{Container: "wl-1", ContainerID: "new-id"})
+	changed := p.bindWorkloadContainerLocked(&w, &docker.Service{Container: "wl-1", ContainerID: "new-id"})
 	w.mu.Unlock()
+	p.workloadMu.Unlock()
 	if changed || w.binding != binding {
 		t.Fatal("a name-to-ID refinement replaced the container binding")
 	}
@@ -1961,7 +1991,6 @@ func TestWorkloadContainerIDRefinesExistingBinding(t *testing.T) {
 		t.Fatalf("refined Docker reference = %q, want new-id", got)
 	}
 	pool := &runningPool{}
-	p := &dockerProvider{srv: &server{}}
 	p.srv.dynamic.Store(&dynamicTable{
 		pools:            map[string]*runningPool{"wl": pool},
 		workloadBindings: map[string]workloadBindingKey{"wl": binding.key},
@@ -1980,13 +2009,16 @@ func TestWorkloadContainerIDRefinesExistingBinding(t *testing.T) {
 }
 
 func TestWorkloadOperationRefRefinesToContainerID(t *testing.T) {
+	p := &dockerProvider{}
 	w := &workload{}
+	p.workloadMu.Lock()
 	w.mu.Lock()
-	w.bindContainerLocked(&docker.Service{Container: "wl-1"})
+	p.bindWorkloadContainerLocked(w, &docker.Service{Container: "wl-1"})
 	binding := w.binding.key
 	stop := w.newStopLocked(nil, workloadIdleStop, binding, "wl-1")
-	w.bindContainerLocked(&docker.Service{Container: "wl-1", ContainerID: "immutable-id"})
+	p.bindWorkloadContainerLocked(w, &docker.Service{Container: "wl-1", ContainerID: "immutable-id"})
 	w.mu.Unlock()
+	p.workloadMu.Unlock()
 
 	if got := w.callRef(stop.binding, stop.ref); got != "immutable-id" {
 		t.Fatalf("refined operation ref = %q, want immutable ID", got)
@@ -2029,6 +2061,174 @@ func TestWorkloadStopSettlementVersionsBeforeStateChange(t *testing.T) {
 	}
 	if p.currentMutationVersion("wl") != 1 || w.phaseNow() != workloadDormant {
 		t.Fatalf("settled state: version=%d phase=%v", p.currentMutationVersion("wl"), w.phaseNow())
+	}
+}
+
+func TestWorkloadStopSettlementReleasesLockDuringRegistryDelete(t *testing.T) {
+	registry, err := openMutationRegistry(t.TempDir(), "test-endpoint")
+	if err != nil {
+		t.Fatalf("open mutation registry: %v", err)
+	}
+	record := mutationRecord{ContainerID: "immutable-id", Service: "wl", Kind: mutationRecordIdleStop, State: mutationRecordPrepared}
+	if err := registry.put(record); err != nil {
+		t.Fatalf("persist mutation: %v", err)
+	}
+	p := &dockerProvider{current: &dockerRun{registry: registry}, mutationVersions: map[string]uint64{}}
+	binding := &workloadBinding{key: 1, container: "wl-1", containerID: record.ContainerID}
+	stop := &workloadStop{binding: binding.key, issued: true, persisted: true}
+	stop.done = make(chan struct{})
+	w := &workload{service: "wl", phase: workloadStopIssued, binding: binding, stop: stop}
+
+	registry.mu.Lock()
+	settled := make(chan workloadStopApply, 1)
+	go func() {
+		settled <- w.applyStopAttempt(p, stop, workloadStopAttempt{result: workloadStopSucceeded})
+	}()
+	workloadUnlocked := waitWorkloadUnlockAfterObservation(p, w)
+	registry.mu.Unlock()
+	if got := <-settled; got != workloadStopSettled {
+		t.Fatalf("stop settlement = %v, want settled", got)
+	}
+	if !workloadUnlocked {
+		t.Fatal("stop settlement held workload lock during registry deletion")
+	}
+}
+
+func waitWorkloadUnlockAfterObservation(p *dockerProvider, w *workload) bool {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		p.generationMu.Lock()
+		invalidated := p.observationVersion > 0
+		p.generationMu.Unlock()
+		if invalidated && w.mu.TryLock() {
+			w.mu.Unlock()
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
+}
+
+func TestWorkloadStaleSettlementDoesNotInvalidatePublishedSuccessor(t *testing.T) {
+	registry, err := openMutationRegistry(t.TempDir(), "test-endpoint")
+	if err != nil {
+		t.Fatalf("open mutation registry: %v", err)
+	}
+	record := mutationRecord{ContainerID: "old-id", Service: "wl", Kind: mutationRecordIdleStop, State: mutationRecordPrepared}
+	if err := registry.put(record); err != nil {
+		t.Fatalf("persist mutation: %v", err)
+	}
+	p := &dockerProvider{srv: &server{}, current: &dockerRun{registry: registry}, mutationVersions: map[string]uint64{}}
+	oldBinding := &workloadBinding{key: 1, container: "wl-old", containerID: record.ContainerID}
+	stop := &workloadStop{binding: oldBinding.key, issued: true, persisted: true}
+	stop.done = make(chan struct{})
+	old := &workload{service: "wl", phase: workloadStopIssued, binding: oldBinding, stop: stop, retired: true}
+
+	registry.mu.Lock()
+	settled := make(chan workloadStopApply, 1)
+	go func() {
+		settled <- old.applyStopAttempt(p, stop, workloadStopAttempt{result: workloadStopSucceeded})
+	}()
+	if !waitWorkloadUnlockAfterObservation(p, old) {
+		registry.mu.Unlock()
+		<-settled
+		t.Fatal("old settlement did not release its workload lock")
+	}
+	staleVersions := p.currentGenerationVersions()
+	successorBinding := workloadBindingKey(2)
+	successorPool := &runningPool{}
+	p.generationMu.Lock()
+	p.srv.dynamic.Store(&dynamicTable{
+		pools:             map[string]*runningPool{"wl": successorPool},
+		workloadBindings:  map[string]workloadBindingKey{"wl": successorBinding},
+		workloadMutations: map[string]uint64{"wl": 0},
+	})
+	p.generationMu.Unlock()
+	registry.mu.Unlock()
+
+	if got := <-settled; got != workloadStopSettled {
+		t.Fatalf("old settlement = %v, want settled", got)
+	}
+	if version := p.currentMutationVersion("wl"); version != 0 {
+		t.Fatalf("old settlement advanced successor mutation version to %d", version)
+	}
+	if got := p.currentPool("wl", successorBinding); got != successorPool {
+		t.Fatal("old settlement invalidated the published successor pool")
+	}
+	if p.publishGeneration(&dynamicTable{}, staleVersions) {
+		t.Fatal("old generation derived during WAL deletion published after settlement")
+	}
+}
+
+func TestWorkloadObservedStopQueuesUnlockedRegistrySettlement(t *testing.T) {
+	registry, err := openMutationRegistry(t.TempDir(), "test-endpoint")
+	if err != nil {
+		t.Fatalf("open mutation registry: %v", err)
+	}
+	record := mutationRecord{ContainerID: "immutable-id", Service: "wl", Kind: mutationRecordIdleStop, State: mutationRecordUncertain}
+	if err := registry.put(record); err != nil {
+		t.Fatalf("persist mutation: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := &dockerProvider{srv: &server{}, mutationVersions: map[string]uint64{}}
+	run := &dockerRun{provider: p, registry: registry, ctx: ctx, cancel: cancel, kick: make(chan struct{}, 1)}
+	p.current = run
+	binding := &workloadBinding{key: 1, container: "wl-1", containerID: record.ContainerID}
+	stop := &workloadStop{binding: binding.key, persisted: true, uncertain: true}
+	stop.done = make(chan struct{})
+	w := &workload{service: "wl", phase: workloadStopUnknown, binding: binding, stop: stop, retired: true}
+	tickets := workloadObservationTickets{w: w.observationEpoch}
+
+	registry.mu.Lock()
+	requireObservedStopReturnsUnlocked(t, p, w, tickets, registry)
+	registry.mu.Unlock()
+	select {
+	case <-stop.done:
+	case <-time.After(time.Second):
+		t.Fatal("queued observed-stop settlement did not finish")
+	}
+	if registry.contains(record.ContainerID) {
+		t.Fatal("queued observed-stop settlement retained durable ownership")
+	}
+	cancel()
+	run.wg.Wait()
+}
+
+func requireObservedStopReturnsUnlocked(t *testing.T, p *dockerProvider, w *workload, tickets workloadObservationTickets, registry *mutationRegistry) {
+	t.Helper()
+	observed := make(chan bool, 1)
+	go func() {
+		p.workloadMu.Lock()
+		current := p.reconcileRetiredMutationObservationLocked(w, nil, tickets)
+		p.workloadMu.Unlock()
+		observed <- current
+	}()
+	select {
+	case current := <-observed:
+		if !current {
+			registry.mu.Unlock()
+			t.Fatal("observed stop rejected a current snapshot")
+		}
+		if !p.workloadMu.TryLock() {
+			registry.mu.Unlock()
+			t.Fatal("observed stop returned with provider workload lock held")
+		}
+		p.workloadMu.Unlock()
+		select {
+		case <-w.stop.done:
+			registry.mu.Unlock()
+			t.Fatal("observed stop settled before durable registry deletion")
+		default:
+		}
+	case <-time.After(100 * time.Millisecond):
+		registry.mu.Unlock()
+		select {
+		case <-observed:
+		case <-time.After(time.Second):
+			t.Fatal("observed stop did not finish after registry release")
+		}
+		t.Fatal("observed stop held provider workload lock during registry deletion")
 	}
 }
 
@@ -2075,17 +2275,22 @@ func TestWorkloadFreshRejectedStopSettlesPreparedMutation(t *testing.T) {
 
 func TestWorkloadContainerIDNeverDowngradesToName(t *testing.T) {
 	binding := &workloadBinding{key: 1, container: "wl-1", containerID: "id-a"}
-	w := workload{binding: binding, nextBinding: binding.key}
+	p := &dockerProvider{nextWorkloadBinding: binding.key}
+	w := workload{binding: binding, hadBinding: true}
+	p.workloadMu.Lock()
 	w.mu.Lock()
-	changed := w.bindContainerLocked(&docker.Service{Container: "wl-1"})
+	changed := p.bindWorkloadContainerLocked(&w, &docker.Service{Container: "wl-1"})
 	w.mu.Unlock()
+	p.workloadMu.Unlock()
 	if changed || w.binding.key != binding.key || w.binding.ref() != "id-a" {
 		t.Fatalf("missing ID weakened binding: changed=%v key=%d ref=%q", changed, w.binding.key, w.binding.ref())
 	}
 
+	p.workloadMu.Lock()
 	w.mu.Lock()
-	changed = w.bindContainerLocked(&docker.Service{Container: "wl-1", ContainerID: "id-b"})
+	changed = p.bindWorkloadContainerLocked(&w, &docker.Service{Container: "wl-1", ContainerID: "id-b"})
 	w.mu.Unlock()
+	p.workloadMu.Unlock()
 	if !changed || w.binding.key == binding.key || w.binding.ref() != "id-b" {
 		t.Fatalf("same-name recreation was absorbed: changed=%v key=%d ref=%q", changed, w.binding.key, w.binding.ref())
 	}
@@ -2095,11 +2300,12 @@ func TestWorkloadWaitersBelongToTheirOutcome(t *testing.T) {
 	oldBinding := &workloadBinding{key: 1, container: "wl-1", containerID: "id-a"}
 	oldActivation := &workloadActivation{binding: oldBinding.key}
 	oldActivation.done = make(chan struct{})
+	p := &dockerProvider{nextWorkloadBinding: oldBinding.key}
 	w := workload{
-		phase:       workloadStarting,
-		binding:     oldBinding,
-		nextBinding: oldBinding.key,
-		activation:  oldActivation,
+		phase:      workloadStarting,
+		binding:    oldBinding,
+		hadBinding: true,
+		activation: oldActivation,
 	}
 	w.mu.Lock()
 	_, oldWait, err := w.serveCurrentStateLocked(nil)
@@ -2108,14 +2314,16 @@ func TestWorkloadWaitersBelongToTheirOutcome(t *testing.T) {
 		t.Fatalf("old wait registration: waiters=%d err=%v", oldWait.waiting, err)
 	}
 
+	p.workloadMu.Lock()
 	w.mu.Lock()
-	w.bindContainerLocked(&docker.Service{Container: "wl-1", ContainerID: "id-b"})
+	p.bindWorkloadContainerLocked(&w, &docker.Service{Container: "wl-1", ContainerID: "id-b"})
 	newActivation := &workloadActivation{observe: true, binding: w.binding.key}
 	newActivation.done = make(chan struct{})
 	w.toLocked(workloadStarting)
 	w.activation = newActivation
 	_, newWait, err := w.serveCurrentStateLocked(nil)
 	w.mu.Unlock()
+	p.workloadMu.Unlock()
 	if err != nil || newWait.waiting != 1 {
 		t.Fatalf("new wait registration: waiters=%d err=%v", newWait.waiting, err)
 	}
