@@ -28,7 +28,7 @@ const (
 // The evidence is correlated per owner type (the named struct from which the server field, done channel, or WaitGroup is selected): each owner type whose server the publication launches must have one function body in the rollback's transitive call closure containing both a Shutdown/Close on that owner's server and a completion wait on that same owner; a stop and a wait belonging to different owners, or split across unrelated bodies, arm nothing.
 var Analyzer = &analysis.Analyzer{
 	Name: pluginName,
-	Doc:  "trace Statute lifecycle publication, goroutine ownership, and cleanup invariants",
+	Doc:  "trace Statute lifecycle publication, goroutine ownership, cleanup, and Docker mutation invariants",
 	Run:  run,
 }
 
@@ -84,6 +84,7 @@ func run(pass *analysis.Pass) (any, error) {
 		checkIgnoredLifecycleCalls(pass, info, functions, parents)
 	}
 	checkGoroutineOwnership(pass, lifecycle)
+	checkDockerMutationInvariants(pass, functions, parents)
 
 	return nil, nil
 }
