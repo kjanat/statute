@@ -83,6 +83,19 @@ func (p *dockerProvider) startActivation(ctx context.Context, w *workload, act *
 	return p.client.StartContainer(sctx, w.callRef(act.binding, act.ref))
 }
 
+func (p *dockerProvider) runActivation(ctx context.Context, w *workload, act *workloadActivation) error {
+	return p.startActivation(ctx, w, act)
+}
+
+func (p *dockerProvider) activate(ctx context.Context, w *workload, act *workloadActivation) {
+	_ = p.runActivation(ctx, w, act)
+	p.finishActivation(ctx, w, act)
+}
+
+func (p *dockerProvider) finishActivation(ctx context.Context, w *workload, _ *workloadActivation) {
+	p.runOwnedStop(ctx, w, w.stop)
+}
+
 func (p *dockerProvider) attemptOwnedStop(ctx context.Context, w *workload, stop *workloadStop) workloadStopAttempt {
 	stopRef := w.callRef(stop.binding, stop.ref)
 	sctx, cancel := context.WithTimeout(ctx, workloadStopTimeout)
@@ -96,6 +109,26 @@ func (p *dockerProvider) executeOwnedStopAttempt(ctx context.Context, w *workloa
 		return workloadStopAttempt{err: err}
 	}
 	return p.attemptOwnedStop(ctx, w, stop)
+}
+
+func (p *dockerProvider) runOwnedStop(ctx context.Context, w *workload, stop *workloadStop) {
+	_ = p.executeOwnedStopAttempt(ctx, w, stop)
+}
+
+type dockerRun struct{}
+
+func (*dockerRun) track(fn func(context.Context)) bool {
+	fn(context.Background())
+	return true
+}
+
+func (p *dockerProvider) scheduleStop(w *workload, stop *workloadStop) {
+	run := &dockerRun{}
+	run.track(func(ctx context.Context) { p.performStop(ctx, w, stop) })
+}
+
+func (p *dockerProvider) performStop(ctx context.Context, w *workload, stop *workloadStop) {
+	p.runOwnedStop(ctx, w, stop)
 }
 
 func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attempt workloadStopAttempt) workloadStopApply {

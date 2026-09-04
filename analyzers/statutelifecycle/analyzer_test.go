@@ -26,6 +26,7 @@ func TestDockerMutationAnalyzer(t *testing.T) {
 		"mutationsettleorder",
 		"mutationsettlewrongregistry",
 		"mutationsettlemissingowner",
+		"mutationsettleownershiporder",
 		"mutationsettledeferred",
 	} {
 		t.Run(fixture, func(t *testing.T) {

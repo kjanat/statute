@@ -66,3 +66,22 @@ func (p *dockerProvider) escaped() {
 	attempt := p.attemptOwnedStop // want `\[SLC106\].*must be called directly`
 	_ = attempt
 }
+
+func (p *dockerProvider) gotoFailure(ctx context.Context, w *workload, stop *workloadStop) workloadStopAttempt {
+	if err := p.persistOwnedStop(w, stop); err != nil {
+		goto attempt
+		return workloadStopAttempt{}
+	}
+	return workloadStopAttempt{}
+
+attempt:
+	return p.attemptOwnedStop(ctx, w, stop) // want `\[SLC106\].*dominated by successful persistOwnedStop`
+}
+
+type stopAttemptInterface interface {
+	attemptOwnedStop(context.Context, *workload, *workloadStop) workloadStopAttempt
+}
+
+func interfaceAttempt(p stopAttemptInterface, ctx context.Context, w *workload, stop *workloadStop) workloadStopAttempt {
+	return p.attemptOwnedStop(ctx, w, stop) // want `\[SLC106\].*concrete dockerProvider method`
+}

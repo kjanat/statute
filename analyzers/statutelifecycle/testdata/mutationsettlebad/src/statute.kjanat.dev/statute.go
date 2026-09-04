@@ -96,6 +96,14 @@ func aliasedRelease(w *workload, stop *workloadStop) {
 	w.stop = (*workloadStop)(nil) // want `\[SLC107\].*workload.stop may only be cleared`
 }
 
+func declaredAliasRelease(w *workload, stop *workloadStop) {
+	var done = stop.done
+	close(done) // want `\[SLC107\].*waiters may only be released`
+	var zero *workloadStop
+	w.stop = zero   // want `\[SLC107\].*workload.stop may only be cleared`
+	*w = workload{} // want `\[SLC107\].*workload values may not be replaced`
+}
+
 func escapedRelease(w *workload, registry *mutationRegistry) {
 	remove := registry.delete    // want `\[SLC107\].*deletion must remain a direct canonical settlement call`
 	settle := w.settleStopLocked // want `\[SLC107\].*release must remain a direct canonical call`
@@ -112,4 +120,18 @@ func goodSupersession(w *workload, svc *service) {
 	if !w.sameContainerLocked(svc) {
 		w.supersedeBindingLocked()
 	}
+}
+
+type mutationDeleter interface{ delete(string) error }
+
+func interfaceDelete(registry mutationDeleter) {
+	_ = registry.delete("container-id") // want `\[SLC107\].*concrete mutationRegistry method`
+}
+
+type workloadSettler interface {
+	settleStopLocked(*dockerProvider, *workloadStop, workloadStopResult)
+}
+
+func interfaceSettle(w workloadSettler, p *dockerProvider, stop *workloadStop) {
+	w.settleStopLocked(p, stop, 0) // want `\[SLC107\].*concrete workload method`
 }
