@@ -15,8 +15,6 @@ const (
 	dockerPackagePath  = statutePackagePath + "/internal/docker"
 	dockerStartMethod  = "StartContainer"
 	dockerStopMethod   = "StopContainer"
-	slc105Code         = "SLC105"
-	slc106Code         = "SLC106"
 )
 
 type dockerMutation uint8
@@ -65,19 +63,19 @@ func checkMutationContextIngress(pass *analysis.Pass, info *functionInfo, parent
 		tracked := false
 		switch {
 		case isLocalMethod(fn, "dockerProvider", "startActivation"):
-			code, expectedCaller = slc105Code, "runActivation"
+			code, expectedCaller = diagnosticSLC105, "runActivation"
 		case isLocalMethod(fn, "dockerProvider", "runActivation"):
-			code, expectedCaller = slc105Code, "activate"
+			code, expectedCaller = diagnosticSLC105, "activate"
 		case isLocalMethod(fn, "dockerProvider", "activate"):
-			code, tracked = slc105Code, true
+			code, tracked = diagnosticSLC105, true
 		case isLocalMethod(fn, "dockerProvider", "executeOwnedStopAttempt"):
-			code, expectedCaller = slc106Code, "runOwnedStop"
+			code, expectedCaller = diagnosticSLC106, "runOwnedStop"
 		case isLocalMethod(fn, "dockerProvider", "runOwnedStop"):
-			code = slc106Code
+			code = diagnosticSLC106
 		case isLocalMethod(fn, "dockerProvider", "finishActivation"):
-			code, expectedCaller = slc106Code, "activate"
+			code, expectedCaller = diagnosticSLC106, "activate"
 		case isLocalMethod(fn, "dockerProvider", "performStop"):
-			code, tracked = slc106Code, true
+			code, tracked = diagnosticSLC106, true
 		default:
 			return true
 		}
@@ -147,7 +145,7 @@ func checkDockerMutationCalls(pass *analysis.Pass, info *functionInfo, parents m
 		if !ok {
 			mutation, ok = interfaceDockerMutation(pass, sel)
 			if ok {
-				pass.Reportf(sel.Pos(), "[SLC105] Docker %s interface dispatch cannot prove the canonical internal client boundary", mutation.method())
+				pass.Reportf(sel.Pos(), "["+diagnosticSLC105+"] Docker %s interface dispatch cannot prove the canonical internal client boundary", mutation.method())
 				return true
 			}
 		}
@@ -156,15 +154,15 @@ func checkDockerMutationCalls(pass *analysis.Pass, info *functionInfo, parents m
 		}
 		call := directSelectorCall(sel, parents)
 		if call == nil {
-			pass.Reportf(sel.Pos(), "[SLC105] Docker %s reference escapes the canonical %s boundary", mutation.method(), mutation.boundary())
+			pass.Reportf(sel.Pos(), "["+diagnosticSLC105+"] Docker %s reference escapes the canonical %s boundary", mutation.method(), mutation.boundary())
 			return true
 		}
 		if !isMutationBoundary(info.fn, mutation) || enclosedByFuncLiteral(call, info.decl.Body, parents) {
-			pass.Reportf(call.Pos(), "[SLC105] Docker %s may only be called directly from %s", mutation.method(), mutation.boundary())
+			pass.Reportf(call.Pos(), "["+diagnosticSLC105+"] Docker %s may only be called directly from %s", mutation.method(), mutation.boundary())
 			return true
 		}
 		if reason := validateDockerMutationCall(pass, info, call, mutation, resolver, flow, parents); reason != "" {
-			pass.Reportf(call.Pos(), "[SLC105] Docker %s in %s %s", mutation.method(), mutation.boundary(), reason)
+			pass.Reportf(call.Pos(), "["+diagnosticSLC105+"] Docker %s in %s %s", mutation.method(), mutation.boundary(), reason)
 		}
 		return true
 	})
@@ -382,7 +380,7 @@ func checkPersistBeforeStop(pass *analysis.Pass, info *functionInfo, parents map
 		}
 		fn := selectedFunction(pass, sel)
 		if isLocalInterfaceMethod(fn, "attemptOwnedStop") {
-			pass.Reportf(sel.Pos(), "[SLC106] attemptOwnedStop must use the concrete dockerProvider method so persistence provenance remains provable")
+			pass.Reportf(sel.Pos(), "["+diagnosticSLC106+"] attemptOwnedStop must use the concrete dockerProvider method so persistence provenance remains provable")
 			return true
 		}
 		if !isLocalMethod(fn, "dockerProvider", "attemptOwnedStop") {
@@ -390,11 +388,11 @@ func checkPersistBeforeStop(pass *analysis.Pass, info *functionInfo, parents map
 		}
 		call := directSelectorCall(sel, parents)
 		if call == nil {
-			pass.Reportf(sel.Pos(), "[SLC106] attemptOwnedStop must be called directly so persistence dominance remains provable")
+			pass.Reportf(sel.Pos(), "["+diagnosticSLC106+"] attemptOwnedStop must be called directly so persistence dominance remains provable")
 			return true
 		}
 		if enclosedByFuncLiteral(call, info.decl.Body, parents) || !providerContextArgument(info.fn, call, resolver) || !persistenceGuardDominates(pass, info.decl.Body, call, resolver, flow, parents) {
-			pass.Reportf(call.Pos(), "[SLC106] attemptOwnedStop must be dominated by successful persistOwnedStop for the same provider, workload, and stop")
+			pass.Reportf(call.Pos(), "["+diagnosticSLC106+"] attemptOwnedStop must be dominated by successful persistOwnedStop for the same provider, workload, and stop")
 		}
 		return true
 	})
@@ -456,7 +454,7 @@ func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, parents 
 	resolver := newPathResolver(pass, info.decl.Body)
 	if apply && (directMethodCallCount(pass, info.decl.Body, "mutationRegistry", "delete", parents) != 1 ||
 		directMethodCallCount(pass, info.decl.Body, "workload", "settleStopLocked", parents) != 1) {
-		pass.Reportf(info.decl.Name.Pos(), "[SLC107] applyStopAttempt must contain exactly one canonical durable deletion and settlement call")
+		pass.Reportf(info.decl.Name.Pos(), "["+diagnosticSLC107+"] applyStopAttempt must contain exactly one canonical durable deletion and settlement call")
 	}
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
 		switch n := node.(type) {
@@ -466,33 +464,33 @@ func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, parents 
 			async := insideDeferredOrGo(n, info.decl.Body, parents)
 			switch {
 			case isLocalInterfaceMethod(fn, "delete"):
-				pass.Reportf(n.Pos(), "[SLC107] durable mutation deletion must use the concrete mutationRegistry method")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] durable mutation deletion must use the concrete mutationRegistry method")
 			case isLocalInterfaceMethod(fn, "settleStopLocked"), isLocalInterfaceMethod(fn, "supersedeBindingLocked"):
-				pass.Reportf(n.Pos(), "[SLC107] mutation ownership release must use the concrete workload method")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation ownership release must use the concrete workload method")
 			case isLocalMethod(fn, "mutationRegistry", "delete") && (!apply || nested || async):
-				pass.Reportf(n.Pos(), "[SLC107] durable mutation evidence may only be deleted by (*workload).applyStopAttempt")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] durable mutation evidence may only be deleted by (*workload).applyStopAttempt")
 			case isLocalMethod(fn, "workload", "settleStopLocked"):
 				if !apply || nested || async {
-					pass.Reportf(n.Pos(), "[SLC107] mutation ownership may only settle through (*workload).applyStopAttempt")
+					pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation ownership may only settle through (*workload).applyStopAttempt")
 				} else if !canonicalSettlementProof(pass, info, n, resolver, flow, parents) {
-					pass.Reportf(n.Pos(), "[SLC107] settlement must follow durable deletion, owner revalidation, generation fencing, and reconcile scheduling")
+					pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] settlement must follow durable deletion, owner revalidation, generation fencing, and reconcile scheduling")
 				}
 			case closesStopDone(pass, info.decl.Body, resolver, n) && ((!settle && !supersede) || nested || async):
-				pass.Reportf(n.Pos(), "[SLC107] mutation waiters may only be released by canonical settlement or binding supersession")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation waiters may only be released by canonical settlement or binding supersession")
 			case isLocalMethod(fn, "workload", "supersedeBindingLocked") && (nested || async || !supersessionGuarded(pass, info.decl.Body, n, resolver, parents)):
-				pass.Reportf(n.Pos(), "[SLC107] mutation ownership may only be superseded after sameContainerLocked rejects the observed binding")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation ownership may only be superseded after sameContainerLocked rejects the observed binding")
 			}
 		case *ast.AssignStmt:
 			if overwritesWorkload(pass, resolver, n) {
-				pass.Reportf(n.Pos(), "[SLC107] workload values may not be replaced because doing so can discard mutation ownership")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] workload values may not be replaced because doing so can discard mutation ownership")
 			} else if clearsWorkloadStop(pass, info.decl.Body, resolver, n) && ((!settle && !supersede) || enclosedByFuncLiteral(n, info.decl.Body, parents)) {
-				pass.Reportf(n.Pos(), "[SLC107] workload.stop may only be cleared by canonical settlement or binding supersession")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] workload.stop may only be cleared by canonical settlement or binding supersession")
 			}
 		case *ast.SelectorExpr:
 			fn := selectedFunction(pass, n)
 			if isLocalInterfaceMethod(fn, "delete") || isLocalInterfaceMethod(fn, "settleStopLocked") || isLocalInterfaceMethod(fn, "supersedeBindingLocked") {
 				if directSelectorCall(n, parents) == nil {
-					pass.Reportf(n.Pos(), "[SLC107] mutation sinks may not be captured through interfaces")
+					pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation sinks may not be captured through interfaces")
 				}
 				break
 			}
@@ -501,9 +499,9 @@ func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, parents 
 			}
 			switch {
 			case isLocalMethod(fn, "mutationRegistry", "delete"):
-				pass.Reportf(n.Pos(), "[SLC107] durable mutation deletion must remain a direct canonical settlement call")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] durable mutation deletion must remain a direct canonical settlement call")
 			case isLocalMethod(fn, "workload", "settleStopLocked"), isLocalMethod(fn, "workload", "supersedeBindingLocked"):
-				pass.Reportf(n.Pos(), "[SLC107] mutation ownership release must remain a direct canonical call")
+				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation ownership release must remain a direct canonical call")
 			}
 		}
 		return true

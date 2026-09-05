@@ -31,7 +31,6 @@ import (
 	"go/types"
 	"sort"
 	"strconv"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 )
@@ -39,12 +38,6 @@ import (
 // groupKey identifies one normalized WaitGroup: the root variable it is
 // selected from and the complete field-selection path below that root.
 type groupKey struct {
-	root *types.Var
-	path string
-}
-
-// aliasTarget is what a single-assignment local alias resolves to.
-type aliasTarget struct {
 	root *types.Var
 	path string
 }
@@ -116,12 +109,12 @@ func reportUnownedLaunches(pass *analysis.Pass, relation *lifecycleStart, obliga
 	pos := relation.start.decl.Name.Pos()
 	for _, display := range obligations.foreign {
 		pass.Reportf(pos,
-			"[SLC103] %s launches lifecycle goroutine(s) on WaitGroup %s outside its lifecycle owner; owner cleanup cannot prove the join",
+			"["+diagnosticSLC103+"] %s launches lifecycle goroutine(s) on WaitGroup %s outside its lifecycle owner; owner cleanup cannot prove the join",
 			relation.start.fn.Name(), display)
 	}
 	if obligations.unresolved {
 		pass.Reportf(pos,
-			"[SLC103] %s launches lifecycle goroutine(s) on a WaitGroup whose provenance cannot be resolved to a lifecycle owner; owner cleanup cannot prove the join",
+			"["+diagnosticSLC103+"] %s launches lifecycle goroutine(s) on a WaitGroup whose provenance cannot be resolved to a lifecycle owner; owner cleanup cannot prove the join",
 			relation.start.fn.Name())
 	}
 }
@@ -142,7 +135,7 @@ func checkOwnerEvidence(pass *analysis.Pass, relation *lifecycleStart, owner lif
 	pos := relation.start.decl.Name.Pos()
 	if obligations.rawGo > 0 && best.receives < obligations.rawGo {
 		pass.Reportf(pos,
-			"[SLC103] %s launches %d lifecycle goroutine(s) but %s visibly waits for only %d completion signal(s); cleanup may return while owned goroutines still run",
+			"["+diagnosticSLC103+"] %s launches %d lifecycle goroutine(s) but %s visibly waits for only %d completion signal(s); cleanup may return while owned goroutines still run",
 			relation.start.fn.Name(), obligations.rawGo, name, best.receives)
 	}
 	for _, path := range required {
@@ -150,7 +143,7 @@ func checkOwnerEvidence(pass *analysis.Pass, relation *lifecycleStart, owner lif
 			continue
 		}
 		pass.Reportf(pos,
-			"[SLC103] %s launches lifecycle goroutine(s) on WaitGroup %s but %s never waits on that group; cleanup may return while owned goroutines still run",
+			"["+diagnosticSLC103+"] %s launches lifecycle goroutine(s) on WaitGroup %s but %s never waits on that group; cleanup may return while owned goroutines still run",
 			relation.start.fn.Name(), ownerGroupDisplay(owner, relation, path), name)
 	}
 }
@@ -792,349 +785,6 @@ func scanCleanupCall(pass *analysis.Pass, call *ast.CallExpr, recv *types.Var, r
 			if lit, ok := arg.(*ast.FuncLit); ok {
 				inspect(lit.Body)
 			}
-		}
-	}
-}
-
-// pathResolver normalizes expressions within one function body. A variable
-// the body reassigns after its definition, or takes the address of, is
-// never resolvable: it may denote different objects at different points,
-// and guessing which one would let evidence discharge work that lives on
-// another object. The same holds one selector deeper: a write or address
-// escape anywhere along a field path may replace the storage the path
-// names, so every path below the written prefix is unresolvable too.
-// Aliases resolve only through pointer-typed definitions, because only a
-// pointer preserves the identity of the storage it names.
-type pathResolver struct {
-	pass        *analysis.Pass
-	aliases     map[*types.Var]aliasTarget
-	aliasRHS    map[ast.Expr]bool
-	addrAliases map[*types.Var]bool
-	written     map[*types.Var][]string
-	mutated     map[*types.Var]bool
-}
-
-func newPathResolver(pass *analysis.Pass, body *ast.BlockStmt) *pathResolver {
-	r := &pathResolver{
-		pass:        pass,
-		aliases:     make(map[*types.Var]aliasTarget),
-		aliasRHS:    make(map[ast.Expr]bool),
-		addrAliases: make(map[*types.Var]bool),
-		written:     make(map[*types.Var][]string),
-		mutated:     collectMutatedVars(pass, body),
-	}
-	r.collectAliases(body)
-	r.collectWrittenPaths(body)
-	r.collectAliasEscapes(body)
-	return r
-}
-
-// resolve normalizes expr to a root variable plus the complete
-// field-selection path below it, then refuses the result when the body
-// writes to, or lets escape, any prefix of that path: the storage the
-// path named at one point may not be the storage it names at another.
-func (r *pathResolver) resolve(expr ast.Expr) (*types.Var, string, bool) {
-	root, path, ok := r.resolveExpr(expr)
-	if !ok || r.pathInvalidated(root, path) {
-		return nil, "", false
-	}
-	return root, path, true
-}
-
-// pathInvalidated reports whether a written or escaped path covers path:
-// equal to it, or a segment-aligned prefix of it.
-func (r *pathResolver) pathInvalidated(root *types.Var, path string) bool {
-	for _, written := range r.written[root] {
-		if written == path || strings.HasPrefix(path, written+".") {
-			return true
-		}
-	}
-	return false
-}
-
-// resolveExpr normalizes expr to a root variable plus the complete
-// field-selection path below it, following parens, address-of, dereference,
-// and single-assignment pointer aliases. Anything else is unresolvable.
-func (r *pathResolver) resolveExpr(expr ast.Expr) (*types.Var, string, bool) {
-	switch e := ast.Unparen(expr).(type) {
-	case *ast.Ident:
-		v, _ := r.pass.TypesInfo.Uses[e].(*types.Var)
-		if v == nil || r.mutated[v] {
-			return nil, "", false
-		}
-		if target, ok := r.aliases[v]; ok {
-			return target.root, target.path, true
-		}
-		return v, "", true
-	case *ast.SelectorExpr:
-		return r.resolveSelector(e)
-	case *ast.UnaryExpr:
-		if e.Op == token.AND {
-			return r.resolveExpr(e.X)
-		}
-	case *ast.StarExpr:
-		return r.resolveExpr(e.X)
-	}
-	return nil, "", false
-}
-
-// resolveSelector normalizes one field selection step on top of its
-// resolved base.
-func (r *pathResolver) resolveSelector(e *ast.SelectorExpr) (*types.Var, string, bool) {
-	sel := r.pass.TypesInfo.Selections[e]
-	if sel == nil || sel.Kind() != types.FieldVal {
-		return nil, "", false
-	}
-	root, base, ok := r.resolveExpr(e.X)
-	if !ok {
-		return nil, "", false
-	}
-	path, ok := selectionFieldPath(sel)
-	if !ok {
-		return nil, "", false
-	}
-	return root, base + path, true
-}
-
-// selectionFieldPath renders a field selection's complete index path as
-// ".f" segments, so embedded promotion still yields the full path. An
-// index that cannot be mapped to a struct field is unresolvable rather
-// than a collidable placeholder.
-func selectionFieldPath(sel *types.Selection) (string, bool) {
-	var b strings.Builder
-	current := sel.Recv()
-	for _, index := range sel.Index() {
-		st := underlyingStruct(current)
-		if st == nil || index >= st.NumFields() {
-			return "", false
-		}
-		field := st.Field(index)
-		b.WriteString(".")
-		b.WriteString(field.Name())
-		current = field.Type()
-	}
-	return b.String(), true
-}
-
-// underlyingStruct dereferences pointers and named types down to a struct.
-func underlyingStruct(t types.Type) *types.Struct {
-	for {
-		t = types.Unalias(t)
-		if pointer, ok := t.(*types.Pointer); ok {
-			t = pointer.Elem()
-			continue
-		}
-		break
-	}
-	st, _ := t.Underlying().(*types.Struct)
-	return st
-}
-
-// collectAliases resolves the eligible alias definitions transitively:
-// run := r, wg := &r.wg, sub := r.a chains rooted at another stable
-// variable.
-func (r *pathResolver) collectAliases(body *ast.BlockStmt) {
-	candidates := r.aliasCandidates(body)
-	for changed := true; changed; {
-		changed = false
-		for v, rhs := range candidates {
-			if _, done := r.aliases[v]; done {
-				continue
-			}
-			root, path, ok := r.resolve(rhs)
-			if !ok || root == v {
-				continue
-			}
-			r.aliases[v] = aliasTarget{root: root, path: path}
-			r.aliasRHS[rhs] = true
-			if r.aliasTakesAddress(rhs) {
-				r.addrAliases[v] = true
-			}
-			changed = true
-		}
-	}
-}
-
-// aliasCandidates returns the := definitions eligible to alias, keyed by
-// the defined variable. Only a pointer-typed right-hand side preserves the
-// identity of the storage it names: x := y.f or x := *p on a struct copies
-// the value, and a Wait through the copy proves nothing about the original.
-func (r *pathResolver) aliasCandidates(body *ast.BlockStmt) map[*types.Var]ast.Expr {
-	candidates := make(map[*types.Var]ast.Expr)
-	ast.Inspect(body, func(node ast.Node) bool {
-		assign, ok := node.(*ast.AssignStmt)
-		if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != len(assign.Rhs) {
-			return true
-		}
-		for i, lhs := range assign.Lhs {
-			id, ok := lhs.(*ast.Ident)
-			if !ok {
-				continue
-			}
-			v, _ := r.pass.TypesInfo.Defs[id].(*types.Var)
-			if v == nil || r.mutated[v] || !isPointerType(r.pass.TypesInfo.TypeOf(assign.Rhs[i])) {
-				continue
-			}
-			candidates[v] = assign.Rhs[i]
-		}
-		return true
-	})
-	return candidates
-}
-
-// collectWrittenPaths records every field path the body writes through, or
-// lets escape by address, keyed by resolved root. Bare identifiers are the
-// mutated-variable model's job; an address-of expression is exempt only
-// when it is the right-hand side of an accepted alias definition, because
-// writes through that alias are themselves resolved and recorded here.
-// Function literals are included: a write from a launched goroutine
-// replaces storage just as effectively.
-func (r *pathResolver) collectWrittenPaths(body *ast.BlockStmt) {
-	ast.Inspect(body, func(node ast.Node) bool {
-		switch n := node.(type) {
-		case *ast.AssignStmt:
-			for _, lhs := range n.Lhs {
-				r.recordWrittenPath(lhs)
-			}
-		case *ast.IncDecStmt:
-			r.recordWrittenPath(n.X)
-		case *ast.RangeStmt:
-			r.recordWrittenPath(n.Key)
-			r.recordWrittenPath(n.Value)
-		case *ast.UnaryExpr:
-			if n.Op == token.AND && !r.aliasRHS[n] {
-				r.recordWrittenPath(n.X)
-			}
-		}
-		return true
-	})
-}
-
-// aliasTakesAddress reports whether an accepted alias definition names the
-// address of a field cell rather than copying an existing pointer: its
-// right-hand side takes an address directly, or is an identifier whose own
-// alias already does.
-func (r *pathResolver) aliasTakesAddress(rhs ast.Expr) bool {
-	switch e := ast.Unparen(rhs).(type) {
-	case *ast.UnaryExpr:
-		return e.Op == token.AND
-	case *ast.Ident:
-		v, _ := r.pass.TypesInfo.Uses[e].(*types.Var)
-		return v != nil && r.addrAliases[v]
-	}
-	return false
-}
-
-// collectAliasEscapes invalidates the target path of every address-taken
-// alias the body uses as a value: passing, storing, comparing, or
-// returning the pointer hands replacement of the aliased storage to code
-// the local model cannot see. Using the alias as a selector or
-// dereference base stays safe — those reads and writes are resolved and
-// recorded through the alias itself.
-func (r *pathResolver) collectAliasEscapes(body *ast.BlockStmt) {
-	if len(r.addrAliases) == 0 {
-		return
-	}
-	safe := safeAliasBaseUses(body)
-	ast.Inspect(body, func(node ast.Node) bool {
-		id, ok := node.(*ast.Ident)
-		if !ok || safe[id] || r.aliasRHS[id] {
-			return true
-		}
-		v, _ := r.pass.TypesInfo.Uses[id].(*types.Var)
-		if v == nil || !r.addrAliases[v] {
-			return true
-		}
-		target := r.aliases[v]
-		r.written[target.root] = append(r.written[target.root], target.path)
-		return true
-	})
-}
-
-// safeAliasBaseUses collects the identifier occurrences used as selector or
-// dereference bases: reads and writes through those go through path
-// resolution and are accounted elsewhere.
-func safeAliasBaseUses(body *ast.BlockStmt) map[*ast.Ident]bool {
-	safe := make(map[*ast.Ident]bool)
-	mark := func(expr ast.Expr) {
-		if id, ok := ast.Unparen(expr).(*ast.Ident); ok {
-			safe[id] = true
-		}
-	}
-	ast.Inspect(body, func(node ast.Node) bool {
-		switch n := node.(type) {
-		case *ast.SelectorExpr:
-			mark(n.X)
-		case *ast.StarExpr:
-			mark(n.X)
-		}
-		return true
-	})
-	return safe
-}
-
-// recordWrittenPath resolves one written or escaped expression and records
-// its path under the resolved root.
-func (r *pathResolver) recordWrittenPath(expr ast.Expr) {
-	if expr == nil {
-		return
-	}
-	if _, ok := ast.Unparen(expr).(*ast.Ident); ok {
-		return
-	}
-	if root, path, ok := r.resolveExpr(expr); ok {
-		r.written[root] = append(r.written[root], path)
-	}
-}
-
-// isPointerType reports whether t is a pointer after alias unwrapping.
-func isPointerType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	_, ok := types.Unalias(t).(*types.Pointer)
-	return ok
-}
-
-// collectMutatedVars records every variable the body assigns to after its
-// definition, or takes the address of: definitions land in Defs, so a Uses
-// identifier on a write side is always a mutation of an existing variable,
-// and an address escape makes later mutation invisible to this model.
-func collectMutatedVars(pass *analysis.Pass, body *ast.BlockStmt) map[*types.Var]bool {
-	mutated := make(map[*types.Var]bool)
-	record := func(id *ast.Ident) {
-		if v, _ := pass.TypesInfo.Uses[id].(*types.Var); v != nil {
-			mutated[v] = true
-		}
-	}
-	ast.Inspect(body, func(node ast.Node) bool {
-		recordNodeWrites(node, record)
-		return true
-	})
-	return mutated
-}
-
-// recordNodeWrites feeds every identifier one node writes, or takes the
-// address of, into record.
-func recordNodeWrites(node ast.Node, record func(*ast.Ident)) {
-	recordIdent := func(expr ast.Expr) {
-		if id, ok := expr.(*ast.Ident); ok {
-			record(id)
-		}
-	}
-	switch n := node.(type) {
-	case *ast.AssignStmt:
-		for _, lhs := range n.Lhs {
-			recordIdent(lhs)
-		}
-	case *ast.IncDecStmt:
-		recordIdent(n.X)
-	case *ast.RangeStmt:
-		recordIdent(n.Key)
-		recordIdent(n.Value)
-	case *ast.UnaryExpr:
-		if n.Op == token.AND {
-			recordIdent(ast.Unparen(n.X))
 		}
 	}
 }
