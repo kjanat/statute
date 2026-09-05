@@ -109,11 +109,23 @@ patch to miss:
   accepted-shape launch that finds no capacity left to spend, whose own
   `Done` is then just as unaccounted, and everything
   else stays raw. Raw
-  `go` launches stay deliberately count-based against visible channel receives —
-  channel identity is out of scope — so that half is conservative join evidence,
-  and anything ambiguous is intentionally a conservative diagnostic, not proof
+  `go` launches stay deliberately count-based against visible channel receives.
+  Channel identity is outside this rule's scope, making this conservative join
+  evidence. Ambiguous cases produce a conservative diagnostic without claiming
   that a particular goroutine leaked.
-- `SLC104` — lifecycle cleanup discards an error from `Close` or `Shutdown`.
+- `SLC104`: lifecycle cleanup discards an error from `Close` or `Shutdown`.
+- `SLC105`: a Docker `StartContainer` or `StopContainer` call escapes its canonical
+  workload boundary, uses a detached or unbounded context, omits cancellation, or
+  targets anything other than the operation binding through `workload.callRef`.
+  Matching resolves the typed internal Docker client symbol independently of method
+  spelling.
+- `SLC106`: an owned stop attempt is reachable without a successful
+  `persistOwnedStop` for the same provider, workload, and stop dominating that path.
+  Persistence failure must return before Docker can receive the mutation.
+- `SLC107`: durable mutation evidence or in-memory stop ownership is released
+  outside canonical settlement, immutable binding supersession lacks a failed
+  `sameContainerLocked` guard, or settlement lacks durable deletion, owner
+  revalidation, generation fences, or reconcile scheduling.
 
 The analyzer is initially disabled from the ordinary `make lint` set because current
 `master` contains the lifecycle debt it was created to expose. Lifecycle PRs run the
@@ -123,9 +135,10 @@ regression harnesses may intentionally construct broken lifecycle shapes; the
 analyzer's own `analysistest` suite verifies those shapes are diagnosed.
 
 Static analysis is not the architecture. It cannot prove external resource ownership,
-ACME protocol state, or whether a server really answered a request. A clean analyzer
-run therefore supplements the lifecycle ownership table and cross-feature tests; it
-never replaces them.
+ACME protocol state, Docker response timing, crash/restart recovery, route arbitration,
+or whether a server really answered a request. A clean analyzer run therefore
+supplements the lifecycle ownership table and behavioral cross-feature tests; it never
+replaces them.
 
 ## Why the roles are separated
 

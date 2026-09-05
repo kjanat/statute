@@ -1,29 +1,6 @@
 package statutelifecycle
 
-// SLC103 models goroutine ownership as obligations against evidence.
-// WaitGroup launches carry exact provenance: each owes a Wait on the very
-// same group, normalized to lifecycle owner root plus the complete
-// field-selection path, resolved only through variables the body never
-// reassigns and aliases that preserve storage identity. Provenance is
-// storage identity, not a lexical path: a write or address escape anywhere
-// along the field path — a pointer alias to it leaving the body as a value
-// included — replaces or may replace the storage the path names, so the
-// whole path becomes unresolvable. A Wait on one group can never discharge
-// work launched through another group, another owner, or a raw go, and a
-// launch whose group cannot be attributed to a lifecycle owner is
-// undischargeable and diagnosed: unknown provenance fails closed. Add(n)
-// registration counts only when its statement dominates the launch in the
-// block structure with no loop between them — a launch the runtime repeats
-// spends capacity counted once, and a goto disables registration for the
-// whole body — the launched literal's first statement must be its only
-// Done, deferred, with no goto in the literal, and any counter operation
-// the model cannot account for, function literals included, poisons that
-// group's capacity entirely. Raw go statements
-// are deliberately count-based: each owes one completion signal,
-// discharged by visible channel receives in the cleanup by count —
-// channel identity is out of SLC103's scope (issue #62 non-goals), so
-// this is conservative join evidence, not proof that a particular receive
-// joins a particular goroutine.
+// SLC103 fails closed when WaitGroup storage identity cannot be proven.
 
 import (
 	"go/ast"
@@ -31,7 +8,6 @@ import (
 	"go/types"
 	"sort"
 	"strconv"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 )
@@ -39,12 +15,6 @@ import (
 // groupKey identifies one normalized WaitGroup: the root variable it is
 // selected from and the complete field-selection path below that root.
 type groupKey struct {
-	root *types.Var
-	path string
-}
-
-// aliasTarget is what a single-assignment local alias resolves to.
-type aliasTarget struct {
 	root *types.Var
 	path string
 }
@@ -116,12 +86,12 @@ func reportUnownedLaunches(pass *analysis.Pass, relation *lifecycleStart, obliga
 	pos := relation.start.decl.Name.Pos()
 	for _, display := range obligations.foreign {
 		pass.Reportf(pos,
-			"[SLC103] %s launches lifecycle goroutine(s) on WaitGroup %s outside its lifecycle owner; owner cleanup cannot prove the join",
+			"["+diagnosticSLC103+"] %s launches lifecycle goroutine(s) on WaitGroup %s outside its lifecycle owner; owner cleanup cannot prove the join",
 			relation.start.fn.Name(), display)
 	}
 	if obligations.unresolved {
 		pass.Reportf(pos,
-			"[SLC103] %s launches lifecycle goroutine(s) on a WaitGroup whose provenance cannot be resolved to a lifecycle owner; owner cleanup cannot prove the join",
+			"["+diagnosticSLC103+"] %s launches lifecycle goroutine(s) on a WaitGroup whose provenance cannot be resolved to a lifecycle owner; owner cleanup cannot prove the join",
 			relation.start.fn.Name())
 	}
 }
@@ -142,7 +112,7 @@ func checkOwnerEvidence(pass *analysis.Pass, relation *lifecycleStart, owner lif
 	pos := relation.start.decl.Name.Pos()
 	if obligations.rawGo > 0 && best.receives < obligations.rawGo {
 		pass.Reportf(pos,
-			"[SLC103] %s launches %d lifecycle goroutine(s) but %s visibly waits for only %d completion signal(s); cleanup may return while owned goroutines still run",
+			"["+diagnosticSLC103+"] %s launches %d lifecycle goroutine(s) but %s visibly waits for only %d completion signal(s); cleanup may return while owned goroutines still run",
 			relation.start.fn.Name(), obligations.rawGo, name, best.receives)
 	}
 	for _, path := range required {
@@ -150,7 +120,7 @@ func checkOwnerEvidence(pass *analysis.Pass, relation *lifecycleStart, owner lif
 			continue
 		}
 		pass.Reportf(pos,
-			"[SLC103] %s launches lifecycle goroutine(s) on WaitGroup %s but %s never waits on that group; cleanup may return while owned goroutines still run",
+			"["+diagnosticSLC103+"] %s launches lifecycle goroutine(s) on WaitGroup %s but %s never waits on that group; cleanup may return while owned goroutines still run",
 			relation.start.fn.Name(), ownerGroupDisplay(owner, relation, path), name)
 	}
 }
@@ -270,16 +240,9 @@ func resolveReceiverGroup(call *ast.CallExpr, resolver *pathResolver) (groupKey,
 	return groupKey{root: root, path: path}, true
 }
 
-// classifyGoLaunch resolves one go statement: a launched literal carrying a
-// deferred Done on a group with unspent Add(1)-style registration capacity
-// earlier in the start body is that group's obligation; everything else,
-// ambiguity included, owes a raw completion signal. An accepted-shape launch
-// that cannot spend registration capacity is such a raw obligation, and from
-// that point on its Done is an unaccounted counter mutation, so it also
-// poisons the group's remaining capacity: at runtime that Done can consume a
-// later Add the model would otherwise attribute to a later launch. Poisoning
-// here is sound because this walk visits go statements in source order, so an
-// earlier launch's poison is already set when later launches try to spend.
+// classifyGoLaunch attributes a recognized deferred Done to available,
+// dominating Add capacity. Other launches become raw obligations; an
+// unaccounted Done poisons the group's remaining capacity.
 func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResolver, capacity *addCapacity, ownerRoots map[*types.Var]int, obligations *startObligations, foreign map[string]bool) {
 	lit, ok := stmt.Call.Fun.(*ast.FuncLit)
 	if !ok {
@@ -299,14 +262,8 @@ func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResol
 	attributeGroup(key, ownerRoots, obligations, foreign)
 }
 
-// deferredDoneGroup recognizes the deliberately boring launched shape: the
-// literal's first statement is `defer group.Done()`, no other Done call
-// appears anywhere in the literal, and no goto exists in it. Only that
-// shape proves exactly one Done per launch — a defer under a conditional
-// may run zero times, one inside a loop or reachable through a goto may
-// register more than once, and one preceded by other statements may be
-// skipped by an early return. Anything else resolves to no group and the
-// launch stays raw.
+// deferredDoneGroup recognizes a literal whose first statement defers its only
+// Done call and which contains no goto. Other shapes remain raw.
 func deferredDoneGroup(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) (groupKey, bool) {
 	if len(lit.Body.List) == 0 {
 		return groupKey{}, false
@@ -326,9 +283,8 @@ func deferredDoneGroup(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathReso
 	return groupKey{root: root, path: path}, true
 }
 
-// soleDoneWithoutGoto verifies the recognized deferred Done is the only
-// Done call in the launched literal — nested literals included — and that
-// no goto can revisit its registration.
+// soleDoneWithoutGoto requires exactly one Done call across the literal and
+// nested literals, with no goto.
 func soleDoneWithoutGoto(pass *analysis.Pass, lit *ast.FuncLit, first *ast.DeferStmt) bool {
 	ok := true
 	ast.Inspect(lit.Body, func(node ast.Node) bool {
@@ -398,21 +354,9 @@ type addEvent struct {
 	n     int
 }
 
-// addCapacity tracks how much Add-registered capacity each normalized group
-// has left. Registration counts only when the Add statement dominates the
-// launch in the block structure: an Add inside a conditional branch, a
-// defer, or after the go statement is not provably executed before the
-// goroutine starts. Block ordering is dominance only while control flow is
-// structured, so a goto anywhere in the body — a jump can land between
-// registration and launch — poisons all capacity, and a loop between the
-// registration and the launch multiplies the launch past the registration
-// count, so such an Add grants it nothing. Each unit is spent once
-// — one Add(1) cannot vouch for two goroutines — and any counter operation
-// the model cannot account for (a Done in the start body or in any
-// function literal outside the recognized launched shape, a non-constant
-// or negative Add) poisons that group's capacity: the model no longer
-// knows the counter's value, so no launch may claim registration through
-// it.
+// addCapacity tracks Add units by normalized group and CFG location. Each
+// launch spends one unit. Loops and unaccounted Add or Done operations poison
+// the affected group; a goto poisons all groups.
 type addCapacity struct {
 	body        *ast.BlockStmt
 	events      map[groupKey][]addEvent
@@ -482,14 +426,8 @@ func childBlock(stmt ast.Stmt, pos token.Pos) *ast.BlockStmt {
 	return found
 }
 
-// dominates reports whether the Add at addChain provably executes exactly
-// once before every arrival at goChain: the Add sits in a block the
-// launch's chain passes through, at an earlier statement index, so
-// structured control flow cannot reach the go statement without passing
-// the Add first — and no loop sits between them, because a launch the
-// runtime repeats below a single registration spends capacity that was
-// counted once. An Add and a go inside the same loop body pair per
-// iteration and stay dominated.
+// dominates requires the Add before every arrival at the launch without a loop
+// multiplying the launch. An Add and launch in the same loop pair per iteration.
 func dominates(addChain, goChain []blockRef) bool {
 	if len(addChain) == 0 || len(addChain) > len(goChain) {
 		return false
@@ -527,16 +465,9 @@ func isLoopStmt(stmt ast.Stmt) bool {
 	return false
 }
 
-// collectAddCapacity records the start body's WaitGroup counter operations
-// per normalized group. Only a plain Add statement with a constant
-// non-negative count, directly in the body, is accountable: a positive
-// count registers capacity at its block position, zero registers nothing.
-// Every other counter operation — Done in the start body proper, an Add
-// buried in a defer or expression, a non-constant or negative count, any
-// Add or Done inside a function literal other than the launched literal's
-// own deferred Done — leaves the counter in a state the model cannot see
-// and poisons the group; an operation whose receiver cannot even be
-// normalized, or a goto anywhere in the body, poisons all capacity.
+// collectAddCapacity records direct, constant, non-negative Add statements by
+// normalized group. Unaccounted counter operations poison their group;
+// unresolved receivers and gotos poison all capacity.
 func collectAddCapacity(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver) *addCapacity {
 	capacity := &addCapacity{
 		body:     body,
@@ -589,15 +520,8 @@ func (c *addCapacity) recordAddStmt(pass *analysis.Pass, stmt *ast.ExprStmt, res
 	c.recordAdd(call, resolver)
 }
 
-// scanLaunchedLiteral inspects a go statement's own function literal and
-// shares the shape verdict the launch classifier will reach. Only a literal
-// the strict recognizer accepts keeps its single first-statement deferred
-// Done exempt — that Done is the unit the launch will spend. A rejected
-// literal's counter operations, its deferred Dones included, poison the
-// group: the launch will be raw, so its Done consumes registration some
-// accepted launch might otherwise claim. Shape is only half the verdict: the
-// classifier additionally poisons the group when an accepted literal's launch
-// cannot spend registration capacity.
+// scanLaunchedLiteral exempts the recognized first-statement deferred Done.
+// Rejected shapes and accepted launches without capacity poison their group.
 func (c *addCapacity) scanLaunchedLiteral(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) {
 	if _, ok := deferredDoneGroup(pass, lit, resolver); !ok {
 		c.poisonCounterOps(pass, lit.Body, resolver, nil)
@@ -678,13 +602,8 @@ func constantAddCount(call *ast.CallExpr) (int, bool) {
 	return n, true
 }
 
-// collectOwnerRoots maps start-body variables to the owner they root: the
-// receiver for a receiver-owned relation, and the variable provably
-// returned at an owner result position. Ambiguity fails closed with the
-// sentinel index -1: a variable feeding two different owners, or a result
-// position fed by two distinct variables — a launch through a root that is
-// only conditionally the returned owner must never be discharged by
-// evidence that may run on a different object.
+// collectOwnerRoots maps start-body variables to receiver or returned owners.
+// Multiple possible owner identities resolve to sentinel index -1 and fail closed.
 func collectOwnerRoots(pass *analysis.Pass, relation *lifecycleStart, resolver *pathResolver) map[*types.Var]int {
 	roots := make(map[*types.Var]int)
 	assign := func(v *types.Var, index int) {
@@ -792,349 +711,6 @@ func scanCleanupCall(pass *analysis.Pass, call *ast.CallExpr, recv *types.Var, r
 			if lit, ok := arg.(*ast.FuncLit); ok {
 				inspect(lit.Body)
 			}
-		}
-	}
-}
-
-// pathResolver normalizes expressions within one function body. A variable
-// the body reassigns after its definition, or takes the address of, is
-// never resolvable: it may denote different objects at different points,
-// and guessing which one would let evidence discharge work that lives on
-// another object. The same holds one selector deeper: a write or address
-// escape anywhere along a field path may replace the storage the path
-// names, so every path below the written prefix is unresolvable too.
-// Aliases resolve only through pointer-typed definitions, because only a
-// pointer preserves the identity of the storage it names.
-type pathResolver struct {
-	pass        *analysis.Pass
-	aliases     map[*types.Var]aliasTarget
-	aliasRHS    map[ast.Expr]bool
-	addrAliases map[*types.Var]bool
-	written     map[*types.Var][]string
-	mutated     map[*types.Var]bool
-}
-
-func newPathResolver(pass *analysis.Pass, body *ast.BlockStmt) *pathResolver {
-	r := &pathResolver{
-		pass:        pass,
-		aliases:     make(map[*types.Var]aliasTarget),
-		aliasRHS:    make(map[ast.Expr]bool),
-		addrAliases: make(map[*types.Var]bool),
-		written:     make(map[*types.Var][]string),
-		mutated:     collectMutatedVars(pass, body),
-	}
-	r.collectAliases(body)
-	r.collectWrittenPaths(body)
-	r.collectAliasEscapes(body)
-	return r
-}
-
-// resolve normalizes expr to a root variable plus the complete
-// field-selection path below it, then refuses the result when the body
-// writes to, or lets escape, any prefix of that path: the storage the
-// path named at one point may not be the storage it names at another.
-func (r *pathResolver) resolve(expr ast.Expr) (*types.Var, string, bool) {
-	root, path, ok := r.resolveExpr(expr)
-	if !ok || r.pathInvalidated(root, path) {
-		return nil, "", false
-	}
-	return root, path, true
-}
-
-// pathInvalidated reports whether a written or escaped path covers path:
-// equal to it, or a segment-aligned prefix of it.
-func (r *pathResolver) pathInvalidated(root *types.Var, path string) bool {
-	for _, written := range r.written[root] {
-		if written == path || strings.HasPrefix(path, written+".") {
-			return true
-		}
-	}
-	return false
-}
-
-// resolveExpr normalizes expr to a root variable plus the complete
-// field-selection path below it, following parens, address-of, dereference,
-// and single-assignment pointer aliases. Anything else is unresolvable.
-func (r *pathResolver) resolveExpr(expr ast.Expr) (*types.Var, string, bool) {
-	switch e := ast.Unparen(expr).(type) {
-	case *ast.Ident:
-		v, _ := r.pass.TypesInfo.Uses[e].(*types.Var)
-		if v == nil || r.mutated[v] {
-			return nil, "", false
-		}
-		if target, ok := r.aliases[v]; ok {
-			return target.root, target.path, true
-		}
-		return v, "", true
-	case *ast.SelectorExpr:
-		return r.resolveSelector(e)
-	case *ast.UnaryExpr:
-		if e.Op == token.AND {
-			return r.resolveExpr(e.X)
-		}
-	case *ast.StarExpr:
-		return r.resolveExpr(e.X)
-	}
-	return nil, "", false
-}
-
-// resolveSelector normalizes one field selection step on top of its
-// resolved base.
-func (r *pathResolver) resolveSelector(e *ast.SelectorExpr) (*types.Var, string, bool) {
-	sel := r.pass.TypesInfo.Selections[e]
-	if sel == nil || sel.Kind() != types.FieldVal {
-		return nil, "", false
-	}
-	root, base, ok := r.resolveExpr(e.X)
-	if !ok {
-		return nil, "", false
-	}
-	path, ok := selectionFieldPath(sel)
-	if !ok {
-		return nil, "", false
-	}
-	return root, base + path, true
-}
-
-// selectionFieldPath renders a field selection's complete index path as
-// ".f" segments, so embedded promotion still yields the full path. An
-// index that cannot be mapped to a struct field is unresolvable rather
-// than a collidable placeholder.
-func selectionFieldPath(sel *types.Selection) (string, bool) {
-	var b strings.Builder
-	current := sel.Recv()
-	for _, index := range sel.Index() {
-		st := underlyingStruct(current)
-		if st == nil || index >= st.NumFields() {
-			return "", false
-		}
-		field := st.Field(index)
-		b.WriteString(".")
-		b.WriteString(field.Name())
-		current = field.Type()
-	}
-	return b.String(), true
-}
-
-// underlyingStruct dereferences pointers and named types down to a struct.
-func underlyingStruct(t types.Type) *types.Struct {
-	for {
-		t = types.Unalias(t)
-		if pointer, ok := t.(*types.Pointer); ok {
-			t = pointer.Elem()
-			continue
-		}
-		break
-	}
-	st, _ := t.Underlying().(*types.Struct)
-	return st
-}
-
-// collectAliases resolves the eligible alias definitions transitively:
-// run := r, wg := &r.wg, sub := r.a chains rooted at another stable
-// variable.
-func (r *pathResolver) collectAliases(body *ast.BlockStmt) {
-	candidates := r.aliasCandidates(body)
-	for changed := true; changed; {
-		changed = false
-		for v, rhs := range candidates {
-			if _, done := r.aliases[v]; done {
-				continue
-			}
-			root, path, ok := r.resolve(rhs)
-			if !ok || root == v {
-				continue
-			}
-			r.aliases[v] = aliasTarget{root: root, path: path}
-			r.aliasRHS[rhs] = true
-			if r.aliasTakesAddress(rhs) {
-				r.addrAliases[v] = true
-			}
-			changed = true
-		}
-	}
-}
-
-// aliasCandidates returns the := definitions eligible to alias, keyed by
-// the defined variable. Only a pointer-typed right-hand side preserves the
-// identity of the storage it names: x := y.f or x := *p on a struct copies
-// the value, and a Wait through the copy proves nothing about the original.
-func (r *pathResolver) aliasCandidates(body *ast.BlockStmt) map[*types.Var]ast.Expr {
-	candidates := make(map[*types.Var]ast.Expr)
-	ast.Inspect(body, func(node ast.Node) bool {
-		assign, ok := node.(*ast.AssignStmt)
-		if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != len(assign.Rhs) {
-			return true
-		}
-		for i, lhs := range assign.Lhs {
-			id, ok := lhs.(*ast.Ident)
-			if !ok {
-				continue
-			}
-			v, _ := r.pass.TypesInfo.Defs[id].(*types.Var)
-			if v == nil || r.mutated[v] || !isPointerType(r.pass.TypesInfo.TypeOf(assign.Rhs[i])) {
-				continue
-			}
-			candidates[v] = assign.Rhs[i]
-		}
-		return true
-	})
-	return candidates
-}
-
-// collectWrittenPaths records every field path the body writes through, or
-// lets escape by address, keyed by resolved root. Bare identifiers are the
-// mutated-variable model's job; an address-of expression is exempt only
-// when it is the right-hand side of an accepted alias definition, because
-// writes through that alias are themselves resolved and recorded here.
-// Function literals are included: a write from a launched goroutine
-// replaces storage just as effectively.
-func (r *pathResolver) collectWrittenPaths(body *ast.BlockStmt) {
-	ast.Inspect(body, func(node ast.Node) bool {
-		switch n := node.(type) {
-		case *ast.AssignStmt:
-			for _, lhs := range n.Lhs {
-				r.recordWrittenPath(lhs)
-			}
-		case *ast.IncDecStmt:
-			r.recordWrittenPath(n.X)
-		case *ast.RangeStmt:
-			r.recordWrittenPath(n.Key)
-			r.recordWrittenPath(n.Value)
-		case *ast.UnaryExpr:
-			if n.Op == token.AND && !r.aliasRHS[n] {
-				r.recordWrittenPath(n.X)
-			}
-		}
-		return true
-	})
-}
-
-// aliasTakesAddress reports whether an accepted alias definition names the
-// address of a field cell rather than copying an existing pointer: its
-// right-hand side takes an address directly, or is an identifier whose own
-// alias already does.
-func (r *pathResolver) aliasTakesAddress(rhs ast.Expr) bool {
-	switch e := ast.Unparen(rhs).(type) {
-	case *ast.UnaryExpr:
-		return e.Op == token.AND
-	case *ast.Ident:
-		v, _ := r.pass.TypesInfo.Uses[e].(*types.Var)
-		return v != nil && r.addrAliases[v]
-	}
-	return false
-}
-
-// collectAliasEscapes invalidates the target path of every address-taken
-// alias the body uses as a value: passing, storing, comparing, or
-// returning the pointer hands replacement of the aliased storage to code
-// the local model cannot see. Using the alias as a selector or
-// dereference base stays safe — those reads and writes are resolved and
-// recorded through the alias itself.
-func (r *pathResolver) collectAliasEscapes(body *ast.BlockStmt) {
-	if len(r.addrAliases) == 0 {
-		return
-	}
-	safe := safeAliasBaseUses(body)
-	ast.Inspect(body, func(node ast.Node) bool {
-		id, ok := node.(*ast.Ident)
-		if !ok || safe[id] || r.aliasRHS[id] {
-			return true
-		}
-		v, _ := r.pass.TypesInfo.Uses[id].(*types.Var)
-		if v == nil || !r.addrAliases[v] {
-			return true
-		}
-		target := r.aliases[v]
-		r.written[target.root] = append(r.written[target.root], target.path)
-		return true
-	})
-}
-
-// safeAliasBaseUses collects the identifier occurrences used as selector or
-// dereference bases: reads and writes through those go through path
-// resolution and are accounted elsewhere.
-func safeAliasBaseUses(body *ast.BlockStmt) map[*ast.Ident]bool {
-	safe := make(map[*ast.Ident]bool)
-	mark := func(expr ast.Expr) {
-		if id, ok := ast.Unparen(expr).(*ast.Ident); ok {
-			safe[id] = true
-		}
-	}
-	ast.Inspect(body, func(node ast.Node) bool {
-		switch n := node.(type) {
-		case *ast.SelectorExpr:
-			mark(n.X)
-		case *ast.StarExpr:
-			mark(n.X)
-		}
-		return true
-	})
-	return safe
-}
-
-// recordWrittenPath resolves one written or escaped expression and records
-// its path under the resolved root.
-func (r *pathResolver) recordWrittenPath(expr ast.Expr) {
-	if expr == nil {
-		return
-	}
-	if _, ok := ast.Unparen(expr).(*ast.Ident); ok {
-		return
-	}
-	if root, path, ok := r.resolveExpr(expr); ok {
-		r.written[root] = append(r.written[root], path)
-	}
-}
-
-// isPointerType reports whether t is a pointer after alias unwrapping.
-func isPointerType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	_, ok := types.Unalias(t).(*types.Pointer)
-	return ok
-}
-
-// collectMutatedVars records every variable the body assigns to after its
-// definition, or takes the address of: definitions land in Defs, so a Uses
-// identifier on a write side is always a mutation of an existing variable,
-// and an address escape makes later mutation invisible to this model.
-func collectMutatedVars(pass *analysis.Pass, body *ast.BlockStmt) map[*types.Var]bool {
-	mutated := make(map[*types.Var]bool)
-	record := func(id *ast.Ident) {
-		if v, _ := pass.TypesInfo.Uses[id].(*types.Var); v != nil {
-			mutated[v] = true
-		}
-	}
-	ast.Inspect(body, func(node ast.Node) bool {
-		recordNodeWrites(node, record)
-		return true
-	})
-	return mutated
-}
-
-// recordNodeWrites feeds every identifier one node writes, or takes the
-// address of, into record.
-func recordNodeWrites(node ast.Node, record func(*ast.Ident)) {
-	recordIdent := func(expr ast.Expr) {
-		if id, ok := expr.(*ast.Ident); ok {
-			record(id)
-		}
-	}
-	switch n := node.(type) {
-	case *ast.AssignStmt:
-		for _, lhs := range n.Lhs {
-			recordIdent(lhs)
-		}
-	case *ast.IncDecStmt:
-		recordIdent(n.X)
-	case *ast.RangeStmt:
-		recordIdent(n.Key)
-		recordIdent(n.Value)
-	case *ast.UnaryExpr:
-		if n.Op == token.AND {
-			recordIdent(ast.Unparen(n.X))
 		}
 	}
 }

@@ -111,13 +111,17 @@ type aliasRun struct{ wg sync.WaitGroup }
 func (*aliasWorker) start() *aliasRun {
 	r := &aliasRun{}
 	run := r
-	run.wg.Go(func() {})
+	runAlias := run
+	runAliasAgain := runAlias
+	runAliasAgain.wg.Go(func() {})
 	return r
 }
 
 func (r *aliasRun) stop() {
 	wg := &r.wg
-	wg.Wait()
+	wgAlias := wg
+	wgAliasAgain := wgAlias
+	wgAliasAgain.Wait()
 }
 
 // A reassigned alias is ambiguous and is not proof: the wait through it
@@ -213,8 +217,10 @@ type escapedAliasRun struct{ child *replacedChildGroup }
 func (*escapedAliasWorker) start() *escapedAliasRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	r := &escapedAliasRun{child: &replacedChildGroup{}}
 	p := &r.child
+	q := p
+	s := q
 	r.child.wg.Go(func() {})
-	swapChild(p)
+	swapChild(s)
 	return r
 }
 
@@ -237,9 +243,7 @@ func (*siblingWriteWorker) start() *siblingWriteRun {
 
 func (r *siblingWriteRun) stop() { r.wg.Wait() }
 
-// A value copy of a group is not an alias: launching through the copy
-// registers work on a different WaitGroup than the owner's, so the owner's
-// wait proves nothing. The copy is foreign, not the owner's group.
+// A WaitGroup value copy has distinct storage and is foreign to the owner.
 type copiedGroupWorker struct{}
 type copiedGroupRun struct{ wg sync.WaitGroup }
 
@@ -357,8 +361,7 @@ func (*addAfterGoWorker) start() *addAfterGoRun { // want `\[SLC103\].*launches 
 
 func (r *addAfterGoRun) stop() { r.wg.Wait() }
 
-// Registration must dominate the launch, not merely precede it in the
-// source: an Add inside a conditional branch may never have executed.
+// Registration must dominate the launch; lexical order alone is insufficient.
 type conditionalAddWorker struct{}
 type conditionalAddRun struct{ wg sync.WaitGroup }
 
@@ -602,10 +605,7 @@ func (*lateDeferDoneWorker) start() *lateDeferDoneRun { // want `\[SLC103\].*lau
 
 func (r *lateDeferDoneRun) stop() { r.wg.Wait() }
 
-// A rejected literal's Done poisons the group's capacity: the raw first
-// goroutine can perform the Done that releases Wait while the accepted
-// second goroutine — to which the analyzer would otherwise attribute the
-// sole Add(1) — is still running. Both launches stay raw.
+// A rejected literal's Done poisons capacity, so competing launches remain raw.
 type contaminatedCapacityWorker struct{}
 type contaminatedCapacityRun struct {
 	wg      sync.WaitGroup
@@ -634,8 +634,8 @@ func (r *contaminatedCapacityRun) stop() {
 	r.wg.Wait()
 }
 
-// Two accepted launches each spending their own registration stay clean:
-// poisoning applies to unaccounted operations, not to the shape itself.
+// Two accepted launches with separate registrations remain clean; only
+// unaccounted operations poison capacity.
 type pairedAddDoneWorker struct{}
 type pairedAddDoneRun struct{ wg sync.WaitGroup }
 
@@ -755,10 +755,7 @@ func (r *mixedCleanRun) stop() {
 	r.wg.Wait()
 }
 
-// Two distinct variables returned at one result position are ambiguous:
-// the caller may hold either object, so a launch through one of them can
-// never be discharged by receiver-rooted evidence that may run on the
-// other. Fails closed as unresolved provenance.
+// Multiple variables at one owner result position are ambiguous and fail closed.
 type multiReturnWorker struct{}
 type multiReturnRun struct{ wg sync.WaitGroup }
 
