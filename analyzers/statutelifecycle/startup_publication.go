@@ -144,8 +144,8 @@ func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, function
 		committed := current.committed
 		rollback := current.rollback
 		for _, node := range current.block.Nodes {
-			// A Serve call that is itself the returned error is a runtime loop,
-			// not an earlier publication followed by a later startup failure.
+			// A Serve call returned directly is the runtime loop itself, leaving
+			// no later startup operation that can fail.
 			if ret, ok := node.(*ast.ReturnStmt); ok && published && !committed && returnMayFail(info.fn, ret) {
 				pass.Reportf(info.decl.Name.Pos(),
 					"["+diagnosticSLC100+"] %s can publish serving before a later error return; bind/acquire every fallible startup resource before launching Serve",

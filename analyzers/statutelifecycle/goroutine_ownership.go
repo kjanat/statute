@@ -1,29 +1,6 @@
 package statutelifecycle
 
-// SLC103 models goroutine ownership as obligations against evidence.
-// WaitGroup launches carry exact provenance: each owes a Wait on the very
-// same group, normalized to lifecycle owner root plus the complete
-// field-selection path, resolved only through variables the body never
-// reassigns and aliases that preserve storage identity. Provenance is
-// storage identity, not a lexical path: a write or address escape anywhere
-// along the field path — a pointer alias to it leaving the body as a value
-// included — replaces or may replace the storage the path names, so the
-// whole path becomes unresolvable. A Wait on one group can never discharge
-// work launched through another group, another owner, or a raw go, and a
-// launch whose group cannot be attributed to a lifecycle owner is
-// undischargeable and diagnosed: unknown provenance fails closed. Add(n)
-// registration counts only when its statement dominates the launch in the
-// block structure with no loop between them — a launch the runtime repeats
-// spends capacity counted once, and a goto disables registration for the
-// whole body — the launched literal's first statement must be its only
-// Done, deferred, with no goto in the literal, and any counter operation
-// the model cannot account for, function literals included, poisons that
-// group's capacity entirely. Raw go statements
-// are deliberately count-based: each owes one completion signal,
-// discharged by visible channel receives in the cleanup by count —
-// channel identity is out of SLC103's scope (issue #62 non-goals), so
-// this is conservative join evidence, not proof that a particular receive
-// joins a particular goroutine.
+// SLC103 fails closed when WaitGroup storage identity cannot be proven.
 
 import (
 	"go/ast"
@@ -263,16 +240,9 @@ func resolveReceiverGroup(call *ast.CallExpr, resolver *pathResolver) (groupKey,
 	return groupKey{root: root, path: path}, true
 }
 
-// classifyGoLaunch resolves one go statement: a launched literal carrying a
-// deferred Done on a group with unspent Add(1)-style registration capacity
-// earlier in the start body is that group's obligation; everything else,
-// ambiguity included, owes a raw completion signal. An accepted-shape launch
-// that cannot spend registration capacity is such a raw obligation, and from
-// that point on its Done is an unaccounted counter mutation, so it also
-// poisons the group's remaining capacity: at runtime that Done can consume a
-// later Add the model would otherwise attribute to a later launch. Poisoning
-// here is sound because this walk visits go statements in source order, so an
-// earlier launch's poison is already set when later launches try to spend.
+// classifyGoLaunch attributes a recognized deferred Done to available,
+// dominating Add capacity. Other launches become raw obligations; an
+// unaccounted Done poisons the group's remaining capacity.
 func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResolver, capacity *addCapacity, ownerRoots map[*types.Var]int, obligations *startObligations, foreign map[string]bool) {
 	lit, ok := stmt.Call.Fun.(*ast.FuncLit)
 	if !ok {
@@ -292,14 +262,8 @@ func classifyGoLaunch(pass *analysis.Pass, stmt *ast.GoStmt, resolver *pathResol
 	attributeGroup(key, ownerRoots, obligations, foreign)
 }
 
-// deferredDoneGroup recognizes the deliberately boring launched shape: the
-// literal's first statement is `defer group.Done()`, no other Done call
-// appears anywhere in the literal, and no goto exists in it. Only that
-// shape proves exactly one Done per launch — a defer under a conditional
-// may run zero times, one inside a loop or reachable through a goto may
-// register more than once, and one preceded by other statements may be
-// skipped by an early return. Anything else resolves to no group and the
-// launch stays raw.
+// deferredDoneGroup recognizes a literal whose first statement defers its only
+// Done call and which contains no goto. Other shapes remain raw.
 func deferredDoneGroup(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) (groupKey, bool) {
 	if len(lit.Body.List) == 0 {
 		return groupKey{}, false
@@ -319,9 +283,8 @@ func deferredDoneGroup(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathReso
 	return groupKey{root: root, path: path}, true
 }
 
-// soleDoneWithoutGoto verifies the recognized deferred Done is the only
-// Done call in the launched literal — nested literals included — and that
-// no goto can revisit its registration.
+// soleDoneWithoutGoto requires exactly one Done call across the literal and
+// nested literals, with no goto.
 func soleDoneWithoutGoto(pass *analysis.Pass, lit *ast.FuncLit, first *ast.DeferStmt) bool {
 	ok := true
 	ast.Inspect(lit.Body, func(node ast.Node) bool {
@@ -391,21 +354,9 @@ type addEvent struct {
 	n     int
 }
 
-// addCapacity tracks how much Add-registered capacity each normalized group
-// has left. Registration counts only when the Add statement dominates the
-// launch in the block structure: an Add inside a conditional branch, a
-// defer, or after the go statement is not provably executed before the
-// goroutine starts. Block ordering is dominance only while control flow is
-// structured, so a goto anywhere in the body — a jump can land between
-// registration and launch — poisons all capacity, and a loop between the
-// registration and the launch multiplies the launch past the registration
-// count, so such an Add grants it nothing. Each unit is spent once
-// — one Add(1) cannot vouch for two goroutines — and any counter operation
-// the model cannot account for (a Done in the start body or in any
-// function literal outside the recognized launched shape, a non-constant
-// or negative Add) poisons that group's capacity: the model no longer
-// knows the counter's value, so no launch may claim registration through
-// it.
+// addCapacity tracks Add units by normalized group and CFG location. Each
+// launch spends one unit. Loops and unaccounted Add or Done operations poison
+// the affected group; a goto poisons all groups.
 type addCapacity struct {
 	body        *ast.BlockStmt
 	events      map[groupKey][]addEvent
@@ -475,14 +426,8 @@ func childBlock(stmt ast.Stmt, pos token.Pos) *ast.BlockStmt {
 	return found
 }
 
-// dominates reports whether the Add at addChain provably executes exactly
-// once before every arrival at goChain: the Add sits in a block the
-// launch's chain passes through, at an earlier statement index, so
-// structured control flow cannot reach the go statement without passing
-// the Add first — and no loop sits between them, because a launch the
-// runtime repeats below a single registration spends capacity that was
-// counted once. An Add and a go inside the same loop body pair per
-// iteration and stay dominated.
+// dominates requires the Add before every arrival at the launch without a loop
+// multiplying the launch. An Add and launch in the same loop pair per iteration.
 func dominates(addChain, goChain []blockRef) bool {
 	if len(addChain) == 0 || len(addChain) > len(goChain) {
 		return false
@@ -520,16 +465,9 @@ func isLoopStmt(stmt ast.Stmt) bool {
 	return false
 }
 
-// collectAddCapacity records the start body's WaitGroup counter operations
-// per normalized group. Only a plain Add statement with a constant
-// non-negative count, directly in the body, is accountable: a positive
-// count registers capacity at its block position, zero registers nothing.
-// Every other counter operation — Done in the start body proper, an Add
-// buried in a defer or expression, a non-constant or negative count, any
-// Add or Done inside a function literal other than the launched literal's
-// own deferred Done — leaves the counter in a state the model cannot see
-// and poisons the group; an operation whose receiver cannot even be
-// normalized, or a goto anywhere in the body, poisons all capacity.
+// collectAddCapacity records direct, constant, non-negative Add statements by
+// normalized group. Unaccounted counter operations poison their group;
+// unresolved receivers and gotos poison all capacity.
 func collectAddCapacity(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver) *addCapacity {
 	capacity := &addCapacity{
 		body:     body,
@@ -582,15 +520,8 @@ func (c *addCapacity) recordAddStmt(pass *analysis.Pass, stmt *ast.ExprStmt, res
 	c.recordAdd(call, resolver)
 }
 
-// scanLaunchedLiteral inspects a go statement's own function literal and
-// shares the shape verdict the launch classifier will reach. Only a literal
-// the strict recognizer accepts keeps its single first-statement deferred
-// Done exempt — that Done is the unit the launch will spend. A rejected
-// literal's counter operations, its deferred Dones included, poison the
-// group: the launch will be raw, so its Done consumes registration some
-// accepted launch might otherwise claim. Shape is only half the verdict: the
-// classifier additionally poisons the group when an accepted literal's launch
-// cannot spend registration capacity.
+// scanLaunchedLiteral exempts the recognized first-statement deferred Done.
+// Rejected shapes and accepted launches without capacity poison their group.
 func (c *addCapacity) scanLaunchedLiteral(pass *analysis.Pass, lit *ast.FuncLit, resolver *pathResolver) {
 	if _, ok := deferredDoneGroup(pass, lit, resolver); !ok {
 		c.poisonCounterOps(pass, lit.Body, resolver, nil)
@@ -671,13 +602,8 @@ func constantAddCount(call *ast.CallExpr) (int, bool) {
 	return n, true
 }
 
-// collectOwnerRoots maps start-body variables to the owner they root: the
-// receiver for a receiver-owned relation, and the variable provably
-// returned at an owner result position. Ambiguity fails closed with the
-// sentinel index -1: a variable feeding two different owners, or a result
-// position fed by two distinct variables — a launch through a root that is
-// only conditionally the returned owner must never be discharged by
-// evidence that may run on a different object.
+// collectOwnerRoots maps start-body variables to receiver or returned owners.
+// Multiple possible owner identities resolve to sentinel index -1 and fail closed.
 func collectOwnerRoots(pass *analysis.Pass, relation *lifecycleStart, resolver *pathResolver) map[*types.Var]int {
 	roots := make(map[*types.Var]int)
 	assign := func(v *types.Var, index int) {

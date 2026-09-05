@@ -427,6 +427,8 @@ func TestWorkloadConcurrentRequestsSingleStart(t *testing.T) {
 func TestWorkloadActivationFailureIsTerminalAndBacksOff(t *testing.T) {
 	fallbackHit := false
 	policy := testWorkloadPolicy()
+	policy.BackoffBase = time.Hour
+	policy.BackoffCap = time.Hour
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -460,7 +462,13 @@ func TestWorkloadActivationFailureIsTerminalAndBacksOff(t *testing.T) {
 	daemon.mu.Lock()
 	daemon.failStart = false
 	daemon.mu.Unlock()
-	time.Sleep(policy.BackoffBase + 50*time.Millisecond)
+	w := p.workloadFor("wl")
+	if w == nil {
+		t.Fatal("workload missing after failed activation")
+	}
+	w.mu.Lock()
+	w.failedUntil = time.Now().Add(-time.Second)
+	w.mu.Unlock()
 	rec = runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("retry after backoff: %d, want 200", rec.Code)
