@@ -209,19 +209,20 @@ func (r *pathResolver) collectAliases(body *ast.BlockStmt) {
 	for changed := true; changed; {
 		changed = false
 		for v, rhs := range candidates {
-			if _, done := r.aliases[v]; done {
-				continue
-			}
 			root, path, ok := r.resolve(rhs)
 			if !ok || root == v {
 				continue
 			}
-			r.aliases[v] = aliasTarget{root: root, path: path}
-			r.aliasRHS[rhs] = true
-			if r.aliasTakesAddress(rhs) {
-				r.addrAliases[v] = true
+			target := aliasTarget{root: root, path: path}
+			if current, exists := r.aliases[v]; !exists || current != target {
+				r.aliases[v] = target
+				changed = true
 			}
-			changed = true
+			r.aliasRHS[rhs] = true
+			if r.aliasTakesAddress(rhs) && !r.addrAliases[v] {
+				r.addrAliases[v] = true
+				changed = true
+			}
 		}
 	}
 }

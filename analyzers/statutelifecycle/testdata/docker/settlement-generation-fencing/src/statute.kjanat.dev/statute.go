@@ -50,6 +50,6 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 	defer p.invalidateWorkloadObservationsLocked(w)
 	defer p.invalidateStoppedGeneration(owner.service, owner.bindingKey, result)
 	w.settleStopLocked(p, stop, result) // want `\[SLC107\].*generation fencing`
-	go p.scheduleReconcile()
+	p.scheduleReconcile()
 	return 1
 }

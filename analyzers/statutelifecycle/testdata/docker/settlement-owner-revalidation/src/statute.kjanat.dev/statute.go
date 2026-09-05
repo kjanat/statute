@@ -16,6 +16,9 @@ func (workloadStopOwnership) currentLocked(*workload) bool { return true }
 
 type workload struct{}
 
+func (*workload) stopOwnershipLocked(stop *workloadStop) (workloadStopOwnership, bool) {
+	return workloadStopOwnership{containerID: "container-id", service: "service", bindingKey: stop.binding}, true
+}
 func (*workload) settleStopLocked(*dockerProvider, *workloadStop, workloadStopResult) {}
 
 type mutationRegistry struct{}
@@ -31,13 +34,13 @@ func (*dockerProvider) invalidateStoppedGeneration(string, workloadBindingKey, w
 func (*dockerProvider) scheduleReconcile() {}
 
 func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attempt workloadStopAttempt) workloadStopApply {
-	owner := workloadStopOwnership{containerID: "container-id", service: "service", bindingKey: stop.binding}
+	owner, owned := w.stopOwnershipLocked(stop)
+	if !owned {
+		return 0
+	}
 	result := attempt.result
 	registry := p.currentMutationRegistry()
 	persistErr := registry.delete(owner.containerID)
-	if !owner.currentLocked(w) {
-		return 0
-	}
 	if persistErr != nil {
 		return 0
 	}

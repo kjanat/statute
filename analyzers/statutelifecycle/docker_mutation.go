@@ -43,16 +43,17 @@ func checkDockerMutationInvariants(pass *analysis.Pass, functions map[*types.Fun
 		return
 	}
 	for _, info := range functions {
-		checkDockerMutationCalls(pass, info, parents)
-		checkMutationContextIngress(pass, info, parents)
-		checkPersistBeforeStop(pass, info, parents)
-		checkSettlementBoundaries(pass, info, parents)
+		flow := newFunctionFlow(info.decl.Body)
+		resolver := newPathResolver(pass, info.decl.Body)
+		checkDockerMutationCalls(pass, info, resolver, flow, parents)
+		checkMutationContextIngress(pass, info, resolver, parents)
+		checkPersistBeforeStop(pass, info, resolver, flow, parents)
+		checkSettlementBoundaries(pass, info, resolver, flow, parents)
 	}
 }
 
 //nolint:gocyclo // Each wrapper has an explicit caller and context provenance contract.
-func checkMutationContextIngress(pass *analysis.Pass, info *functionInfo, parents map[ast.Node]ast.Node) {
-	resolver := newPathResolver(pass, info.decl.Body)
+func checkMutationContextIngress(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, parents map[ast.Node]ast.Node) {
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
 		sel, ok := node.(*ast.SelectorExpr)
 		if !ok {
@@ -133,9 +134,7 @@ func isStatutePackage(path string) bool {
 
 // SLC105 keeps raw Docker mutation capability inside the two workload
 // boundaries and pins their context, client, and immutable binding shape.
-func checkDockerMutationCalls(pass *analysis.Pass, info *functionInfo, parents map[ast.Node]ast.Node) {
-	flow := newFunctionFlow(info.decl.Body)
-	resolver := newPathResolver(pass, info.decl.Body)
+func checkDockerMutationCalls(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) {
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
 		sel, ok := node.(*ast.SelectorExpr)
 		if !ok {
@@ -370,9 +369,7 @@ func callsVariable(pass *analysis.Pass, call *ast.CallExpr, variable *types.Var)
 
 // SLC106 requires the nil edge of matching durable persistence to dominate
 // every owned stop attempt.
-func checkPersistBeforeStop(pass *analysis.Pass, info *functionInfo, parents map[ast.Node]ast.Node) {
-	flow := newFunctionFlow(info.decl.Body)
-	resolver := newPathResolver(pass, info.decl.Body)
+func checkPersistBeforeStop(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) {
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
 		sel, ok := node.(*ast.SelectorExpr)
 		if !ok {
@@ -446,12 +443,10 @@ func persistenceGuardDominates(pass *analysis.Pass, body *ast.BlockStmt, attempt
 // requires owner revalidation, generation fencing, and republication.
 //
 //nolint:gocyclo // One typed AST walk dispatches the complete settlement sink set.
-func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, parents map[ast.Node]ast.Node) {
+func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) {
 	apply := isLocalMethod(info.fn, "workload", "applyStopAttempt")
 	settle := isLocalMethod(info.fn, "workload", "settleStopLocked")
 	supersede := isLocalMethod(info.fn, "workload", "supersedeBindingLocked")
-	flow := newFunctionFlow(info.decl.Body)
-	resolver := newPathResolver(pass, info.decl.Body)
 	if apply && (directMethodCallCount(pass, info.decl.Body, "mutationRegistry", "delete", parents) != 1 ||
 		directMethodCallCount(pass, info.decl.Body, "workload", "settleStopLocked", parents) != 1) {
 		pass.Reportf(info.decl.Name.Pos(), "["+diagnosticSLC107+"] applyStopAttempt must contain exactly one canonical durable deletion and settlement call")
@@ -472,8 +467,8 @@ func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, parents 
 			case isLocalMethod(fn, "workload", "settleStopLocked"):
 				if !apply || nested || async {
 					pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation ownership may only settle through (*workload).applyStopAttempt")
-				} else if !canonicalSettlementProof(pass, info, n, resolver, flow, parents) {
-					pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] settlement must follow durable deletion, owner revalidation, generation fencing, and reconcile scheduling")
+				} else if failure := canonicalSettlementProof(pass, info, n, resolver, flow, parents); failure != settlementProofValid {
+					pass.Reportf(n.Pos(), "[%s] settlement requires %s", diagnosticSLC107, failure)
 				}
 			case closesStopDone(pass, info.decl.Body, resolver, n) && ((!settle && !supersede) || nested || async):
 				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation waiters may only be released by canonical settlement or binding supersession")
@@ -508,41 +503,56 @@ func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, parents 
 	})
 }
 
+type settlementProofFailure string
+
+const (
+	settlementProofValid             settlementProofFailure = ""
+	settlementProofCanonicalCall     settlementProofFailure = "canonical receiver and arguments"
+	settlementProofDurableDeletion   settlementProofFailure = "durable deletion"
+	settlementProofOwnershipGuard    settlementProofFailure = "ownership guard"
+	settlementProofOwnerRevalidation settlementProofFailure = "owner revalidation"
+	settlementProofGenerationFencing settlementProofFailure = "generation fencing"
+	settlementProofReconciliation    settlementProofFailure = "reconcile scheduling"
+)
+
 //nolint:gocyclo // Settlement is accepted only when every independent proof holds.
-func canonicalSettlementProof(pass *analysis.Pass, info *functionInfo, settlement *ast.CallExpr, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) bool {
+func canonicalSettlementProof(pass *analysis.Pass, info *functionInfo, settlement *ast.CallExpr, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) settlementProofFailure {
 	sig, _ := info.fn.Type().(*types.Signature)
 	settleSel, _ := ast.Unparen(settlement.Fun).(*ast.SelectorExpr)
 	if sig == nil || sig.Recv() == nil || sig.Params().Len() < 2 || settleSel == nil || len(settlement.Args) != 3 {
-		return false
+		return settlementProofCanonicalCall
 	}
 	w := sig.Recv()
 	p := sig.Params().At(0)
 	stop := sig.Params().At(1)
 	if !sameResolvedValue(resolver, settleSel.X, w, "") || !sameResolvedValue(resolver, settlement.Args[0], p, "") || !sameResolvedValue(resolver, settlement.Args[1], stop, "") {
-		return false
+		return settlementProofCanonicalCall
 	}
 	deletion, deleteOK := durableDeleteProven(pass, info.decl.Body, settlement, p, resolver, flow, parents)
 	if !deleteOK {
-		return false
+		return settlementProofDurableDeletion
 	}
 	if !ownershipCaptureProven(pass, info.decl.Body, settlement, deletion.call, deletion.owner, w, stop, resolver, flow, parents) {
-		return false
+		return settlementProofOwnershipGuard
 	}
 	ownerGuard := ownerRevalidation(pass, info.decl.Body, settlement, deletion.owner, w, deletion.call.End(), resolver, flow, parents)
 	if ownerGuard == nil {
-		return false
+		return settlementProofOwnerRevalidation
 	}
 	fenceAfter := max(ownerGuard.End(), deletion.guard.End())
 	if !settlementFenced(pass, info.decl.Body, settlement, deletion.owner, w, p, fenceAfter, resolver, flow, parents) {
-		return false
+		return settlementProofGenerationFencing
 	}
-	return flow.allNormalReturnsAfter(settlement, func(call *ast.CallExpr) bool {
+	if !flow.allNormalReturnsAfter(settlement, func(call *ast.CallExpr) bool {
 		if !isLocalMethod(calledFunction(pass, call), "dockerProvider", "scheduleReconcile") {
 			return false
 		}
 		sel, _ := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 		return sel != nil && sameResolvedValue(resolver, sel.X, p, "") && !insideDeferredOrGo(call, info.decl.Body, parents)
-	})
+	}) {
+		return settlementProofReconciliation
+	}
+	return settlementProofValid
 }
 
 //nolint:gocyclo // Capture provenance and its fail-closed owned guard are one proof.

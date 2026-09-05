@@ -111,13 +111,17 @@ type aliasRun struct{ wg sync.WaitGroup }
 func (*aliasWorker) start() *aliasRun {
 	r := &aliasRun{}
 	run := r
-	run.wg.Go(func() {})
+	runAlias := run
+	runAliasAgain := runAlias
+	runAliasAgain.wg.Go(func() {})
 	return r
 }
 
 func (r *aliasRun) stop() {
 	wg := &r.wg
-	wg.Wait()
+	wgAlias := wg
+	wgAliasAgain := wgAlias
+	wgAliasAgain.Wait()
 }
 
 // A reassigned alias is ambiguous and is not proof: the wait through it
@@ -213,8 +217,10 @@ type escapedAliasRun struct{ child *replacedChildGroup }
 func (*escapedAliasWorker) start() *escapedAliasRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	r := &escapedAliasRun{child: &replacedChildGroup{}}
 	p := &r.child
+	q := p
+	s := q
 	r.child.wg.Go(func() {})
-	swapChild(p)
+	swapChild(s)
 	return r
 }
 

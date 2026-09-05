@@ -49,7 +49,7 @@ func (w *workload) applyStopAttempt(p *dockerProvider, stop *workloadStop, attem
 	}
 	p.invalidateWorkloadObservationsLocked(w)
 	p.invalidateStoppedGeneration(owner.service, owner.bindingKey, result)
-	w.settleStopLocked(p, stop, result) // want `\[SLC107\].*durable deletion`
+	w.settleStopLocked(p, stop, result) // want `\[SLC107\].*ownership guard`
 	p.scheduleReconcile()
 	return 1
 }
