@@ -103,7 +103,7 @@ func TestStreamEvents(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = client.StreamEvents(ctx, func(ev Event) {
+		_ = client.StreamEvents(ctx, nil, func(ev Event) {
 			got = append(got, ev)
 			if len(got) == len(events) {
 				cancel()
@@ -188,7 +188,7 @@ func TestClientStatusErrors(t *testing.T) {
 	if err := client.Ping(context.Background()); err == nil || !strings.Contains(err.Error(), "unexpected status") {
 		t.Errorf("Ping 500: %v", err)
 	}
-	if err := client.StreamEvents(context.Background(), func(Event) {}); err == nil || !strings.Contains(err.Error(), "unexpected status") {
+	if err := client.StreamEvents(context.Background(), nil, func(Event) {}); err == nil || !strings.Contains(err.Error(), "unexpected status") {
 		t.Errorf("StreamEvents 500: %v", err)
 	}
 }
@@ -199,7 +199,7 @@ func TestClientDecodeErrors(t *testing.T) {
 	if _, err := client.ListContainers(context.Background()); err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Errorf("ListContainers malformed body: %v", err)
 	}
-	if err := client.StreamEvents(context.Background(), func(Event) {}); err == nil || !strings.Contains(err.Error(), "decode") {
+	if err := client.StreamEvents(context.Background(), nil, func(Event) {}); err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Errorf("StreamEvents malformed body: %v", err)
 	}
 }
@@ -371,7 +371,7 @@ func TestEventActorName(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = client.StreamEvents(ctx, func(ev Event) {
+		_ = client.StreamEvents(ctx, nil, func(ev Event) {
 			got = append(got, ev)
 			cancel()
 		})

@@ -3,8 +3,11 @@
 The lifecycle analyzer enforces the source boundaries behind Docker mutation
 ownership. This is the coverage contract for
 [issue #105](https://github.com/kjanat/statute/issues/105).
-External lifecycle actors and cooperative authority remain separate work in
-[issue #108](https://github.com/kjanat/statute/issues/108).
+External lifecycle actors follow the
+[single-writer observation contract](docker.md#external-lifecycle-actors)
+defined by [issue #108](https://github.com/kjanat/statute/issues/108).
+Cooperative pause/lease authority is not supported; an external Docker command
+cannot revoke outstanding mutation ownership.
 
 ## Ownership contract
 

@@ -90,6 +90,7 @@ type fakeDaemon struct {
 	listRelease        chan struct{}
 	stopStarted        chan struct{}
 	stopRelease        chan struct{}
+	events             http.HandlerFunc
 }
 
 func (d *fakeDaemon) swap(cs []fakeDaemonContainer) {
@@ -289,17 +290,23 @@ func (d *fakeDaemon) listContainers(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(body))
 }
 
+func (d *fakeDaemon) streamEvents(w http.ResponseWriter, r *http.Request) {
+	if d.events != nil {
+		d.events(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	<-r.Context().Done()
+}
+
 func (d *fakeDaemon) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
-	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if fl, ok := w.(http.Flusher); ok {
-			fl.Flush()
-		}
-		<-r.Context().Done()
-	})
+	mux.HandleFunc("/events", d.streamEvents)
 	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, _ *http.Request) { d.listContainers(w) })
 	mux.HandleFunc("/containers/", func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/containers/"), "/")

@@ -147,3 +147,11 @@ so CI can never silently drop declared coverage.
   IPs must be routable from the Statute container, which containers
   inside a DinD daemon are not. Discovery stays opt-in per label, so
   the lane's own containers never surface as routes.
+- **Workload discovery is event-only.** The `workload` scenario leaves
+  `Refresh` unset. `TestRegression_DockerOnDemandWorkload` proves adoption,
+  idle shutdown, demand activation after an external stop, and adoption after
+  an external start against the real daemon. It waits for transition logs before
+  demand; network
+  responses prove serving and Docker inspection proves idle shutdown. The
+  listing/subscription race and ambiguous-stop interleavings use deterministic
+  in-process provider tests.

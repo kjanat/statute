@@ -199,6 +199,25 @@ Routing remains the primary concern and lifecycle exists to make a routed servic
 available. A requirement that needs any of the excluded capabilities belongs
 outside this layer.
 
+Statute owns lifecycle intent; Docker state supplies observations. An
+external stop is not an administrative disable: after observing it, Statute may
+start the container again on demand. An external start may be adopted through
+readiness and remains subject to idle shutdown. Event actions do not identify
+operator intent or prove an intermediate state that discovery never observed.
+There is no cooperative pause, lease, or external administrative-control signal.
+Removing eligibility revokes new lifecycle authority while preserving ownership
+of an already-issued mutation. The operational conflict matrix lives in
+[`docs/docker.md`](docs/docker.md#external-lifecycle-actors).
+
+Discovery subscribes continuously to Docker events and debounces reconciliation.
+Every successful subscription, initial or reconnected, requests a full listing
+after the subscription is established, closing the listing/subscription gap.
+`Refresh == 0` adds no periodic polling; positive `Refresh` supplies an independent
+periodic listing. Event-only operation is supported, but cannot promise bounded
+discovery of silent stream stalls, undetected delivery loss, or daemon outages.
+Neither events nor polling are a second lifecycle owner, and mutation convergence
+does not depend on either producing another observation.
+
 A discovered service is not the unit of activation. `mergeService` folds
 same-named registrations from several containers into one pool. Such a service
 carries one backend plus every backend folded in from its siblings, and takes its

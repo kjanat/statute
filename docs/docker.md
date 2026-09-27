@@ -57,9 +57,20 @@ statute.Main(statute.Config{
   failed reconcile logs and keeps the previous routing generation serving.
 - The provider follows the Docker event stream (with reconnect + backoff)
   and coalesces bursts — a `docker compose up` starting ten containers
-  reconciles once. Activation demand arriving during an in-flight listing
+  can reconcile as one burst. Every successful subscription, including the first,
+  requests a full resync **after** the stream is established, so changes between
+  a previous listing and subscription are not lost. Reconnect also requests a
+  resync before its next connection attempt. Activation demand arriving during an in-flight listing
   joins that publication edge; readiness waits one probe interval after
   publication before checking again.
+- `Refresh == 0` (the default) has **no periodic poll loop**. Events request a
+  reconcile after a 300 ms quiet window; a detected disconnect reconnects with
+  backoff, and failed reconciliation retries. A positive `Refresh`, such as
+  `Refresh("30s")`, adds periodic listings even without an event. Event-only
+  operation is supported, but silent stream stalls, undetected event loss, and
+  daemon/network outages have no bounded discovery time. Polling preserves the
+  same lifecycle policy, and neither mode promises to observe every
+  intermediate stop/start in a burst.
 - Route tables swap atomically per generation. Requests in flight finish
   against the generation they started with. Pool handlers whose resolved
   config is unchanged are carried over, keeping health-check state and
@@ -193,6 +204,64 @@ How it behaves:
 
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.
+
+### External lifecycle actors
+
+Statute is the **single lifecycle authority** for eligible containers governed by
+`Workload`. Compose, scripts, operators, and other controllers can still change
+Docker state, but those changes are observations Statute may adopt or override.
+`docker stop` does **not** mean "keep this workload disabled": the next routed
+request can start it again. An external start does not bypass readiness or the
+idle policy. Running two controllers that both expect final say over the same
+container is unsupported.
+
+These four concepts have different lifetimes:
+
+| Concept               | Meaning                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Observed state        | What Docker currently reports about one immutable container ID.                                                                                  |
+| Lifecycle grant       | Code-owned `Workload` policy plus current one-to-one topology eligibility; authorizes new lifecycle operations.                                  |
+| Owned mutation        | An already-issued stop and its durable uncertainty; survives grant retirement, relabeling, and container replacement until canonical settlement. |
+| Administrative intent | An operator's wish to pause/disable a workload; Docker events do not encode it and Statute exposes no cooperative pause/lease/API signal.        |
+
+If maintenance requires a durable disable, arrange exclusive lifecycle ownership
+and withdraw traffic/authority explicitly. Do not rely on a Docker stop, a
+restart-policy setting, or an inferred event actor. Stopping Statute cancels its
+client calls and leaves workloads as they are; cancellation cannot prove that
+Docker cancelled or rolled back an already-issued mutation. Retain the registry
+and account for unresolved stops before handing control to
+another process. Removing a grant is not itself a routing-deny policy; ordinary
+discovery and routing rules apply once outstanding quarantine settles.
+
+An event requests a fresh snapshot; the following describes how those observations
+are handled. Statute does not guess whether a stop was a crash, a human, or another
+controller.
+
+| Current workload                     | External change / observation                                        | Result                                                                                                                                                            |
+| ------------------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ready or stop-pending                | Same ID observed stopped                                             | Becomes Dormant; later demand can reactivate it.                                                                                                                  |
+| Dormant                              | Same ID observed running                                             | Observe-only readiness, then admission and idle policy; no redundant start.                                                                                       |
+| Failed                               | Stopped then running observed, or a different ID observed running    | May clear backoff and prove readiness anew. An unchanged running snapshot alone does not prove repair.                                                            |
+| Ready                                | Same-ID restart                                                      | If only the final running state is observed, no restart is inferred. If a stopped snapshot is observed, it becomes Dormant and later running must pass readiness. |
+| Starting after a Statute start       | Same ID stops before readiness completes                             | Inspect/readiness reports failure; activation fails closed with backoff and canonical cleanup where applicable.                                                   |
+| Starting with observe-only readiness | Same ID stops before readiness completes                             | Returns Dormant without a cleanup stop for an activation Statute did not start.                                                                                   |
+| Stop-issued or stop-unknown          | Same ID running, including an external start                         | Remains non-serving and owned; running cannot erase ambiguity or reopen admission.                                                                                |
+| Stop-issued                          | Same ID observed stopped while the stop call is outstanding          | The issued attempt still owns its outcome; the observation cannot race its settlement.                                                                            |
+| Stop-unknown, no call outstanding    | Same immutable ID confirmed stopped or missing                       | Canonical terminal settlement clears durable evidence and schedules publication.                                                                                  |
+| Any active operation                 | Remove/recreate under the same service/name, with a new immutable ID | The successor has independent readiness and lifecycle state. Old callbacks cannot affect it; unresolved predecessor ownership remains separately tracked.         |
+| No outstanding mutation              | Removal or loss of eligible topology                                 | Removes the missing contribution or revokes its grant; remaining routes and fallback follow ordinary discovery rules.                                             |
+| Outstanding mutation                 | Removal, relabeling, or loss of eligible topology                    | Revokes new grant authority while preserving mutation ownership; affected contributions remain quarantined until settlement.                                      |
+| Eligible topology restored           | Container running                                                    | May adopt through readiness using the current immutable binding and retained failure evidence; does not inherit an unrelated container's operation.               |
+
+Ready-to-stopped observations and running adoptions or repairs log the container
+identity and the action Statute chooses each time, without attributing the Docker
+command to an actor. Debounced snapshots can coalesce intermediate
+changes, so the logs are not an audit trail of every external action.
+
+The [discovery contract](#how-discovery-behaves) applies equally to these changes:
+events, post-subscription resyncs, and optional polling all feed the same state
+machine. Owned-mutation convergence has its own bounded retries and publication
+demand, so `Refresh == 0` does not leave uncertain stops dependent on a new event.
 
 ## Native label schema (`statute.*`)
 

@@ -332,8 +332,9 @@ func (e Event) ChangesTopology() bool {
 
 // StreamEvents opens the event stream and invokes handle for every event
 // until the stream ends or ctx is cancelled. It returns the stream error;
-// the caller owns reconnect policy.
-func (c *Client) StreamEvents(ctx context.Context, handle func(Event)) error {
+// the caller owns reconnect policy. If non-nil, onConnected runs once after
+// HTTP 200 and before decoding events, even if the body subsequently fails.
+func (c *Client) StreamEvents(ctx context.Context, onConnected func(), handle func(Event)) error {
 	q := url.Values{}
 	q.Set("filters", `{"type":["container"]}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/events?"+q.Encode(), nil)
@@ -347,6 +348,9 @@ func (c *Client) StreamEvents(ctx context.Context, handle func(Event)) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("docker: event stream: unexpected status %s", resp.Status)
+	}
+	if onConnected != nil {
+		onConnected()
 	}
 	dec := json.NewDecoder(resp.Body)
 	for {
