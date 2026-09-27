@@ -26,6 +26,8 @@ const (
 	diagnosticSLC105    = "SLC105"
 	diagnosticSLC106    = "SLC106"
 	diagnosticSLC107    = "SLC107"
+	diagnosticSLC108    = "SLC108"
+	diagnosticSLC109    = "SLC109"
 )
 
 // Analyzer checks Statute-specific lifecycle ownership invariants.

@@ -103,7 +103,7 @@ This table is a floor, not an exhaustive list.
 - Do not infer successful serving merely from a successful bind or a nil `Start`
   return. Lifecycle tests must prove the relevant endpoint actually serves.
 - Lifecycle changes run `make lint-lifecycle` in addition to `make lint`. Treat
-  `SLC100`–`SLC107` diagnostics as architecture findings and resolve every one;
+  `SLC100`–`SLC109` diagnostics as architecture findings and resolve every one;
   suppressions do not satisfy the gate.
 - Go formatting must pass `make fmt-check`. It runs toolchain `gofmt` and the
   `goimports` tool pinned by `go.mod`, while dprint invokes that same tool for

@@ -116,7 +116,7 @@ func badSupersession(w *workload) {
 	w.supersedeBindingLocked() // want `\[SLC107\].*only be superseded after sameContainerLocked`
 }
 
-func goodSupersession(w *workload, svc *service) {
+func (p *dockerProvider) bindWorkloadContainerLocked(w *workload, svc *service) {
 	if !w.sameContainerLocked(svc) {
 		w.supersedeBindingLocked()
 	}

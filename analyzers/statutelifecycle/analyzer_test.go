@@ -17,6 +17,17 @@ func TestDockerMutationAnalyzer(t *testing.T) {
 	t.Parallel()
 	for _, fixture := range []string{
 		"valid",
+		"mutation-state",
+		"uncertainty-rejection",
+		"uncertainty-unrecorded",
+		"phase-guard",
+		"state-refactor",
+		"observation-state",
+		"retention-state",
+		"retention-prune-invalid",
+		"retention-prune-break",
+		"supersession-refactor",
+		"supersession-goto",
 		"raw-call",
 		"boundary-context",
 		"missing-cancellation",

@@ -12,7 +12,7 @@ func (*dockerProvider) attemptOwnedStop(context.Context, *workload, *workloadSto
 	return workloadStopAttempt{}
 }
 
-func (p *dockerProvider) good(ctx context.Context, w *workload, stop *workloadStop) workloadStopAttempt {
+func (p *dockerProvider) executeOwnedStopAttempt(ctx context.Context, w *workload, stop *workloadStop) workloadStopAttempt {
 	if err := p.persistOwnedStop(w, stop); err != nil {
 		return workloadStopAttempt{}
 	}

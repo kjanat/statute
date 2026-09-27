@@ -49,7 +49,10 @@ func checkDockerMutationInvariants(pass *analysis.Pass, functions map[*types.Fun
 		checkMutationContextIngress(pass, info, resolver, parents)
 		checkPersistBeforeStop(pass, info, resolver, flow, parents)
 		checkSettlementBoundaries(pass, info, resolver, flow, parents)
+		checkMutationState(pass, info, resolver, flow, parents)
+		checkMutationRetention(pass, info, resolver, flow, parents)
 	}
+	checkDockerMutationHelpers(pass, functions, parents)
 }
 
 //nolint:gocyclo // Each wrapper has an explicit caller and context provenance contract.
@@ -60,21 +63,25 @@ func checkMutationContextIngress(pass *analysis.Pass, info *functionInfo, resolv
 			return true
 		}
 		fn := selectedFunction(pass, sel)
+		if code := interfaceMutationContextCode(fn); code != "" {
+			pass.Reportf(sel.Pos(), "[%s] Docker mutation context wrappers cannot use interface dispatch or capture", code)
+			return true
+		}
 		var code, expectedCaller string
 		tracked := false
 		switch {
 		case isLocalMethod(fn, "dockerProvider", "startActivation"):
 			code, expectedCaller = diagnosticSLC105, "runActivation"
 		case isLocalMethod(fn, "dockerProvider", "runActivation"):
-			code, expectedCaller = diagnosticSLC105, "activate"
-		case isLocalMethod(fn, "dockerProvider", "activate"):
+			code, expectedCaller = diagnosticSLC105, mutationActivateMethod
+		case isLocalMethod(fn, "dockerProvider", mutationActivateMethod):
 			code, tracked = diagnosticSLC105, true
 		case isLocalMethod(fn, "dockerProvider", "executeOwnedStopAttempt"):
 			code, expectedCaller = diagnosticSLC106, "runOwnedStop"
 		case isLocalMethod(fn, "dockerProvider", "runOwnedStop"):
 			code = diagnosticSLC106
 		case isLocalMethod(fn, "dockerProvider", "finishActivation"):
-			code, expectedCaller = diagnosticSLC106, "activate"
+			code, expectedCaller = diagnosticSLC106, mutationActivateMethod
 		case isLocalMethod(fn, "dockerProvider", "performStop"):
 			code, tracked = diagnosticSLC106, true
 		default:
@@ -92,13 +99,28 @@ func checkMutationContextIngress(pass *analysis.Pass, info *functionInfo, resolv
 			valid = isLocalMethod(info.fn, "dockerProvider", expectedCaller) &&
 				!enclosedByFuncLiteral(call, info.decl.Body, parents) && providerContextArgument(info.fn, call, resolver)
 		} else {
-			valid = providerContextArgument(info.fn, call, resolver) || trackedProviderContext(pass, info.decl.Body, call, resolver, parents)
+			valid = ((isLocalMethod(info.fn, "dockerProvider", "finishActivation") || isLocalMethod(info.fn, "dockerProvider", "performStop")) &&
+				providerContextArgument(info.fn, call, resolver)) || trackedProviderContext(pass, info.decl.Body, call, resolver, parents)
 		}
 		if !valid {
 			pass.Reportf(call.Pos(), "[%s] %s must receive a provider-derived tracked context", code, fn.Name())
 		}
 		return true
 	})
+}
+
+func interfaceMutationContextCode(fn *types.Func) string {
+	for _, name := range []string{"startActivation", "runActivation", mutationActivateMethod} {
+		if isLocalInterfaceMethod(fn, name) {
+			return diagnosticSLC105
+		}
+	}
+	for _, name := range []string{"executeOwnedStopAttempt", "runOwnedStop", "finishActivation", "performStop"} {
+		if isLocalInterfaceMethod(fn, name) {
+			return diagnosticSLC106
+		}
+	}
+	return ""
 }
 
 //nolint:gocyclo // Tracked closure provenance is deliberately fail closed.
@@ -388,7 +410,7 @@ func checkPersistBeforeStop(pass *analysis.Pass, info *functionInfo, resolver *p
 			pass.Reportf(sel.Pos(), "["+diagnosticSLC106+"] attemptOwnedStop must be called directly so persistence dominance remains provable")
 			return true
 		}
-		if enclosedByFuncLiteral(call, info.decl.Body, parents) || !providerContextArgument(info.fn, call, resolver) || !persistenceGuardDominates(pass, info.decl.Body, call, resolver, flow, parents) {
+		if !isLocalMethod(info.fn, "dockerProvider", "executeOwnedStopAttempt") || enclosedByFuncLiteral(call, info.decl.Body, parents) || !providerContextArgument(info.fn, call, resolver) || !persistenceGuardDominates(pass, info.decl.Body, call, resolver, flow, parents) {
 			pass.Reportf(call.Pos(), "["+diagnosticSLC106+"] attemptOwnedStop must be dominated by successful persistOwnedStop for the same provider, workload, and stop")
 		}
 		return true
@@ -472,7 +494,7 @@ func checkSettlementBoundaries(pass *analysis.Pass, info *functionInfo, resolver
 				}
 			case closesStopDone(pass, info.decl.Body, resolver, n) && ((!settle && !supersede) || nested || async):
 				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation waiters may only be released by canonical settlement or binding supersession")
-			case isLocalMethod(fn, "workload", "supersedeBindingLocked") && (nested || async || !supersessionGuarded(pass, info.decl.Body, n, resolver, parents)):
+			case isLocalMethod(fn, "workload", "supersedeBindingLocked") && (nested || async || !supersessionGuarded(pass, info, n, resolver, flow, parents)):
 				pass.Reportf(n.Pos(), "["+diagnosticSLC107+"] mutation ownership may only be superseded after sameContainerLocked rejects the observed binding")
 			}
 		case *ast.AssignStmt:
@@ -765,24 +787,42 @@ func settlementFenced(pass *analysis.Pass, body *ast.BlockStmt, settlement *ast.
 	return observations && generation
 }
 
-func supersessionGuarded(pass *analysis.Pass, body *ast.BlockStmt, supersede *ast.CallExpr, resolver *pathResolver, parents map[ast.Node]ast.Node) bool {
+func supersessionGuarded(pass *analysis.Pass, info *functionInfo, supersede *ast.CallExpr, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) bool {
+	body := info.decl.Body
+	sig, _ := info.fn.Type().(*types.Signature)
+	if !isLocalMethod(info.fn, "dockerProvider", "bindWorkloadContainerLocked") || sig == nil || sig.Params().Len() != 2 {
+		return false
+	}
 	supersedeSel, _ := ast.Unparen(supersede.Fun).(*ast.SelectorExpr)
 	if supersedeSel == nil {
 		return false
 	}
-	for node := parents[supersede]; node != nil && node != body; node = parents[node] {
+	guarded := false
+	ast.Inspect(body, func(node ast.Node) bool {
 		stmt, ok := node.(*ast.IfStmt)
-		if !ok || !nodeContains(stmt.Body, supersede) {
-			continue
+		if !ok || enclosedByFuncLiteral(stmt, body, parents) || !flow.dominates(stmt.Cond, supersede) {
+			return true
 		}
-		call := negatedCall(stmt.Cond)
-		if call == nil || !isLocalMethod(calledFunction(pass, call), "workload", "sameContainerLocked") {
-			continue
+		if supersessionConditionProven(pass, stmt.Cond, supersede, flow, resolver, sig, supersedeSel.X) {
+			guarded = true
 		}
-		sel, _ := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-		return sel != nil && sameExpressionValue(resolver, sel.X, supersedeSel.X)
+		return true
+	})
+	return guarded
+}
+
+func supersessionConditionProven(pass *analysis.Pass, condition ast.Expr, supersede *ast.CallExpr, flow *functionFlow, resolver *pathResolver, sig *types.Signature, receiver ast.Expr) bool {
+	call := negatedCall(condition)
+	excludes := flow.falseBranchExcludes(condition, supersede)
+	if call == nil {
+		call, _ = ast.Unparen(condition).(*ast.CallExpr)
+		excludes = flow.trueBranchExcludes(condition, supersede)
 	}
-	return false
+	if !excludes || call == nil || !isLocalMethod(calledFunction(pass, call), "workload", "sameContainerLocked") || len(call.Args) != 1 {
+		return false
+	}
+	sel, _ := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	return sel != nil && sameExpressionValue(resolver, sel.X, receiver) && sameResolvedValue(resolver, sel.X, sig.Params().At(0), "") && sameResolvedValue(resolver, call.Args[0], sig.Params().At(1), "")
 }
 
 func closesStopDone(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver, call *ast.CallExpr) bool {
@@ -796,13 +836,12 @@ func closesStopDone(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathReso
 		return true
 	}
 	root, path, resolved := resolver.resolveExpr(target)
-	return resolved && path == ".done" && isNamedPackageType(root.Type(), statutePackagePath, "workloadStop")
+	return resolved && path == ".done" && isNamedPackageType(root.Type(), "workloadStop")
 }
 
 func clearsWorkloadStop(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver, assign *ast.AssignStmt) bool {
 	for i, lhs := range assign.Lhs {
-		root, path, ok := resolver.resolveExpr(lhs)
-		if !ok || path != ".stop" || !isNamedPackageType(root.Type(), statutePackagePath, "workload") {
+		if !protectedStateField(pass, resolver, lhs, "workload", "stop") {
 			continue
 		}
 		return i >= len(assign.Rhs) || isNilValue(pass, body, assign.Rhs[i])
@@ -812,13 +851,18 @@ func clearsWorkloadStop(pass *analysis.Pass, body *ast.BlockStmt, resolver *path
 
 func overwritesWorkload(pass *analysis.Pass, resolver *pathResolver, assign *ast.AssignStmt) bool {
 	for _, lhs := range assign.Lhs {
+		if isNamedPackageValueType(pass.TypesInfo.TypeOf(lhs), "workload") {
+			if !freshIdentifier(pass, lhs) {
+				return true
+			}
+		}
 		root, path, ok := resolver.resolveExpr(lhs)
-		if ok && path == "" && isNamedPackageType(root.Type(), statutePackagePath, "workload") {
+		if ok && path == "" && isNamedPackageType(root.Type(), "workload") {
 			return true
 		}
 		id, ok := ast.Unparen(lhs).(*ast.Ident)
 		variable, _ := pass.TypesInfo.Uses[id].(*types.Var)
-		if ok && variable != nil && isNamedPackageValueType(variable.Type(), statutePackagePath, "workload") {
+		if ok && variable != nil && isNamedPackageValueType(variable.Type(), "workload") {
 			return true
 		}
 	}
@@ -864,14 +908,14 @@ func isNilValue(pass *analysis.Pass, body *ast.BlockStmt, expr ast.Expr) bool {
 	return ok && tv.IsType()
 }
 
-func isNamedPackageType(t types.Type, pkgPath, name string) bool {
+func isNamedPackageType(t types.Type, name string) bool {
 	named := namedType(t)
-	return named != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == pkgPath && named.Obj().Name() == name
+	return named != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == statutePackagePath && named.Obj().Name() == name
 }
 
-func isNamedPackageValueType(t types.Type, pkgPath, name string) bool {
+func isNamedPackageValueType(t types.Type, name string) bool {
 	named, _ := types.Unalias(t).(*types.Named)
-	return named != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == pkgPath && named.Obj().Name() == name
+	return named != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == statutePackagePath && named.Obj().Name() == name
 }
 
 func isLocalMethod(fn *types.Func, receiver, method string) bool {
@@ -1156,6 +1200,14 @@ func (f *functionFlow) trueBranchExcludes(condition, target ast.Node) bool {
 		return false
 	}
 	return !f.blockReaches(conditionPoint.block.Succs[0], targetPoint.block)
+}
+
+func (f *functionFlow) falseBranchExcludes(condition, target ast.Node) bool {
+	conditionPoint, conditionOK := f.point(condition)
+	targetPoint, targetOK := f.point(target)
+	return conditionOK && targetOK && len(conditionPoint.block.Succs) == 2 &&
+		conditionPoint.index == len(conditionPoint.block.Nodes)-1 &&
+		!f.blockReaches(conditionPoint.block.Succs[1], targetPoint.block)
 }
 
 func (f *functionFlow) blockReaches(start, target *cfg.Block) bool {

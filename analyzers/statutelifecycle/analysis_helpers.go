@@ -45,7 +45,7 @@ func parentMap(files []*ast.File) map[ast.Node]ast.Node {
 
 func calledFunction(pass *analysis.Pass, call *ast.CallExpr) *types.Func {
 	var obj types.Object
-	switch fun := call.Fun.(type) {
+	switch fun := ast.Unparen(call.Fun).(type) {
 	case *ast.Ident:
 		obj = pass.TypesInfo.Uses[fun]
 	case *ast.SelectorExpr:

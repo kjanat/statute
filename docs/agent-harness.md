@@ -126,6 +126,16 @@ patch to miss:
   outside canonical settlement, immutable binding supersession lacks a failed
   `sameContainerLocked` guard, or settlement lacks durable deletion, owner
   revalidation, generation fences, or reconcile scheduling.
+- `SLC108`: mutation uncertainty or terminal evidence can be overwritten, or an
+  ambiguous attempt or rejected retry can reach terminal settlement without the
+  evidence required for that mutation.
+- `SLC109`: a workload phase write or transition can bypass an owned mutation's
+  quarantine. Ordinary transitions cannot release issued/unknown ownership;
+  canonical settlement and guarded supersession own that release.
+
+See [Docker mutation analysis](docker-mutation-analysis.md) for the issue-to-proof
+coverage, helper trust boundaries, cancellation contract, and runtime regression
+evidence. Grant retirement does not exempt any mutation sink from these checks.
 
 The analyzer is initially disabled from the ordinary `make lint` set because current
 `master` contains the lifecycle debt it was created to expose. Lifecycle PRs run the
