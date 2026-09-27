@@ -2210,10 +2210,14 @@ func TestReadinessDoesNotWaitForHTTP01Warmup(t *testing.T) {
 			t.Errorf("Shutdown: %v", err)
 		}
 	}()
-	// Released before the Shutdown defer (LIFO) so the drain never waits
-	// on the gated warm-up order.
+	// Release the gate before shutdown even if the readiness assertion fails.
 	defer releaseGate()
 
 	<-reached // the warm-up order is now in flight, blocked at the CA
 	mustServeHealth(t, healthAddr)
+
+	// Releasing the gate alone does not await the CA's HTTP-01 fetch. Finish
+	// issuance before teardown closes the challenge listener.
+	releaseGate()
+	waitForCachedCert(t, mgr, "pin.example", 10*time.Second)
 }
