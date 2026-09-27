@@ -52,6 +52,8 @@ func TestAcceptedRulesMatchTraefik(t *testing.T) {
 		{name: "dotted host", rule: "Host(`app.example.com.`)"},
 		{name: "exact path", rule: "Path(`/login`)"},
 		{name: "byte path prefix", rule: "PathPrefix(`/api`)"},
+		{name: "trailing-slash path prefix", rule: "PathPrefix(`/api/`)"},
+		{name: "root path prefix", rule: "PathPrefix(`/`)"},
 		{name: "host and path prefix", rule: "Host(`app.example.com`) && PathPrefix(`/api`)"},
 		{name: "parenthesized disjunction", rule: "(Host(`a.example.com`) || Host(`b.example.com`)) && (Path(`/login`) || PathPrefix(`/api`))"},
 		{name: "operator precedence", rule: "Host(`a.example.com`) && Path(`/x`) || Host(`b.example.com`)"},

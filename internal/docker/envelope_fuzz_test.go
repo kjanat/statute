@@ -70,6 +70,7 @@ func FuzzRuleEnvelope(f *testing.F) {
 		"Host(`a.example.com.`)",
 		"Host(`0.`, `0`)",
 		"Host(`0..`, `0`)",
+		"Host(`0...`, `0`)",
 		"Host(`0..``0`)",
 		"Host(`*`)",
 		"Host(`*.example.com`)",
