@@ -312,7 +312,7 @@ func assertMissingClientCertRejected(ctx context.Context, t *testing.T, r *harne
 
 func assertVerifiedClientCertLogged(ctx context.Context, t *testing.T, r *harness.Run) {
 	t.Helper()
-	logs := awaitServiceLog(ctx, t, r, harness.Server1, "verified client identity in access log", func(logs string) (bool, string) {
+	logs := awaitServerLog(ctx, t, r, "verified client identity in access log", func(logs string) (bool, string) {
 		return strings.Contains(logs, `"client_cert_subject":"CN=statute-e2e-proxy"`), logs
 	})
 	if strings.Contains(logs, `"path":"/echo"`) && !strings.Contains(logs, `"client_cert_sans"`) {
@@ -551,7 +551,7 @@ func TestRegression_TrustedClientIdentity(t *testing.T) {
 
 	// The access log is not on stdout merely because the plan returned;
 	// wait for both legs, then assert their exact count on that snapshot.
-	logs := awaitServiceLog(ctx, t, r, harness.Server1,
+	logs := awaitServerLog(ctx, t, r,
 		"both access log legs reach statute-1's log", func(logs string) (bool, string) {
 			u, tr := logLinesContaining(logs, "leg=untrusted", `"remote"`), logLinesContaining(logs, "leg=trusted", `"remote"`)
 			return len(u) > 0 && len(tr) > 0, fmt.Sprintf("untrusted=%d trusted=%d", len(u), len(tr))

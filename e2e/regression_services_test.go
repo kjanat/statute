@@ -122,7 +122,8 @@ func dockerOut(ctx context.Context, t *testing.T, args ...string) string {
 // TestRegression_DockerOnDemandWorkload proves the on-demand lifecycle
 // against a real Docker Engine: a running labeled container is adopted and
 // idle-stopped, its dormant route still matches and the request wakes the
-// container, and the idle window stops it again afterwards.
+// container, external stops do not disable demand activation, and external
+// starts are adopted back into idle policy. Discovery has no periodic polling.
 func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	t.Parallel()
 	topo := harness.MustTopology(t, "1s1c")
@@ -177,8 +178,35 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 		t.Fatal("workload served but its container is not running")
 	}
 
-	// Idle stops it again after the wake.
-	pollUntil(t, 30*time.Second, "idle stop after activation", func() (bool, string) {
+	// Observe the external stop before issuing new demand.
+	dockerCLI(ctx, t, "stop", name)
+	awaitServerLog(ctx, t, r, "external stop becomes dormant", func(logs string) (bool, string) {
+		return strings.Contains(logs, "stopped outside statute"), logs
+	})
+	pollUntil(t, 60*time.Second, "external stop does not disable demand activation", serves)
+	if !running() {
+		t.Fatal("workload served after external stop but its container is not running")
+	}
+	pollUntil(t, 30*time.Second, "idle stop after reactivation", func() (bool, string) {
+		return !running(), "container still running"
+	})
+	awaitServerLog(ctx, t, r, "second idle stop has settled", func(logs string) (bool, string) {
+		return strings.Count(logs, "stopped after") >= 2, logs
+	})
+
+	// External start must be discovered without a request or periodic poll.
+	// Count only new adoption diagnostics: startup already emitted one.
+	const adoption = "found running, establishing readiness"
+	previousAdoptions := strings.Count(r.Logs(ctx, harness.Server1), adoption)
+	dockerCLI(ctx, t, "start", name)
+	awaitServerLog(ctx, t, r, "external start is adopted without demand", func(logs string) (bool, string) {
+		return strings.Count(logs, adoption) > previousAdoptions, logs
+	})
+	pollUntil(t, 30*time.Second, "externally started container serves after readiness", serves)
+
+	// Adoption also keeps Statute's idle policy: an external start is not
+	// authority to keep the container running indefinitely.
+	pollUntil(t, 30*time.Second, "idle stop after external start", func() (bool, string) {
 		return !running(), "container still running"
 	})
 }
@@ -244,7 +272,7 @@ func TestRegression_Observability(t *testing.T) {
 
 	// The same identifier in the access log, which is not on stdout
 	// merely because the plan returned.
-	awaitServiceLog(ctx, t, r, harness.Server1,
+	awaitServerLog(ctx, t, r,
 		"access log carries request "+requestID, func(logs string) (bool, string) {
 			return len(logLinesContaining(logs, requestID, "probe=trace")) > 0, logs
 		})

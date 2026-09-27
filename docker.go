@@ -105,8 +105,9 @@ func (d *DockerConfig) TraefikLabels() *DockerConfig {
 }
 
 // Refresh adds a periodic full re-list of containers on top of the event
-// stream, e.g. "30s". Zero (the default) relies on Docker events alone;
-// the provider already re-lists whenever the event stream reconnects.
+// stream, e.g. "30s". Zero (the default) uses events and a full re-list after
+// each successful subscription, including reconnects. A positive interval
+// also detects changes missed by a silently stalled event stream.
 func (d *DockerConfig) Refresh(interval string) *DockerConfig {
 	d.refresh = interval
 	return d

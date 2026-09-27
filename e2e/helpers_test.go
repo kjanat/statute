@@ -84,16 +84,16 @@ func awaitOriginJournal(ctx context.Context, t *testing.T, r *harness.Run, origi
 	return snapshot
 }
 
-// awaitServiceLog polls one service's logs until want accepts the
+// awaitServerLog polls statute-1's logs until want accepts the
 // snapshot, then returns exactly that snapshot. A server's own log
 // output is not synchronous with the client response that provoked it:
 // the client has its bytes while the server is still writing the access
 // log line and the container log pipeline is still carrying it.
-func awaitServiceLog(ctx context.Context, t *testing.T, r *harness.Run, service, what string, want func(string) (bool, string)) string {
+func awaitServerLog(ctx context.Context, t *testing.T, r *harness.Run, what string, want func(string) (bool, string)) string {
 	t.Helper()
 	var snapshot string
 	pollUntil(t, 30*time.Second, what, func() (bool, string) {
-		snapshot = r.Logs(ctx, service)
+		snapshot = r.Logs(ctx, harness.Server1)
 		return want(snapshot)
 	})
 	return snapshot

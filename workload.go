@@ -1976,7 +1976,7 @@ func (p *dockerProvider) observeRunningWorkloadLocked(w *workload, replaced bool
 		p.ensureStopConvergenceLocked(w, w.stop)
 	case workloadDormant:
 		if _, err := p.beginActivationLocked(w, true); err == nil {
-			log.Printf("statute: docker: workload %q: found running, establishing readiness", w.service)
+			log.Printf("statute: docker: workload %q: found running, establishing readiness (container %q; observe-only adoption)", w.service, w.binding.containerID)
 		}
 	case workloadFailed:
 		if !replaced && w.failureEvidence != workloadFailureStopped {
@@ -1984,7 +1984,7 @@ func (p *dockerProvider) observeRunningWorkloadLocked(w *workload, replaced bool
 		}
 		w.clearFailureLocked()
 		if _, err := p.beginActivationLocked(w, true); err == nil {
-			log.Printf("statute: docker: workload %q: external repair found, establishing readiness", w.service)
+			log.Printf("statute: docker: workload %q: external repair found, establishing readiness (container %q; observe-only adoption)", w.service, w.binding.containerID)
 		}
 	case workloadStarting, workloadReady, workloadStopPending:
 		// These phases already own the running observation or its in-flight
@@ -1997,7 +1997,7 @@ func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 	case workloadReady:
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()
-		log.Printf("statute: docker: workload %q: container stopped outside statute", w.service)
+		log.Printf("statute: docker: workload %q: container stopped outside statute (container %q; dormant, routing demand may reactivate)", w.service, w.binding.containerID)
 	case workloadStopPending:
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()

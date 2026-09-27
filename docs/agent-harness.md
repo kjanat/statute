@@ -150,6 +150,13 @@ or whether a server really answered a request. A clean analyzer run therefore
 supplements the lifecycle ownership table and behavioral cross-feature tests; it never
 replaces them.
 
+For external Docker lifecycle actors, use the
+[single-writer contract](docker.md#external-lifecycle-actors): observations are
+not administrative intent, grant retirement does not end mutation ownership, and
+an external start cannot clear quarantine. Keep event/reconnect/poll ordering in
+deterministic provider tests and real-Docker network scenarios. Event-only tests
+must leave `Refresh` unset and await observation before issuing routed demand.
+
 ## Why the roles are separated
 
 A model that chose an architecture is very good at later explaining why that choice

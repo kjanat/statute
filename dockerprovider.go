@@ -279,7 +279,7 @@ func (r *dockerRun) watchEvents() {
 	p, ctx := r.provider, r.ctx
 	backoff := time.Second
 	for ctx.Err() == nil {
-		err := p.client.StreamEvents(ctx, func(ev docker.Event) {
+		err := p.client.StreamEvents(ctx, r.trigger, func(ev docker.Event) {
 			backoff = time.Second
 			if ev.ChangesTopology() {
 				r.trigger()
