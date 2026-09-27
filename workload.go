@@ -304,6 +304,15 @@ func (w *workload) to(next workloadPhase) bool {
 
 // toLocked is to with w.mu already held.
 func (w *workload) toLocked(next workloadPhase) bool {
+	if w.stop != nil && next != workloadStopIssued && next != workloadStopUnknown {
+		return false
+	}
+	return w.transitionLocked(next)
+}
+
+// transitionLocked is the raw transition boundary. Only the quarantining
+// transition gate and canonical terminal settlement may bypass that gate.
+func (w *workload) transitionLocked(next workloadPhase) bool {
 	if !slices.Contains(workloadTransitions[w.phase], next) {
 		return false
 	}
@@ -1097,6 +1106,9 @@ func (p *dockerProvider) performStop(ctx context.Context, w *workload, binding w
 }
 
 func (w *workload) newStopLocked(p *dockerProvider, kind workloadStopKind, binding workloadBindingKey, ref string) *workloadStop {
+	if w.stop != nil {
+		panic("statute: cannot replace an owned Docker stop")
+	}
 	p.invalidateWorkloadObservationsLocked(w)
 	stop := &workloadStop{kind: kind, binding: binding, ref: ref, converging: true}
 	stop.done = make(chan struct{})
@@ -1228,11 +1240,11 @@ func (w *workload) settleStopLocked(p *dockerProvider, stop *workloadStop, resul
 		} else {
 			w.failureEvidence = workloadFailureUnproven
 		}
-		w.toLocked(workloadFailed)
+		w.transitionLocked(workloadFailed)
 	} else if result == workloadStopSucceeded {
-		w.toLocked(workloadDormant)
+		w.transitionLocked(workloadDormant)
 	} else {
-		w.toLocked(workloadReady)
+		w.transitionLocked(workloadReady)
 		w.reserveWaitersLocked(&stop.workloadWait)
 		w.armIdleLocked(p)
 	}
@@ -1301,6 +1313,7 @@ func (p *dockerProvider) persistOwnedStop(w *workload, stop *workloadStop) error
 		w.mu.Unlock()
 		return nil
 	}
+	stop.ref = owner.containerID
 	record := mutationRecord{
 		ContainerID:   owner.containerID,
 		ContainerName: owner.containerName,
@@ -1685,6 +1698,9 @@ func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service, t
 		}
 	}
 	if w == nil {
+		if p.workloadEntries[svc.Name] != nil {
+			panic("statute: cannot replace a registered workload owner")
+		}
 		if p.workloadEntries == nil {
 			p.workloadEntries = map[string]*workload{}
 		}
@@ -1701,18 +1717,22 @@ func (p *dockerProvider) prepareWorkloadObservationLocked(svc *docker.Service, t
 // detachMutationOwnerHeldLocked separates an immutable predecessor mutation
 // from the current grant. The successor inherits replacement history and backoff.
 func (p *dockerProvider) detachMutationOwnerHeldLocked(old *workload, service string) *workload {
+	if p.workloadEntries[service] != old {
+		panic("statute: detached workload is not the registered owner")
+	}
 	old.retired = true
 	old.stopIdleLocked()
 	failures := old.failures
 	failedUntil := old.failedUntil
 	old.mu.Unlock()
 	p.retiredMutations = append(p.retiredMutations, old)
+	phase := workloadDormant
+	if failures > 0 {
+		phase = workloadFailed
+	}
 	fresh := &workload{
 		service: service, policy: p.cfg.Workloads[service], hadBinding: old.hadBinding,
-		failures: failures, failedUntil: failedUntil,
-	}
-	if failures > 0 {
-		fresh.phase = workloadFailed
+		failures: failures, failedUntil: failedUntil, phase: phase,
 	}
 	p.workloadEntries[service] = fresh
 	return fresh
@@ -1817,11 +1837,12 @@ func (p *dockerProvider) retiredMutationContainerRefsLocked() []workloadContaine
 	}
 	kept := p.retiredMutations[:0]
 	for _, w := range p.retiredMutations {
-		before := len(refs)
 		refs = p.appendRetiredMutationRefLocked(refs, w)
-		if len(refs) > before {
+		w.mu.Lock()
+		if w.stop != nil {
 			kept = append(kept, w)
 		}
+		w.mu.Unlock()
 	}
 	p.retiredMutations = kept
 	return refs

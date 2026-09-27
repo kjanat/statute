@@ -45,6 +45,66 @@ func TestWorkloadOnlyReadyServes(t *testing.T) {
 	}
 }
 
+func TestWorkloadMutationOwnershipGuardsTransitions(t *testing.T) {
+	t.Parallel()
+	for _, from := range []workloadPhase{workloadStopIssued, workloadStopUnknown} {
+		for _, retired := range []bool{false, true} {
+			for _, next := range []workloadPhase{workloadReady, workloadDormant, workloadFailed, workloadStarting, workloadStopPending} {
+				stop := &workloadStop{uncertain: true}
+				w := &workload{phase: from, stop: stop, retired: retired}
+				if w.to(next) || w.phase != from || w.stop != stop || !stop.uncertain {
+					t.Fatalf("owned transition %s -> %s (retired=%v) escaped quarantine", from, next, retired)
+				}
+			}
+		}
+	}
+	w := &workload{phase: workloadStopIssued, stop: &workloadStop{uncertain: true}}
+	if !w.to(workloadStopUnknown) || !w.to(workloadStopIssued) {
+		t.Fatal("owned stop retry transitions must remain available")
+	}
+}
+
+func TestWorkloadCanonicalSettlementTransitions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind   workloadStopKind
+		result workloadStopResult
+		want   workloadPhase
+	}{
+		{workloadIdleStop, workloadStopSucceeded, workloadDormant},
+		{workloadIdleStop, workloadStopRejected, workloadReady},
+		{workloadCleanupStop, workloadStopSucceeded, workloadFailed},
+	} {
+		stop := &workloadStop{kind: tc.kind, terminal: true, result: tc.result}
+		stop.done = make(chan struct{})
+		w := &workload{phase: workloadStopIssued, stop: stop, retired: true, binding: &workloadBinding{key: 1}}
+		w.settleStopLocked(nil, stop, tc.result)
+		if w.phase != tc.want || w.stop != nil {
+			t.Fatalf("canonical settlement = %s, owner %p; want %s, nil", w.phase, w.stop, tc.want)
+		}
+		select {
+		case <-stop.done:
+		default:
+			t.Fatal("settlement did not release waiters")
+		}
+	}
+}
+
+func TestWorkloadStopConstructorPreservesExistingOwner(t *testing.T) {
+	t.Parallel()
+	stop := &workloadStop{uncertain: true}
+	w := &workload{stop: stop, phase: workloadStopUnknown}
+	defer func() {
+		if recover() == nil {
+			t.Error("replacing an owned stop did not panic")
+		}
+		if w.stop != stop || !stop.uncertain || w.phase != workloadStopUnknown {
+			t.Error("failed constructor changed mutation ownership")
+		}
+	}()
+	w.newStopLocked(nil, workloadIdleStop, 1, "id")
+}
+
 func TestWorkloadLegalTransitions(t *testing.T) {
 	t.Parallel()
 
@@ -427,6 +487,8 @@ func TestWorkloadConcurrentRequestsSingleStart(t *testing.T) {
 func TestWorkloadActivationFailureIsTerminalAndBacksOff(t *testing.T) {
 	fallbackHit := false
 	policy := testWorkloadPolicy()
+	policy.BackoffBase = time.Hour
+	policy.BackoffCap = time.Hour
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -460,7 +522,13 @@ func TestWorkloadActivationFailureIsTerminalAndBacksOff(t *testing.T) {
 	daemon.mu.Lock()
 	daemon.failStart = false
 	daemon.mu.Unlock()
-	time.Sleep(policy.BackoffBase + 50*time.Millisecond)
+	w := p.workloadFor("wl")
+	if w == nil {
+		t.Fatal("workload missing after failed activation")
+	}
+	w.mu.Lock()
+	w.failedUntil = time.Now().Add(-time.Second)
+	w.mu.Unlock()
 	rec = runRequest(t, router, httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("retry after backoff: %d, want 200", rec.Code)
