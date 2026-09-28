@@ -64,6 +64,21 @@ func TestGraphDOT_BadConfigReturnsError(t *testing.T) {
 	}
 }
 
+func TestGraphDOTCloudflareSource(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTPS(":443", StaticTLS("cert.pem", "key.pem"), CloudflareTrustedProxy())},
+		Routes:    Routes{Match("/*").Serve("./public")},
+	}
+	var out bytes.Buffer
+	if err := GraphDOT(cfg, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "trusted-proxy=cloudflare (startup + periodic)") {
+		t.Fatalf("missing managed source intent: %s", out.String())
+	}
+}
+
 func TestGraphDOTShowsClientAuth(t *testing.T) {
 	t.Parallel()
 	cfg := tlsRouterConfig(

@@ -8,9 +8,9 @@ import (
 	"net/netip"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 
+	"statute.kjanat.dev/internal/cloudflare"
 	"statute.kjanat.dev/resolved"
 )
 
@@ -18,25 +18,27 @@ import (
 // families without making the test suite depend on a live provider endpoint.
 func TestCloudflareCIDRsSnapshot(t *testing.T) {
 	t.Parallel()
+	data, err := os.ReadFile("internal/cloudflare/snapshot.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot cloudflare.Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
 	var want []string
 	for _, family := range []struct {
-		file  string
-		count int
-		is4   bool
+		ranges []string
+		is4    bool
 	}{
-		{"ips-v4.txt", 15, true},
-		{"ips-v6.txt", 7, false},
+		{snapshot.IPv4, true},
+		{snapshot.IPv6, false},
 	} {
-		data, err := os.ReadFile("testdata/cloudflare/" + family.file)
-		if err != nil {
-			t.Fatal(err)
+		if len(family.ranges) == 0 {
+			t.Fatalf("empty snapshot family IPv4=%v", family.is4)
 		}
-		ranges := strings.Fields(string(data))
-		if len(ranges) != family.count {
-			t.Fatalf("%s: got %d ranges, want %d", family.file, len(ranges), family.count)
-		}
-		assertCloudflarePrefixFamily(t, ranges, family.is4)
-		want = append(want, ranges...)
+		assertCloudflarePrefixFamily(t, family.ranges, family.is4)
+		want = append(want, family.ranges...)
 	}
 	got := CloudflareCIDRs()
 	if !slices.Equal(got, want) {
@@ -265,20 +267,22 @@ func TestCloudflareCIDRsListenerWiring(t *testing.T) {
 // TestCloudflareCIDRsALPN keeps ACME challenge policy independent of the preset.
 func TestCloudflareCIDRsALPN(t *testing.T) {
 	t.Parallel()
-	for _, behind := range []bool{false, true} {
-		opts := []ListenerOption{AutoTLS("x.example").Email("ops@example.com").Storage(t.TempDir()), TrustedProxy(CloudflareCIDRs()...).ClientIPHeader("CF-Connecting-IP")}
-		if behind {
-			opts = append(opts, BehindCloudflare())
-		}
-		r := mustResolve(t, Config{Listeners: Listeners{HTTPS(":443", opts...)}, Routes: Routes{Match("/*").Serve(t.TempDir())}})
-		srv, err := newServer(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Construction alone does not start ACME workers, issue certificates or
-		// bind listeners; inspecting ALPN needs neither a CA nor cleanup work.
-		if got := slices.Contains(srv.listeners[0].TLSConfig.NextProtos, "acme-tls/1"); got == behind {
-			t.Errorf("BehindCloudflare=%v: TLS-ALPN advertised=%v", behind, got)
+	for _, policy := range []*TrustedProxyConfig{TrustedProxy(CloudflareCIDRs()...).ClientIPHeader("CF-Connecting-IP"), CloudflareTrustedProxy()} {
+		for _, behind := range []bool{false, true} {
+			opts := []ListenerOption{AutoTLS("x.example").Email("ops@example.com").Storage(t.TempDir()), policy}
+			if behind {
+				opts = append(opts, BehindCloudflare())
+			}
+			r := mustResolve(t, Config{Listeners: Listeners{HTTPS(":443", opts...)}, Routes: Routes{Match("/*").Serve(t.TempDir())}})
+			srv, err := newServer(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Construction alone does not start ACME workers, issue certificates or
+			// bind listeners; inspecting ALPN needs neither a CA nor cleanup work.
+			if got := slices.Contains(srv.listeners[0].TLSConfig.NextProtos, "acme-tls/1"); got == behind {
+				t.Errorf("BehindCloudflare=%v: TLS-ALPN advertised=%v", behind, got)
+			}
 		}
 	}
 }

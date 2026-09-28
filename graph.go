@@ -195,6 +195,9 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 		if l.ClientAuth != nil {
 			label += fmt.Sprintf("\\nclient-auth=%s\\nclient-ca=%v", l.ClientAuth.Mode, l.ClientAuth.CAFiles)
 		}
+		if l.CloudflareTrustedProxy {
+			label += "\\ntrusted-proxy=cloudflare (startup + periodic)"
+		}
 		d.printf("  L%d [shape=Mrecord, style=filled, fillcolor=\"#cfe2ff\", label=%q];\n", i, label)
 	}
 

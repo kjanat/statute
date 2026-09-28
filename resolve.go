@@ -708,14 +708,17 @@ func resolveTrustedProxy(t *TrustedProxyConfig, rl *resolved.Listener) error {
 	if t == nil {
 		return nil
 	}
-	if len(t.cidrs) == 0 {
+	if len(t.cidrs) == 0 && !t.cloudflare {
 		return errors.New("trusted_proxy: at least one CIDR required")
 	}
-	canon, err := resolveCIDRs(t.cidrs)
-	if err != nil {
-		return fmt.Errorf("trusted_proxy: %w", err)
+	if !t.cloudflare {
+		canon, err := resolveCIDRs(t.cidrs)
+		if err != nil {
+			return fmt.Errorf("trusted_proxy: %w", err)
+		}
+		rl.TrustedProxies = canon
 	}
-	rl.TrustedProxies = canon
+	rl.CloudflareTrustedProxy = t.cloudflare
 	// No empty-name fallback here: TrustedProxy() seeds the default, so an
 	// empty name at this point was configured explicitly — likely a value
 	// that went missing — and silently trusting X-Forwarded-For instead

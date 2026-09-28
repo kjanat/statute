@@ -4,7 +4,7 @@
 // Pin HTTP01() to avoid that failed attempt; see docs/cloudflare.md.
 //
 // The separate TrustedProxy policy accepts CF-Connecting-IP only from
-// direct peers in the bundled Cloudflare ranges. Rebuild after range updates.
+// direct peers in startup-refreshed Cloudflare ranges, refreshed periodically.
 //
 // Cloudflare-side prerequisites:
 //   - SSL/TLS mode: Full (Strict).
@@ -25,7 +25,7 @@ func main() {
 					Storage("/var/lib/statute/certs"),
 				statute.HTTP2(),
 				statute.BehindCloudflare(),
-				statute.TrustedProxy(statute.CloudflareCIDRs()...).ClientIPHeader("CF-Connecting-IP"),
+				statute.CloudflareTrustedProxy(),
 			),
 		},
 

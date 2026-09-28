@@ -1,7 +1,6 @@
-// Package cloudflare is a tiny Cloudflare DNS API client used for ACME
-// DNS-01 challenges. It implements only the endpoints statute needs (list
-// zones, create/delete TXT records) and depends solely on the standard
-// library. Kept in internal/ so it is not part of the public API surface.
+// Package cloudflare provides Statute's DNS-01 API client and public proxy-range
+// acquisition. Both clients depend solely on the standard library and remain
+// internal implementation details.
 package cloudflare
 
 import (

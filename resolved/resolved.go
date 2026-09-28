@@ -146,10 +146,14 @@ type Listener struct {
 
 	// TrustedProxies are CIDR ranges whose members may assert the client IP
 	// through ClientIPHeader; peers outside them are their own clients and
-	// their forwarded headers are ignored. Empty means no per-peer trust is
-	// configured on this listener.
+	// their forwarded headers are ignored. These are explicit static ranges;
+	// CloudflareTrustedProxy carries separately refreshed provider intent.
 	TrustedProxies []string
 	ClientIPHeader string
+
+	// CloudflareTrustedProxy selects startup and periodic Cloudflare range
+	// acquisition. Runtime snapshots do not mutate this resolved configuration.
+	CloudflareTrustedProxy bool
 }
 
 // TLSPolicy is a resolved downstream TLS protocol policy: the version

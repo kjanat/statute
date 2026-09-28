@@ -1,105 +1,92 @@
-// Command check-cloudflare-cidrs compares the bundled proxy ranges with
-// Cloudflare's published lists. It never modifies the snapshot.
+// Command check-cloudflare-cidrs compares or regenerates the embedded fallback.
 package main
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
-	"statute.kjanat.dev"
+	"statute.kjanat.dev/internal/cloudflare"
 )
 
-const maxBody = 64 << 10
-
 func main() {
-	if err := check(context.Background(), sourceClient(), os.Stdout); err != nil {
+	client := cloudflare.NewClient()
+	err := run(context.Background(), client, os.Args[1:], os.Stdout)
+	client.CloseIdleConnections()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func sourceClient() *http.Client {
-	return &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+func run(ctx context.Context, client *http.Client, args []string, out io.Writer) error {
+	flags := flag.NewFlagSet("check-cloudflare-cidrs", flag.ContinueOnError)
+	flags.SetOutput(out)
+	update := flags.Bool("update", false, "fetch and atomically regenerate the embedded fallback")
+	output := flags.String("output", "internal/cloudflare/snapshot.json", "generated snapshot path")
+	if err := flags.Parse(args); err != nil {
+		return err
 	}
-}
-
-func check(ctx context.Context, client *http.Client, out io.Writer) error {
-	var published []string
-	for _, source := range []struct {
-		url  string
-		ipv4 bool
-	}{
-		{"https://www.cloudflare.com/ips-v4/#", true},
-		{"https://www.cloudflare.com/ips-v6/#", false},
-	} {
-		ranges, err := fetch(ctx, client, source.url, source.ipv4)
-		if err != nil {
-			return fmt.Errorf("%s: %w", source.url, err)
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	published, err := cloudflare.Fetch(ctx, client)
+	if err != nil {
+		return err
+	}
+	if *update {
+		if err := writeSnapshot(*output, published); err != nil {
+			return err
 		}
-		published = append(published, ranges...)
+		_, err = fmt.Fprintf(out, "Generated %s (%d prefixes, fetched %s). Rebuild to embed this fallback.\n", *output, len(published.CIDRs()), published.FetchedAt.Format(time.RFC3339))
+		return err
 	}
-	if bundled := statute.CloudflareCIDRs(); !slices.Equal(bundled, published) {
-		return fmt.Errorf("bundled Cloudflare CIDR snapshot differs:\nbundled: %v\npublished: %v\nreview the changes using docs/cloudflare.md#maintaining-the-bundled-snapshot; no files were changed", bundled, published)
+	if bundled := cloudflare.Bundled().CIDRs(); !slices.Equal(bundled, published.CIDRs()) {
+		return fmt.Errorf("bundled Cloudflare CIDR snapshot differs:\nbundled: %v\npublished: %v\nrun make generate-cloudflare-cidrs and review the generated fallback diff; no files were changed", bundled, published.CIDRs())
 	}
-	_, err := fmt.Fprintf(out, "Cloudflare CIDR snapshot matches both published lists (%d prefixes).\n", len(published))
+	_, err = fmt.Fprintf(out, "Cloudflare CIDR snapshot matches both published lists (%d prefixes); next runtime refresh in %s.\n", len(published.CIDRs()), published.RefreshAfter.Round(time.Second))
 	return err
 }
 
-func fetch(ctx context.Context, client *http.Client, url string, ipv4 bool) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// writeSnapshot validates the complete pair before atomically replacing one file.
+func writeSnapshot(path string, snapshot cloudflare.Snapshot) error {
+	if err := snapshot.Validate(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	resp, err := client.Do(req)
+	f, err := os.CreateTemp(filepath.Dir(path), ".cloudflare-snapshot-*")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+	defer func() { _ = os.Remove(f.Name()) }()
+	if err := prepareSnapshot(f, append(data, '\n')); err != nil {
+		_ = f.Close()
+		return err
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
-	if err != nil {
-		return nil, err
+	if err := f.Close(); err != nil {
+		return err
 	}
-	if len(body) > maxBody {
-		return nil, fmt.Errorf("response exceeds %d bytes", maxBody)
-	}
-	return parseRanges(string(body), ipv4)
+	return os.Rename(f.Name(), path)
 }
 
-func parseRanges(body string, ipv4 bool) ([]string, error) {
-	ranges := strings.Fields(body)
-	if len(ranges) == 0 {
-		return nil, fmt.Errorf("empty range list")
+func prepareSnapshot(f *os.File, data []byte) error {
+	if err := f.Chmod(0o644); err != nil {
+		return err
 	}
-	seen := make(map[string]bool, len(ranges))
-	for _, cidr := range ranges {
-		prefix, err := netip.ParsePrefix(cidr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid prefix %q: %w", cidr, err)
-		}
-		if prefix.Addr().Is4() != ipv4 || prefix.Addr().Is4In6() {
-			return nil, fmt.Errorf("wrong address family: %q", cidr)
-		}
-		if prefix.Masked().String() != cidr {
-			return nil, fmt.Errorf("noncanonical prefix: %q", cidr)
-		}
-		if seen[cidr] {
-			return nil, fmt.Errorf("duplicate prefix: %q", cidr)
-		}
-		seen[cidr] = true
+	if _, err := f.Write(data); err != nil {
+		return err
 	}
-	return ranges, nil
+	return f.Sync()
 }

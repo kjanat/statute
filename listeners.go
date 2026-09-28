@@ -290,8 +290,20 @@ func (h http3Option) applyListener(l *Listener) { l.http3Addr = h.addr }
 // TrustedProxyConfig marks CIDR ranges whose members may assert the real
 // client IP through a forwarded header. Build it with TrustedProxy.
 type TrustedProxyConfig struct {
-	cidrs  []string
-	header string
+	cidrs      []string
+	header     string
+	cloudflare bool
+}
+
+// CloudflareTrustedProxy trusts Cloudflare's published proxy ranges and reads
+// CF-Connecting-IP from matching direct peers. Start fetches the current ranges;
+// the server refreshes them periodically and retains the last good snapshot.
+// A failed initial fetch uses the release-bundled CloudflareCIDRs snapshot.
+//
+// ClientIPHeader may override the header independently on each listener.
+// BehindCloudflare remains a separate TLS/ACME and legacy header-trust option.
+func CloudflareTrustedProxy() *TrustedProxyConfig {
+	return &TrustedProxyConfig{cloudflare: true, header: "CF-Connecting-IP"}
 }
 
 // TrustedProxy trusts the given CIDR ranges as forwarding proxies on this
