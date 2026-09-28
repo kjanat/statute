@@ -6,8 +6,14 @@ package main
 import statute "statute.kjanat.dev"
 
 func main() {
+	statute.Main(exampleConfig())
+}
+
+// exampleConfig is the compiled authority and readiness policy for the labeled
+// Compose origin; resolving it does not open listeners or contact Docker.
+func exampleConfig() statute.Config {
 	const shortWindow = "10s"
-	statute.Main(statute.Config{
+	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
 		Docker: statute.Docker().Storage("/var/lib/statute/docker").
 			Workload("ondemand-demo", statute.WorkloadPolicy{
@@ -20,5 +26,5 @@ func main() {
 			Health:    statute.Health(":8081", "/healthz"),
 		},
 		Shutdown: statute.Shutdown{GracePeriod: shortWindow, DrainListeners: true},
-	})
+	}
 }
