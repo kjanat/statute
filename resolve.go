@@ -241,11 +241,14 @@ func acmeChallengeDir(a *resolved.AutoTLS) string {
 // must run first.
 func resolveRoutes(in []*Route, out *resolved.Config) error {
 	for i, r := range in {
-		rr, err := resolveRoute(r, out.Upstreams)
+		if r == nil {
+			return fmt.Errorf("route[%d]: nil route", i)
+		}
+		routes, err := resolveRouteExpansion(r, out.Upstreams)
 		if err != nil {
 			return fmt.Errorf("route[%d] %q: %w", i, r.pattern, err)
 		}
-		out.Routes = append(out.Routes, rr)
+		out.Routes = append(out.Routes, routes...)
 	}
 	return nil
 }

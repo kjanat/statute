@@ -6,6 +6,9 @@ import "net/http"
 type Route struct {
 	pattern        string
 	host           string
+	hostSet        bool
+	hosts          []string
+	hostsSet       bool
 	clientIPs      []string
 	clientIPsSet   bool
 	upstream       string
@@ -26,6 +29,20 @@ func Match(pattern string) *Route {
 // Host scopes this route to the given Host header value. Empty means any host.
 func (r *Route) Host(host string) *Route {
 	r.host = host
+	r.hostSet = true
+	return r
+}
+
+// Hosts appends explicit host values to this declaration, copying the inputs.
+// Resolve expands them in order into consecutive ordinary Host routes, each
+// with the same action, client-IP matcher and middleware declarations.
+//
+// The final list must be nonempty, contain no empty entry or case-insensitive
+// duplicate, and cannot be combined with Host. Values retain their spelling
+// and the existing Host matching semantics; no DNS normalization is applied.
+func (r *Route) Hosts(hosts ...string) *Route {
+	r.hosts = append(r.hosts, hosts...)
+	r.hostsSet = true
 	return r
 }
 

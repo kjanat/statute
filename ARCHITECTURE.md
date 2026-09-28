@@ -47,6 +47,15 @@ Static routes compile in declaration order and are consulted before Docker's
 current dynamic generation. Dynamic discovery must not shadow compiled static
 configuration.
 
+`Hosts(...)` is surface declaration shorthand. Resolve expands its ordered host
+list into consecutive single-host routes before the next declaration. Each route
+retains the same action, client constraints, and middleware declaration, with its
+own resolved middleware values and runtime middleware state. Upstream pools and
+application handlers remain shared as with explicitly repeated `Host(...)` routes.
+Host spelling and matching semantics are unchanged; export, graph, and lint see
+the expanded routes. Mixing `Host` and `Hosts`, an empty host list or entry, and
+case-insensitive duplicate entries fail resolution.
+
 A configured `Fallback` handler is the router's terminal stage, reached only
 after both tables, the current generation's mutation quarantines, and its Docker
 tombstones miss; unset, the terminal behavior stays `http.NotFound`. It is not a
