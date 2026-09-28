@@ -62,6 +62,13 @@ func ExampleMatch_proxyTo() {
 	}
 }
 
+func ExampleRoute_Hosts() {
+	_ = statute.Routes{
+		statute.Match("/api/*").Hosts("app.example.com", "www.example.com").
+			ProxyTo("api").With(statute.Timeout("30s")),
+	}
+}
+
 // ExampleMatch_handle shows an in-process handler route: matching requests
 // are answered by an http.Handler in the same binary instead of being
 // proxied, served from disk, or redirected.

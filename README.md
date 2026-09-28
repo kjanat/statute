@@ -226,6 +226,12 @@ A backend with an `https://` address gets its certificate verified against the s
 
 ### Routes and middleware
 
+Use `.Hosts("app.example.com", "www.example.com")` to apply one declaration to
+several hosts. Resolve expands it into consecutive single-host routes in input
+order; each gets its own middleware state while sharing the selected pool or
+application handler. All four actions support it. See [multi-host routing](docs/routing.md)
+for validation, matching semantics, and the equivalent ordinary Go loop.
+
 ```go
 Routes: statute.Routes{
     statute.Match("/api/v1/*").Host("api.example.com").ProxyTo("api").
