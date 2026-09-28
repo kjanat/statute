@@ -2,6 +2,8 @@
 # through the mounted socket. Discovery is opt-in per container label
 # (ExposedByDefault stays off), so only the containers the test launches
 # with statute.* labels ever surface as routes.
+# This overlay configures only statute-1. The harness rejects multi-server
+# Docker scenarios; separate storage would not isolate workload authority.
 services:
   statute-1:
     environment:

@@ -14,6 +14,8 @@ import (
 
 // TestRegression_InfrastructureDiscoveryIsolation renders every checked-in
 // Compose combination. Cleanup labels must never grant Docker routing intent.
+// This render-only matrix does not claim runtime support for Docker scenarios
+// with multiple servers; the harness rejects those startup combinations.
 func TestRegression_InfrastructureDiscoveryIsolation(t *testing.T) {
 	topologies := infrastructureComposeFiles(t, "topologies/*.yml")
 	scenarios := append([]string{""}, infrastructureComposeFiles(t, "scenarios/*/compose.yml")...)
@@ -48,6 +50,21 @@ type infrastructureService struct {
 	Networks    map[string]struct {
 		Aliases []string `json:"aliases"`
 	} `json:"networks"`
+	Volumes []infrastructureMount `json:"volumes"`
+}
+
+type infrastructureMount struct {
+	Type     string `json:"type"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only"`
+}
+
+type infrastructureConfig struct {
+	Services map[string]infrastructureService `json:"services"`
+	Volumes  map[string]struct {
+		Name string `json:"name"`
+	} `json:"volumes"`
 }
 
 func assertInfrastructureCompose(t *testing.T, topology, scenario string) {
@@ -69,9 +86,7 @@ func assertInfrastructureCompose(t *testing.T, topology, scenario string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rendered struct {
-		Services map[string]infrastructureService `json:"services"`
-	}
+	var rendered infrastructureConfig
 	if err := json.Unmarshal([]byte(output), &rendered); err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +99,44 @@ func assertInfrastructureCompose(t *testing.T, topology, scenario string) {
 		}
 	}
 	assertInfrastructureIdentity(t, rendered.Services["statute-1"], project, scenario)
+	assertInfrastructureTopology(t, rendered, topology, scenario, project)
+}
+
+func assertInfrastructureTopology(t *testing.T, rendered infrastructureConfig, topology, scenario, project string) {
+	t.Helper()
+	name := strings.TrimSuffix(filepath.Base(topology), ".yml")
+	declared := harness.MustTopology(t, name)
+	_, secondExists := rendered.Services[harness.Server2]
+	if secondExists != slices.Contains(declared.Servers, harness.Server2) {
+		t.Errorf("rendered second-server presence=%v disagrees with topology %s", secondExists, name)
+	}
+	if scenario == filepath.Join("scenarios", "docker", "compose.yml") {
+		assertDockerInfrastructureStorage(t, rendered.Services[harness.Server1])
+		if got := rendered.Volumes["statute-workload"].Name; got != project+"_statute-workload" {
+			t.Errorf("workload WAL volume is not project-scoped: %q", got)
+		}
+	}
+}
+
+func assertDockerInfrastructureStorage(t *testing.T, node infrastructureService) {
+	t.Helper()
+	wanted := map[string]infrastructureMount{
+		"/var/run/docker.sock":    {Type: "bind", Source: "/var/run/docker.sock"},
+		"/var/lib/statute/docker": {Type: "volume", Source: "statute-workload"},
+	}
+	for _, mount := range node.Volumes {
+		want, exists := wanted[mount.Target]
+		if !exists {
+			continue
+		}
+		if mount.Type != want.Type || mount.Source != want.Source || mount.ReadOnly {
+			t.Errorf("Docker infrastructure mount %s: %+v", mount.Target, mount)
+		}
+		delete(wanted, mount.Target)
+	}
+	if len(wanted) != 0 {
+		t.Errorf("Docker infrastructure lacks required mounts: %v", wanted)
+	}
 }
 
 func assertInfrastructureIdentity(t *testing.T, node infrastructureService, project, scenario string) {
