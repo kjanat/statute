@@ -72,13 +72,15 @@ func dockerDiscoveryConfig(string) statute.Config {
 // running, and stopped again after a short idle window. Readiness stays on
 // the automatic TCP probe, and discovery uses events without periodic polling.
 func workloadConfig(string) statute.Config {
+	observability := e2eObservability()
+	observability.Metrics = statute.Prometheus(":9090", "/metrics")
 	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
 		Docker: statute.Docker().Storage("/var/lib/statute/docker").Workload("wl", statute.WorkloadPolicy{
 			IdleAfter: "10s",
 		}),
 		Defaults:      e2eDefaults(),
-		Observability: e2eObservability(),
+		Observability: observability,
 		Shutdown:      e2eShutdown(),
 	}
 }

@@ -173,6 +173,7 @@ type workloadBinding struct {
 	container   string
 	containerID string
 	activity    workloadActivity
+	diagnostics workloadBindingDiagnostics
 }
 
 // workloadStopOwnership is the exact owner captured around unlocked WAL I/O.
@@ -797,6 +798,7 @@ func (p *dockerProvider) beginActivationLocked(w *workload, observe bool) (*work
 		return nil, workloadUnavailable{}
 	}
 	act.cancel = cancel
+	p.recordWorkloadEvent(w.service, workloadActivationAttemptEvent)
 	return act, nil
 }
 
@@ -814,9 +816,9 @@ func (p *dockerProvider) activate(ctx context.Context, w *workload, act *workloa
 // then establishes readiness within the policy's deadline.
 func (p *dockerProvider) runActivation(ctx context.Context, w *workload, act *workloadActivation) error {
 	if err := p.startActivation(ctx, w, act); err != nil {
-		return err
+		return classifyWorkloadStartFailure(err)
 	}
-	return p.awaitReadiness(ctx, w, act)
+	return classifyWorkloadReadinessFailure(p.awaitReadiness(ctx, w, act))
 }
 
 func (p *dockerProvider) startActivation(ctx context.Context, w *workload, act *workloadActivation) error {
@@ -848,7 +850,7 @@ func (p *dockerProvider) awaitReadiness(ctx context.Context, w *workload, act *w
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("readiness not established within %s", act.policy.ReadyTimeout)
+			return fmt.Errorf("%w within %s", errWorkloadReadinessTimeout, act.policy.ReadyTimeout)
 		}
 	}
 }
@@ -993,6 +995,7 @@ func (w *workload) settleActivation(p *dockerProvider, act *workloadActivation, 
 		abandoned: err != nil && errors.Is(err, context.Canceled),
 		stale:     err != nil && act.observe && errors.Is(err, errWorkloadStopped),
 	}
+	w.recordActivationCompletionLocked(p, act, err, out)
 	act.failed = err != nil
 	switch {
 	case err == nil:
@@ -1243,6 +1246,7 @@ func (w *workload) settleStopLocked(p *dockerProvider, stop *workloadStop, resul
 		w.transitionLocked(workloadFailed)
 	} else if result == workloadStopSucceeded {
 		w.transitionLocked(workloadDormant)
+		p.recordWorkloadEvent(w.service, workloadIdleStopEvent)
 	} else {
 		w.transitionLocked(workloadReady)
 		w.reserveWaitersLocked(&stop.workloadWait)
@@ -1976,6 +1980,7 @@ func (p *dockerProvider) observeRunningWorkloadLocked(w *workload, replaced bool
 		p.ensureStopConvergenceLocked(w, w.stop)
 	case workloadDormant:
 		if _, err := p.beginActivationLocked(w, true); err == nil {
+			p.recordWorkloadEvent(w.service, workloadExternalStartEvent)
 			log.Printf("statute: docker: workload %q: found running, establishing readiness (container %q; observe-only adoption)", w.service, w.binding.containerID)
 		}
 	case workloadFailed:
@@ -1984,6 +1989,7 @@ func (p *dockerProvider) observeRunningWorkloadLocked(w *workload, replaced bool
 		}
 		w.clearFailureLocked()
 		if _, err := p.beginActivationLocked(w, true); err == nil {
+			p.recordWorkloadEvent(w.service, workloadExternalStartEvent)
 			log.Printf("statute: docker: workload %q: external repair found, establishing readiness (container %q; observe-only adoption)", w.service, w.binding.containerID)
 		}
 	case workloadStarting, workloadReady, workloadStopPending:
@@ -1997,10 +2003,12 @@ func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 	case workloadReady:
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()
+		p.recordWorkloadEvent(w.service, workloadExternalStopEvent)
 		log.Printf("statute: docker: workload %q: container stopped outside statute (container %q; dormant, routing demand may reactivate)", w.service, w.binding.containerID)
 	case workloadStopPending:
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()
+		p.recordWorkloadEvent(w.service, workloadExternalStopEvent)
 	case workloadStopIssued, workloadStopUnknown:
 		if w.stop != nil {
 			if w.stop.issued {

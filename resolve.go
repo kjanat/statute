@@ -1767,6 +1767,9 @@ func resolveMetrics(m Metrics) (resolved.Metrics, error) {
 	if path == "" {
 		path = "/metrics"
 	}
+	if _, err := newMetricsMux(path, http.NotFoundHandler(), http.NotFoundHandler()); err != nil {
+		return resolved.Metrics{}, err
+	}
 	return resolved.Metrics{
 		Enabled: true,
 		Kind:    "prometheus",
