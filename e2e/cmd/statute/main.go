@@ -21,18 +21,19 @@ import (
 // topology; scenarios whose nodes differ use it, symmetric ones ignore
 // it.
 var scenarios = map[string]func(node string) statute.Config{
-	"mesh":          meshConfig,
-	"routes":        routesConfig,
-	"upstream-tls":  upstreamTLSConfig,
-	"h3":            h3Config,
-	"client-mtls":   clientMTLSConfig,
-	"isolation":     isolationConfig,
-	"startup-bad":   startupBadConfig,
-	"trusted":       trustedConfig,
-	"acme-http01":   acmeHTTP01Config,
-	"docker":        dockerDiscoveryConfig,
-	"workload":      workloadConfig,
-	"observability": observabilityConfig,
+	"mesh":                 meshConfig,
+	"routes":               routesConfig,
+	"upstream-tls":         upstreamTLSConfig,
+	"h3":                   h3Config,
+	"client-mtls":          clientMTLSConfig,
+	"isolation":            isolationConfig,
+	"startup-bad":          startupBadConfig,
+	"trusted":              trustedConfig,
+	"acme-http01":          acmeHTTP01Config,
+	"docker":               dockerDiscoveryConfig,
+	"workload":             workloadConfig,
+	"workload-concurrency": workloadConcurrencyConfig,
+	"observability":        observabilityConfig,
 }
 
 func main() {

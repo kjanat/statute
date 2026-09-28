@@ -95,6 +95,11 @@ route, but TLS for it will not be issued.
 
 ## On-demand workloads (`Workload`)
 
+For a complete runnable cold-start and idle-stop demonstration, see
+[`examples/ondemand`](../examples/ondemand/README.md). It includes a compiled
+proxy, body-echo origin, Compose setup, persistent mutation storage, and commands
+that start with the origin stopped and verify a second wake-up after idle shutdown.
+
 A service that is needed rarely can scale to zero. Register its identity
 with `Workload` and statute starts the container when a routed request
 needs it, holds the request until readiness is established, proxies it, and

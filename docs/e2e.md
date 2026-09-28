@@ -155,3 +155,15 @@ so CI can never silently drop declared coverage.
   responses prove serving and Docker inspection proves idle shutdown. The
   listing/subscription race and ambiguous-stop interleavings use deterministic
   in-process provider tests.
+
+The separate `workload-concurrency` regression starts with a created, stopped
+origin and holds HTTP readiness down until all concurrent requests appear as
+activation waiters. A test-only `dockerproxy` actor forwards Statute's Docker API
+requests to the real host daemon and counts every start call, including duplicate
+calls that Docker would answer as already running without emitting another start
+event. Only that actor mounts the socket, and its API is not published to the host.
+Before readiness is released, the origin journal must contain none of the planned
+requests. After release, every client result must succeed and every request ID must
+appear exactly once at the origin, with exactly one recorded Docker start call.
+The observer is built into the lane image and has no Statute dependency or
+production hook. Its forwarding tests also check streamed event delivery.

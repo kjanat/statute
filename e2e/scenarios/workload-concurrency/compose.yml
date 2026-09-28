@@ -1,0 +1,26 @@
+# Only the recording actor can reach the host daemon. Statute uses the real
+# daemon through this transparent proxy; no listener publishes a host port.
+services:
+  dockerproxy:
+    image: ${STATUTE_E2E_IMAGE}
+    entrypoint: ["/dockerproxy"]
+    networks: [mesh]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels: { statute.e2e: "1" }
+    healthcheck:
+      test: ["CMD", "/client", "wait", "-url", "http://127.0.0.1:2375/debug/starts", "-timeout", "2s"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  statute-1:
+    environment:
+      STATUTE_WORKLOAD_SERVICE: ${COMPOSE_PROJECT_NAME}-cold
+    depends_on:
+      dockerproxy:
+        condition: service_healthy
+    volumes:
+      - statute-workload:/var/lib/statute/docker
+
+volumes:
+  statute-workload:
