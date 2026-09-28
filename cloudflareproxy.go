@@ -33,18 +33,15 @@ type cloudflareSource struct {
 func cloudflareSourceForListeners(listeners []*resolved.Listener) *cloudflareSource {
 	for _, listener := range listeners {
 		if listener.CloudflareTrustedProxy {
-			source := newCloudflareSource()
-			source.fallback = listenerCloudflareFallback(listener)
-			source.publish(source.fallback)
-			return source
+			return newCloudflareSource(listenerCloudflareFallback(listener))
 		}
 	}
 	return nil
 }
 
 // newCloudflareSource seeds the fail-closed fallback before handlers are built.
-func newCloudflareSource() *cloudflareSource {
-	source := &cloudflareSource{fetch: cloudflare.Fetch, wait: waitCloudflareRefresh, fallback: cloudflare.Bundled().Normalized()}
+func newCloudflareSource(fallback cloudflare.Snapshot) *cloudflareSource {
+	source := &cloudflareSource{fetch: cloudflare.Fetch, wait: waitCloudflareRefresh, fallback: fallback.Normalized()}
 	source.publish(source.fallback)
 	return source
 }

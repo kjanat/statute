@@ -101,7 +101,7 @@ func stepCloudflareRefresh(t *testing.T, steps chan<- struct{}) {
 
 func TestCloudflareTrustedProxyRefreshRetainsLastGood(t *testing.T) {
 	t.Parallel()
-	source := newCloudflareSource()
+	source := newCloudflareSource(cloudflare.Bundled())
 	steps, delays := controlledCloudflareWait(t, source)
 	calls := 0
 	source.fetch = func(ctx context.Context, _ *http.Client) (cloudflare.Snapshot, error) {
@@ -135,7 +135,7 @@ func TestCloudflareTrustedProxyFallbackWarning(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	source := newCloudflareSource()
+	source := newCloudflareSource(cloudflare.Bundled())
 	source.fetch = func(context.Context, *http.Client) (cloudflare.Snapshot, error) {
 		return cloudflare.Snapshot{}, errors.New("test provider outage")
 	}
@@ -151,7 +151,7 @@ func TestCloudflareTrustedProxyFallbackWarning(t *testing.T) {
 
 func TestCloudflareTrustedProxyRequestSnapshot(t *testing.T) {
 	t.Parallel()
-	source := newCloudflareSource()
+	source := newCloudflareSource(cloudflare.Bundled())
 	source.publish(cloudflareTestSnapshot("192.0.2.0/24"))
 	h := source.middleware("Cf-Connecting-Ip", http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		before := clientIP(r)
@@ -173,7 +173,7 @@ func TestCloudflareTrustedProxyRequestSnapshot(t *testing.T) {
 
 func TestCloudflareTrustedProxyStopCancelsFetch(t *testing.T) {
 	t.Parallel()
-	source := newCloudflareSource()
+	source := newCloudflareSource(cloudflare.Bundled())
 	steps, delays := controlledCloudflareWait(t, source)
 	entered := make(chan struct{})
 	exited := make(chan struct{})

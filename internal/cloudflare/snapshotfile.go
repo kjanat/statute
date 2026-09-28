@@ -2,12 +2,19 @@ package cloudflare
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
 
-// WriteSnapshot validates the complete pair before atomically replacing one file.
+// WriteSnapshot validates and syncs a complete pair before replacing one file.
+// Unix also syncs the parent directory; a subsequent error leaves the new file
+// in place. Other platforms use their native rename guarantees.
 func WriteSnapshot(path string, snapshot Snapshot) error {
+	return writeSnapshot(path, snapshot, syncSnapshotDirectory)
+}
+
+func writeSnapshot(path string, snapshot Snapshot, syncDir func(string) error) error {
 	if err := snapshot.Validate(); err != nil {
 		return err
 	}
@@ -27,7 +34,13 @@ func WriteSnapshot(path string, snapshot Snapshot) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), path)
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("snapshot replaced; parent directory durability unconfirmed: %w", err)
+	}
+	return nil
 }
 
 func prepareSnapshot(f *os.File, data []byte) error {

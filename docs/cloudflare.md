@@ -108,7 +108,7 @@ make generate-cloudflare-cidrs
 go build ./...
 ```
 
-Generation uses the same bounded fetch and validation as runtime. It writes a temporary file only after both sources validate and atomically replaces the complete artifact; a failed fetch leaves the previous fallback untouched. Review and commit the generated diff so ordinary downstream builds embed the reviewed fallback. There is no manually duplicated Go CIDR list.
+Generation uses the same bounded fetch and validation as runtime. It writes and syncs a temporary file only after both sources validate, then replaces the complete artifact; a failed fetch leaves the previous fallback untouched. On Unix, replacement is atomic and the containing directory is synced afterward. Directory open, sync (including unsupported-filesystem), or close failures return an error stating that replacement already occurred but durability could not be confirmed; the new complete file stays in place. Other platforms use their native rename semantics without a portable atomicity or directory-durability guarantee. Both generators use this writer. Review and commit the generated diff so ordinary downstream builds embed the reviewed fallback. There is no manually duplicated Go CIDR list.
 
 Ordinary `go build` does **not** execute generators or contact these endpoints. The explicit generation target is build preparation; checked-in fallback data keeps normal builds and tests hermetic. Runtime refresh remains the primary update path, so running applications with the managed policy do **not** require rebuilding to receive new ranges. Rebuilding is necessary only to update the embedded fallback or an explicitly static policy.
 

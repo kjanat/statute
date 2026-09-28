@@ -24,6 +24,55 @@ func fallbackJSON(t *testing.T, snapshot cloudflare.Snapshot) []byte {
 	return data
 }
 
+func TestNewCloudflareSourceOwnsSelectedFallback(t *testing.T) {
+	t.Parallel()
+	fallback := cloudflare.Snapshot{
+		IPv4:      []string{"198.51.100.0/24", "192.0.2.0/24"},
+		IPv6:      []string{"2606:4700::/32", "2001:db8::/32"},
+		FetchedAt: time.Date(2026, 9, 28, 14, 0, 0, 0, time.FixedZone("consumer", 2*60*60)),
+	}
+	want := fallback.Normalized()
+	source := newCloudflareSource(fallback)
+	fallback.IPv4[0] = "203.0.113.0/24"
+	fallback.IPv6[0] = "2400:cb00::/32"
+	fallback.FetchedAt = time.Time{}
+	if !sameCloudflareFallback(source.fallback, want) || source.fallback.FetchedAt.Location() != time.UTC {
+		t.Fatalf("constructor did not retain an independent normalized fallback: %+v", source.fallback)
+	}
+	published := source.current.Load()
+	if !slices.Equal(published.prefixes, mustParsePrefixes(want.CIDRs())) || !published.fetchedAt.Equal(want.FetchedAt) {
+		t.Fatalf("pre-Start publication differs from selected fallback: %+v", published)
+	}
+}
+
+func TestCloudflareSourceSelectionBeforeStart(t *testing.T) {
+	t.Parallel()
+	custom := cloudflareTestSnapshot("192.0.2.0/24")
+	static := &resolved.Listener{TrustedProxies: []string{"203.0.113.0/24"}}
+	if source := cloudflareSourceForListeners([]*resolved.Listener{static}); source != nil {
+		t.Fatal("static policy allocated a managed source")
+	}
+	for _, tc := range []struct {
+		name     string
+		fallback *resolved.CloudflareSnapshot
+		want     cloudflare.Snapshot
+	}{
+		{"bundled", nil, cloudflare.Bundled().Normalized()},
+		{"consumer", &resolved.CloudflareSnapshot{IPv4: custom.IPv4, IPv6: custom.IPv6, FetchedAt: custom.FetchedAt}, custom.Normalized()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := cloudflareSourceForListeners([]*resolved.Listener{static, {CloudflareTrustedProxy: true, CloudflareFallback: tc.fallback}})
+			if source == nil {
+				t.Fatal("managed policy did not allocate a source")
+			}
+			published := source.current.Load()
+			if !slices.Equal(published.prefixes, mustParsePrefixes(tc.want.CIDRs())) || !published.fetchedAt.Equal(tc.want.FetchedAt) {
+				t.Fatalf("pre-Start fallback selection: %+v", published)
+			}
+		})
+	}
+}
+
 func TestCloudflareFallbackCopiesAndExports(t *testing.T) {
 	t.Parallel()
 	snapshot := cloudflareTestSnapshot("192.0.2.0/24")
@@ -109,8 +158,7 @@ func TestCloudflareFallbackAcrossListeners(t *testing.T) {
 
 func TestCloudflareFallbackReseedsNextAttempt(t *testing.T) {
 	t.Parallel()
-	source := newCloudflareSource()
-	source.fallback = cloudflareTestSnapshot("127.0.0.0/8").Normalized()
+	source := newCloudflareSource(cloudflareTestSnapshot("127.0.0.0/8"))
 	calls := 0
 	source.fetch = func(context.Context, *http.Client) (cloudflare.Snapshot, error) {
 		calls++
