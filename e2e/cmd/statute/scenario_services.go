@@ -45,7 +45,7 @@ func acmeHTTP01Config(string) statute.Config {
 // Engine (the daemon socket is mounted by the scenario override;
 // discovery is opt-in per container label, so the lane's own
 // infrastructure never surfaces as routes). Code-owned pool policy must
-// reach the native service named dyn, and the static route must keep
+// reach the project-scoped native service, and the static route must keep
 // shadowing its label-derived catch-all.
 func dockerDiscoveryConfig(string) statute.Config {
 	return statute.Config{
@@ -59,7 +59,7 @@ func dockerDiscoveryConfig(string) statute.Config {
 			statute.Match("/static/*").ProxyTo("static-origin").
 				With(statute.StripPrefix("/static"), statute.RequestID().From("X-Request-Id")),
 		},
-		Docker: statute.Docker().Refresh("1s").PoolPolicy("dyn", statute.PoolPolicy{
+		Docker: statute.Docker().Refresh("1s").PoolPolicy(os.Getenv("STATUTE_DISCOVERY_SERVICE"), statute.PoolPolicy{
 			HealthCheck:        statute.HealthCheck{Path: healthPath, Interval: "2s", Healthy: 1},
 			PassiveHealthCheck: statute.PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
 			Transport:          statute.Transport{ResponseHeaderTimeout: "5s"},
@@ -71,8 +71,8 @@ func dockerDiscoveryConfig(string) statute.Config {
 	}
 }
 
-// workloadConfig grants on-demand activation for the native service named
-// wl: its labeled container is started by routed demand, adopted when found
+// workloadConfig grants on-demand activation for a project-scoped service:
+// its labeled container is started by routed demand, adopted when found
 // running, and stopped again after a short idle window. Readiness stays on
 // the automatic TCP probe, and discovery uses events without periodic polling.
 func workloadConfig(string) statute.Config {
@@ -80,7 +80,7 @@ func workloadConfig(string) statute.Config {
 	observability.Metrics = statute.Prometheus(":9090", "/metrics")
 	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
-		Docker: statute.Docker().Storage("/var/lib/statute/docker").Workload("wl", statute.WorkloadPolicy{
+		Docker: statute.Docker().Storage("/var/lib/statute/docker").Workload(os.Getenv("STATUTE_WORKLOAD_SERVICE"), statute.WorkloadPolicy{
 			IdleAfter: "10s",
 		}),
 		Defaults:      e2eDefaults(),

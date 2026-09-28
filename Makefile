@@ -20,7 +20,7 @@ E2E_REGRESSION_TIMEOUT ?= 60m
 E2E_SOAK_TIMEOUT       ?= 120m
 COMMENT_COP_BASE       ?=
 
-.PHONY: all help comment-cop test test-race fmt-check lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
+.PHONY: all help comment-cop test test-race fmt-check lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff check-cloudflare-cidrs generate-cloudflare-cidrs typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -122,6 +122,13 @@ e2e-clean: ## Force-remove anything the e2e lane leaked (labeled containers, nam
 # offline; APIDIFF_ALLOW_BREAKING=1 downgrades a deliberate break to a warning.
 apidiff: ## Diff the exported API against the surface published on pkg.go.dev
 	$(GO) run ./scripts/apidiff
+
+# Explicit build preparation; ordinary Go builds/tests remain offline.
+generate-cloudflare-cidrs: ## Fetch and generate the embedded Cloudflare fallback before building
+	$(GO) run ./scripts/check-cloudflare-cidrs -update
+
+check-cloudflare-cidrs: ## Compare bundled Cloudflare ranges with the canonical live lists (read-only)
+	$(GO) run ./scripts/check-cloudflare-cidrs
 
 typecheck: ## Strict-typecheck scripts/ (installs dev deps on first run)
 	@test -d node_modules || npm ci --no-audit --no-fund

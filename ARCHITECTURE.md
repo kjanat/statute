@@ -436,6 +436,37 @@ startup rollback, and shutdown ordering must preserve that distinction.
 
 ## Lifecycle
 
+### Cloudflare trusted-proxy ranges
+
+`CloudflareTrustedProxy()` is an explicit listener-owned source policy, separate
+from `BehindCloudflare()` TLS behavior and static `TrustedProxy` CIDRs. Resolve,
+export, graph, and lint remain offline: the resolved source marker describes
+managed acquisition; effective ranges belong to the runtime snapshot.
+
+An optional `FallbackSnapshot` is application-owned input, copied at the surface
+boundary and strictly validated into the resolved listener's typed snapshot.
+Managed listeners sharing one server must have equal effective fallback ranges
+and fetch-time instants; omission selects the bundled snapshot. Server creation
+copies the selected fallback, and each startup attempt seeds that owned copy.
+Explicit invalid input fails resolution. Generation is optional build preparation;
+ordinary builds and configuration tooling perform no network acquisition.
+
+Only a server with that source in use acquires a refresh run. One bounded startup
+fetch and one periodic worker serve all its opted-in listeners. Both address
+families must validate before an immutable snapshot replaces the previous pair.
+Startup failure uses the generated embedded fallback with a warning; background
+failure retains the last valid pair, warns, and retries. Provider cache lifetimes
+and response age guide the bounded refresh schedule. Static policies never read
+this source, and no request performs network acquisition.
+
+The outer listener wrapper snapshots the source once per request, keeping ACLs,
+client-IP routing, rate limits, and logs on the same policy even during refresh.
+TCP and QUIC share that wrapper. A typed refresh run owns its cancellation,
+timer, client, and completion signal; startup rollback and normal shutdown cancel
+and join it. No predecessor can publish into a retried startup after rollback.
+
+### Server resources
+
 Lifecycle changes must state ownership rather than relying on `Serve` goroutines to
 hide it.
 

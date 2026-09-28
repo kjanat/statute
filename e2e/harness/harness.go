@@ -63,6 +63,9 @@ func Start(t *testing.T, scenario string, topo Topology, extraFiles ...string) *
 // it to run.
 func StartServices(t *testing.T, scenario string, topo Topology, services []string, extraFiles ...string) *Run {
 	t.Helper()
+	if err := ValidateScenarioTopology(scenario, topo, services); err != nil {
+		t.Fatal(err)
+	}
 	image := os.Getenv("STATUTE_E2E_IMAGE")
 	if image == "" {
 		t.Fatal("STATUTE_E2E_IMAGE is not set; run through `make test-e2e` or build the image and export the variable")

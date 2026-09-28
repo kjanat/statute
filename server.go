@@ -46,7 +46,8 @@ type server struct {
 	docker  *dockerProvider
 	dynamic atomic.Pointer[dynamicTable]
 
-	stats *stats
+	stats      *stats
+	cloudflare *cloudflareSource
 
 	autocertMgr     *autocert.Manager
 	acmeManagers    map[*resolved.AutoTLS]*acmeManager // keyed by resolved source
@@ -63,9 +64,10 @@ type server struct {
 
 func newServer(cfg *resolved.Config) (*server, error) {
 	s := &server{
-		cfg:   cfg,
-		pools: make(map[string]*poolHandler, len(cfg.Upstreams)),
-		stats: newStats(),
+		cfg:        cfg,
+		pools:      make(map[string]*poolHandler, len(cfg.Upstreams)),
+		stats:      newStats(),
+		cloudflare: cloudflareSourceForListeners(cfg.Listeners),
 	}
 
 	mgr, err := buildAutocertManager(cfg.Listeners)
@@ -266,7 +268,9 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	}
 	// The per-peer trust policy wraps outermost for the same reason; when
 	// both are configured, clientIP consults this policy alone.
-	if len(l.TrustedProxies) > 0 {
+	if l.CloudflareTrustedProxy {
+		handler = s.cloudflare.middleware(l.ClientIPHeader, handler)
+	} else if len(l.TrustedProxies) > 0 {
 		handler = trustedProxyMiddleware(l, handler)
 	}
 	return handler
@@ -512,11 +516,12 @@ func (b *boundListeners) count() int {
 // startAttempt is the sole owner of every resource acquired by one Start
 // call until commit transfers those typed handles into serverRun.
 type startAttempt struct {
-	pools     []*runningPool
-	acme      []*acmeRun
-	docker    *dockerRun
-	listeners boundListeners
-	finished  bool
+	pools      []*runningPool
+	acme       []*acmeRun
+	docker     *dockerRun
+	cloudflare *cloudflareRun
+	listeners  boundListeners
+	finished   bool
 }
 
 func (a *startAttempt) rollback() error {
@@ -524,6 +529,7 @@ func (a *startAttempt) rollback() error {
 		return nil
 	}
 	a.finished = true
+	a.cloudflare.stop()
 	for _, run := range a.acme {
 		run.stop()
 	}
@@ -559,21 +565,23 @@ func (a *startAttempt) commit() *serverRun {
 	}
 	a.finished = true
 	return &serverRun{
-		pools:     a.pools,
-		acme:      a.acme,
-		docker:    a.docker,
-		listeners: a.listeners,
+		pools:      a.pools,
+		acme:       a.acme,
+		docker:     a.docker,
+		cloudflare: a.cloudflare,
+		listeners:  a.listeners,
 	}
 }
 
 // serverRun owns exactly the resources transferred by the successful Start.
 // Shutdown never rediscovers ownership from configured server fields.
 type serverRun struct {
-	pools     []*runningPool
-	acme      []*acmeRun
-	docker    *dockerRun
-	listeners boundListeners
-	mu        sync.Mutex
+	pools      []*runningPool
+	acme       []*acmeRun
+	docker     *dockerRun
+	cloudflare *cloudflareRun
+	listeners  boundListeners
+	mu         sync.Mutex
 }
 
 // Start opens all configured listeners and begins serving. Calling it
@@ -624,6 +632,9 @@ func (s *server) Start() (err error) {
 // DNS-01 warm-up (which needs no local listener), and the Docker
 // provider's initial sync. Each is recorded in rb as it comes up.
 func (s *server) startPrerequisites(attempt *startAttempt) error {
+	if s.cloudflare != nil {
+		attempt.cloudflare = s.cloudflare.start()
+	}
 	for _, ph := range s.pools {
 		attempt.pools = append(attempt.pools, ph.start())
 	}
@@ -765,6 +776,7 @@ func (s *server) Shutdown() error {
 func (r *serverRun) shutdown(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.cloudflare.stop()
 
 	// Stop ACME before listeners so in-flight HTTP-01 work can finish
 	// cancellation while its challenge endpoint is still reachable.

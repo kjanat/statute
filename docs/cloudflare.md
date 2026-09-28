@@ -15,6 +15,7 @@ statute.HTTPS(":443",
         HTTP01(),
     statute.HTTP2(),
     statute.BehindCloudflare(),
+    statute.CloudflareTrustedProxy(),
 )
 ```
 
@@ -30,6 +31,8 @@ statute.HTTPS(":443",
         Storage("/var/lib/statute/certs").
         CloudflareDNS01(token).Zone(zoneID),
     statute.HTTP2(),
+    statute.BehindCloudflare(),
+    statute.CloudflareTrustedProxy(),
 )
 ```
 
@@ -54,18 +57,95 @@ For request handling: every request to the origin arrives via Cloudflare's IP ra
    To skip the burned attempt entirely, pin the source with `.HTTP01()`. A pinned source issues through statute's in-tree ACME manager, which only ever attempts HTTP-01: no `acme-tls/1` advertisement, no failed validation, no extra order. Behind Cloudflare that is the recommended configuration; `BehindCloudflare()` still matters for client-IP attribution, and for any unpinned source on the listener.
 2. **Tags the request context.** A small middleware sets a context key on every request received on this listener. `clientIP()` reads it and returns `CF-Connecting-IP` (or `True-Client-IP` as a fallback) instead of `r.RemoteAddr` and `X-Forwarded-For`. CF-Connecting-IP is populated by Cloudflare's edge and is not user-controllable on the path through the proxy.
 
-The option does not enforce that the request actually came from a Cloudflare IP range. Adding that would require keeping the CF IP list current; a stale list can DOS the deployment if CF rotates ranges, so we instead trust the network path the operator has configured.
+The option alone does not verify that the request came from a Cloudflare IP range. Use `CloudflareTrustedProxy()` below to verify the direct peer against automatically refreshed ranges. The TLS behavior and peer-trust policy remain separate options.
 
 **This means**: if the listener is reachable directly (not only via Cloudflare), `BehindCloudflare()` alone becomes a security hole. Any client can send a forged `CF-Connecting-IP` header and dictate the IP statute uses for rate limiting and access logging. For that shared-listener topology, keep `BehindCloudflare()` — it still owns the ACME behaviour above — and add a peer-scoped trust policy beside it:
 
 ```go
 statute.HTTPS(":443",
     statute.BehindCloudflare(),
-    statute.TrustedProxy(cfRanges...).ClientIPHeader("CF-Connecting-IP"),
+    statute.CloudflareTrustedProxy(),
 )
 ```
 
-`TrustedProxy` takes precedence over `BehindCloudflare()`'s blanket header trust wherever the client IP is resolved: the CF headers count only when the connection's direct peer is inside the declared Cloudflare ranges, and every other peer is attributed by its own address, forged headers ignored. The ranges are static CIDRs you maintain (Cloudflare publishes them at cloudflare.com/ips); statute deliberately does not fetch the list, since a stale auto-refreshed list can take a deployment down when ranges rotate.
+`CloudflareTrustedProxy()` and static `TrustedProxy(...)` policies take precedence over `BehindCloudflare()`'s blanket header trust wherever the client IP is resolved: the configured header counts only when the connection's direct peer is inside the active policy's ranges (the current snapshot for managed Cloudflare), and every other peer is attributed by its own address, forged headers ignored. With this policy, a missing `CF-Connecting-IP` falls back to the peer; `True-Client-IP` and `X-Forwarded-For` remain ignored.
+
+### Managed Cloudflare ranges
+
+`CloudflareTrustedProxy()` selects the existing direct-peer verifier, defaults to `CF-Connecting-IP`, and enables startup and periodic acquisition from the exact [IPv4](https://www.cloudflare.com/ips-v4/#) and [IPv6](https://www.cloudflare.com/ips-v6/#) sources. `.ClientIPHeader(...)` can explicitly select another header. It does not enable `BehindCloudflare()` or alter TLS/ACME.
+
+**Nothing is fetched unless a configured listener actually selects this managed policy.** Plain listeners, `BehindCloudflare()` alone, and static `TrustedProxy(...)` CIDRs create no refresh worker. Multiple opted-in listeners on one server share a single fetch pair and worker. Resolve, export, graph, and lint also remain network-free; their source marker describes managed acquisition. Effective ranges belong to the runtime snapshot.
+
+Before serving content, startup attempts both lists within a **five-second total deadline**. Both must be nonempty, canonical, correctly typed CIDR lists without duplicates or universal `/0` ranges. Redirects, non-200 statuses, oversized bodies and malformed data are rejected. A complete valid pair replaces the previous pair; removals are not silently unioned back into the new list. No request performs a fetch.
+
+If startup acquisition fails, the server uses its generated embedded fallback and logs a warning with the failure and fallback date. If a periodic fetch fails, it keeps the entire last-known-good pair, warns, and retries after five minutes. This is an availability-preserving fallback, **not a guarantee that stale ranges still belong to Cloudflare**. Removed ranges may remain trusted during an outage; newly added ranges remain untrusted until a successful refresh. There is no on-disk cache, so a new process experiencing an outage starts with its embedded fallback.
+
+Refresh publishes an immutable pair atomically. Each request captures it once at listener entry, so ACL checks, IP-based routing, rate limits, and access logs keep the same attribution for that request. TCP and HTTP/3 use the same policy. Rollback and shutdown cancel and join the worker, including any in-flight fetch.
+
+#### Refresh timing
+
+On 2026-09-28 both endpoints returned `Cache-Control: s-maxage=86400`, `Age`, `Date`, and `Last-Modified`, without an `ETag` or response `Expires`. Statute uses a valid `max-age` when provided, otherwise a valid `s-maxage` as an **operational scheduling hint**. This shared-cache directive gives no guarantee about continued ownership of the listed addresses. See [HTTP cache semantics](https://www.rfc-editor.org/rfc/rfc9111.html#name-s-maxage).
+
+Otherwise, `Expires` relative to `Date` supplies the lifetime; absent usable lifetime metadata, the default is 24 hours. Malformed, overflowing, or duplicate lifetime directives are skipped in that precedence order. The greater of response `Age` and apparent age from `Date` is subtracted once, including from the default lifetime. The earlier deadline of the two families governs the next fetch. Delays are bounded between five minutes and 24 hours, and `no-cache` or `no-store` selects the five-minute floor. Each refresh downloads and validates both lists; no conditional requests or `304` reuse are implemented.
+
+#### Static overrides
+
+Operators can instead use explicit `TrustedProxy("CIDR", ...)` values. `CloudflareCIDRs()` returns a fresh copy of the embedded fallback without fetching, for deliberately offline or extended static policies:
+
+```go
+trusted := append(statute.CloudflareCIDRs(), "192.0.2.0/24") // replace with your actual proxy range
+policy := statute.TrustedProxy(trusted...).ClientIPHeader("CF-Connecting-IP")
+```
+
+Only add proxies authorized to assert that header. The preset verifies an address range; Cloudflare account or zone ownership requires separate authentication. Untrusted direct clients can still connect, but cannot override their attributed IP through forwarded headers. If another load balancer sits between Cloudflare and Statute, review that direct-peer trust boundary explicitly; do not trust a Cloudflare address merely because it appears in a header.
+
+### Generating the embedded fallback
+
+The fallback is one generated `internal/cloudflare/snapshot.json` artifact containing both lists and their fetch timestamp, embedded into the binary with `go:embed`. Generate it from the live sources before building or releasing:
+
+```sh
+make generate-cloudflare-cidrs
+go build ./...
+```
+
+Generation uses the same bounded fetch and validation as runtime. It writes and syncs a temporary file only after both sources validate, then replaces the complete artifact; a failed fetch leaves the previous fallback untouched. On Unix, replacement is atomic and the containing directory is synced afterward. Directory open, sync (including unsupported-filesystem), or close failures return an error stating that replacement already occurred but durability could not be confirmed; the new complete file stays in place. Other platforms use their native rename semantics without a portable atomicity or directory-durability guarantee. Both generators use this writer. Review and commit the generated diff so ordinary downstream builds embed the reviewed fallback. There is no manually duplicated Go CIDR list.
+
+Ordinary `go build` does **not** execute generators or contact these endpoints. The explicit generation target is build preparation; checked-in fallback data keeps normal builds and tests hermetic. Runtime refresh remains the primary update path, so running applications with the managed policy do **not** require rebuilding to receive new ranges. Rebuilding is necessary only to update the embedded fallback or an explicitly static policy.
+
+`make check-cloudflare-cidrs` remains a read-only live comparison against the embedded fallback. A difference fails with both sets and regeneration instructions. Run it after generation, inspect additions/removals, and run `go test ./...` and `make lint` before publishing an updated bundle.
+
+#### Optional application-owned fallback
+
+`CloudflareTrustedProxy()` works without any generation step in your application. Applications that want control over the fallback's refresh date can generate and embed their own snapshot, independently of the Statute dependency. Vendoring is unnecessary; the generated file belongs to your application.
+
+Place this in your application's package, replacing `vX.Y.Z` with a pinned Statute version that includes the generator:
+
+```go
+package main
+
+import (
+    _ "embed"
+
+    "statute.kjanat.dev"
+)
+
+//go:generate go run statute.kjanat.dev/cmd/cloudflare-snapshot@vX.Y.Z -out cloudflare.json
+
+//go:embed cloudflare.json
+var cloudflareFallback []byte
+
+func cloudflarePolicy() *statute.TrustedProxyConfig {
+    return statute.CloudflareTrustedProxy().FallbackSnapshot(cloudflareFallback)
+}
+```
+
+Pass `cloudflarePolicy()` as the trusted-proxy option on each managed HTTPS listener. Run `go generate ./...` explicitly when you want to refresh the fallback, review and commit `cloudflare.json`, then build normally. The generator fetches both canonical sources within one five-second deadline and replaces the file only after the complete snapshot validates. A failed download preserves the previous file. The output directory must already exist. Keeping the generated file in source control lets ordinary builds remain offline.
+
+The method copies the supplied bytes. `Resolve` strictly validates the JSON schema (`ipv4`, `ipv6`, `fetched_at`) and both address families, and normalizes ordering and the timestamp. Empty, malformed, incomplete, duplicate-field, or unknown-field input fails configuration; explicitly passing `nil` also fails. The option is valid only on `CloudflareTrustedProxy()`.
+
+All managed listeners on one server must select equal effective fallback ranges **and the same fetch-time instant**, because they share one source. JSON whitespace, array order, and equivalent timestamp offsets do not affect equality. An omitted override selects Statute's bundled snapshot, so mixing an override with the default is accepted only when both normalize to the same snapshot. Static `TrustedProxy(...)` listeners remain independent.
+
+An application-owned snapshot changes only the startup fallback. Startup and periodic live refresh still run, failures retain the fallback or last successful pair, and each fresh startup attempt begins with the configured fallback. `CloudflareCIDRs()` continues to return Statute's bundled snapshot. Export includes the normalized configured fallback, and graph identifies its provenance; neither performs a network request.
 
 ## HTTP-01 vs DNS-01: when to use which
 
@@ -197,7 +277,7 @@ A renewal goroutine wakes hourly. Any cert whose leaf expires within 30 days is 
 
 ## CF-Connecting-IP: which header to trust
 
-When `BehindCloudflare()` is enabled, statute checks headers in this order:
+When `BehindCloudflare()` is enabled **without `TrustedProxy`**, statute checks headers in this order:
 
 1. `CF-Connecting-IP` — Cloudflare's primary header for the originating client's IP. Always present on requests via the CF proxy.
 2. `True-Client-IP` — only present on Cloudflare Enterprise plans. Same value as `CF-Connecting-IP` when both are present.
@@ -205,7 +285,7 @@ When `BehindCloudflare()` is enabled, statute checks headers in this order:
 
 `X-Forwarded-For` is deliberately not in the list: without explicit trust configuration it is a client-controlled header, and consulting it would let a direct client dictate the address used for rate limiting, IP lists, and client-IP route matching. Forwarded headers count only under a `TrustedProxy` policy or the Cloudflare pair above.
 
-This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash strategy, and access log all key on the real client IP. If statute receives a request that doesn't come via Cloudflare (someone discovered the origin and connected directly), the CF headers are absent and the code falls back to `r.RemoteAddr` — which is the attacker's real IP. So degraded behaviour is graceful, not insecure.
+Do not assume a direct client omits these headers: it can forge them. On a reachable origin, use the peer-verified `TrustedProxy` composition above so the rate limiter, IP-hash strategy, route/IP checks, and access log cannot be given a forged identity by an untrusted peer.
 
 ## Failure modes
 
@@ -219,9 +299,9 @@ This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash 
 
 **Cert is issued but browsers show a different issuer than expected**: Cloudflare's "Authenticated Origin Pulls" (mTLS) and "Origin CA" (CF-issued cert for edge↔origin) generate certificates that browsers do not trust — only Cloudflare's edge does. statute's autocert path issues real Let's Encrypt certs that are publicly trusted; they are different products. You cannot mix them.
 
-**Rate limiter buckets all clients together**: `BehindCloudflare()` is missing or `CF-Connecting-IP` is empty. Verify the listener actually has `BehindCloudflare()` and that requests are arriving via Cloudflare (not bypassing it via the origin's IP).
+**Rate limiter buckets all clients together**: check the listener's `CloudflareTrustedProxy()` or static `TrustedProxy(...)` policy, its configured `CF-Connecting-IP` header, and whether the direct peer is in the current managed snapshot or explicit static ranges. For managed policies, inspect refresh/fallback warnings for failures and the retained snapshot's date; startup outages can use either the bundled or application-owned fallback. A missing header or newly added Cloudflare range in an old snapshot falls back to the proxy's own address. Confirm that traffic arrives through the expected network path before changing trust.
 
-**`statute_requests_by_status_total{status="200"}` is high but `CF-Connecting-IP` is in the access log as `r.RemoteAddr`**: `BehindCloudflare()` is missing.
+**Access logs attribute requests to proxy addresses**: inspect the same peer/header/snapshot conditions above. `BehindCloudflare()` alone trusts headers listener-wide; a publicly reachable listener needs direct-peer verification.
 
 **HTTP/3 not working**: Cloudflare proxies HTTP/3 to clients but always re-encrypts to origin over HTTP/2 (or HTTP/1.1). The `HTTP3()` option on a behind-CF listener will start a UDP listener that never receives traffic from Cloudflare. The `Alt-Svc` header advertised to browsers is also stripped by Cloudflare. If Cloudflare is your client-facing layer, drop `HTTP3()` from the origin config — Cloudflare's edge speaks HTTP/3 to clients on your behalf.
 

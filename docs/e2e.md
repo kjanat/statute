@@ -2,8 +2,9 @@
 
 The `e2e/` tree runs the compiled Statute binary across real network
 boundaries: separate server, client, and origin processes in Docker
-containers on a private network, in all four server/client topologies
-(`1s1c`, `1s2c`, `2s1c`, `2s2c`). It complements the fast in-process
+containers on a private network. The smoke matrix covers all four server/client
+topologies (`1s1c`, `1s2c`, `2s1c`, `2s2c`); individual regression scenarios
+declare their supported topologies. It complements the fast in-process
 tests — it proves process boundaries, container networking, signal
 handling, multi-instance isolation, and the deployed binary, none of
 which `go test ./...` can.
@@ -145,14 +146,35 @@ so CI can never silently drop declared coverage.
   deployments should shape their routes the same way.
 - **Docker discovery uses the host daemon socket.** Discovered backend
   IPs must be routable from the Statute container, which containers
-  inside a DinD daemon are not. Discovery stays opt-in per label, so
-  the lane's own containers never surface as routes.
+  inside a DinD daemon are not. Every infrastructure service explicitly sets
+  `statute.enable=false` alongside its `statute.e2e` cleanup label: the cleanup
+  label alone would implicitly enable native discovery. A rendered-Compose
+  regression enforces both labels across every rendered topology/overlay
+  combination. That render-only check covers labels and Compose merge behavior;
+  runnable combinations are declared by each scenario. Intentional
+  discovery targets opt in and use project-specific Host and service identities,
+  with matching compiled policy keys. This isolates route selection and workload
+  authority even when parallel scenarios observe the same daemon. Content probes
+  use the project's DNS alias; unmatched-Host probes must receive 404.
+- **Docker scenarios use one Statute server.** The `docker`, `workload`, and
+  `workload-concurrency` fixtures configure only `statute-1`; their regressions
+  run `1s1c`. The harness rejects other server lists and explicit `statute-2`
+  startup requests before creating artifacts or invoking Compose. `1s2c` is
+  permitted because client count leaves lifecycle ownership unchanged; current
+  regression coverage remains `1s1c`. One process must own each governed
+  container, even with separate mutation-storage volumes. Observation-only
+  discovery can have multiple readers, but these fixtures configure one server.
 - **Workload discovery is event-only.** The `workload` scenario leaves
   `Refresh` unset. `TestRegression_DockerOnDemandWorkload` proves adoption,
   idle shutdown, demand activation after an external stop, and adoption after
-  an external start against the real daemon. It waits for transition logs before
-  demand; network
-  responses prove serving and Docker inspection proves idle shutdown. The
+  an external start against the real daemon. It first creates a stopped container
+  and waits for dormant discovery, then starts it externally. Private diagnostics
+  must confirm adoption and readiness before any content request. Exact phase and
+  counter checkpoints separate every subsequent lifecycle action, including stop
+  settlement before demand or another external start. Content requests are single
+  deliberate serving assertions: polling a routed URL would itself activate a
+  dormant workload and race observe-only adoption. Docker inspection additionally
+  proves idle shutdown; the final JSON/Prometheus counter checks remain intact. The
   listing/subscription race and ambiguous-stop interleavings use deterministic
   in-process provider tests.
 

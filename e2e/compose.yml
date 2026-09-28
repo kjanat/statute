@@ -28,7 +28,7 @@ services:
     networks: [mesh]
     volumes:
       - ./testdata/certs:/certs:ro
-    labels: { statute.e2e: "1" }
+    labels: { statute.e2e: "1", statute.enable: "false" }
 
   origin-2:
     image: ${STATUTE_E2E_IMAGE}
@@ -39,7 +39,7 @@ services:
     networks: [mesh]
     volumes:
       - ./testdata/certs:/certs:ro
-    labels: { statute.e2e: "1" }
+    labels: { statute.e2e: "1", statute.enable: "false" }
 
   statute-1:
     image: ${STATUTE_E2E_IMAGE}
@@ -47,14 +47,16 @@ services:
     environment:
       STATUTE_SCENARIO: ${STATUTE_SCENARIO}
       STATUTE_NODE: "1"
-    networks: [mesh]
+    networks:
+      mesh:
+        aliases: ["${COMPOSE_PROJECT_NAME}.test"]
     # Isolated writable state per node; shared ACME storage between
     # nodes is deliberately not a thing until a future feature defines
     # safe multi-instance ownership.
     volumes:
       - statute-1-state:/var/lib/statute
       - ./testdata/certs:/certs:ro
-    labels: { statute.e2e: "1" }
+    labels: { statute.e2e: "1", statute.enable: "false" }
 
   # Clients are one-shot actors the harness starts with `compose run`;
   # they are never part of `up`.
@@ -67,4 +69,4 @@ services:
     volumes:
       - ${E2E_REPORTS}:/reports
       - ./testdata/certs:/certs:ro
-    labels: { statute.e2e: "1" }
+    labels: { statute.e2e: "1", statute.enable: "false" }
