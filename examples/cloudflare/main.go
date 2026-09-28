@@ -1,15 +1,10 @@
 // Example: a statute deployment fronted by Cloudflare with origin AutoTLS.
 //
-// Cloudflare terminates TLS at its edge and re-encrypts to the origin. This
-// origin runs autocert with the HTTP-01 challenge (TLS-ALPN-01 cannot work
-// behind Cloudflare because the proxy strips custom ALPN). The
-// BehindCloudflare() option does two things:
+// Automatic ACME still attempts TLS-ALPN-01 before HTTP-01 behind Cloudflare.
+// Pin HTTP01() to avoid that failed attempt; see docs/cloudflare.md.
 //
-//   - Drops "acme-tls/1" from the listener's ALPN advertisement so autocert
-//     does not choose TLS-ALPN-01 and quietly fail.
-//   - Marks requests on this listener as trusted-proxy so CF-Connecting-IP
-//     and True-Client-IP become the authoritative client IP for rate
-//     limiting, access logs, and IP-hash load balancing.
+// The separate TrustedProxy policy accepts CF-Connecting-IP only from
+// direct peers in the bundled Cloudflare ranges. Rebuild after range updates.
 //
 // Cloudflare-side prerequisites:
 //   - SSL/TLS mode: Full (Strict).
@@ -30,6 +25,7 @@ func main() {
 					Storage("/var/lib/statute/certs"),
 				statute.HTTP2(),
 				statute.BehindCloudflare(),
+				statute.TrustedProxy(statute.CloudflareCIDRs()...).ClientIPHeader("CF-Connecting-IP"),
 			),
 		},
 
@@ -51,8 +47,8 @@ func main() {
 			statute.Match("/api/*").ProxyTo("api").
 				With(
 					// RateLimit keys on the originating client IP. With
-					// BehindCloudflare() this is CF-Connecting-IP, not the
-					// proxy's address — so each real client gets its own bucket.
+					// TrustedProxy this is CF-Connecting-IP only for a verified
+					// proxy peer; direct callers cannot forge their bucket.
 					statute.RateLimit("100/min").Per(statute.ClientIP),
 					statute.Timeout("30s"),
 				),

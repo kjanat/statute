@@ -15,6 +15,7 @@ statute.HTTPS(":443",
         HTTP01(),
     statute.HTTP2(),
     statute.BehindCloudflare(),
+    statute.TrustedProxy(statute.CloudflareCIDRs()...).ClientIPHeader("CF-Connecting-IP"),
 )
 ```
 
@@ -30,6 +31,8 @@ statute.HTTPS(":443",
         Storage("/var/lib/statute/certs").
         CloudflareDNS01(token).Zone(zoneID),
     statute.HTTP2(),
+    statute.BehindCloudflare(),
+    statute.TrustedProxy(statute.CloudflareCIDRs()...).ClientIPHeader("CF-Connecting-IP"),
 )
 ```
 
@@ -54,18 +57,50 @@ For request handling: every request to the origin arrives via Cloudflare's IP ra
    To skip the burned attempt entirely, pin the source with `.HTTP01()`. A pinned source issues through statute's in-tree ACME manager, which only ever attempts HTTP-01: no `acme-tls/1` advertisement, no failed validation, no extra order. Behind Cloudflare that is the recommended configuration; `BehindCloudflare()` still matters for client-IP attribution, and for any unpinned source on the listener.
 2. **Tags the request context.** A small middleware sets a context key on every request received on this listener. `clientIP()` reads it and returns `CF-Connecting-IP` (or `True-Client-IP` as a fallback) instead of `r.RemoteAddr` and `X-Forwarded-For`. CF-Connecting-IP is populated by Cloudflare's edge and is not user-controllable on the path through the proxy.
 
-The option does not enforce that the request actually came from a Cloudflare IP range. Adding that would require keeping the CF IP list current; a stale list can DOS the deployment if CF rotates ranges, so we instead trust the network path the operator has configured.
+The option alone does not verify that the request came from a Cloudflare IP range. Use the separate `TrustedProxy` policy below to verify the direct peer; `CloudflareCIDRs()` supplies a release-bundled snapshot for that policy.
 
 **This means**: if the listener is reachable directly (not only via Cloudflare), `BehindCloudflare()` alone becomes a security hole. Any client can send a forged `CF-Connecting-IP` header and dictate the IP statute uses for rate limiting and access logging. For that shared-listener topology, keep `BehindCloudflare()` — it still owns the ACME behaviour above — and add a peer-scoped trust policy beside it:
 
 ```go
 statute.HTTPS(":443",
     statute.BehindCloudflare(),
-    statute.TrustedProxy(cfRanges...).ClientIPHeader("CF-Connecting-IP"),
+    statute.TrustedProxy(statute.CloudflareCIDRs()...).ClientIPHeader("CF-Connecting-IP"),
 )
 ```
 
-`TrustedProxy` takes precedence over `BehindCloudflare()`'s blanket header trust wherever the client IP is resolved: the CF headers count only when the connection's direct peer is inside the declared Cloudflare ranges, and every other peer is attributed by its own address, forged headers ignored. The ranges are static CIDRs you maintain (Cloudflare publishes them at cloudflare.com/ips); statute deliberately does not fetch the list, since a stale auto-refreshed list can take a deployment down when ranges rotate.
+`TrustedProxy` takes precedence over `BehindCloudflare()`'s blanket header trust wherever the client IP is resolved: the configured header counts only when the connection's direct peer is inside the declared Cloudflare ranges, and every other peer is attributed by its own address, forged headers ignored. With this policy, a missing `CF-Connecting-IP` falls back to the peer; `True-Client-IP` and `X-Forwarded-For` remain ignored.
+
+### Bundled Cloudflare ranges
+
+`CloudflareCIDRs()` returns a fresh `[]string` containing both published IPv4 and IPv6 proxy ranges. It does not enable trust, select a client-IP header, or change TLS/ACME by itself. The snapshot was checked on **2026-09-28** against the exact [IPv4](https://www.cloudflare.com/ips-v4/#) and [IPv6](https://www.cloudflare.com/ips-v6/#) source URLs (15 IPv4 and 7 IPv6 prefixes).
+
+There is no network fetch at startup or per request, and no background refresh. Updates ship in Statute releases; **already compiled applications must update their dependency, rebuild, and redeploy** to use a newer snapshot. Newly added Cloudflare ranges remain untrusted in an old binary, so client attribution falls back to the peer address. Removed ranges remain trusted in an old binary, potentially extending trust beyond Cloudflare's current set. Review both additions and removals.
+
+Operators can replace the snapshot with explicit `TrustedProxy("CIDR", ...)` values, or extend a private copy when another known direct proxy overwrites the same client-IP header:
+
+```go
+trusted := append(statute.CloudflareCIDRs(), "192.0.2.0/24") // replace with your actual proxy range
+policy := statute.TrustedProxy(trusted...).ClientIPHeader("CF-Connecting-IP")
+```
+
+Only add proxies authorized to assert that header. The preset verifies an address range; Cloudflare account or zone ownership requires separate authentication. Untrusted direct clients can still connect, but cannot override their attributed IP through forwarded headers. If another load balancer sits between Cloudflare and Statute, review that direct-peer trust boundary explicitly; do not trust a Cloudflare address merely because it appears in a header.
+
+### Maintaining the bundled snapshot
+
+Before releasing Statute, run this explicit, read-only network check from the repository root:
+
+```sh
+make check-cloudflare-cidrs
+```
+
+The checker uses the exact source URLs above, with bounded response size and timeout. It refuses redirects, HTTP errors, empty/malformed lists, noncanonical prefixes, wrong address families, and duplicates; a changed list fails with the bundled and published values. It never updates trust policy automatically. This target is deliberately outside ordinary tests and PR checks so those do not depend on mutable external responses.
+
+When the check finds a change:
+
+1. Verify the published additions/removals and review their effect on trusted direct peers.
+2. Update `cloudflarecidrs.go` and the captured `testdata/cloudflare/ips-v4.txt` and `ips-v6.txt` fixtures together, preserving source order. Fixtures normalize only the final newline. Update their provenance record, snapshot date here and in godoc, and the changelog.
+3. Run `go test ./...`, `make lint`, and the live check again. Offline tests compare every bundled entry with the captured lists; live comparison remains an explicit maintenance operation.
+4. Release the reviewed update and tell operators to rebuild/redeploy, or use explicitly reviewed CIDRs for a controlled rollout.
 
 ## HTTP-01 vs DNS-01: when to use which
 
@@ -197,7 +232,7 @@ A renewal goroutine wakes hourly. Any cert whose leaf expires within 30 days is 
 
 ## CF-Connecting-IP: which header to trust
 
-When `BehindCloudflare()` is enabled, statute checks headers in this order:
+When `BehindCloudflare()` is enabled **without `TrustedProxy`**, statute checks headers in this order:
 
 1. `CF-Connecting-IP` — Cloudflare's primary header for the originating client's IP. Always present on requests via the CF proxy.
 2. `True-Client-IP` — only present on Cloudflare Enterprise plans. Same value as `CF-Connecting-IP` when both are present.
@@ -205,7 +240,7 @@ When `BehindCloudflare()` is enabled, statute checks headers in this order:
 
 `X-Forwarded-For` is deliberately not in the list: without explicit trust configuration it is a client-controlled header, and consulting it would let a direct client dictate the address used for rate limiting, IP lists, and client-IP route matching. Forwarded headers count only under a `TrustedProxy` policy or the Cloudflare pair above.
 
-This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash strategy, and access log all key on the real client IP. If statute receives a request that doesn't come via Cloudflare (someone discovered the origin and connected directly), the CF headers are absent and the code falls back to `r.RemoteAddr` — which is the attacker's real IP. So degraded behaviour is graceful, not insecure.
+Do not assume a direct client omits these headers: it can forge them. On a reachable origin, use the peer-verified `TrustedProxy` composition above so the rate limiter, IP-hash strategy, route/IP checks, and access log cannot be given a forged identity by an untrusted peer.
 
 ## Failure modes
 
@@ -219,9 +254,9 @@ This ordering means: on a real Cloudflare deployment, the rate limiter, IP-hash 
 
 **Cert is issued but browsers show a different issuer than expected**: Cloudflare's "Authenticated Origin Pulls" (mTLS) and "Origin CA" (CF-issued cert for edge↔origin) generate certificates that browsers do not trust — only Cloudflare's edge does. statute's autocert path issues real Let's Encrypt certs that are publicly trusted; they are different products. You cannot mix them.
 
-**Rate limiter buckets all clients together**: `BehindCloudflare()` is missing or `CF-Connecting-IP` is empty. Verify the listener actually has `BehindCloudflare()` and that requests are arriving via Cloudflare (not bypassing it via the origin's IP).
+**Rate limiter buckets all clients together**: check the listener's `TrustedProxy` policy, its configured `CF-Connecting-IP` header, and whether the direct peer is in the bundled or explicit ranges. A missing header or newly added Cloudflare range in an old snapshot falls back to the proxy's own address. Confirm that traffic arrives through the expected network path before changing trust.
 
-**`statute_requests_by_status_total{status="200"}` is high but `CF-Connecting-IP` is in the access log as `r.RemoteAddr`**: `BehindCloudflare()` is missing.
+**Access logs attribute requests to proxy addresses**: inspect the same peer/header/snapshot conditions above. `BehindCloudflare()` alone trusts headers listener-wide; a publicly reachable listener needs direct-peer verification.
 
 **HTTP/3 not working**: Cloudflare proxies HTTP/3 to clients but always re-encrypts to origin over HTTP/2 (or HTTP/1.1). The `HTTP3()` option on a behind-CF listener will start a UDP listener that never receives traffic from Cloudflare. The `Alt-Svc` header advertised to browsers is also stripped by Cloudflare. If Cloudflare is your client-facing layer, drop `HTTP3()` from the origin config — Cloudflare's edge speaks HTTP/3 to clients on your behalf.
 
