@@ -75,6 +75,7 @@ type dockerProvider struct {
 	// retiredMutations keep predecessor workloads alive while their issued
 	// stops settle independently from a successor using the same service key.
 	retiredMutations []*workload
+	diagnostics      workloadDiagnostics
 }
 
 // dockerRun owns one provider generation's watcher, reconcile loop, and

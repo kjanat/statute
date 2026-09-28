@@ -102,8 +102,9 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		return nil, err
 	}
 
-	if cfg.Observability.Metrics.Enabled {
-		s.metricsServer = s.buildMetricsServer(cfg.Observability.Metrics)
+	s.metricsServer, err = s.buildMetricsServer(cfg.Observability.Metrics)
+	if err != nil {
+		return nil, err
 	}
 
 	ok = true
@@ -322,18 +323,24 @@ func (s *server) applyListenerTLS(hs *http.Server, l *resolved.Listener) error {
 	return nil
 }
 
-func (s *server) buildMetricsServer(m resolved.Metrics) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc(m.Path, func(w http.ResponseWriter, r *http.Request) {
+func (s *server) buildMetricsServer(m resolved.Metrics) (*http.Server, error) {
+	if !m.Enabled {
+		return nil, nil
+	}
+	metrics := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		s.stats.WritePrometheus(w)
+		writeWorkloadPrometheus(w, s.docker.snapshotWorkloads())
 	})
-	registerPprof(mux)
+	mux, err := newMetricsMux(m.Path, metrics, workloadSnapshotHandler(s.docker))
+	if err != nil {
+		return nil, err
+	}
 	return &http.Server{
 		Addr:              m.Addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-	}
+	}, nil
 }
 
 // buildHealthServer builds one attempt's fresh health http.Server: an exact-path handler (no ServeMux subtrees) answering liveness at h.Path, readiness at h.Path+"/ready", 404 otherwise, with neither metrics nor pprof mounted.

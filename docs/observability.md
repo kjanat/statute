@@ -84,23 +84,55 @@ Observability: statute.Observability{
 }
 ```
 
-Prometheus exposition format on a separate listener. The metrics listener is intended to be **private** — bind it to a loopback address or a private interface and scrape it from your monitoring system. Do not expose it publicly: the same listener exposes `pprof` (see below).
+Prometheus exposition format on a separate listener. The metrics listener is intended to be **private** — bind it to a loopback address or a private interface and scrape it from your monitoring system. Do not expose it publicly: the same unauthenticated listener exposes `pprof` and workload diagnostics (see below). Statute does not enforce a private bind address.
 
 ### Metric names
 
-| Name                                             | Type    | Description                                       |
-| ------------------------------------------------ | ------- | ------------------------------------------------- |
-| `statute_requests_total`                         | counter | Total HTTP requests handled across all listeners. |
-| `statute_requests_by_status_total{status="..."}` | counter | Requests broken down by response status code.     |
-| `statute_request_duration_microseconds_sum`      | counter | Sum of request durations in microseconds.         |
-| `statute_request_duration_microseconds_count`    | counter | Count of observed requests.                       |
+| Name                                                | Type    | Description                                                                                                               |
+| --------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `statute_requests_total`                            | counter | Total HTTP requests handled across all listeners.                                                                         |
+| `statute_requests_by_status_total{status="..."}`    | counter | Requests broken down by response status code.                                                                             |
+| `statute_request_duration_microseconds_sum`         | counter | Sum of request durations in microseconds.                                                                                 |
+| `statute_request_duration_microseconds_count`       | counter | Count of observed requests.                                                                                               |
+| `statute_docker_workload_activations_total`         | counter | Accepted activation/readiness attempts, including observe-only adoption.                                                  |
+| `statute_docker_workload_activation_failures_total` | counter | Failed start/readiness attempts; excludes cancellation, supersession, and stale observe-only stopped observations.        |
+| `statute_docker_workload_idle_stops_total`          | counter | Successfully settled idle shutdowns; not retries, rejections, or cleanup stops.                                           |
+| `statute_docker_workload_external_starts_total`     | counter | Running observations initiating adoption/repair readiness, including initial discovery.                                   |
+| `statute_docker_workload_external_stops_total`      | counter | Observed stops of ready or stop-pending workloads, not repeated listings or owned-stop settlement.                        |
+| `statute_docker_workload_phase`                     | gauge   | Current owner phase: dormant=0, starting=1, ready=2, stop-pending=3, stop-issued=4, stop-unknown=5, failed=6.             |
+| `statute_docker_workload_waiters`                   | gauge   | Requests waiting for the current activation; excludes issued-stop waiters.                                                |
+| `statute_docker_workload_last_activation_seconds`   | gauge   | Current incarnation's last completed activation/readiness duration, including cancelled attempts; zero before completion. |
+| `statute_docker_workload_retired`                   | gauge   | Whether the current registered owner has lost lifecycle authority (0 or 1).                                               |
+| `statute_docker_workload_retired_owners`            | gauge   | Retained retired owners, including unresolved predecessor mutations.                                                      |
+| `statute_docker_workload_orphaned_mutations`        | gauge   | Recovered mutation owners without a currently configured service; no labels.                                              |
 
 Average request duration is `sum / count`. Histogram buckets are not exported — for percentile queries use OpenTelemetry tracing or a richer metrics backend. The current metrics surface is intentionally minimal; deployments that need more should swap the in-process `stats` for the [prometheus/client_golang](https://github.com/prometheus/client_golang) library and define their own histograms.
+
+Workload series have only a `service` label drawn from the compiled `Docker().Workload(...)` map, except the unlabelled orphan count. There are no container-ID, incarnation, phase-text, or error-text labels. Service counters start at zero and accumulate for the provider object's lifetime, including provider stop/start within one process. They reset when that object/process is replaced and are not persisted. Container replacement and removal of settled retired owners never decrease them. A recovered idle stop that successfully settles counts in this process if its service remains configured; recovery does not invent historical activation counts.
+
+The phase, waiter, duration, and retired gauges describe only the current registered owner. They are absent before an owner exists; a retained retired predecessor never emits duplicate current-owner samples. `retired_owners` counts all retained retired owners, including a retired current entry. External transition counters describe observations, not which actor caused them. Existing request metrics retain their request-level semantics and do not count auxiliary metrics/diagnostic reads.
+
+### Workload snapshots
+
+`GET /debug/workloads` (also `HEAD`) returns JSON on the metrics listener whenever `Prometheus(...)` is enabled. It is not mounted on content or health listeners and has `Cache-Control: no-store`. The exact path is reserved: a conflicting metrics pattern is a resolve/construction error, not a startup panic. Other custom metrics paths, including `/` or a subtree, continue to work; the exact diagnostic handler takes precedence.
+
+The response has `services` and `orphaned_mutations` arrays, both empty when Docker is absent. Each configured service has `service`, cumulative `activation_attempts`, `activation_failures`, `idle_stops`, `external_starts`, `external_stops`, and an `owners` array. An owner contains:
+
+- `incarnation`: opaque provider-local binding identity, not a Docker container ID; do not correlate it across processes.
+- `current`: whether this is the service's registered owner rather than a detached predecessor.
+- `phase`, `retired`, and `activation_waiters`: a coherent copy of current lifecycle state.
+- `last_activation_seconds`: the last completed current-incarnation attempt's duration, not an in-progress timer.
+- `last_failure_reason` and optional `last_failure_at` (UTC RFC 3339): the last actual failure; success preserves that history until the binding changes.
+
+Failure reasons are a closed set: `start-failed`, `start-timeout`, `readiness-timeout`, `stopped-before-ready`, or `activation-failed`; an empty string means no recorded failure. Raw Docker errors, endpoints, container names/IDs, labels, backend addresses, credentials, and policy objects are never included. The configured service name is the only service identity exposed. Restored owners with no current code-owned service grant appear only in `orphaned_mutations`, without their historical service name.
+
+Generation replacement and retirement/regrant of the same binding preserve incarnation details. A different container gets fresh duration/failure details even when its service name is reused. An unresolved predecessor remains separately visible until canonical settlement and subsequent reconciliation remove it; counters survive that removal. Snapshots copy registry membership, owner state, and service totals under their owning locks, then encode without holding lifecycle locks. Reads never trigger Docker calls, readiness, reconciliation, or lifecycle transitions. Snapshots are live diagnostics, not a durable history; the metrics listener drains before provider shutdown completes.
 
 ### What to alert on
 
 The minimum-useful alert set:
 
+- **Workload failures**: increasing `statute_docker_workload_activation_failures_total`, sustained activation waiters, or phase `5` (unresolved stop). Inspect `/debug/workloads` for safe reasons and retired owners. A nonzero `statute_docker_workload_orphaned_mutations` means recovered ownership still needs convergence despite the removed grant.
 - **Error rate**: `rate(statute_requests_by_status_total{status=~"5.."}[5m]) / rate(statute_requests_total[5m]) > 0.01`. Page when 5xx exceeds 1% over a 5-minute window.
 - **Availability of upstreams**: best detected from access log (502 spike) since active health checks demote silently. Pair with backend-side metrics if you have them.
 - **Latency**: `rate(statute_request_duration_microseconds_sum[5m]) / rate(statute_request_duration_microseconds_count[5m])` against a per-route SLO. Average latency is a weak signal — prefer p95/p99 from traces.

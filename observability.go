@@ -103,8 +103,9 @@ type prometheusMetrics struct {
 
 func (prometheusMetrics) statuteMetrics() {}
 
-// Prometheus exposes process and request metrics on the given address and
-// path, formatted in the Prometheus exposition format.
+// Prometheus exposes request and Docker workload metrics at the given address
+// and path. Bind it privately: this unauthenticated listener also serves pprof
+// and the JSON workload snapshot at /debug/workloads.
 func Prometheus(addr, path string) Metrics {
 	return prometheusMetrics{addr: addr, path: path}
 }

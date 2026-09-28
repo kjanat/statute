@@ -209,6 +209,7 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	pollUntil(t, 30*time.Second, "idle stop after external start", func() (bool, string) {
 		return !running(), "container still running"
 	})
+	assertWorkloadDiagnostics(ctx, t, r, name)
 }
 
 // TestRegression_ACMEHTTP01 proves a hermetic ACME issuance: Pebble as

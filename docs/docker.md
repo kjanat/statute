@@ -205,6 +205,25 @@ How it behaves:
 Defaults: `IdleAfter` 15m, `StartTimeout` 30s, `ReadyTimeout` 2m,
 `BackoffBase` 5s, `BackoffCap` 5m.
 
+### Lifecycle diagnostics
+
+When `Observability.Metrics` is enabled, the existing private metrics listener
+also serves `GET /debug/workloads` and `statute_docker_workload_*` metrics. These
+show lifecycle phase, activation attempts/failures, readiness duration, activation
+waiters, successful idle shutdowns, externally observed transitions, and safe
+failure codes. They are not exposed on content routes or the health listener.
+Keep this unauthenticated operational listener private.
+
+Counters are cumulative per configured service for the provider object's lifetime.
+A different container starts fresh duration and
+failure details; same-binding retirement/regrant retains them. Unsettled retired
+mutation predecessors appear separately with opaque local incarnation identifiers,
+and removing a settled predecessor does not erase service counters. Recovery
+restores outstanding mutation ownership with zero historical counters; an unconfigured recovered
+owner is shown without its old service name. See
+[workload snapshots](observability.md#workload-snapshots) for the JSON fields,
+metric names, exact counting rules, and retention limits.
+
 ### External lifecycle actors
 
 Statute is the **single lifecycle authority** for eligible containers governed by

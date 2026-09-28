@@ -464,6 +464,24 @@ second `Start` is insufficient.
 
 ## Observability
 
+Docker workload diagnostics are owned by the Docker layer. Provider-lifetime
+service counters are bounded by the compiled workload policy map and survive
+container replacement, grant retirement, and retired-owner pruning. Duration and
+safe failure details instead belong to the immutable binding: same-binding
+retirement/regrant preserves them, while another container starts fresh. Retained
+mutation predecessors stay separately visible; restored owners without a current
+configured service are reported without their historical service name.
+
+The existing metrics listener exposes these counters and a read-only JSON snapshot
+at `/debug/workloads`. Observability consumes copies, never lifecycle authority.
+Snapshot lock order is registry membership, all included owner mutexes, then
+diagnostic totals; lifecycle writers already holding one owner take only totals.
+No encoding or network I/O holds those locks. No raw Docker identity, endpoint,
+label, policy, or error text crosses this boundary. The listener remains an
+unauthenticated operational surface that must be bound privately; health and
+content listeners gain no diagnostics. The resolved model, export, and graph
+continue to describe only static policy.
+
 Listener-level observability wraps the routed content path. Access logging and
 metrics use the final response status, including handlers that emit informational
 1xx responses before the final status.
