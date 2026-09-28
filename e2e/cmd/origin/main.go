@@ -28,6 +28,7 @@ func main() {
 	id := envDefault("ORIGIN_ID", "origin")
 	addr := envDefault("ORIGIN_ADDR", ":7000")
 	o := newOrigin(id)
+	o.healthy = os.Getenv("ORIGIN_INITIAL_HEALTH") != "down"
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           o,

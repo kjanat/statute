@@ -2,7 +2,11 @@
 
 package main
 
-import statute "statute.kjanat.dev"
+import (
+	"os"
+
+	statute "statute.kjanat.dev"
+)
 
 // acmeHTTP01Config issues a real certificate for proxy.e2e.test from
 // Pebble over the HTTP-01 challenge, hermetically: the Directory knob
@@ -82,6 +86,20 @@ func workloadConfig(string) statute.Config {
 		Defaults:      e2eDefaults(),
 		Observability: observability,
 		Shutdown:      e2eShutdown(),
+	}
+}
+
+// workloadConcurrencyConfig holds cold traffic behind an explicitly controlled
+// HTTP readiness gate while the recorder observes real Docker start requests.
+func workloadConcurrencyConfig(string) statute.Config {
+	observability := e2eObservability()
+	observability.Metrics = statute.Prometheus(":9090", "/metrics")
+	return statute.Config{
+		Listeners: statute.Listeners{statute.HTTP(":8080")},
+		Docker: statute.Docker().Endpoint("tcp://dockerproxy:2375").Storage("/var/lib/statute/docker").Workload(os.Getenv("STATUTE_WORKLOAD_SERVICE"), statute.WorkloadPolicy{
+			IdleAfter: "5m", ReadyTimeout: "1m", Readiness: statute.HTTPReadiness("/health"),
+		}),
+		Defaults: e2eDefaults(), Observability: observability, Shutdown: e2eShutdown(),
 	}
 }
 

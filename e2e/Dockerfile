@@ -16,10 +16,12 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -tags e2e -trimpath -ldflags="-s -w" -o /out/statute ./e2e/cmd/statute \
     && CGO_ENABLED=0 go build -tags e2e -trimpath -ldflags="-s -w" -o /out/origin ./e2e/cmd/origin \
-    && CGO_ENABLED=0 go build -tags e2e -trimpath -ldflags="-s -w" -o /out/client ./e2e/cmd/client
+    && CGO_ENABLED=0 go build -tags e2e -trimpath -ldflags="-s -w" -o /out/client ./e2e/cmd/client \
+    && CGO_ENABLED=0 go build -tags e2e -trimpath -ldflags="-s -w" -o /out/dockerproxy ./e2e/cmd/dockerproxy
 
 FROM gcr.io/distroless/static-debian12:latest@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2
 COPY --from=builder /out/statute /statute
 COPY --from=builder /out/origin /origin
 COPY --from=builder /out/client /client
+COPY --from=builder /out/dockerproxy /dockerproxy
 ENTRYPOINT ["/statute"]
