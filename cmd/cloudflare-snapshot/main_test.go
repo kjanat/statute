@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -80,16 +81,27 @@ func TestExternalConsumer(t *testing.T) {
 	if err := run(t.Context(), fixtureClient(t, false), []string{"-out", filepath.Join(dir, "cloudflare.json")}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(dir, "go.mod"), []byte("module consumer.example/app\n\ngo 1.27.0\n\nrequire statute.kjanat.dev v0.0.0\n\nreplace statute.kjanat.dev => "+root+"\n"))
+	writeFile(t, filepath.Join(dir, "go.mod"), consumerModule(t, root))
 	writeFile(t, filepath.Join(dir, "go.sum"), readFile(t, filepath.Join(root, "go.sum")))
 	writeFile(t, filepath.Join(dir, "main.go"), []byte(consumerSource))
-	cmd := exec.CommandContext(t.Context(), testGoBinary(t), "run", "-mod=mod", ".") //nolint:gosec // G204: trusted test toolchain path; fixed arguments keep the external consumer offline.
+	cmd := exec.CommandContext(t.Context(), testGoBinary(t), "run", "-mod=readonly", ".") //nolint:gosec // G204: trusted test toolchain path; fixed arguments keep the external consumer offline.
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off", "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local")
 	output, err := cmd.CombinedOutput()
 	if err != nil || strings.TrimSpace(string(output)) != "192.0.2.0/24" {
 		t.Fatalf("external consumer: %v\n%s", err, output)
 	}
+}
+
+// consumerModule shares the outer suite's pinned dependency graph so an offline
+// consumer needs only metadata acquired while building that suite.
+func consumerModule(t *testing.T, root string) []byte {
+	t.Helper()
+	body, ok := strings.CutPrefix(string(readFile(t, filepath.Join(root, "go.mod"))), "module statute.kjanat.dev\n")
+	if !ok {
+		t.Fatal("unexpected source module directive")
+	}
+	return fmt.Appendf(nil, "module consumer.example/app\n%s\nrequire statute.kjanat.dev v0.0.0\nreplace statute.kjanat.dev => %q\n", body, root)
 }
 
 func testGoBinary(t *testing.T) string {
