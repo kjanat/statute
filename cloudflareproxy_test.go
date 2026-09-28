@@ -141,7 +141,7 @@ func TestCloudflareTrustedProxyFallbackWarning(t *testing.T) {
 	}
 	run := source.start()
 	run.stop()
-	if !slices.Equal(source.current.Load().prefixes, mustParsePrefixes(CloudflareCIDRs())) {
+	if !slices.Equal(source.current.Load().prefixes, mustParsePrefixes(cloudflare.Bundled().Normalized().CIDRs())) {
 		t.Fatal("initial failure did not preserve complete bundled fallback")
 	}
 	if text := logs.String(); !strings.Contains(text, "test provider outage") || !strings.Contains(text, cloudflare.Bundled().FetchedAt.Format(time.RFC3339)) {

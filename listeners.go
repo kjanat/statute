@@ -1,5 +1,7 @@
 package statute
 
+import "bytes"
+
 // Listener is a surface listener declaration. Construct via HTTP or HTTPS.
 type Listener struct {
 	addr     string
@@ -288,22 +290,35 @@ func HTTP3(addr string) ListenerOption { return http3Option{addr: addr} }
 func (h http3Option) applyListener(l *Listener) { l.http3Addr = h.addr }
 
 // TrustedProxyConfig marks CIDR ranges whose members may assert the real
-// client IP through a forwarded header. Build it with TrustedProxy.
+// client IP through a forwarded header. Build it with TrustedProxy or
+// CloudflareTrustedProxy.
 type TrustedProxyConfig struct {
-	cidrs      []string
-	header     string
-	cloudflare bool
+	cidrs            []string
+	header           string
+	cloudflare       bool
+	fallbackSnapshot []byte
+	fallbackSet      bool
 }
 
 // CloudflareTrustedProxy trusts Cloudflare's published proxy ranges and reads
 // CF-Connecting-IP from matching direct peers. Start fetches the current ranges;
 // the server refreshes them periodically and retains the last good snapshot.
-// A failed initial fetch uses the release-bundled CloudflareCIDRs snapshot.
+// A failed initial fetch uses CloudflareCIDRs unless FallbackSnapshot is supplied.
 //
 // ClientIPHeader may override the header independently on each listener.
 // BehindCloudflare remains a separate TLS/ACME and legacy header-trust option.
 func CloudflareTrustedProxy() *TrustedProxyConfig {
 	return &TrustedProxyConfig{cloudflare: true, header: "CF-Connecting-IP"}
+}
+
+// FallbackSnapshot replaces the bundled startup fallback with a generated JSON
+// snapshot embedded by the caller. The bytes are copied immediately; Resolve
+// validates them and rejects incompatible fallbacks across managed listeners.
+// This option is valid only on CloudflareTrustedProxy.
+func (t *TrustedProxyConfig) FallbackSnapshot(snapshot []byte) *TrustedProxyConfig {
+	t.fallbackSnapshot = bytes.Clone(snapshot)
+	t.fallbackSet = true
+	return t
 }
 
 // TrustedProxy trusts the given CIDR ranges as forwarding proxies on this

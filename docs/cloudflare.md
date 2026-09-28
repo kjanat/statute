@@ -114,6 +114,39 @@ Ordinary `go build` does **not** execute generators or contact these endpoints. 
 
 `make check-cloudflare-cidrs` remains a read-only live comparison against the embedded fallback. A difference fails with both sets and regeneration instructions. Run it after generation, inspect additions/removals, and run `go test ./...` and `make lint` before publishing an updated bundle.
 
+#### Optional application-owned fallback
+
+`CloudflareTrustedProxy()` works without any generation step in your application. Applications that want control over the fallback's refresh date can generate and embed their own snapshot, independently of the Statute dependency. Vendoring is unnecessary; the generated file belongs to your application.
+
+Place this in your application's package, replacing `vX.Y.Z` with a pinned Statute version that includes the generator:
+
+```go
+package main
+
+import (
+    _ "embed"
+
+    "statute.kjanat.dev"
+)
+
+//go:generate go run statute.kjanat.dev/cmd/cloudflare-snapshot@vX.Y.Z -out cloudflare.json
+
+//go:embed cloudflare.json
+var cloudflareFallback []byte
+
+func cloudflarePolicy() *statute.TrustedProxyConfig {
+    return statute.CloudflareTrustedProxy().FallbackSnapshot(cloudflareFallback)
+}
+```
+
+Pass `cloudflarePolicy()` as the trusted-proxy option on each managed HTTPS listener. Run `go generate ./...` explicitly when you want to refresh the fallback, review and commit `cloudflare.json`, then build normally. The generator fetches both canonical sources within one five-second deadline and replaces the file only after the complete snapshot validates. A failed download preserves the previous file. The output directory must already exist. Keeping the generated file in source control lets ordinary builds remain offline.
+
+The method copies the supplied bytes. `Resolve` strictly validates the JSON schema (`ipv4`, `ipv6`, `fetched_at`) and both address families, and normalizes ordering and the timestamp. Empty, malformed, incomplete, duplicate-field, or unknown-field input fails configuration; explicitly passing `nil` also fails. The option is valid only on `CloudflareTrustedProxy()`.
+
+All managed listeners on one server must select equal effective fallback ranges **and the same fetch-time instant**, because they share one source. JSON whitespace, array order, and equivalent timestamp offsets do not affect equality. An omitted override selects Statute's bundled snapshot, so mixing an override with the default is accepted only when both normalize to the same snapshot. Static `TrustedProxy(...)` listeners remain independent.
+
+An application-owned snapshot changes only the startup fallback. Startup and periodic live refresh still run, failures retain the fallback or last successful pair, and each fresh startup attempt begins with the configured fallback. `CloudflareCIDRs()` continues to return Statute's bundled snapshot. Export includes the normalized configured fallback, and graph identifies its provenance; neither performs a network request.
+
 ## HTTP-01 vs DNS-01: when to use which
 
 **Use HTTP-01 (`.HTTP01()`) when**:

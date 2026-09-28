@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -196,7 +197,7 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 			label += fmt.Sprintf("\\nclient-auth=%s\\nclient-ca=%v", l.ClientAuth.Mode, l.ClientAuth.CAFiles)
 		}
 		if l.CloudflareTrustedProxy {
-			label += "\\ntrusted-proxy=cloudflare (startup + periodic)"
+			label += graphCloudflarePolicy(l)
 		}
 		d.printf("  L%d [shape=Mrecord, style=filled, fillcolor=\"#cfe2ff\", label=%q];\n", i, label)
 	}
@@ -212,6 +213,17 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 			}
 		}
 	}
+}
+
+// graphCloudflarePolicy shows configured fallback provenance without presenting
+// its ranges as the live, periodically refreshed runtime snapshot.
+func graphCloudflarePolicy(listener *resolved.Listener) string {
+	provenance := "bundled"
+	if listener.CloudflareFallback != nil {
+		provenance = "consumer"
+	}
+	snapshot := listenerCloudflareFallback(listener)
+	return fmt.Sprintf("\\ntrusted-proxy=cloudflare (startup + periodic)\\nfallback=%s fetched_at=%s (IPv4=%d IPv6=%d)", provenance, snapshot.FetchedAt.Format(time.RFC3339Nano), len(snapshot.IPv4), len(snapshot.IPv6))
 }
 
 func graphRoutes(d *dotWriter, r *resolved.Config) {

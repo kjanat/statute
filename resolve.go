@@ -96,6 +96,9 @@ func resolveListeners(in []*Listener, out *resolved.Config) error {
 		}
 		out.Listeners = append(out.Listeners, rl)
 	}
+	if err := validateCloudflareFallbacks(out.Listeners); err != nil {
+		return err
+	}
 	return validateTLSAcrossListeners(out.Listeners)
 }
 
@@ -707,6 +710,9 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 func resolveTrustedProxy(t *TrustedProxyConfig, rl *resolved.Listener) error {
 	if t == nil {
 		return nil
+	}
+	if err := resolveCloudflareFallback(t, rl); err != nil {
+		return err
 	}
 	if len(t.cidrs) == 0 && !t.cloudflare {
 		return errors.New("trusted_proxy: at least one CIDR required")

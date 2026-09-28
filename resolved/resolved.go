@@ -154,6 +154,17 @@ type Listener struct {
 	// CloudflareTrustedProxy selects startup and periodic Cloudflare range
 	// acquisition. Runtime snapshots do not mutate this resolved configuration.
 	CloudflareTrustedProxy bool
+
+	// CloudflareFallback is the normalized consumer-provided startup snapshot.
+	// Nil selects Statute's bundled fallback; live snapshots remain runtime-only.
+	CloudflareFallback *CloudflareSnapshot
+}
+
+// CloudflareSnapshot records a validated fallback pair and its source timestamp.
+type CloudflareSnapshot struct {
+	IPv4      []string
+	IPv6      []string
+	FetchedAt time.Time
 }
 
 // TLSPolicy is a resolved downstream TLS protocol policy: the version

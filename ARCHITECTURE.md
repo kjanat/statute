@@ -443,6 +443,14 @@ from `BehindCloudflare()` TLS behavior and static `TrustedProxy` CIDRs. Resolve,
 export, graph, and lint remain offline: the resolved source marker describes
 managed acquisition; effective ranges belong to the runtime snapshot.
 
+An optional `FallbackSnapshot` is application-owned input, copied at the surface
+boundary and strictly validated into the resolved listener's typed snapshot.
+Managed listeners sharing one server must have equal effective fallback ranges
+and fetch-time instants; omission selects the bundled snapshot. Server creation
+copies the selected fallback, and each startup attempt seeds that owned copy.
+Explicit invalid input fails resolution. Generation is optional build preparation;
+ordinary builds and configuration tooling perform no network acquisition.
+
 Only a server with that source in use acquires a refresh run. One bounded startup
 fetch and one periodic worker serve all its opted-in listeners. Both address
 families must validate before an immutable snapshot replaces the previous pair.

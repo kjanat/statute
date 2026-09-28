@@ -3,13 +3,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -44,7 +42,7 @@ func run(ctx context.Context, client *http.Client, args []string, out io.Writer)
 		return err
 	}
 	if *update {
-		if err := writeSnapshot(*output, published); err != nil {
+		if err := cloudflare.WriteSnapshot(*output, published); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(out, "Generated %s (%d prefixes, fetched %s). Rebuild to embed this fallback.\n", *output, len(published.CIDRs()), published.FetchedAt.Format(time.RFC3339))
@@ -55,38 +53,4 @@ func run(ctx context.Context, client *http.Client, args []string, out io.Writer)
 	}
 	_, err = fmt.Fprintf(out, "Cloudflare CIDR snapshot matches both published lists (%d prefixes); next runtime refresh in %s.\n", len(published.CIDRs()), published.RefreshAfter.Round(time.Second))
 	return err
-}
-
-// writeSnapshot validates the complete pair before atomically replacing one file.
-func writeSnapshot(path string, snapshot cloudflare.Snapshot) error {
-	if err := snapshot.Validate(); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(snapshot, "", "  ")
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".cloudflare-snapshot-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(f.Name()) }()
-	if err := prepareSnapshot(f, append(data, '\n')); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
-}
-
-func prepareSnapshot(f *os.File, data []byte) error {
-	if err := f.Chmod(0o644); err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	return f.Sync()
 }

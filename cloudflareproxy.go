@@ -23,16 +23,20 @@ type cloudflarePolicySnapshot struct {
 
 // cloudflareSource belongs to a server, never to the resolved configuration.
 type cloudflareSource struct {
-	current atomic.Pointer[cloudflarePolicySnapshot]
-	fetch   func(context.Context, *http.Client) (cloudflare.Snapshot, error)
-	wait    func(context.Context, time.Duration) bool
+	current  atomic.Pointer[cloudflarePolicySnapshot]
+	fallback cloudflare.Snapshot
+	fetch    func(context.Context, *http.Client) (cloudflare.Snapshot, error)
+	wait     func(context.Context, time.Duration) bool
 }
 
 // cloudflareSourceForListeners allocates one source only for provider opt-ins.
 func cloudflareSourceForListeners(listeners []*resolved.Listener) *cloudflareSource {
 	for _, listener := range listeners {
 		if listener.CloudflareTrustedProxy {
-			return newCloudflareSource()
+			source := newCloudflareSource()
+			source.fallback = listenerCloudflareFallback(listener)
+			source.publish(source.fallback)
+			return source
 		}
 	}
 	return nil
@@ -40,8 +44,8 @@ func cloudflareSourceForListeners(listeners []*resolved.Listener) *cloudflareSou
 
 // newCloudflareSource seeds the fail-closed fallback before handlers are built.
 func newCloudflareSource() *cloudflareSource {
-	source := &cloudflareSource{fetch: cloudflare.Fetch, wait: waitCloudflareRefresh}
-	source.publish(cloudflare.Bundled())
+	source := &cloudflareSource{fetch: cloudflare.Fetch, wait: waitCloudflareRefresh, fallback: cloudflare.Bundled().Normalized()}
+	source.publish(source.fallback)
 	return source
 }
 
@@ -74,11 +78,11 @@ type cloudflareRun struct {
 }
 
 // start refreshes synchronously before content serving and then owns polling.
-// A failed startup fetch resets to the bundled snapshot for this new attempt.
+// Each attempt starts from the fallback independently captured at construction.
 func (s *cloudflareSource) start() *cloudflareRun {
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &cloudflareRun{source: s, ctx: ctx, cancel: cancel, done: make(chan struct{}), client: cloudflare.NewClient()}
-	s.publish(cloudflare.Bundled())
+	s.publish(s.fallback)
 	delay := run.refresh()
 	go run.loop(delay)
 	return run
