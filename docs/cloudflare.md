@@ -68,7 +68,7 @@ statute.HTTPS(":443",
 )
 ```
 
-`TrustedProxy` takes precedence over `BehindCloudflare()`'s blanket header trust wherever the client IP is resolved: the configured header counts only when the connection's direct peer is inside the declared Cloudflare ranges, and every other peer is attributed by its own address, forged headers ignored. With this policy, a missing `CF-Connecting-IP` falls back to the peer; `True-Client-IP` and `X-Forwarded-For` remain ignored.
+`CloudflareTrustedProxy()` and static `TrustedProxy(...)` policies take precedence over `BehindCloudflare()`'s blanket header trust wherever the client IP is resolved: the configured header counts only when the connection's direct peer is inside the active policy's ranges (the current snapshot for managed Cloudflare), and every other peer is attributed by its own address, forged headers ignored. With this policy, a missing `CF-Connecting-IP` falls back to the peer; `True-Client-IP` and `X-Forwarded-For` remain ignored.
 
 ### Managed Cloudflare ranges
 
@@ -299,7 +299,7 @@ Do not assume a direct client omits these headers: it can forge them. On a reach
 
 **Cert is issued but browsers show a different issuer than expected**: Cloudflare's "Authenticated Origin Pulls" (mTLS) and "Origin CA" (CF-issued cert for edge↔origin) generate certificates that browsers do not trust — only Cloudflare's edge does. statute's autocert path issues real Let's Encrypt certs that are publicly trusted; they are different products. You cannot mix them.
 
-**Rate limiter buckets all clients together**: check the listener's `TrustedProxy` policy, its configured `CF-Connecting-IP` header, and whether the direct peer is in the bundled or explicit ranges. A missing header or newly added Cloudflare range in an old snapshot falls back to the proxy's own address. Confirm that traffic arrives through the expected network path before changing trust.
+**Rate limiter buckets all clients together**: check the listener's `CloudflareTrustedProxy()` or static `TrustedProxy(...)` policy, its configured `CF-Connecting-IP` header, and whether the direct peer is in the current managed snapshot or explicit static ranges. For managed policies, inspect refresh/fallback warnings for failures and the retained snapshot's date; startup outages can use either the bundled or application-owned fallback. A missing header or newly added Cloudflare range in an old snapshot falls back to the proxy's own address. Confirm that traffic arrives through the expected network path before changing trust.
 
 **Access logs attribute requests to proxy addresses**: inspect the same peer/header/snapshot conditions above. `BehindCloudflare()` alone trusts headers listener-wide; a publicly reachable listener needs direct-peer verification.
 
