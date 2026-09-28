@@ -4,6 +4,9 @@
 # with statute.* labels ever surface as routes.
 services:
   statute-1:
+    environment:
+      STATUTE_WORKLOAD_SERVICE: ${COMPOSE_PROJECT_NAME}-wl
+      STATUTE_DISCOVERY_SERVICE: ${COMPOSE_PROJECT_NAME}-dyn
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - statute-workload:/var/lib/statute/docker

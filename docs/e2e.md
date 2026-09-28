@@ -145,14 +145,25 @@ so CI can never silently drop declared coverage.
   deployments should shape their routes the same way.
 - **Docker discovery uses the host daemon socket.** Discovered backend
   IPs must be routable from the Statute container, which containers
-  inside a DinD daemon are not. Discovery stays opt-in per label, so
-  the lane's own containers never surface as routes.
+  inside a DinD daemon are not. Every infrastructure service explicitly sets
+  `statute.enable=false` alongside its `statute.e2e` cleanup label: the cleanup
+  label alone would implicitly enable native discovery. A rendered-Compose
+  regression enforces both labels across every topology and scenario. Intentional
+  discovery targets opt in and use project-specific Host and service identities,
+  with matching compiled policy keys. This isolates route selection and workload
+  authority even when parallel scenarios observe the same daemon. Content probes
+  use the project's DNS alias; unmatched-Host probes must receive 404.
 - **Workload discovery is event-only.** The `workload` scenario leaves
   `Refresh` unset. `TestRegression_DockerOnDemandWorkload` proves adoption,
   idle shutdown, demand activation after an external stop, and adoption after
-  an external start against the real daemon. It waits for transition logs before
-  demand; network
-  responses prove serving and Docker inspection proves idle shutdown. The
+  an external start against the real daemon. It first creates a stopped container
+  and waits for dormant discovery, then starts it externally. Private diagnostics
+  must confirm adoption and readiness before any content request. Exact phase and
+  counter checkpoints separate every subsequent lifecycle action, including stop
+  settlement before demand or another external start. Content requests are single
+  deliberate serving assertions: polling a routed URL would itself activate a
+  dormant workload and race observe-only adoption. Docker inspection additionally
+  proves idle shutdown; the final JSON/Prometheus counter checks remain intact. The
   listing/subscription race and ambiguous-stop interleavings use deterministic
   in-process provider tests.
 

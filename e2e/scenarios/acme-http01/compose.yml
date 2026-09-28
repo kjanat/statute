@@ -13,7 +13,7 @@ services:
     volumes:
       - ./scenarios/acme-http01/pebble-config.json:/pebble-config.json:ro
     networks: [mesh]
-    labels: { statute.e2e: "1" }
+    labels: { statute.e2e: "1", statute.enable: "false" }
 
   statute-1:
     # ACME registration runs during startup and a failed start exits by

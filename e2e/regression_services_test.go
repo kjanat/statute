@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,7 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 
 	network := r.Compose.Project + "_mesh"
 	image := os.Getenv("STATUTE_E2E_IMAGE")
+	host := r.Compose.Project + ".test"
 	launch := func(name, originID string) {
 		t.Helper()
 		dockerCLI(ctx, t, "run", "-d", "--name", name,
@@ -50,8 +52,9 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 			"--label", "statute.e2e=1",
 			"--label", "statute.enable=true",
 			"--label", "statute.path=/*",
+			"--label", "statute.host="+host,
 			"--label", "statute.port=7000",
-			"--label", "statute.service=dyn",
+			"--label", "statute.service="+r.Compose.Project+"-dyn",
 			"--label", "statute.network="+network,
 			image)
 		t.Cleanup(func() {
@@ -59,7 +62,7 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 		})
 	}
 	dynBody := func() string {
-		out, err := clientGet(ctx, r, fmt.Sprintf("http://statute-1:%d/echo", harness.PortHTTP))
+		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
 		if err != nil {
 			return "error: " + err.Error() + out
 		}
@@ -67,7 +70,7 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	}
 	assertStatic := func() {
 		t.Helper()
-		body := mustClientGet(ctx, r, fmt.Sprintf("http://statute-1:%d/static/echo", harness.PortHTTP))
+		body := mustClientGet(ctx, r, fmt.Sprintf("http://%s:%d/static/echo", host, harness.PortHTTP))
 		if !strings.Contains(body, `"origin":"origin-1"`) {
 			t.Errorf("static route: %q; a dynamic catch-all shadowed compiled configuration", body)
 		}
@@ -75,7 +78,7 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 
 	// Before discovery: only the static route serves.
 	assertStatic()
-	if out, err := clientGet(ctx, r, fmt.Sprintf("http://statute-1:%d/echo", harness.PortHTTP)); err == nil {
+	if out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP)); err == nil {
 		t.Fatalf("dynamic path served before any labeled container existed: %s", out)
 	}
 
@@ -86,6 +89,8 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 		return strings.Contains(b, `"origin":"origin-dyn1"`) && strings.Contains(b, `"host":"policy.internal"`), b
 	})
 	assertStatic()
+
+	assertForeignDockerHost(ctx, r)
 
 	// Generation replacement: a successor container with the same labels
 	// takes over; the retired generation must not serve again.
@@ -102,7 +107,7 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	// route entirely.
 	dockerCLI(ctx, t, "rm", "-f", dyn2)
 	pollUntil(t, 30*time.Second, "route withdrawn", func() (bool, string) {
-		out, err := clientGet(ctx, r, fmt.Sprintf("http://statute-1:%d/echo", harness.PortHTTP))
+		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
 		return err != nil, out
 	})
 	assertStatic()
@@ -134,7 +139,8 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	network := r.Compose.Project + "_mesh"
 	image := os.Getenv("STATUTE_E2E_IMAGE")
 	name := r.Compose.Project + "-wl-1"
-	dockerCLI(ctx, t, "run", "-d", "--name", name,
+	host := r.Compose.Project + ".test"
+	dockerCLI(ctx, t, "create", "--name", name,
 		"--network", network,
 		"--entrypoint", "/origin",
 		"-e", "ORIGIN_ID=origin-wl",
@@ -142,74 +148,86 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 		"--label", "statute.e2e=1",
 		"--label", "statute.enable=true",
 		"--label", "statute.path=/*",
+		"--label", "statute.host="+host,
 		"--label", "statute.port=7000",
-		"--label", "statute.service=wl",
+		"--label", "statute.service="+r.Compose.Project+"-wl",
 		"--label", "statute.network="+network,
 		image)
 	t.Cleanup(func() {
 		_ = exec.Command("docker", "rm", "-f", name).Run()
 	})
 
-	serves := func() (bool, string) {
-		out, err := clientGet(ctx, r, fmt.Sprintf("http://statute-1:%d/echo", harness.PortHTTP))
-		if err != nil {
-			return false, "error: " + err.Error() + out
+	serves := func() {
+		out := mustClientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
+		if !strings.Contains(out, `"origin":"origin-wl"`) {
+			t.Fatalf("workload response: %s", out)
 		}
-		return strings.Contains(out, `"origin":"origin-wl"`), out
 	}
 	running := func() bool {
 		out := dockerOut(ctx, t, "inspect", "-f", "{{.State.Running}}", name)
 		return strings.TrimSpace(out) == "true"
 	}
 
-	// Adoption: the externally started container passes the readiness
-	// gate and serves.
-	pollUntil(t, 30*time.Second, "labeled container becomes a route", serves)
+	// Force discovery of the stopped container before its external start.
+	// Only the private diagnostics endpoint observes these transitions.
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant"})
+	if running() {
+		t.Fatal("created workload started without demand")
+	}
+	dockerCLI(ctx, t, "start", name)
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 1, externalStarts: 1})
+	serves()
+	assertForeignDockerHost(ctx, r)
 
 	// The idle policy applies to the adopted container.
 	pollUntil(t, 30*time.Second, "idle stop after adoption", func() (bool, string) {
 		return !running(), "container still running"
 	})
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant", activations: 1, idleStops: 1, externalStarts: 1})
 
 	// A dormant route still matches: the request wakes the workload and
 	// is answered, without ever reaching a 404 or fallback.
-	pollUntil(t, 60*time.Second, "request wakes the dormant workload", serves)
+	serves()
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 2, idleStops: 1, externalStarts: 1})
 	if !running() {
 		t.Fatal("workload served but its container is not running")
 	}
 
 	// Observe the external stop before issuing new demand.
 	dockerCLI(ctx, t, "stop", name)
-	awaitServerLog(ctx, t, r, "external stop becomes dormant", func(logs string) (bool, string) {
-		return strings.Contains(logs, "stopped outside statute"), logs
-	})
-	pollUntil(t, 60*time.Second, "external stop does not disable demand activation", serves)
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant", activations: 2, idleStops: 1, externalStarts: 1, externalStops: 1})
+	serves()
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 3, idleStops: 1, externalStarts: 1, externalStops: 1})
 	if !running() {
 		t.Fatal("workload served after external stop but its container is not running")
 	}
 	pollUntil(t, 30*time.Second, "idle stop after reactivation", func() (bool, string) {
 		return !running(), "container still running"
 	})
-	awaitServerLog(ctx, t, r, "second idle stop has settled", func(logs string) (bool, string) {
-		return strings.Count(logs, "stopped after") >= 2, logs
-	})
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant", activations: 3, idleStops: 2, externalStarts: 1, externalStops: 1})
 
 	// External start must be discovered without a request or periodic poll.
-	// Count only new adoption diagnostics: startup already emitted one.
-	const adoption = "found running, establishing readiness"
-	previousAdoptions := strings.Count(r.Logs(ctx, harness.Server1), adoption)
 	dockerCLI(ctx, t, "start", name)
-	awaitServerLog(ctx, t, r, "external start is adopted without demand", func(logs string) (bool, string) {
-		return strings.Count(logs, adoption) > previousAdoptions, logs
-	})
-	pollUntil(t, 30*time.Second, "externally started container serves after readiness", serves)
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 4, idleStops: 2, externalStarts: 2, externalStops: 1})
+	serves()
 
 	// Adoption also keeps Statute's idle policy: an external start is not
 	// authority to keep the container running indefinitely.
 	pollUntil(t, 30*time.Second, "idle stop after external start", func() (bool, string) {
 		return !running(), "container still running"
 	})
+	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant", activations: 4, idleStops: 3, externalStarts: 2, externalStops: 1})
 	assertWorkloadDiagnostics(ctx, t, r, name)
+}
+
+func assertForeignDockerHost(ctx context.Context, r *harness.Run) {
+	r.T.Helper()
+	r.ExecutePlan(ctx, harness.Client1, &report.Plan{Name: "foreign-docker-host", Steps: []report.Step{{
+		Name: "unmatched host", URL: fmt.Sprintf("http://statute-1:%d/echo", harness.PortHTTP),
+		TargetServer: harness.Server1, Proto: "h1", Count: 1,
+		Headers: map[string]string{"Host": r.Compose.Project + ".unrelated.test"},
+		Expect:  report.Expect{Status: http.StatusNotFound},
+	}}})
 }
 
 // TestRegression_ACMEHTTP01 proves a hermetic ACME issuance: Pebble as
