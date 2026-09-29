@@ -16,7 +16,7 @@ jobs:
       - { name: race, run: go test -race -coverprofile=cover.out -covermode=atomic ./... }
       - { name: Traefik oracle, run: go -C traefikoracle test ./... }
       - run: go tool cover -func=cover.out
-      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
       - name: upload coverage artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -113,7 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: kjanat/actionlint@7c5b0a3880b3d29c51072b1e5e0730e5988f8b7d # v1
+      - uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 # v1
   typecheck:
     name: typecheck scripts
     runs-on: ubuntu-latest
