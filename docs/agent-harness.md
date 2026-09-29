@@ -76,6 +76,10 @@ as `statutehttp` and can be run with:
 make lint-lifecycle
 ```
 
+Keep the golangci-lint versions in `.custom-gcl.yml` and `.tool-versions` aligned.
+CI's mise installation and both lint action jobs read `.tool-versions`; Renovate
+groups updates to these two files in one PR.
+
 Its first rules deliberately encode failures that are easy for a locally-correct
 patch to miss:
 
