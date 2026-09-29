@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Request exact-version indexing directly from pkg.go.dev before release verification, and avoid cached version-list responses while polling.
+
 ## [0.7.1] - 2026-09-29
 
 ### Fixed

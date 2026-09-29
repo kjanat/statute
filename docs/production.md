@@ -4,6 +4,24 @@ This document covers the operational concerns of running statute in production: 
 
 ## Building the binary
 
+### Release availability
+
+The release workflow runs vet, race tests, and example builds before publishing
+the GitHub release and warming the Go module proxy. A separate verification job
+then requests the exact tag from pkg.go.dev using its Request-button endpoint
+(`POST /fetch/<module>@<tag>`) before polling fresh version metadata for up to
+20 minutes. The request has bounded retries; if it fails or times out, polling
+still checks whether indexing completed. Only the indexed tag and the existing
+metadata checks can make verification pass, not the fetch request alone.
+
+Documentation indexing can lag behind module availability. A verification
+timeout does not undo the published release or its Go proxy availability. Once
+indexing is available, rerun only the verification job; do not move the tag or
+republish the release. Reruns use the workflow from the original tagged commit,
+so workflow fixes on `master` apply to future tags, not existing releases.
+
+### Build commands
+
 ```sh
 go build -o statute ./examples/basic
 ```
