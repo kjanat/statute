@@ -2,7 +2,6 @@ name: ci
 on: { push: { branches: [master] }, pull_request: null }
 permissions: { contents: read }
 concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
-env: { glc: "2.13.1" }
 jobs:
   test:
     name: test
@@ -16,7 +15,7 @@ jobs:
       - { name: race, run: go test -race -coverprofile=cover.out -covermode=atomic ./... }
       - { name: Traefik oracle, run: go -C traefikoracle test ./... }
       - run: go tool cover -func=cover.out
-      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
       - name: upload coverage artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -30,7 +29,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with: { tool_versions: "golangci-lint ${{ env.glc }}" }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
       - uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3.0.15
@@ -40,7 +38,7 @@ jobs:
       # tool, while this explicit step also checks every tracked Go file.
       - { name: format check, run: make fmt-check }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with: { version: "v${{ env.glc }}", args: --timeout=5m }
+        with: { version-file: .tool-versions, args: --timeout=5m }
   lifecycle_lint:
     name: lifecycle lint
     if: github.event_name == 'pull_request'
@@ -52,7 +50,7 @@ jobs:
         with: { go-version-file: go.mod, cache: true }
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v${{ env.glc }}
+          version-file: .tool-versions
           args: --enable-only=statutelifecycle --new-from-merge-base=origin/${{ github.base_ref }} --whole-files --timeout=5m
   discover_fuzz:
     name: discover fuzz targets
@@ -113,7 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: kjanat/actionlint@7c5b0a3880b3d29c51072b1e5e0730e5988f8b7d # v1
+      - uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 # v1
   typecheck:
     name: typecheck scripts
     runs-on: ubuntu-latest

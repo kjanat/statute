@@ -50,16 +50,6 @@
     },
     {
       "customType": "regex",
-      "description": "golangci-lint release installed by mise in the ci lint job (bare, no v prefix)",
-      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
-      "matchStrings": ["golangci-lint (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depNameTemplate": "golangci/golangci-lint",
-      "datasourceTemplate": "github-releases",
-      "versioningTemplate": "semver",
-      "extractVersionTemplate": "^v(?<version>.+)$"
-    },
-    {
-      "customType": "regex",
       "description": "gpg-signing-service release consumed by the sign-commits composite action",
       "managerFilePatterns": ["/^\\.github/workflows/sign-commits\\.yml$/"],
       "matchStrings": ["signing-service-version:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
@@ -137,8 +127,8 @@
       "semanticCommitType": "chore"
     },
     {
-      "description": "The custom linter build and every installed golangci-lint must be the same release, so all four version strings land in one PR",
-      "matchDepNames": ["golangci/golangci-lint"],
+      "description": "Keep the custom linter build in .custom-gcl.yml and the shared CI version in .tool-versions on the same release",
+      "matchPackageNames": ["golangci/golangci-lint"],
       "groupName": "golangci-lint",
       "semanticCommitType": "ci"
     },
