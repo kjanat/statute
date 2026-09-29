@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"statute.kjanat.dev/e2e/harness"
+	"statute.kjanat.dev/e2e/report"
 )
 
 // The wire shape is intentionally independent of Statute's internal snapshot.
@@ -41,29 +42,42 @@ type workloadOwnerReport struct {
 
 func readSettledWorkloadReport(ctx context.Context, t *testing.T, r *harness.Run, container string) workloadDiagnosticsReport {
 	t.Helper()
-	return awaitWorkloadReport(ctx, t, r, container, "settled lifecycle diagnostics", func(report workloadDiagnosticsReport) bool {
-		return report.settled(r.Compose.Project + "-wl")
-	})
+	spec := workloadOwnerSpec(t, r.Compose.Project+"-wl", "dormant")
+	spec.JSON = append(spec.JSON,
+		jsonMinimum("/services/0/activation_attempts", "4"),
+		jsonMinimum("/services/0/idle_stops", "3"),
+		jsonMinimum("/services/0/external_starts", "2"),
+		jsonMinimum("/services/0/external_stops", "1"),
+		jsonPositive("/services/0/owners/0/last_activation_seconds"),
+	)
+	snapshot := awaitWorkloadReport(ctx, t, r, container, spec)
+	if !snapshot.settled(r.Compose.Project + "-wl") {
+		t.Fatalf("unsettled workload diagnostics: %+v", snapshot)
+	}
+	return snapshot
 }
 
-func awaitWorkloadReport(ctx context.Context, t *testing.T, r *harness.Run, container, what string, accept func(workloadDiagnosticsReport) bool) workloadDiagnosticsReport {
+func awaitWorkloadReport(ctx context.Context, t *testing.T, r *harness.Run, container string, spec report.WaitSpec) workloadDiagnosticsReport {
 	t.Helper()
-	var report workloadDiagnosticsReport
+	var snapshot workloadDiagnosticsReport
 	snapshotURL := fmt.Sprintf("http://statute-1:%d/debug/workloads", harness.PortMetrics)
-	pollUntil(t, 30*time.Second, what, func() (bool, string) {
-		body, err := clientGet(ctx, r, snapshotURL)
-		if err != nil {
-			return false, err.Error()
-		}
-		if strings.Contains(body, container) {
-			t.Fatal("snapshot exposes the Docker container name")
-		}
-		if err := json.Unmarshal([]byte(body), &report); err != nil {
-			t.Fatalf("invalid workload snapshot: %v\n%s", err, body)
-		}
-		return accept(report), body
-	})
-	return report
+	spec.RejectContains = append(spec.RejectContains, container)
+	body := awaitClient(ctx, r, snapshotURL, 30*time.Second, spec)
+	if err := json.Unmarshal([]byte(body), &snapshot); err != nil {
+		t.Fatalf("invalid workload snapshot: %v\n%s", err, body)
+	}
+	return snapshot
+}
+
+func workloadOwnerSpec(t *testing.T, service, phase string) report.WaitSpec {
+	t.Helper()
+	return report.WaitSpec{JSON: []report.JSONCondition{
+		jsonLength("/services", 1), jsonLength("/services/0/owners", 1), jsonLength("/orphaned_mutations", 0),
+		jsonEqual(t, "/services/0/service", service), jsonEqual(t, "/services/0/activation_failures", 0),
+		jsonEqual(t, "/services/0/owners/0/current", true), jsonEqual(t, "/services/0/owners/0/retired", false),
+		jsonEqual(t, "/services/0/owners/0/phase", phase), jsonPositive("/services/0/owners/0/incarnation"),
+		jsonEqual(t, "/services/0/owners/0/activation_waiters", 0), jsonEqual(t, "/services/0/owners/0/last_failure_reason", ""),
+	}}
 }
 
 // workloadCheckpoint describes the wire-visible result of one explicit action.
@@ -79,7 +93,17 @@ type workloadCheckpoint struct {
 func awaitWorkloadCheckpoint(ctx context.Context, t *testing.T, r *harness.Run, container string, want workloadCheckpoint) {
 	t.Helper()
 	want.service = r.Compose.Project + "-wl"
-	awaitWorkloadReport(ctx, t, r, container, fmt.Sprintf("workload checkpoint %+v", want), want.matches)
+	spec := workloadOwnerSpec(t, want.service, want.phase)
+	spec.JSON = append(spec.JSON,
+		jsonEqual(t, "/services/0/activation_attempts", want.activations),
+		jsonEqual(t, "/services/0/idle_stops", want.idleStops),
+		jsonEqual(t, "/services/0/external_starts", want.externalStarts),
+		jsonEqual(t, "/services/0/external_stops", want.externalStops),
+	)
+	snapshot := awaitWorkloadReport(ctx, t, r, container, spec)
+	if !want.matches(snapshot) {
+		t.Fatalf("checkpoint %+v: got %+v", want, snapshot)
+	}
 }
 
 func (want workloadCheckpoint) matches(report workloadDiagnosticsReport) bool {

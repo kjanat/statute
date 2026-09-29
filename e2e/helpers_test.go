@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"statute.kjanat.dev/e2e/harness"
+	"statute.kjanat.dev/e2e/report"
 )
 
 // clientGet fetches a URL from inside the network through the client
@@ -28,6 +29,43 @@ func mustClientGet(ctx context.Context, r *harness.Run, url string, extra ...str
 		r.T.Fatalf("get %s: %v", url, err)
 	}
 	return out
+}
+
+func awaitClient(ctx context.Context, r *harness.Run, url string, budget time.Duration, spec report.WaitSpec, extra ...string) string {
+	r.T.Helper()
+	blob, err := json.Marshal(spec)
+	if err != nil {
+		r.T.Fatal(err)
+	}
+	args := append([]string{"wait", "-url", url, "-timeout", budget.String(), "-spec", string(blob)}, extra...)
+	out, err := r.Compose.RunClient(ctx, r.Topology.Clients[0], args...)
+	if err != nil {
+		r.T.Fatalf("wait for %s: %v\n%s", url, err, out)
+	}
+	return out
+}
+
+func jsonEqual(t *testing.T, pointer string, value any) report.JSONCondition {
+	t.Helper()
+	blob, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report.JSONCondition{Pointer: pointer, Equal: blob}
+}
+
+func jsonLength(pointer string, length int) report.JSONCondition {
+	return report.JSONCondition{Pointer: pointer, Length: &length}
+}
+
+func jsonMinimum(pointer, minimum string) report.JSONCondition {
+	number := json.Number(minimum)
+	return report.JSONCondition{Pointer: pointer, Min: &number}
+}
+
+func jsonPositive(pointer string) report.JSONCondition {
+	zero := json.Number("0")
+	return report.JSONCondition{Pointer: pointer, GreaterThan: &zero}
 }
 
 // journalEntry mirrors the origin actor's journal record — the shared
@@ -67,20 +105,24 @@ func originJournal(ctx context.Context, r *harness.Run, origin, scheme string) [
 	return entries
 }
 
-// awaitOriginJournal polls one origin's journal until want accepts the
-// snapshot, then returns exactly that snapshot for the caller's
-// assertions. The origin records an entry on arrival, so traffic a
-// client plan just drove is already in the journal — but traffic the
-// origin receives on someone else's schedule, such as an active health
-// probe on the pool's own ticker, is not, and reading once races
-// whatever produced it.
-func awaitOriginJournal(ctx context.Context, t *testing.T, r *harness.Run, origin, scheme, what string, want func([]journalEntry) (bool, string)) []journalEntry {
+// awaitOriginJournal batches journal observations until proxy traffic and a health probe are present.
+func awaitOriginJournal(ctx context.Context, t *testing.T, r *harness.Run, origin, scheme string) []journalEntry {
 	t.Helper()
+	url := fmt.Sprintf("%s://%s:%d/admin/requests", scheme, origin, harness.PortOrigin)
+	var extra []string
+	if scheme == "https" {
+		extra = []string{"-roots", "/certs/ca.crt", "-cert", "/certs/statute.crt", "-key", "/certs/statute.key"}
+	}
+	body := awaitClient(ctx, r, url, 30*time.Second, report.WaitSpec{
+		Contains: []string{`"path":"/echo"`, `"path":"/health"`},
+	}, extra...)
 	var snapshot []journalEntry
-	pollUntil(t, 30*time.Second, what, func() (bool, string) {
-		snapshot = originJournal(ctx, r, origin, scheme)
-		return want(snapshot)
-	})
+	if err := json.Unmarshal([]byte(body), &snapshot); err != nil {
+		t.Fatalf("invalid origin journal: %v\n%s", err, body)
+	}
+	if ok, observation := bothTrafficKinds(snapshot); !ok {
+		t.Fatalf("journal lacks proxy traffic or health probe: %s", observation)
+	}
 	return snapshot
 }
 
@@ -122,11 +164,7 @@ func pollUntil(t *testing.T, budget time.Duration, what string, fn func() (bool,
 	t.Fatalf("%s: not reached within %s; last: %s", what, budget, last)
 }
 
-// awaitOriginLog waits until an origin's stdout carries the marker. The
-// origin logs every journal entry as it arrives, so this is the same
-// evidence as the journal API but costs one CLI call instead of a client
-// container — and these callers race a live request, so the wait's own
-// latency is part of what they are timing.
+// awaitOriginLog observes a request marker through bounded Engine log reads.
 func awaitOriginLog(ctx context.Context, t *testing.T, r *harness.Run, what, marker string) {
 	t.Helper()
 	pollUntil(t, 60*time.Second, what, func() (bool, string) {

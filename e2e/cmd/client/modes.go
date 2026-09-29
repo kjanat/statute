@@ -93,46 +93,6 @@ func runGet(args []string) error {
 	return nil
 }
 
-// runWait polls a URL until it answers 200 or the deadline passes. It is
-// the lane's readiness gate: reachability of the Statute health
-// endpoint's ready path over the real network, never container state.
-func runWait(args []string) error {
-	fs := flag.NewFlagSet("wait", flag.ExitOnError)
-	target := fs.String("url", "", "URL to poll until it returns 200")
-	timeout := fs.Duration("timeout", 30*time.Second, "polling deadline")
-	roots := fs.String("roots", "", "PEM roots for HTTPS targets")
-	fs.Parse(args)
-	if *target == "" {
-		return errors.New("wait: -url required")
-	}
-	tlsCfg, err := tlsConfigFor(*roots, "", "", "")
-	if err != nil {
-		return err
-	}
-	client := &http.Client{
-		Timeout:   2 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-	}
-	deadline := time.Now().Add(*timeout)
-	var last error
-	for time.Now().Before(deadline) {
-		resp, err := get(client, *target)
-		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				fmt.Printf(`{"event":"ready","url":%q}`+"\n", *target)
-				return nil
-			}
-			last = fmt.Errorf("status %d", resp.StatusCode)
-		} else {
-			last = err
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return fmt.Errorf("wait: %s not ready within %s: %w", *target, *timeout, last)
-}
-
 // runProbeNegative succeeds only when the target is NOT reachable: a
 // refused or timed-out connection is the pass condition. It proves a
 // released listener (TCP or QUIC/UDP) and a failed startup that never

@@ -46,9 +46,17 @@ compiles the lane and never needs Docker. Lint sees it because
 
 ## Running locally
 
-Prerequisites: a Docker daemon with Compose v2 and the `go` toolchain.
+Prerequisites: a local Docker daemon at `/var/run/docker.sock`, Compose v2, and the `go` toolchain.
 Nothing publishes a host port and images are digest-pinned, so runs are
-parallel-safe and, after the images are pulled once, offline.
+parallel-safe within one suite and, after the images are pulled once, offline.
+
+The harness resolves Docker's effective selection before creating resources:
+`DOCKER_CONTEXT`, then `DOCKER_HOST`, then the selected CLI context. The endpoint
+must identify the local socket mounted by the fixtures; `/run/docker.sock` is
+accepted when it resolves to that same socket. TCP, SSH, TLS configuration, and
+other Unix sockets fail explicitly. Compose and the Engine SDK are pinned to the
+resolved endpoint for the run. This prevents topology and container operations
+from silently targeting different daemons.
 
 ```sh
 make test-e2e                 # the four-topology smoke matrix
@@ -84,21 +92,57 @@ Every run writes `e2e/artifacts/<run-id>/<scenario>/<topology>/`:
 - `ps.json`, `logs.txt` — container states and all service logs,
 - `reports/` — the plans the harness wrote and the structured reports
   the clients wrote back (this directory is the `/reports` bind mount).
+- `container-<id>.txt`: state and combined stdout/stderr for dynamically created
+  containers still owned at teardown.
 
 CI uploads the whole directory when a job fails. The directory is
 git-ignored.
 
 ## Cleanup contract
 
-Teardown runs on success, failure, and timeout, in a fixed order:
-diagnostics first (down would destroy their sources), then
-`compose down -v --remove-orphans`, then the orphan proof — any
+Each harness `Run` shares one official Moby Engine SDK client alongside Compose.
+Compose owns the checked-in topology, configuration rendering, and one-shot client
+actor launches. The Engine helper owns typed container operations, log reads,
+exit waits, and cleanup verification. Dynamic containers are recorded by immutable
+ID immediately after creation, before starting them; a failed start retains that
+cleanup obligation. They receive project/lane labels and an explicit discovery
+opt-out unless the scenario requests discovery.
+
+Teardown runs on success and test failure in a fixed order:
+diagnostics first, then tracked dynamic containers, then
+`compose down -v --remove-orphans`, then the orphan proof. Any
 container, network, or volume of the run's project that survived fails
-the test and is then force-removed. `TestMain` ends every invocation
+the test and is then force-removed. API calls and cleanup phases have bounded
+deadlines, cleanup has a fresh context, and client connections close last.
+Inspection and removal errors fail the test; only an already-removed container's
+not-found response is an idempotent success. `TestMain` ends every invocation
 with a lane-wide sweep over the `statute.e2e` label that fails the
 suite if it reaps anything, and CI repeats that proof in an
 `if: always()` step so even a cancelled job cannot leak silently. A
 `docker kill`ed harness is recovered with `make e2e-clean`.
+
+Run only one e2e suite invocation per daemon at a time. The lane-wide epilogue can
+remove another invocation's containers, even when that invocation is only running
+a different test subset. Tests inside one invocation can run concurrently.
+
+## Batched observations
+
+Repeated HTTP observations run inside one `/client wait` invocation with one HTTP
+transport. A typed `report.WaitSpec` selects the expected status, body markers,
+JSON-pointer comparisons, and consecutive matches. JSON numbers are compared
+exactly, including lifecycle counters larger than floating-point integer precision.
+Invalid predicates and malformed diagnostic JSON fail immediately. Forbidden body
+markers fail immediately on every observed response, including nonmatching statuses.
+
+The actor returns the final matching body for the scenario's remaining assertions;
+timeouts include the last observation. Overall and per-request deadlines bound
+polling and response reads. TLS roots and client certificates are retained for
+HTTPS/mTLS journal checks. Readiness without a specification still requires HTTP
+200 from the health endpoint.
+
+Workload checkpoints poll only private diagnostics. Content requests remain
+deliberate, one-shot activation or serving assertions. Log and container-state
+waits use the reused Engine client, while artifact-file waits stay on the host.
 
 ## Writing a scenario
 

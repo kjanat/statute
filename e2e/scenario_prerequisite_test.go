@@ -4,13 +4,13 @@ package e2e
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"statute.kjanat.dev/e2e/harness"
 )
 
 func TestRegression_DockerDiscoveryRequiresService(t *testing.T) {
@@ -23,33 +23,29 @@ func TestRegression_DockerDiscoveryRequiresService(t *testing.T) {
 		env  []string
 	}{
 		{"unset", nil},
-		{"empty", []string{"-e", "STATUTE_DISCOVERY_SERVICE="}},
-		{"whitespace", []string{"-e", "STATUTE_DISCOVERY_SERVICE= \t"}},
+		{"empty", []string{"STATUTE_DISCOVERY_SERVICE="}},
+		{"whitespace", []string{"STATUTE_DISCOVERY_SERVICE= \t"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			name := fmt.Sprintf("statute-e2e-prerequisite-%d-%s", os.Getpid(), tc.name)
-			t.Cleanup(func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				out, err := exec.CommandContext(ctx, "docker", "rm", "-f", name).CombinedOutput()
-				if err != nil && !strings.Contains(string(out), "No such container") {
-					t.Errorf("remove prerequisite container: %v\n%s", err, out)
-				}
-			})
-			args := make([]string, 0, 13+len(tc.env))
-			args = append(args, "run", "--rm", "--name", name, "--network", "none",
-				"--label", "statute.e2e=1", "--entrypoint", "/statute", "-e", "STATUTE_SCENARIO=docker")
-			args = append(args, tc.env...)
-			args = append(args, image)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() != 2 {
-				t.Fatalf("invalid prerequisite must exit 2: %v\n%s", err, out)
+			engine := newTestEngine(t, name)
+			id, err := engine.Create(ctx, harness.ContainerSpec{
+				Name: name, Image: image, Network: "none", Entrypoint: []string{"/statute"},
+				Env: append([]string{"STATUTE_SCENARIO=docker"}, tc.env...),
+			})
+			requireEngine(t, err)
+			requireEngine(t, engine.Start(ctx, id))
+			code, err := engine.Wait(ctx, id)
+			requireEngine(t, err)
+			out, err := engine.Logs(ctx, id)
+			requireEngine(t, err)
+			if code != 2 {
+				t.Fatalf("invalid prerequisite exit = %d, want 2\n%s", code, out)
 			}
 			const diagnostic = "statute-e2e: STATUTE_DISCOVERY_SERVICE is required for the docker scenario"
-			if strings.TrimSpace(string(out)) != diagnostic {
+			if strings.TrimSpace(out) != diagnostic {
 				t.Fatalf("prerequisite diagnostic = %q, want %q", out, diagnostic)
 			}
 		})

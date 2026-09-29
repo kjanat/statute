@@ -22,7 +22,12 @@ import (
 // fails the whole invocation even when every test passed.
 func TestMain(m *testing.M) {
 	code := m.Run()
-	if leaked := harness.SweepLaneOrphans(context.Background()); len(leaked) > 0 {
+	leaked, err := harness.SweepLaneOrphans(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: lane orphan verification failed: %v\n", err)
+		code = 1
+	}
+	if len(leaked) > 0 {
 		fmt.Fprintf(os.Stderr, "e2e: lane orphan containers reaped after the suite: %v\n", leaked)
 		if code == 0 {
 			code = 1

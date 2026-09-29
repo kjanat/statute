@@ -9,9 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +39,7 @@ type Run struct {
 	Scenario string
 	Topology Topology
 	Compose  *Compose
+	Engine   *Engine
 
 	// ArtifactDir holds everything this run leaves behind; ReportsDir is
 	// the subdirectory bind-mounted into every container at /reports.
@@ -71,6 +70,16 @@ func StartServices(t *testing.T, scenario string, topo Topology, services []stri
 		t.Fatal("STATUTE_E2E_IMAGE is not set; run through `make test-e2e` or build the image and export the variable")
 	}
 	runID := randomID()
+	project := fmt.Sprintf("statute-e2e-%s-%s-%s", sanitize(scenario), topo.Name, runID)
+	engine, err := NewEngine(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := engine.Close(); err != nil {
+			t.Errorf("close Docker client: %v", err)
+		}
+	})
 	artifactDir, err := filepath.Abs(filepath.Join("artifacts", runID, scenario, topo.Name))
 	if err != nil {
 		t.Fatal(err)
@@ -89,8 +98,10 @@ func StartServices(t *testing.T, scenario string, topo Topology, services []stri
 		T:        t,
 		Scenario: scenario,
 		Topology: topo,
+		Engine:   engine,
 		Compose: &Compose{
-			Project: fmt.Sprintf("statute-e2e-%s-%s-%s", sanitize(scenario), topo.Name, runID),
+			Project: project,
+			Engine:  engine,
 			Files:   files,
 			Env: map[string]string{
 				"STATUTE_E2E_IMAGE": image,
@@ -243,7 +254,11 @@ func (r *Run) AssertFullMesh(reports map[string]*report.Report) {
 // the access log and lifecycle stderr lines.
 func (r *Run) Logs(ctx context.Context, service string) string {
 	r.T.Helper()
-	out, err := r.Compose.Output(ctx, "logs", "--no-color", service)
+	id, err := r.Engine.serviceID(ctx, service)
+	if err != nil {
+		r.T.Fatal(err)
+	}
+	out, err := r.Engine.Logs(ctx, id)
 	if err != nil {
 		r.T.Fatalf("logs of %s: %v", service, err)
 	}
@@ -255,22 +270,13 @@ func (r *Run) Logs(ctx context.Context, service string) string {
 // across compose versions, unlike `compose ps` JSON).
 func (r *Run) WaitExit(ctx context.Context, service string) int {
 	r.T.Helper()
-	// `compose wait` exits with the container's own code, so its error
-	// says nothing; inspect below is authoritative.
-	_, _ = r.Compose.Output(ctx, "wait", service)
-	ids := dockerLines(ctx, r.T, "ps", "-aq",
-		"--filter", "label=com.docker.compose.project="+r.Compose.Project,
-		"--filter", "label=com.docker.compose.service="+service)
-	if len(ids) != 1 {
-		r.T.Fatalf("wait for %s: found containers %v", service, ids)
-	}
-	out := dockerLines(ctx, r.T, "inspect", "--format", "{{.State.ExitCode}}", ids[0])
-	if len(out) != 1 {
-		r.T.Fatalf("exit code of %s: %v", service, out)
-	}
-	code, err := strconv.Atoi(out[0])
+	id, err := r.Engine.serviceID(ctx, service)
 	if err != nil {
-		r.T.Fatalf("exit code of %s: %q", service, out[0])
+		r.T.Fatal(err)
+	}
+	code, err := r.Engine.Wait(ctx, id)
+	if err != nil {
+		r.T.Fatal(err)
 	}
 	return code
 }
@@ -279,15 +285,23 @@ func (r *Run) WaitExit(ctx context.Context, service string) int {
 // nothing project-owned survived. Ordering is deliberate: diagnostics
 // before down (down destroys their sources), the orphan proof after.
 func (r *Run) teardown() {
-	// Teardown gets its own deadline so it also runs when the test
-	// context is already dead.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	r.collectDiagnostics(ctx)
+	diagnostics, finishDiagnostics := context.WithTimeout(context.Background(), 30*time.Second)
+	r.collectDiagnostics(diagnostics)
+	finishDiagnostics()
+	// Cleanup retains its budget even when diagnostics exhausted theirs.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	if err := r.Engine.Cleanup(ctx); err != nil {
+		r.T.Errorf("dynamic container cleanup: %v", err)
+	}
+	cancel()
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Minute)
 	if err := r.Compose.Down(ctx); err != nil {
 		r.T.Errorf("compose down: %v", err)
 	}
+	cancel()
+	ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
 	r.proveNoOrphans(ctx)
+	cancel()
 }
 
 // collectDiagnostics snapshots the rendered config, container states,
@@ -306,77 +320,28 @@ func (r *Run) collectDiagnostics(ctx context.Context) {
 			r.T.Logf("write %s: %v", name, werr)
 		}
 	}
+	for _, id := range r.Engine.ownedIDs() {
+		state, err := r.Engine.Inspect(ctx, id)
+		out := fmt.Sprintf("state: %+v\ninspection error: %v\n", state, err)
+		logs, err := r.Engine.Logs(ctx, id)
+		out += fmt.Sprintf("%s\nlogs error: %v\n", logs, err)
+		if err := os.WriteFile(filepath.Join(r.ArtifactDir, "container-"+id+".txt"), []byte(out), 0o644); err != nil {
+			r.T.Errorf("write container diagnostics: %v", err)
+		}
+	}
 }
 
 // proveNoOrphans fails the test when any container, network, or volume
 // of this project outlived down, then force-removes it so one leak
 // cannot cascade into later runs.
 func (r *Run) proveNoOrphans(ctx context.Context) {
-	const (
-		kindNetwork = "network"
-		kindVolume  = "volume"
-	)
-	filter := "label=com.docker.compose.project=" + r.Compose.Project
-	checks := []struct {
-		kind   string
-		list   []string
-		remove []string
-	}{
-		{kind: "container", list: []string{"ps", "-aq"}, remove: []string{"rm", "-f"}},
-		{kind: kindNetwork, list: []string{kindNetwork, "ls", "-q"}, remove: []string{kindNetwork, "rm"}},
-		{kind: kindVolume, list: []string{kindVolume, "ls", "-q"}, remove: []string{kindVolume, "rm", "-f"}},
-	}
-	for _, check := range checks {
-		ids := dockerLines(ctx, r.T, append(check.list, "--filter", filter)...)
-		if len(ids) == 0 {
-			continue
-		}
-		r.T.Errorf("orphan %s(s) after down: %v", check.kind, ids)
-		dockerLines(ctx, r.T, append(check.remove, ids...)...)
-	}
-}
-
-// SweepLaneOrphans is the suite-level epilogue: after everything ran,
-// no statute.e2e-labeled container may remain on the host, regardless
-// of which run leaked it. It returns the ids it had to reap — a
-// non-empty result means the suite must fail — after force-removing
-// them so one leak cannot poison the next invocation.
-func SweepLaneOrphans(ctx context.Context) []string {
-	ids, err := rawDocker(ctx, "ps", "-aq", "--filter", "label=statute.e2e=1")
-	if err != nil || len(ids) == 0 {
-		return nil
-	}
-	// Best-effort reap: the returned ids fail the suite either way.
-	_, _ = rawDocker(ctx, append([]string{"rm", "-f"}, ids...)...)
-	return ids
-}
-
-// dockerLines runs one raw docker command (not compose) and returns
-// its non-empty output lines, logging failures to the test.
-func dockerLines(ctx context.Context, t *testing.T, args ...string) []string {
-	t.Helper()
-	lines, err := rawDocker(ctx, args...)
+	ids, err := r.Engine.projectOrphans(ctx)
 	if err != nil {
-		t.Logf("docker %s: %v", strings.Join(args, " "), err)
+		r.T.Errorf("project orphan verification: %v", err)
 	}
-	return lines
-}
-
-// rawDocker runs one docker command under the invocation timeout.
-func rawDocker(ctx context.Context, args ...string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, composeTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "docker", args...).Output()
-	if err != nil {
-		return nil, err
+	if len(ids) > 0 {
+		r.T.Errorf("project orphans after down: %v", ids)
 	}
-	var lines []string
-	for l := range strings.SplitSeq(string(out), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			lines = append(lines, l)
-		}
-	}
-	return lines, nil
 }
 
 // randomID returns eight hex characters of collision resistance for

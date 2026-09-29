@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,16 +15,6 @@ import (
 	"statute.kjanat.dev/e2e/harness"
 	"statute.kjanat.dev/e2e/report"
 )
-
-// dockerCLI runs one raw docker command for the discovery scenario's
-// container churn and fails the test on error.
-func dockerCLI(ctx context.Context, t *testing.T, args ...string) {
-	t.Helper()
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-}
 
 // TestRegression_DockerDiscovery proves label discovery against a real
 // Docker Engine: a labeled container becomes a route with its exact-key
@@ -43,24 +32,16 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	network := r.Compose.Project + "_mesh"
 	image := os.Getenv("STATUTE_E2E_IMAGE")
 	host := r.Compose.Project + ".test"
-	launch := func(name, originID string) {
+	launch := func(name, originID string) string {
 		t.Helper()
-		dockerCLI(ctx, t, "run", "-d", "--name", name,
-			"--network", network,
-			"--entrypoint", "/origin",
-			"-e", "ORIGIN_ID="+originID,
-			"-e", "ORIGIN_ADDR=:7000",
-			"--label", "statute.e2e=1",
-			"--label", "statute.enable=true",
-			"--label", "statute.path=/*",
-			"--label", "statute.host="+host,
-			"--label", "statute.port=7000",
-			"--label", "statute.service="+r.Compose.Project+"-dyn",
-			"--label", "statute.network="+network,
-			image)
-		t.Cleanup(func() {
-			exec.Command("docker", "rm", "-f", name).Run()
-		})
+		return mustCreateContainer(ctx, r, harness.ContainerSpec{
+			Name: name, Image: image, Network: network, Entrypoint: []string{"/origin"},
+			Env: []string{"ORIGIN_ID=" + originID, "ORIGIN_ADDR=:7000"},
+			Labels: map[string]string{
+				"statute.enable": "true", "statute.path": "/*", "statute.host": host,
+				"statute.port": "7000", "statute.service": r.Compose.Project + "-dyn", "statute.network": network,
+			},
+		}, true)
 	}
 	dynBody := func() string {
 		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
@@ -88,33 +69,25 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	// Before discovery: ordinary and terminal routes share the native pool.
 	assertStatic()
 	assertTerminal()
-	dyn1 := r.Compose.Project + "-dyn-1"
-	launch(dyn1, "origin-dyn1")
-	pollUntil(t, 30*time.Second, "labeled container becomes a route", func() (bool, string) {
-		b := dynBody()
-		return strings.Contains(b, `"origin":"origin-dyn1"`) && strings.Contains(b, `"host":"policy.internal"`), b
-	})
+	dyn1 := launch(r.Compose.Project+"-dyn-1", "origin-dyn1")
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"origin":"origin-dyn1"`, `"host":"policy.internal"`}})
 	assertStatic()
 
 	assertForeignDockerHost(ctx, r)
 
 	// Generation replacement: a successor container with the same labels
 	// takes over; the retired generation must not serve again.
-	dyn2 := r.Compose.Project + "-dyn-2"
-	launch(dyn2, "origin-dyn2")
-	dockerCLI(ctx, t, "rm", "-f", dyn1)
-	pollUntil(t, 30*time.Second, "replacement generation serves", func() (bool, string) {
-		b := dynBody()
-		return strings.Contains(b, `"origin":"origin-dyn2"`) && strings.Contains(b, `"host":"policy.internal"`), b
-	})
+	dyn2 := launch(r.Compose.Project+"-dyn-2", "origin-dyn2")
+	requireEngine(t, r.Engine.Remove(ctx, dyn1))
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"origin":"origin-dyn2"`, `"host":"policy.internal"`}})
 	assertStatic()
 
 	// Withdrawal retires the dynamic generation and reveals terminal routing.
-	dockerCLI(ctx, t, "rm", "-f", dyn2)
-	pollUntil(t, 30*time.Second, "route withdrawn", func() (bool, string) {
-		out := dynBody()
-		return strings.Contains(out, `"origin":"origin-1"`) && strings.Contains(out, `"request_id":"terminal-route"`), out
-	})
+	requireEngine(t, r.Engine.Remove(ctx, dyn2))
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"origin":"origin-1"`, `"request_id":"terminal-route"`}})
 	assertStatic()
 	assertTerminal()
 	assertDockerTerminalRefusal(ctx, t, r, assertStatic)
@@ -127,39 +100,25 @@ func assertDockerTerminalRefusal(ctx context.Context, t *testing.T, r *harness.R
 	host := r.Compose.Project + ".test"
 	// An invalid native registration owns a refusal envelope; it must not
 	// become an innocent miss that serves terminal content instead.
-	refused := r.Compose.Project + "-refused"
-	dockerCLI(ctx, t, "run", "-d", "--name", refused, "--network", network,
-		"--entrypoint", "/origin", "-e", "ORIGIN_ADDR=:7000",
-		"--label", "statute.e2e=1", "--label", "statute.enable=true",
-		"--label", "statute.host="+host, "--label", "statute.path=/*",
-		"--label", "statute.port=invalid", "--label", "statute.network="+network, image)
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", refused).Run() })
-	pollUntil(t, 30*time.Second, "invalid registration refuses terminal content", func() (bool, string) {
-		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
-		return err != nil && strings.Contains(out, "404"), out
-	})
+	refused := mustCreateContainer(ctx, r, harness.ContainerSpec{
+		Name: r.Compose.Project + "-refused", Image: image, Network: network,
+		Entrypoint: []string{"/origin"}, Env: []string{"ORIGIN_ADDR=:7000"},
+		Labels: map[string]string{
+			"statute.enable": "true", "statute.host": host, "statute.path": "/*",
+			"statute.port": "invalid", "statute.network": network,
+		},
+	}, true)
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Status: http.StatusNotFound})
 	r.ExecutePlan(ctx, harness.Client1, &report.Plan{Name: "terminal-refusal", Steps: []report.Step{{
 		Name: "Docker refusal precedes terminal route", URL: fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP),
 		TargetServer: harness.Server1, Proto: "h1", Count: 1,
 		Expect: report.Expect{Status: http.StatusNotFound},
 	}}})
 	assertStatic()
-	dockerCLI(ctx, t, "rm", "-f", refused)
-	pollUntil(t, 30*time.Second, "refusal withdrawal reveals terminal route", func() (bool, string) {
-		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
-		return err == nil && strings.Contains(out, `"origin":"origin-1"`) && strings.Contains(out, `"request_id":"terminal-route"`), out
-	})
-}
-
-// dockerOut runs one raw docker command and returns its output, failing
-// the test on error.
-func dockerOut(ctx context.Context, t *testing.T, args ...string) string {
-	t.Helper()
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-	return string(out)
+	requireEngine(t, r.Engine.Remove(ctx, refused))
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"origin":"origin-1"`, `"request_id":"terminal-route"`}})
 }
 
 // TestRegression_DockerOnDemandWorkload proves the on-demand lifecycle
@@ -178,22 +137,14 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	image := os.Getenv("STATUTE_E2E_IMAGE")
 	name := r.Compose.Project + "-wl-1"
 	host := r.Compose.Project + ".test"
-	dockerCLI(ctx, t, "create", "--name", name,
-		"--network", network,
-		"--entrypoint", "/origin",
-		"-e", "ORIGIN_ID=origin-wl",
-		"-e", "ORIGIN_ADDR=:7000",
-		"--label", "statute.e2e=1",
-		"--label", "statute.enable=true",
-		"--label", "statute.path=/*",
-		"--label", "statute.host="+host,
-		"--label", "statute.port=7000",
-		"--label", "statute.service="+r.Compose.Project+"-wl",
-		"--label", "statute.network="+network,
-		image)
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
-	})
+	id := mustCreateContainer(ctx, r, harness.ContainerSpec{
+		Name: name, Image: image, Network: network, Entrypoint: []string{"/origin"},
+		Env: []string{"ORIGIN_ID=origin-wl", "ORIGIN_ADDR=:7000"},
+		Labels: map[string]string{
+			"statute.enable": "true", "statute.path": "/*", "statute.host": host,
+			"statute.port": "7000", "statute.service": r.Compose.Project + "-wl", "statute.network": network,
+		},
+	}, false)
 
 	serves := func() {
 		out := mustClientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
@@ -202,8 +153,9 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 		}
 	}
 	running := func() bool {
-		out := dockerOut(ctx, t, "inspect", "-f", "{{.State.Running}}", name)
-		return strings.TrimSpace(out) == "true"
+		state, err := r.Engine.Inspect(ctx, id)
+		requireEngine(t, err)
+		return state.Running
 	}
 
 	// Force discovery of the stopped container before its external start.
@@ -212,7 +164,7 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	if running() {
 		t.Fatal("created workload started without demand")
 	}
-	dockerCLI(ctx, t, "start", name)
+	requireEngine(t, r.Engine.Start(ctx, id))
 	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 1, externalStarts: 1})
 	serves()
 	assertForeignDockerHost(ctx, r)
@@ -232,7 +184,7 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	}
 
 	// Observe the external stop before issuing new demand.
-	dockerCLI(ctx, t, "stop", name)
+	requireEngine(t, r.Engine.Stop(ctx, id))
 	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant", activations: 2, idleStops: 1, externalStarts: 1, externalStops: 1})
 	serves()
 	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 3, idleStops: 1, externalStarts: 1, externalStops: 1})
@@ -245,7 +197,7 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant", activations: 3, idleStops: 2, externalStarts: 1, externalStops: 1})
 
 	// External start must be discovered without a request or periodic poll.
-	dockerCLI(ctx, t, "start", name)
+	requireEngine(t, r.Engine.Start(ctx, id))
 	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 4, idleStops: 2, externalStarts: 2, externalStops: 1})
 	serves()
 
