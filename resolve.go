@@ -238,6 +238,7 @@ func acmeChallengeDir(a *resolved.AutoTLS) string {
 
 func resolveRoutes(cfg Config, out *resolved.Config) error {
 	var err error
+	// Keep the established singular prefix for ordinary route diagnostics.
 	out.Routes, err = resolveRouteTable(cfg.Routes, out.Upstreams, "route")
 	if err != nil {
 		return err

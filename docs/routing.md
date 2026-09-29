@@ -133,3 +133,5 @@ ordered terminal stage with edges to the same pool nodes. `AUTH001` and `RL001`
 apply to both tables, using `fallback_routes[i].middleware[j]` for terminal routes.
 `FB001` warns when an ordinary hostless, client-unconstrained catch-all shadows
 Docker or either fallback stage; a final catch-all in `FallbackRoutes` is valid.
+Move the whole route into `Config.FallbackRoutes`, creating that table if needed,
+to retain its named pool and middleware while allowing Docker routes to match first.

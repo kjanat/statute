@@ -461,10 +461,7 @@ func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 	if shadowed == "" {
 		return nil
 	}
-	remedy := "move its handler into Config.Fallback, which is the tier meant for unmatched requests."
-	if len(c.FallbackRoutes) > 0 {
-		remedy = "move the route into Config.FallbackRoutes, which is the table meant for unmatched requests."
-	}
+	const remedy = "move the whole route into Config.FallbackRoutes, preserving its upstream and middleware for unmatched requests."
 	var out []Finding
 	for i, route := range c.Routes {
 		if route.Host != "" || route.Pattern != catchAllPattern || len(route.ClientIPCIDRs) > 0 {

@@ -174,3 +174,49 @@ func TestFallbackRoutesShadowLint(t *testing.T) {
 		})
 	}
 }
+
+func TestFallbackRoutesShadowLintMigration(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		Listeners: Listeners{HTTP(":0")},
+		Upstreams: Upstreams{"assets": Pool{Backends: []Backend{{Address: "http://assets.example"}}}},
+		Routes: Routes{Match("/*").ProxyTo("assets").With(
+			StripPrefix("/assets"), SetRequestHeader("X-Route", "assets"),
+		)},
+		Docker: Docker(),
+	}
+	findings, err := Lint(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shadows []Finding
+	for _, finding := range findings {
+		if finding.Code == "FB001" {
+			shadows = append(shadows, finding)
+		}
+	}
+	if len(shadows) != 1 {
+		t.Fatalf("FB001 findings = %v, want one", shadows)
+	}
+	finding := shadows[0]
+	if finding.Path != "routes[0]" || finding.Severity != SeverityWarning ||
+		!strings.Contains(finding.Message, "move the whole route into Config.FallbackRoutes") ||
+		strings.Contains(finding.Message, "move its handler into Config.Fallback") {
+		t.Fatalf("migration advice loses native route composition: %+v", finding)
+	}
+	cfg.FallbackRoutes, cfg.Routes = cfg.Routes, nil
+	assertNoFallbackShadowFinding(t, cfg)
+}
+
+func assertNoFallbackShadowFinding(t *testing.T, cfg Config) {
+	t.Helper()
+	findings, err := Lint(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		if finding.Code == "FB001" {
+			t.Fatalf("recommended migration still shadows Docker: %+v", finding)
+		}
+	}
+}

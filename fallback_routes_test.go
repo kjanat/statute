@@ -76,6 +76,19 @@ func TestFallbackRoutesResolutionErrors(t *testing.T) {
 	}
 }
 
+func TestFallbackRoutesDiagnosticCompatibility(t *testing.T) {
+	t.Parallel()
+	cfg := fallbackRoutesConfig(Routes{nil})
+	cfg.Routes = Routes{nil}
+	if _, err := Resolve(cfg); err == nil || err.Error() != "route[0]: nil route" {
+		t.Fatalf("ordinary diagnostic changed: %v", err)
+	}
+	cfg.Routes = nil
+	if _, err := Resolve(cfg); err == nil || err.Error() != "fallback_routes[0]: nil route" {
+		t.Fatalf("terminal diagnostic changed: %v", err)
+	}
+}
+
 func TestFallbackRoutesActionsAndOrder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
