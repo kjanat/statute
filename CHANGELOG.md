@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-29
+
 ### Fixed
 
 - Fix premature settlement assertions in Docker lifecycle tests by waiting for the required published routing state. Add deterministic coverage for unrelated publications, publication during predicate evaluation, already-published state, and missing-publication deadlines.
@@ -253,7 +255,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/kjanat/statute/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kjanat/statute/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/kjanat/statute/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/kjanat/statute/compare/v0.5.0...v0.5.1
