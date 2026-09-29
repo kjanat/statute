@@ -34,7 +34,7 @@ jobs:
 
       - uses: ./.github/actions/sign-commits
         with:
-          signing-service-version: v1.1.2
+          signing-service-version: v1.2.0
           signing-service-url: ${{ vars.SIGNING_SERVICE_URL }}
           oidc-audience: gpg-signing-service
           key-id: ${{ vars.SIGNING_SERVICE_KEY_ID }}
