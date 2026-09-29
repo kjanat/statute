@@ -79,13 +79,15 @@ Nothing automerges. Renovate PRs go through the same review as every other chang
 There is no CI job validating `renovate.json`; Renovate reports its own config errors on the dashboard and in its PRs. If you want to check a config change locally before pushing, two traps are worth knowing, because both fail in a way that looks like a real answer:
 
 ```sh
-npx --yes --package renovate@44.46.0 renovate-config-validator --strict renovate.json
+npx --yes --package renovate@44.112.0 -- renovate-config-validator --strict --no-global renovate.json
 ```
 
 - Keep the `--package renovate@<version>` form. Bare `renovate-config-validator` is a _different_ npm package, a third-party placeholder with no executable, so `npx renovate-config-validator` never runs the real tool.
 - Keep the version pinned. Renovate 44 declares `engines.node: ^24.11.0`, so on a newer Node an unpinned install silently walks back to 37.440.7, whose validator reports false errors for `platformCommit`, `managerFilePatterns` and `github-runners`.
 
 Note what the validator does not do: it checks syntax, unknown keys and malformed regexes, but it exits 0 on a `packageRules` entry that matches nothing at all. A rule aimed at a manager or datasource that does not exist is accepted in silence, so if a rule is meant to disable or group something, confirm it by running an extraction rather than by a clean validator run.
+
+Passing a filename selects global-config validation unless `--no-global` is set. Use repository mode for this config; `--strict` also rejects configurations requiring migration. For Mend-hosted validation, open configuration PRs from `renovate/reconfigure` in this repository. Renovate validates that branch on its next run and reports status and any validation errors on the PR.
 
 ## Adding new middleware
 
