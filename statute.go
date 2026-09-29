@@ -24,8 +24,12 @@ type Config struct {
 	Routes    Routes
 	Docker    *DockerConfig
 
-	// Fallback answers requests no static route, Docker generation, or
-	// generation tombstone matched. Nil keeps the terminal 404.
+	// FallbackRoutes match after static/Docker misses, with Routes' pool and middleware semantics.
+	// Docker refusals and matched errors never fall through.
+	FallbackRoutes Routes
+
+	// Fallback answers requests left unmatched by all routing tiers,
+	// including FallbackRoutes. Nil keeps the terminal 404.
 	Fallback http.Handler
 
 	Defaults      Defaults

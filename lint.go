@@ -212,15 +212,20 @@ func ruleInsecureUpstreamTLS(c *resolved.Config) []Finding {
 }
 
 func ruleRateLimitMinimum(c *resolved.Config) []Finding {
+	out := rateLimitRouteFindings(c.Routes, "routes")
+	return append(out, rateLimitRouteFindings(c.FallbackRoutes, "fallback_routes")...)
+}
+
+func rateLimitRouteFindings(routes []*resolved.Route, path string) []Finding {
 	var out []Finding
-	for i, route := range c.Routes {
+	for i, route := range routes {
 		for j, mw := range route.Middleware {
 			if mw.Type == resolved.MWRateLimit && mw.RateLimitPerSecond > 0 && mw.RateLimitPerSecond < 1 {
 				out = append(out, Finding{
 					Severity: SeverityWarning,
 					Code:     "RL001",
 					Message:  fmt.Sprintf("RateLimit is below 1/s (configured: %.3f/s); legitimate clients may be blocked.", mw.RateLimitPerSecond),
-					Path:     fmt.Sprintf("routes[%d].middleware[%d]", i, j),
+					Path:     fmt.Sprintf("%s[%d].middleware[%d]", path, i, j),
 				})
 			}
 		}
@@ -239,15 +244,20 @@ func ruleBasicAuthOverHTTP(c *resolved.Config) []Finding {
 	if hasHTTPSContent {
 		return nil
 	}
+	out := basicAuthRouteFindings(c.Routes, "routes")
+	return append(out, basicAuthRouteFindings(c.FallbackRoutes, "fallback_routes")...)
+}
+
+func basicAuthRouteFindings(routes []*resolved.Route, path string) []Finding {
 	var out []Finding
-	for i, route := range c.Routes {
+	for i, route := range routes {
 		for j, mw := range route.Middleware {
 			if mw.Type == resolved.MWBasicAuth {
 				out = append(out, Finding{
 					Severity: SeverityError,
 					Code:     "AUTH001",
 					Message:  "BasicAuth is configured but no HTTPS listener serves content; credentials would travel in clear-text.",
-					Path:     fmt.Sprintf("routes[%d].middleware[%d]", i, j),
+					Path:     fmt.Sprintf("%s[%d].middleware[%d]", path, i, j),
 				})
 			}
 		}
@@ -438,7 +448,7 @@ const catchAllPattern = "/*"
 // request (no host, the catch-all pattern, no client constraint) declared
 // in a config that also configures Docker discovery or a fallback. Static
 // routes are consulted before the Docker generation, before that
-// generation's tombstones, and before Config.Fallback, so such a route
+// generation's tombstones, FallbackRoutes, and Config.Fallback, so such a route
 // answers first for every request and nothing behind it is ever reached.
 //
 // The finding is a warning: the route is legal and still serves. A
@@ -451,6 +461,10 @@ func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 	if shadowed == "" {
 		return nil
 	}
+	remedy := "move its handler into Config.Fallback, which is the tier meant for unmatched requests."
+	if len(c.FallbackRoutes) > 0 {
+		remedy = "move the route into Config.FallbackRoutes, which is the table meant for unmatched requests."
+	}
 	var out []Finding
 	for i, route := range c.Routes {
 		if route.Host != "" || route.Pattern != catchAllPattern || len(route.ClientIPCIDRs) > 0 {
@@ -460,8 +474,8 @@ func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 			Severity: SeverityWarning,
 			Code:     "FB001",
 			Message: fmt.Sprintf(
-				"Route matches every request (no host, %q, no ClientIPs) and static routes are consulted before every tier behind them, so %s can never be reached. Give it a host, a narrower pattern, or a ClientIPs constraint — or move its handler into Config.Fallback, which is the tier meant for unmatched requests.",
-				catchAllPattern, shadowed,
+				"Route matches every request (no host, %q, no ClientIPs) and static routes are consulted before every tier behind them, so %s can never be reached. Give it a host, a narrower pattern, or a ClientIPs constraint — or %s",
+				catchAllPattern, shadowed, remedy,
 			),
 			Path: fmt.Sprintf("routes[%d]", i),
 		})
@@ -470,7 +484,7 @@ func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 }
 
 // shadowedTiers names the dispatch tiers a hostless catch-all would hide,
-// or "" when the config declares neither. The tiers are named from the
+// or "" when the config declares none. The tiers are named from the
 // config: the finding cites Docker only when the config has it.
 //
 // With Docker configured the generation's tombstones are shadowed too: a
@@ -479,14 +493,15 @@ func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 // existed to stop.
 func shadowedTiers(c *resolved.Config) string {
 	const dockerTiers = "every Docker-discovered route, and the refusals standing in for the routers statute had to drop"
-	switch {
-	case c.Docker != nil && c.HasFallback:
-		return dockerTiers + ", and the fallback"
-	case c.Docker != nil:
-		return dockerTiers
-	case c.HasFallback:
-		return "the fallback"
-	default:
-		return ""
+	var tiers []string
+	if c.Docker != nil {
+		tiers = append(tiers, dockerTiers)
 	}
+	if len(c.FallbackRoutes) > 0 {
+		tiers = append(tiers, "the terminal fallback routes")
+	}
+	if c.HasFallback {
+		tiers = append(tiers, "the fallback")
+	}
+	return strings.Join(tiers, ", and ")
 }

@@ -56,18 +56,32 @@ Host spelling and matching semantics are unchanged; export, graph, and lint see
 the expanded routes. Mixing `Host` and `Hosts`, an empty host list or entry, and
 case-insensitive duplicate entries fail resolution.
 
-A configured `Fallback` handler is the router's terminal stage, reached only
-after both tables, the current generation's mutation quarantines, and its Docker
-tombstones miss; unset, the terminal behavior stays `http.NotFound`. It is not a
-route: it has no matcher and no route middleware. It lives inside the content
-router, so everything wrapping the router keeps its precedence over it:
+`FallbackRoutes` is an optional, declaration-ordered native route table at the
+existing terminal no-match boundary. Dispatch is ordinary static routes, unchanged
+Docker dispatch (including mutation quarantines and tombstones), terminal routes,
+then the existing `Fallback` handler or `http.NotFound`. A matched response,
+including a denial, proxy failure, or 404, never continues to another stage.
+Backend failover and error interception remain outside terminal route selection.
+
+Terminal routes use the same matcher, action, middleware resolver, and compiler
+as ordinary routes. They reference only declared `Config.Upstreams`, never
+ephemeral Docker pools. Both tables share each named pool's transport, health,
+selection, and lifecycle owner; middleware state remains route-owned. A
+fallback-only pool acquires and releases resources through the ordinary startup,
+rollback, and shutdown path. The resolved model and export retain a separate
+`FallbackRoutes` collection, with `fallback_routes[i]` diagnostic paths;
+`HasFallback` continues to describe only the application handler.
+
+The `Fallback` handler itself is not a route: it has no matcher and no route
+middleware. Both terminal stages live inside the content router, so everything
+wrapping the router keeps its precedence over them:
 pending HTTP-01 challenge responses on a plain HTTP listener, Alt-Svc, and
-listener observability all sit outside it, and a redirect-only listener never
-reaches it. What each ACME source claims differs: an automatic source absorbs
+listener observability all sit outside the router, and a redirect-only listener
+never reaches it. What each ACME source claims differs: an automatic source absorbs
 the whole challenge namespace, while a pinned HTTP-01 source answers only its
 pending tokens and passes other paths through to the router, where they are
-routed normally: a static or Docker route may match one, and the fallback is
-reached only when both tables and the tombstones miss.
+routed normally: a static or Docker route may match one, and terminal routing is
+reached only when those tables and the generation's refusals miss.
 
 A compiled route combines:
 
@@ -127,8 +141,9 @@ crosses service identities or becomes router
 middleware.
 
 A discarded registration leaves a **tombstone**: a matcher carrying no upstream,
-no middleware, and one fixed 404 refusal. Dispatch is static routes, then valid
-Docker routes, container-mutation quarantines, tombstones, and `Config.Fallback`.
+no middleware, and one fixed 404 refusal. Dispatch is static routes, then existing
+Docker dispatch with its container-mutation quarantines and tombstones, then
+`Config.FallbackRoutes`, and finally `Config.Fallback`.
 Tombstones exist because
 a dropped registration used to end in the terminal 404; with a fallback
 configured it would instead fall through into operator code that does not know

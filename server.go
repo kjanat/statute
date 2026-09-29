@@ -940,36 +940,16 @@ func (s *server) fallbackHandler() http.Handler {
 // buildRouter returns an http.Handler that dispatches to the matching
 // static route in declaration order, then to the docker provider's dynamic
 // routes when one is configured, then its container-mutation quarantines,
-// then that generation's tombstones, then the fallback handler.
+// then that generation's tombstones, then native fallback routes, then
+// the fallback handler.
 //
 // INVARIANT: the tombstone tier sits between discovered routes and the
 // fallback. A Docker registration whose routes were discarded must not
 // reach operator code that no longer knows it asked for a policy statute
 // could not supply. Envelopes cover every request such a router matched.
 func (s *server) buildRouter() http.Handler {
-	static := make([]compiledRoute, 0, len(s.cfg.Routes))
-	for _, r := range s.cfg.Routes {
-		var base http.Handler
-		switch {
-		case r.Upstream != nil:
-			base = s.pools[r.Upstream.Name]
-		case r.StaticDir != "":
-			base = http.FileServer(http.Dir(r.StaticDir))
-			base = stripPrefix(r.Pattern, base)
-		case r.Redirect != nil:
-			base = redirectRouteHandler(r.Redirect)
-		case r.Handler != nil:
-			base = r.Handler
-		}
-		h := wrapMiddleware(r.Middleware, base)
-		static = append(static, compiledRoute{
-			route:          r,
-			handler:        h,
-			matcher:        docker.CompileNative(r.Host, r.Pattern),
-			clientPrefixes: mustParsePrefixes(r.ClientIPCIDRs),
-		})
-	}
-
+	static := s.compileRoutes(s.cfg.Routes)
+	terminal := s.compileRoutes(s.cfg.FallbackRoutes)
 	fallback := s.fallbackHandler()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -984,8 +964,41 @@ func (s *server) buildRouter() http.Handler {
 				return
 			}
 		}
+		if h := findHandler(terminal, host, req); h != nil {
+			h.ServeHTTP(w, req)
+			return
+		}
 		fallback.ServeHTTP(w, req)
 	})
+}
+
+// compileRoutes builds independent route middleware chains over server-owned
+// pools. Both tables use this path; adding a route never acquires another pool.
+func (s *server) compileRoutes(routes []*resolved.Route) []compiledRoute {
+	compiled := make([]compiledRoute, 0, len(routes))
+	for _, r := range routes {
+		var base http.Handler
+		switch {
+		case r.Upstream != nil:
+			base = s.pools[r.Upstream.Name]
+		case r.StaticDir != "":
+			base = http.FileServer(http.Dir(r.StaticDir))
+			base = stripPrefix(r.Pattern, base)
+		case r.Redirect != nil:
+			base = redirectRouteHandler(r.Redirect)
+		case r.Handler != nil:
+			base = r.Handler
+		}
+		h := wrapMiddleware(r.Middleware, base)
+		compiled = append(compiled, compiledRoute{
+			route:          r,
+			handler:        h,
+			matcher:        docker.CompileNative(r.Host, r.Pattern),
+			clientPrefixes: mustParsePrefixes(r.ClientIPCIDRs),
+		})
+	}
+
+	return compiled
 }
 
 func stripPort(hostport string) string {

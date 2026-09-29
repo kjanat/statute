@@ -4,6 +4,7 @@ package main
 
 import (
 	"os"
+	"strings"
 
 	statute "statute.kjanat.dev"
 )
@@ -58,6 +59,10 @@ func dockerDiscoveryConfig(string) statute.Config {
 		Routes: statute.Routes{
 			statute.Match("/static/*").ProxyTo("static-origin").
 				With(statute.StripPrefix("/static"), statute.RequestID().From("X-Request-Id")),
+		},
+		FallbackRoutes: statute.Routes{
+			statute.Match("/*").Host(strings.TrimSuffix(os.Getenv("STATUTE_DISCOVERY_SERVICE"), "-dyn")+".test").
+				ProxyTo("static-origin").With(statute.ReplacePath("/echo"), statute.SetRequestHeader("X-Request-Id", "terminal-route")),
 		},
 		Docker: statute.Docker().Refresh("1s").PoolPolicy(os.Getenv("STATUTE_DISCOVERY_SERVICE"), statute.PoolPolicy{
 			HealthCheck:        statute.HealthCheck{Path: healthPath, Interval: "2s", Healthy: 1},

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Add `Config.FallbackRoutes` for native terminal routing after ordinary routes and Docker discovery, including its refusals. Reuse existing matchers, actions, middleware, and shared upstream pools without intercepting matched error responses; retain `Fallback` as the final application handler. Export, graph, and lint expose the separate terminal table.
+
 ## [0.7.2] - 2026-09-29
 
 ### Changed

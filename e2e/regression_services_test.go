@@ -30,8 +30,9 @@ func dockerCLI(ctx context.Context, t *testing.T, args ...string) {
 // TestRegression_DockerDiscovery proves label discovery against a real
 // Docker Engine: a labeled container becomes a route with its exact-key
 // code-owned pool policy, replacing it swaps the dynamic generation,
-// removal withdraws it, and the compiled static route shadows the
-// label-derived catch-all throughout.
+// removal reveals the terminal pool route, and the compiled static route
+// shadows the label-derived catch-all throughout. Refused registrations
+// must never be answered by the otherwise matching terminal route.
 func TestRegression_DockerDiscovery(t *testing.T) {
 	t.Parallel()
 	topo := harness.MustTopology(t, "1s1c")
@@ -71,17 +72,22 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	assertStatic := func() {
 		t.Helper()
 		body := mustClientGet(ctx, r, fmt.Sprintf("http://%s:%d/static/echo", host, harness.PortHTTP))
-		if !strings.Contains(body, `"origin":"origin-1"`) {
+		if !strings.Contains(body, `"origin":"origin-1"`) || strings.Contains(body, `"request_id":"terminal-route"`) {
 			t.Errorf("static route: %q; a dynamic catch-all shadowed compiled configuration", body)
 		}
 	}
 
-	// Before discovery: only the static route serves.
-	assertStatic()
-	if out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP)); err == nil {
-		t.Fatalf("dynamic path served before any labeled container existed: %s", out)
+	assertTerminal := func() {
+		t.Helper()
+		body := dynBody()
+		if !strings.Contains(body, `"origin":"origin-1"`) || !strings.Contains(body, `"request_id":"terminal-route"`) {
+			t.Fatalf("terminal pool route: %s", body)
+		}
 	}
 
+	// Before discovery: ordinary and terminal routes share the native pool.
+	assertStatic()
+	assertTerminal()
 	dyn1 := r.Compose.Project + "-dyn-1"
 	launch(dyn1, "origin-dyn1")
 	pollUntil(t, 30*time.Second, "labeled container becomes a route", func() (bool, string) {
@@ -103,14 +109,46 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	})
 	assertStatic()
 
-	// Withdrawal: removing the last labeled container withdraws the
-	// route entirely.
+	// Withdrawal retires the dynamic generation and reveals terminal routing.
 	dockerCLI(ctx, t, "rm", "-f", dyn2)
 	pollUntil(t, 30*time.Second, "route withdrawn", func() (bool, string) {
-		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
-		return err != nil, out
+		out := dynBody()
+		return strings.Contains(out, `"origin":"origin-1"`) && strings.Contains(out, `"request_id":"terminal-route"`), out
 	})
 	assertStatic()
+	assertTerminal()
+	assertDockerTerminalRefusal(ctx, t, r, assertStatic)
+}
+
+func assertDockerTerminalRefusal(ctx context.Context, t *testing.T, r *harness.Run, assertStatic func()) {
+	t.Helper()
+	network := r.Compose.Project + "_mesh"
+	image := os.Getenv("STATUTE_E2E_IMAGE")
+	host := r.Compose.Project + ".test"
+	// An invalid native registration owns a refusal envelope; it must not
+	// become an innocent miss that serves terminal content instead.
+	refused := r.Compose.Project + "-refused"
+	dockerCLI(ctx, t, "run", "-d", "--name", refused, "--network", network,
+		"--entrypoint", "/origin", "-e", "ORIGIN_ADDR=:7000",
+		"--label", "statute.e2e=1", "--label", "statute.enable=true",
+		"--label", "statute.host="+host, "--label", "statute.path=/*",
+		"--label", "statute.port=invalid", "--label", "statute.network="+network, image)
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", refused).Run() })
+	pollUntil(t, 30*time.Second, "invalid registration refuses terminal content", func() (bool, string) {
+		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
+		return err != nil && strings.Contains(out, "404"), out
+	})
+	r.ExecutePlan(ctx, harness.Client1, &report.Plan{Name: "terminal-refusal", Steps: []report.Step{{
+		Name: "Docker refusal precedes terminal route", URL: fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP),
+		TargetServer: harness.Server1, Proto: "h1", Count: 1,
+		Expect: report.Expect{Status: http.StatusNotFound},
+	}}})
+	assertStatic()
+	dockerCLI(ctx, t, "rm", "-f", refused)
+	pollUntil(t, 30*time.Second, "refusal withdrawal reveals terminal route", func() (bool, string) {
+		out, err := clientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
+		return err == nil && strings.Contains(out, `"origin":"origin-1"`) && strings.Contains(out, `"request_id":"terminal-route"`), out
+	})
 }
 
 // dockerOut runs one raw docker command and returns its output, failing

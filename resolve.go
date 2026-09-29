@@ -42,7 +42,7 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 	if err := resolveListeners(cfg.Listeners, out); err != nil {
 		return nil, err
 	}
-	if err := resolveRoutes(cfg.Routes, out); err != nil {
+	if err := resolveRoutes(cfg, out); err != nil {
 		return nil, err
 	}
 
@@ -236,21 +236,32 @@ func acmeChallengeDir(a *resolved.AutoTLS) string {
 	return "http01"
 }
 
-// resolveRoutes resolves every surface route and appends it to out.
-// Upstream references are looked up in out.Upstreams, so resolveUpstreams
-// must run first.
-func resolveRoutes(in []*Route, out *resolved.Config) error {
+func resolveRoutes(cfg Config, out *resolved.Config) error {
+	var err error
+	out.Routes, err = resolveRouteTable(cfg.Routes, out.Upstreams, "route")
+	if err != nil {
+		return err
+	}
+	out.FallbackRoutes, err = resolveRouteTable(cfg.FallbackRoutes, out.Upstreams, "fallback_routes")
+	return err
+}
+
+// resolveRouteTable normalizes either declaration table against the same
+// named pools. The path keeps diagnostics tied to the source declaration,
+// even when Hosts expands one declaration into several resolved routes.
+func resolveRouteTable(in []*Route, pools map[string]*resolved.Pool, path string) ([]*resolved.Route, error) {
+	var out []*resolved.Route
 	for i, r := range in {
 		if r == nil {
-			return fmt.Errorf("route[%d]: nil route", i)
+			return nil, fmt.Errorf("%s[%d]: nil route", path, i)
 		}
-		routes, err := resolveRouteExpansion(r, out.Upstreams)
+		routes, err := resolveRouteExpansion(r, pools)
 		if err != nil {
-			return fmt.Errorf("route[%d] %q: %w", i, r.pattern, err)
+			return nil, fmt.Errorf("%s[%d] %q: %w", path, i, r.pattern, err)
 		}
-		out.Routes = append(out.Routes, routes...)
+		out = append(out, routes...)
 	}
-	return nil
+	return out, nil
 }
 
 func resolveDefaults(d Defaults) (resolved.Defaults, error) {
@@ -1851,7 +1862,7 @@ func validateResolved(c *resolved.Config) error {
 			break
 		}
 	}
-	if !hasContentListener && len(c.Routes) > 0 {
+	if !hasContentListener && (len(c.Routes) > 0 || len(c.FallbackRoutes) > 0) {
 		return errors.New("routes declared but no listener serves content (all listeners are redirects)")
 	}
 	return nil

@@ -78,6 +78,11 @@ statute.Main(statute.Config{
 - **Static routes always win.** Label-derived routes are matched only after
   every compiled `Routes` entry, so a container label can never shadow
   configuration you shipped in the binary.
+- **Terminal routes run after discovery.** `Config.FallbackRoutes` is consulted
+  only after the current Docker generation has no match or refusal. It uses
+  declared native pools only; Docker pool names are unavailable. See [terminal native routes](routing.md#terminal-native-routes).
+  A matched Docker response, tombstone 404, or mutation quarantine 503 never
+  continues to either `FallbackRoutes` or `Fallback`.
 - Label-derived routes are ordered by specificity, not container order:
   host-scoped before host-agnostic, longer path prefixes first, and an exact
   native host before the broader Traefik host matcher when both overlap.
@@ -408,12 +413,12 @@ router or a container's native `statute.*` labels; both declare routes, and
 dropping either has the same consequence.
 
 A dropped registration does not simply vanish. Its traffic used to end in
-the terminal 404, and with a `Config.Fallback` configured it would instead
+the terminal 404, and with `Config.FallbackRoutes` or `Config.Fallback` configured it would instead
 fall through into operator code that does not know the registration asked
 for a policy statute could not supply. So the generation keeps a
 **tombstone** for it: a matcher with no upstream and no middleware that
 answers the same 404, consulted after the discovered routes and before the
-fallback. Without a fallback configured nothing changes.
+terminal route table and handler fallback. Without either configured nothing changes.
 
 A tombstone covers everything the dropped registration could have matched,
 never less. Constraints statute cannot represent are dropped:
