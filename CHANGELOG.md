@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix premature settlement assertions in Docker lifecycle tests by waiting for the required published routing state. Add deterministic coverage for unrelated publications, publication during predicate evaluation, already-published state, and missing-publication deadlines.
+
 ## [0.7.0] - 2026-09-29
 
 ### Added

@@ -629,9 +629,6 @@ func TestWorkloadRejectedCleanupPreservesBackoffAcrossSettlementReconcile(t *tes
 	var releaseListOnce sync.Once
 	releaseList := func() { releaseListOnce.Do(func() { close(listRelease) }) }
 	defer releaseList()
-	p.generationMu.Lock()
-	settled := p.generationChanged
-	p.generationMu.Unlock()
 	p.scheduleReconcile()
 	waitSignal(t, listStarted, "listing did not capture stopped state before cleanup rejection")
 	daemon.mu.Lock()
@@ -639,8 +636,9 @@ func TestWorkloadRejectedCleanupPreservesBackoffAcrossSettlementReconcile(t *tes
 	daemon.mu.Unlock()
 	releaseStop()
 	waitWorkloadPhase(t, p, workloadFailed)
+	before := p.srv.dynamic.Load()
 	releaseList()
-	waitSignal(t, settled, "cleanup settlement did not reconcile the running container")
+	waitPublishedWorkloadPool(t, p, before)
 
 	rec := runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
@@ -691,9 +689,6 @@ func TestWorkloadStaleStoppedSnapshotCannotInventExternalRepair(t *testing.T) {
 	releaseList := func() { releaseOnce.Do(func() { close(listRelease) }) }
 	defer releaseList()
 
-	p.generationMu.Lock()
-	reconciled := p.generationChanged
-	p.generationMu.Unlock()
 	p.scheduleReconcile()
 	waitSignal(t, listStarted, "stale stopped listing did not start")
 
@@ -709,8 +704,9 @@ func TestWorkloadStaleStoppedSnapshotCannotInventExternalRepair(t *testing.T) {
 	daemon.mu.Lock()
 	daemon.find("wl-1").health = "healthy"
 	daemon.mu.Unlock()
+	before := p.srv.dynamic.Load()
 	releaseList()
-	waitSignal(t, reconciled, "stale stopped listing did not trigger a fresh publication")
+	waitPublishedWorkloadPool(t, p, before)
 
 	rec = runRequest(t, p.srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil))
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
@@ -2782,6 +2778,49 @@ func waitRetiredWorkloadDormant(t *testing.T, w *workload) {
 	t.Fatalf("retired workload phase = %v, want dormant", w.phaseNow())
 }
 
+// Settlement and publication are separate. An unrelated generation can publish
+// while a stop is still owned, so its notification alone proves no settlement.
+func waitPublishedQuarantineRemoval(t *testing.T, p *dockerProvider) {
+	t.Helper()
+	waitPublishedTable(t, p, func(table *dynamicTable) bool {
+		return table != nil && len(table.quarantines) == 0
+	})
+}
+
+func waitPublishedWorkloadPool(t *testing.T, p *dockerProvider, before *dynamicTable) {
+	t.Helper()
+	waitPublishedTable(t, p, func(table *dynamicTable) bool {
+		return table != nil && table != before && table.pools["wl"] != nil
+	})
+}
+
+func waitPublishedTable(t *testing.T, p *dockerProvider, ready func(*dynamicTable) bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if err := awaitPublishedTable(ctx, p, ready); err != nil {
+		t.Fatalf("required routing table was not published: %v", err)
+	}
+}
+
+func awaitPublishedTable(ctx context.Context, p *dockerProvider, ready func(*dynamicTable) bool) error {
+	for {
+		// Subscribe before reading to retain a publication racing with the check.
+		p.generationMu.Lock()
+		changed := p.generationChanged
+		table := p.srv.dynamic.Load()
+		p.generationMu.Unlock()
+		if ready(table) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
 func TestWorkloadRetiredIssuedStopQuarantinesSiblingRoutes(t *testing.T) {
 	backendHits := make(chan struct{}, 2)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -2890,13 +2929,9 @@ func TestWorkloadRetiredStopSettlementRepublishesRoutes(t *testing.T) {
 	}})
 	mustSync(t, p)
 	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusServiceUnavailable, "")
-	p.generationMu.Lock()
-	republished := p.generationChanged
-	p.generationMu.Unlock()
-
 	releaseStop()
 	waitRetiredWorkloadDormant(t, w)
-	waitSignal(t, republished, "settled retired stop did not republish routes")
+	waitPublishedQuarantineRemoval(t, p)
 	daemon.mu.Lock()
 	daemon.find("combo-1").stopped = false
 	daemon.mu.Unlock()
@@ -2966,10 +3001,6 @@ func TestWorkloadMutationQuarantineBypassesServingCompilation(t *testing.T) {
 	if got := len(backendHits); got != 0 {
 		t.Fatalf("quarantine reached backend %d times", got)
 	}
-	p.generationMu.Lock()
-	republished := p.generationChanged
-	p.generationMu.Unlock()
-
 	daemon.mu.Lock()
 	daemon.failList = true
 	daemon.listStarted = make(chan struct{})
@@ -2985,7 +3016,7 @@ func TestWorkloadMutationQuarantineBypassesServingCompilation(t *testing.T) {
 	daemon.listRelease = nil
 	daemon.mu.Unlock()
 	close(listRelease)
-	waitSignal(t, republished, "settled quarantine did not publish normal refusal semantics")
+	waitPublishedQuarantineRemoval(t, p)
 	assertWorkloadTopologyRoutes(t, srv.buildRouter(), http.StatusNotFound, "")
 	if got := fallbackCalls.Load(); got != 0 {
 		t.Fatalf("normal refusal called fallback %d times", got)
@@ -3044,13 +3075,9 @@ func TestWorkloadMutationQuarantineSurvivesExtractionRefusal(t *testing.T) {
 		t.Fatal("quarantined extraction announced an ordinary route refusal")
 	}
 	assertRouteResponse(t, srv.buildRouter(), "http://invalid.example.com/", http.StatusServiceUnavailable, "")
-	p.generationMu.Lock()
-	republished := p.generationChanged
-	p.generationMu.Unlock()
-
 	releaseStop()
 	waitRetiredWorkloadDormant(t, w)
-	waitSignal(t, republished, "settlement did not republish extraction refusal")
+	waitPublishedQuarantineRemoval(t, p)
 	assertRouteResponse(t, srv.buildRouter(), "http://invalid.example.com/", http.StatusNotFound, "404 page not found\n")
 	if !dockerWarningContains(p, `router "ra"`, "dropping its routes") {
 		t.Fatal("settled extraction refusal was not announced")
@@ -3125,13 +3152,9 @@ func TestWorkloadMutationQuarantineSurvivesServiceKeyReplacement(t *testing.T) {
 	assertDynamicTableShape(t, srv.dynamic.Load(), 1, 1, 0, 1)
 	assertRouteResponse(t, srv.buildRouter(), "http://d.example.com/", http.StatusOK, "container-d")
 	assertRouteResponse(t, srv.buildRouter(), "http://quarantined.example.com/", http.StatusServiceUnavailable, "")
-	p.generationMu.Lock()
-	republished := p.generationChanged
-	p.generationMu.Unlock()
-
 	releaseStop()
 	waitRetiredWorkloadDormant(t, w)
-	waitSignal(t, republished, "settlement did not transfer the service grant")
+	waitPublishedQuarantineRemoval(t, p)
 	assertRouteResponse(t, srv.buildRouter(), "http://d.example.com/", http.StatusOK, "container-d")
 	assertRouteResponse(t, srv.buildRouter(), "http://quarantined.example.com/", http.StatusNotFound, "404 page not found\n")
 	if got := fallbackCalls.Load(); got != 0 {
@@ -3350,12 +3373,9 @@ func TestWorkloadStoppedObservationSettlesRenamedMutation(t *testing.T) {
 	if got := w.phaseNow(); got != workloadStopIssued {
 		t.Fatalf("in-flight renamed mutation phase = %v, want stop-issued", got)
 	}
-	p.generationMu.Lock()
-	republished := p.generationChanged
-	p.generationMu.Unlock()
 	releaseStop()
 	waitRetiredWorkloadDormant(t, w)
-	waitSignal(t, republished, "settled renamed mutation did not republish routes")
+	waitPublishedQuarantineRemoval(t, p)
 	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://b.example.com/", nil)); rec.Code != http.StatusTeapot {
 		t.Fatalf("settled renamed contribution = %d, want fallback 418", rec.Code)
 	}
