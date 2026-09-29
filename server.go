@@ -989,10 +989,10 @@ func (s *server) buildRouter() http.Handler {
 }
 
 func stripPort(hostport string) string {
-	if i := strings.LastIndex(hostport, ":"); i >= 0 {
+	if before, _, ok := strings.CutLast(hostport, ":"); ok {
 		// IPv6 hosts will be in brackets; conservative split only when no bracket.
-		if !strings.Contains(hostport[:i], "]") {
-			return hostport[:i]
+		if !strings.Contains(before, "]") {
+			return before
 		}
 	}
 	return hostport

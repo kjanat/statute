@@ -95,8 +95,8 @@ func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler, al
 func altSvcHandler(http3Addr string, alive *atomic.Bool, next http.Handler) http.Handler {
 	addr := strings.TrimSuffix(http3Addr, "/udp")
 	port := addr
-	if i := strings.LastIndex(addr, ":"); i >= 0 {
-		port = addr[i+1:]
+	if _, after, ok := strings.CutLast(addr, ":"); ok {
+		port = after
 	}
 	value := fmt.Sprintf(`h3=":%s"; ma=86400`, port)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
