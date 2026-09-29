@@ -60,6 +60,13 @@
   ],
   "packageRules": [
     {
+      "description": "The oracle tests the local checkout through replace, not a published Statute release",
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["traefikoracle/go.mod"],
+      "matchPackageNames": ["statute.kjanat.dev"],
+      "enabled": false
+    },
+    {
       "description": "Go module updates carry the go label",
       "matchManagers": ["gomod"],
       "addLabels": ["go"]
