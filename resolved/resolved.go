@@ -23,8 +23,12 @@ type Config struct {
 	Routes    []*Route
 	Docker    *Docker // nil unless Docker label discovery is enabled
 
+	// FallbackRoutes match in order after static and Docker routing miss.
+	// Upstream pointers share pools with Routes; Docker refusals take precedence.
+	FallbackRoutes []*Route
+
 	// Fallback is the handler after static routes, the current Docker
-	// generation, and that generation's refusal envelopes; nil is 404.
+	// generation's refusal envelopes, and FallbackRoutes; nil is 404.
 	Fallback http.Handler `json:"-"`
 	// HasFallback is true when Fallback is non-nil. The JSON export uses
 	// this marker; the handler itself does not serialize.

@@ -3,7 +3,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"strings"
 
 	statute "statute.kjanat.dev"
 )
@@ -48,6 +50,11 @@ func acmeHTTP01Config(string) statute.Config {
 // reach the project-scoped native service, and the static route must keep
 // shadowing its label-derived catch-all.
 func dockerDiscoveryConfig(string) statute.Config {
+	service := os.Getenv("STATUTE_DISCOVERY_SERVICE")
+	if strings.TrimSpace(service) == "" {
+		fmt.Fprintln(os.Stderr, "statute-e2e: STATUTE_DISCOVERY_SERVICE is required for the docker scenario")
+		os.Exit(2)
+	}
 	return statute.Config{
 		Listeners: statute.Listeners{statute.HTTP(":8080")},
 		Upstreams: statute.Upstreams{
@@ -59,7 +66,11 @@ func dockerDiscoveryConfig(string) statute.Config {
 			statute.Match("/static/*").ProxyTo("static-origin").
 				With(statute.StripPrefix("/static"), statute.RequestID().From("X-Request-Id")),
 		},
-		Docker: statute.Docker().Refresh("1s").PoolPolicy(os.Getenv("STATUTE_DISCOVERY_SERVICE"), statute.PoolPolicy{
+		FallbackRoutes: statute.Routes{
+			statute.Match("/*").Host(strings.TrimSuffix(service, "-dyn")+".test").
+				ProxyTo("static-origin").With(statute.ReplacePath("/echo"), statute.SetRequestHeader("X-Request-Id", "terminal-route")),
+		},
+		Docker: statute.Docker().Refresh("1s").PoolPolicy(service, statute.PoolPolicy{
 			HealthCheck:        statute.HealthCheck{Path: healthPath, Interval: "2s", Healthy: 1},
 			PassiveHealthCheck: statute.PassiveHealthCheck{FailureWindow: "30s", MaxFailures: 3},
 			Transport:          statute.Transport{ResponseHeaderTimeout: "5s"},

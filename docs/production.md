@@ -172,6 +172,26 @@ ENTRYPOINT ["/statute"]
 
 If you're on Kubernetes, the container needs `securityContext.capabilities.add: [NET_BIND_SERVICE]` and `runAsUser: 65532`. Or use ports >= 1024 inside the container and remap externally with a Service.
 
+## Terminal routing policy
+
+Use [`FallbackRoutes`](routing.md#terminal-native-routes) for a native pool-backed
+default page or host-scoped legacy application after Docker discovery. Do not put
+an unconstrained `Match("/*")` in ordinary `Routes` for this purpose: it wins before
+Docker and shadows both fallback stages (`FB001`). A final terminal catch-all is
+intentional operator policy; constrain it by host or client range when unknown
+traffic should retain the final 404.
+
+Configure timeout, upstream Host/TLS, and health policy on the named pool. Both
+tables reuse its one transport and lifecycle; keep auth, caching, and rewrites on
+the route that needs them. `AUTH001` and `RL001` audit terminal middleware too.
+Inspect `-export` and `-graph` to verify the separate terminal table and shared pools.
+
+Only **routing misses** reach fallback. A matched backend failure, denial,
+404, or 5xx is final. Docker tombstones and mutation quarantines refuse before
+either fallback stage; do not use the default page as a workaround for missing
+auth references or unresolved lifecycle operations. Listener trust, HTTP-01
+challenge ownership, final-status logs/metrics, and shutdown draining still apply.
+
 ## Reverse proxy chains
 
 statute is fine as the front door, but it also works as a middle layer. Common patterns:

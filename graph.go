@@ -16,13 +16,15 @@ const renderedNone = "none"
 // Render with `dot -Tsvg < input.dot > topology.svg` (or any DOT-capable
 // renderer).
 //
-// The graph has six kinds of nodes:
+// The graph contains these nodes:
 //
 //   - Listeners (Mrecord, blue) — one per HTTP/HTTPS listener.
 //   - Routes (rectangle, light yellow) — one per declared route.
+//   - Terminal routes (rectangle, light red): ordered after static/Docker misses.
 //   - Upstream pools (ellipse, green) — one per named pool.
 //   - Backends (circle, gray) — one per backend in each pool, dashed if Backup.
 //   - Docker pool policies (ellipse, dashed green): one per code-owned policy.
+//   - Docker workloads (ellipse, dashed yellow): one per workload policy.
 //   - The fallback (rectangle, light red): one, when Config.Fallback is set.
 //
 // Edges:
@@ -30,9 +32,10 @@ const renderedNone = "none"
 //   - Listener → Listener for redirect-to-https arrows.
 //   - Listener → Route for the matching relation (every content listener
 //     reaches every route; the host filter is on the route node).
-//   - Listener → Fallback, dashed, from the same content listeners
-//     (terminal stage after routes and Docker tombstones miss).
+//   - Listener → Terminal routes, dashed, after static/Docker dispatch misses.
+//   - Listener → Fallback, dashed, when no terminal route table is configured.
 //   - Route → Pool for ProxyTo.
+//   - Terminal route → Pool for ProxyTo, sharing ordinary route pools.
 //   - Pool → Backend for membership; weighted edges show Weight.
 //
 // The output is intentionally minimal — no fancy layout, no colour palette.
@@ -66,6 +69,7 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 	d.printf("  rankdir=LR;\n  node [fontname=\"Helvetica\"];\n  edge [fontname=\"Helvetica\"];\n\n")
 	graphListeners(d, r)
 	graphRoutes(d, r)
+	graphFallbackRoutes(d, r)
 	graphFallback(d, r)
 	graphUpstreams(d, r)
 	graphDockerPoolPolicies(d, r)
@@ -248,22 +252,49 @@ func graphRoutes(d *dotWriter, r *resolved.Config) {
 	}
 }
 
-// graphFallback renders the terminal fallback stage, reached from the same
-// content listeners the routes are, and from no redirect-only listener. It
-// is reached only when no route and no tombstone of the current Docker
-// generation matched; neither the generation's routes nor its tombstones
-// are in the resolved model, so neither is in the graph.
+// graphFallback renders the application handler after terminal routes miss,
+// or directly from content listeners when that table is absent. Dynamic Docker
+// routes and refusals precede both stages but are absent from the resolved graph.
 func graphFallback(d *dotWriter, r *resolved.Config) {
 	if !r.HasFallback {
 		return
 	}
 	d.printf("\n  // fallback\n")
 	d.printf("  F [shape=box, style=\"filled,rounded\", fillcolor=\"#f8d7da\", label=\"fallback\"];\n")
+	if n := len(r.FallbackRoutes); n > 0 {
+		d.printf("  FR%d -> F [label=\"no match\", style=dashed];\n", n-1)
+		return
+	}
 	for i, l := range r.Listeners {
 		if l.Redirect != "" {
 			continue
 		}
 		d.printf("  L%d -> F [color=\"#888\", style=dashed];\n", i)
+	}
+}
+
+// graphFallbackRoutes renders declaration order after static/Docker misses.
+// No-match edges link terminal routes and then the application fallback.
+func graphFallbackRoutes(d *dotWriter, r *resolved.Config) {
+	if len(r.FallbackRoutes) == 0 {
+		return
+	}
+	d.printf("\n  // terminal routes, after static and Docker dispatch miss\n")
+	for i, route := range r.FallbackRoutes {
+		host := route.Host
+		if host == "" {
+			host = "*"
+		}
+		label := fmt.Sprintf("terminal #%d: %s %s", i+1, host, route.Pattern)
+		d.printf("  FR%d [shape=box, style=\"filled,rounded\", fillcolor=\"#f8d7da\", label=%q];\n", i, label)
+		if i > 0 {
+			d.printf("  FR%d -> FR%d [label=\"no match\", style=dashed];\n", i-1, i)
+		}
+	}
+	for i, listener := range r.Listeners {
+		if listener.Redirect == "" {
+			d.printf("  L%d -> FR0 [label=\"static and Docker miss\", style=dashed];\n", i)
+		}
 	}
 }
 
@@ -289,6 +320,11 @@ func graphUpstreams(d *dotWriter, r *resolved.Config) {
 			continue
 		}
 		d.printf("  R%d -> P_%s;\n", i, sanitize(route.Upstream.Name))
+	}
+	for i, route := range r.FallbackRoutes {
+		if route.Upstream != nil {
+			d.printf("  FR%d -> P_%s;\n", i, sanitize(route.Upstream.Name))
+		}
 	}
 }
 
