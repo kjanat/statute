@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-29
+
+### Changed
+
+- Update Go dependencies, including gRPC 1.84.0, quic-go 0.63.0, OpenTelemetry 1.46.0, Brotli 1.2.5, and the Go networking, cryptography, and analysis packages. Synchronize the Traefik oracle dependencies while retaining the Kubernetes-compatible kube-openapi revision.
+
 ### Fixed
 
 - Request exact-version indexing directly from pkg.go.dev before release verification, and avoid cached version-list responses while polling.
@@ -259,7 +265,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/kjanat/statute/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/kjanat/statute/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kjanat/statute/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/kjanat/statute/compare/v0.5.1...v0.6.0
