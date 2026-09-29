@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/traefik/traefik/v3 v3.7.13
-	statute.kjanat.dev v0.0.0
+	statute.kjanat.dev v0.7.1
 )
 
 require (
