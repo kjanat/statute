@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Add `Config.FallbackRoutes` for native terminal routing after ordinary routes and Docker discovery, including its refusals. Reuse existing matchers, actions, middleware, and shared upstream pools without intercepting matched error responses; retain `Fallback` as the final application handler. Export, graph, and lint expose the separate terminal table.
 
+### Changed
+
+- Reuse a native Docker Engine client for e2e container operations and batch repeated network observations inside the client actor. Keep Compose topology declarations, preserve observation-only workload checks, and fail explicitly on unsupported daemon selection or cleanup errors.
+
 ## [0.7.2] - 2026-09-29
 
 ### Changed

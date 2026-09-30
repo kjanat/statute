@@ -91,11 +91,20 @@ linters:
         # strict allow-list keeps the boundary explicit for future deps.
         e2e-orchestrator:
           list-mode: strict
-          files: ["**/e2e/**", "!**/e2e/cmd/statute/**"]
+          files: ["**/e2e/**", "!**/e2e/cmd/statute/**", "!**/e2e/harness/**"]
           allow:
             - $gostd
             - statute.kjanat.dev/e2e
             - github.com/quic-go/quic-go
+        e2e-harness:
+          list-mode: strict
+          files: ["**/e2e/harness/**"]
+          allow:
+            - $gostd
+            - statute.kjanat.dev/e2e
+            - github.com/moby/moby/client
+            - github.com/moby/moby/api
+            - github.com/containerd/errdefs$
     errcheck:
       check-type-assertions: false
       check-blank: false

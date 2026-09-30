@@ -16,11 +16,10 @@ import (
 // daemon cannot absorb a scenario's whole budget, teardown included.
 const composeTimeout = 2 * time.Minute
 
-// Compose drives one uniquely named Compose project through the docker
-// CLI. The CLI (not an SDK) keeps the topology declarative in the
-// checked-in compose files and leaves this type responsible only for
-// naming, environment, and invocation discipline.
+// Compose keeps project topology declarative while Engine owns runtime operations.
 type Compose struct {
+	// Engine shares the frozen daemon selection and runtime operations.
+	Engine *Engine
 	// Project is the unique per-run project name; compose derives
 	// network and container names from it, which is what makes parallel
 	// and repeated runs collision-free.
@@ -39,7 +38,7 @@ type Compose struct {
 // environment.
 func (c *Compose) command(ctx context.Context, args ...string) *exec.Cmd {
 	full := make([]string, 0, 3+2*len(c.Files)+len(args))
-	full = append(full, "compose", "-p", c.Project)
+	full = append(full, "--host", c.Engine.Host(), "compose", "-p", c.Project)
 	for _, f := range c.Files {
 		full = append(full, "-f", f)
 	}
@@ -50,6 +49,7 @@ func (c *Compose) command(ctx context.Context, args ...string) *exec.Cmd {
 	for k, v := range c.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	cmd.Env = daemonEnvironment(cmd.Env)
 	return cmd
 }
 
@@ -99,20 +99,29 @@ func (c *Compose) RunClient(ctx context.Context, service string, clientArgs ...s
 
 // Signal delivers a signal to one service's container.
 func (c *Compose) Signal(ctx context.Context, service, signal string) error {
-	_, err := c.Output(ctx, "kill", "-s", signal, service)
-	return err
+	id, err := c.Engine.serviceID(ctx, service)
+	if err != nil {
+		return err
+	}
+	return c.Engine.signal(ctx, id, signal)
 }
 
 // Stop stops one service and waits up to timeout for it to exit.
 func (c *Compose) Stop(ctx context.Context, service string, timeout time.Duration) error {
-	_, err := c.Output(ctx, "stop", "-t", fmt.Sprintf("%d", int(timeout.Seconds())), service)
-	return err
+	id, err := c.Engine.serviceID(ctx, service)
+	if err != nil {
+		return err
+	}
+	return c.Engine.stop(ctx, id, timeout)
 }
 
 // Restart restarts one service and waits for its container to run.
 func (c *Compose) Restart(ctx context.Context, service string) error {
-	_, err := c.Output(ctx, "restart", "-t", "20", service)
-	return err
+	id, err := c.Engine.serviceID(ctx, service)
+	if err != nil {
+		return err
+	}
+	return c.Engine.restart(ctx, id)
 }
 
 // Down removes the project's containers, network, and volumes.

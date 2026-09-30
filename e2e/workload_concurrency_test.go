@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
@@ -29,19 +27,14 @@ func TestRegression_DockerWorkloadConcurrentColdStart(t *testing.T) {
 	name := r.Compose.Project + "-cold"
 	host := name + ".test"
 	network := r.Compose.Project + "_mesh"
-	id := strings.TrimSpace(dockerOut(ctx, t, "create", "--name", name, "--network", network, "--entrypoint", "/origin",
-		"-e", "ORIGIN_ID=origin-cold", "-e", "ORIGIN_INITIAL_HEALTH=down",
-		"--label", "statute.e2e=1", "--label", "statute.enable=true", "--label", "statute.path=/*",
-		"--label", "statute.host="+host, "--label", "statute.port=7000",
-		"--label", "statute.service="+name, "--label", "statute.network="+network,
-		os.Getenv("STATUTE_E2E_IMAGE")))
-	t.Cleanup(func() {
-		cleanup, stop := context.WithTimeout(context.Background(), 20*time.Second)
-		defer stop()
-		if out, err := exec.CommandContext(cleanup, "docker", "rm", "-f", name).CombinedOutput(); err != nil {
-			t.Errorf("remove cold origin: %v: %s", err, out)
-		}
-	})
+	id := mustCreateContainer(ctx, r, harness.ContainerSpec{
+		Name: name, Image: os.Getenv("STATUTE_E2E_IMAGE"), Network: network, Entrypoint: []string{"/origin"},
+		Env: []string{"ORIGIN_ID=origin-cold", "ORIGIN_INITIAL_HEALTH=down"},
+		Labels: map[string]string{
+			"statute.enable": "true", "statute.path": "/*", "statute.host": host,
+			"statute.port": "7000", "statute.service": name, "statute.network": network,
+		},
+	}, false)
 	awaitColdWorkload(ctx, t, r, "dormant", 0)
 	assertRecordedStarts(ctx, t, r, id, 0)
 
@@ -145,21 +138,13 @@ func assertColdJournal(t *testing.T, entries []journalEntry, planned map[string]
 
 func awaitColdWorkload(ctx context.Context, t *testing.T, r *harness.Run, phase string, waiters int) {
 	t.Helper()
-	pollUntil(t, 20*time.Second, fmt.Sprintf("cold workload %s with %d waiters", phase, waiters), func() (bool, string) {
-		body, err := clientGet(ctx, r, fmt.Sprintf("http://statute-1:%d/debug/workloads", harness.PortMetrics))
-		if err != nil {
-			return false, err.Error()
-		}
-		var snapshot workloadDiagnosticsReport
-		if err := json.Unmarshal([]byte(body), &snapshot); err != nil {
-			return false, err.Error()
-		}
-		if len(snapshot.Services) != 1 || snapshot.Services[0].Service != r.Compose.Project+"-cold" || len(snapshot.Services[0].Owners) != 1 {
-			return false, body
-		}
-		owner := snapshot.Services[0].Owners[0]
-		return owner.Current && !owner.Retired && owner.Phase == phase && owner.ActivationWaiters == waiters, body
-	})
+	awaitClient(ctx, r, fmt.Sprintf("http://statute-1:%d/debug/workloads", harness.PortMetrics), 20*time.Second,
+		report.WaitSpec{JSON: []report.JSONCondition{
+			jsonLength("/services", 1), jsonLength("/services/0/owners", 1),
+			jsonEqual(t, "/services/0/service", r.Compose.Project+"-cold"),
+			jsonEqual(t, "/services/0/owners/0/current", true), jsonEqual(t, "/services/0/owners/0/retired", false),
+			jsonEqual(t, "/services/0/owners/0/phase", phase), jsonEqual(t, "/services/0/owners/0/activation_waiters", waiters),
+		}})
 }
 
 func assertRecordedStarts(ctx context.Context, t *testing.T, r *harness.Run, id string, want uint64) {

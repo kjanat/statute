@@ -75,7 +75,7 @@ func assertInfrastructureCompose(t *testing.T, topology, scenario string) {
 		files = append(files, scenario)
 	}
 	compose := harness.Compose{
-		Project: project, Files: files, Dir: ".",
+		Project: project, Files: files, Dir: ".", Engine: newTestEngine(t, project),
 		Env: map[string]string{
 			"STATUTE_E2E_IMAGE": "statute-e2e:compose-check",
 			"STATUTE_SCENARIO":  "compose-isolation",
