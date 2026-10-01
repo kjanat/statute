@@ -1,6 +1,8 @@
 module statute.kjanat.dev/traefikoracle
 
-go 1.27.0
+go 1.27
+
+toolchain go1.27.1
 
 require (
 	github.com/traefik/traefik/v3 v3.7.13

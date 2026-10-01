@@ -6,7 +6,12 @@
     "cwd": "${configDir}",
     "commands": [
       { "command": "go tool goimports -local statute.kjanat.dev", "exts": ["go"], "cacheKeyFiles": ["go.mod"] },
-      { "command": "gofmt -s", "exts": ["go"], "cacheKeyFiles": ["go.mod"] }
+      { "command": "gofmt -s", "exts": ["go"], "cacheKeyFiles": ["go.mod"] },
+      {
+        "command": "tombi format - --stdin-filename {{file_path}}",
+        "exts": ["toml"],
+        "cacheKeyFiles": ["tombi.toml", ".mise.toml"],
+      },
     ],
   },
   "gofumpt": {
@@ -27,6 +32,6 @@
     "npm:@dprint/markdown@0.24.0",
     "npm:@jakebailey/dprint-plugin-gofumpt@0.0.18",
     "npm:@dprint/typescript@0.96.1",
-    "https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm@feab63e2babc12c43c633072f9bdddb02579ebb05e9ec215d9e252144876ad7c",
+    "https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
   ],
 }

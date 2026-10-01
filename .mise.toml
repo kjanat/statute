@@ -1,0 +1,11 @@
+[tools]
+dprint        = "0.58.0"
+golangci-lint = "2.14.0"
+node          = "26"
+tombi         = "1.5.10"
+
+[settings]
+idiomatic_version_file_enable_tools = ["go"]
+
+[bootstrap.repos]
+wiki = { url = "https://github.com/kjanat/statute.wiki.git" }
