@@ -1,0 +1,44 @@
+name: HTML rewrite research
+on:
+  pull_request:
+    paths:
+      - research/htmlrewrite/**
+      - .github/workflows/research-htmlrewrite.yml
+  push:
+    branches: [master]
+    paths:
+      - research/htmlrewrite/**
+      - .github/workflows/research-htmlrewrite.yml
+  workflow_dispatch:
+permissions: { contents: read }
+concurrency: { group: "htmlrewrite-${{ github.ref }}", cancel-in-progress: true }
+jobs:
+  experiment:
+    name: HTML rewrite (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: research/htmlrewrite
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: research/htmlrewrite/go.mod
+          cache-dependency-path: research/htmlrewrite/go.sum
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Build and test cgo-free host and native oracle
+        run: make test
+      - name: Race detector
+        if: matrix.runner == 'ubuntu-latest'
+        run: go test -race ./...
+      - name: Fuzz chunk boundaries
+        run: make fuzz
+      - name: Artifact identity
+        run: sha256sum artifact/rewriter.wasm

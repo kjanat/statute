@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add an isolated LOL HTML/Wasm research harness with streaming, native-parity, resource-limit, and instance-isolation checks. Document initial arm64 measurements and the remaining work before any HTML-rewriting API can ship.
+
 - Add `Config.FallbackRoutes` for native terminal routing after ordinary routes and Docker discovery, including its refusals. Reuse existing matchers, actions, middleware, and shared upstream pools without intercepting matched error responses; retain `Fallback` as the final application handler. Export, graph, and lint expose the separate terminal table.
 
 ### Changed

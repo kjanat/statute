@@ -84,7 +84,7 @@ bench: ## Run all microbenchmarks
 
 fuzz: ## Run every fuzz target for $(FUZZ_TIME)
 	@set -e; \
-	for target in $$(grep -rhoE '^func (Fuzz[A-Za-z0-9_]+)' --include='*_test.go' . | awk '{print $$2}' | sort -u); do \
+	for target in $$(git grep -hE '^func (Fuzz[A-Za-z0-9_]+)' -- '*_test.go' ':!research' | awk '{print $$2}' | sort -u); do \
 		echo "== $$target =="; \
 		$(GO) test -run=^$$ -fuzz="^$${target}$$" -fuzztime=$(FUZZ_TIME) ./...; \
 	done
