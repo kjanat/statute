@@ -1,4 +1,5 @@
 /.worktrees/
+/.worktree/
 /basic
 /cover.out
 /custom-gcl

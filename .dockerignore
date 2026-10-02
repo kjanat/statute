@@ -2,5 +2,7 @@
 # Actions checkout credentials into the builder context and its cache.
 .git
 .worktrees
+.worktree
 e2e/artifacts
 cover.out
+research
