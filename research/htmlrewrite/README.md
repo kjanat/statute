@@ -20,6 +20,32 @@ The generated Wasm and Cargo target directory are ignored. This research build n
 
 `make bench-native NATIVE_BENCH_ITERATIONS=1000` times repeated rewrites inside one Rust process. It excludes process startup and fixture construction. The Go matrix compares direct and batched output with 1-byte and 4-KiB input chunks, dense and sparse selector matches, and small and large documents. Separate benchmarks cover instance creation, concurrent streams, and first-output latency. [Recorded arm64 samples](results/arm64-2026-10-02.txt) accompany the report.
 
+## Execution and memory probes
+
+`BenchmarkPhases` times instance/parser setup, input feeding, and finish/close separately. A test-only wazero listener measures time inside the host `emit` function, including range checks and the copy into a discard writer. That time is **nested inside** the write/finish timings; do not add it again. These instrumented measurements include observer overhead and exclude compilation. They do not attribute individual Rust functions or measure only parser instructions.
+
+`BenchmarkCancellationCost` compares the normal engine against a deliberately non-cancellable control on a fixed, finite fixture. The control is unsafe for arbitrary input and is not a supported engine policy. The normal engine and memory probe retain cancellation, memory limits, and fresh instances.
+
+On Linux, run the load probe as its own process:
+
+```sh
+make memory LOAD_DURATION=20s LOAD_ROUNDS=3 LOAD_WORKERS=4
+```
+
+It shares one compiled engine, feeds dense 42-KiB documents in 4-KiB chunks, and discards output without collecting whole responses. Each worker owns and closes its stream; round expiry cancels and joins outstanding work. Completed and interrupted requests are reported separately. Samples every 25 ms record Go heap and `/proc/self/status` RSS; round boundaries record post-GC retention. Shutdown records both post-GC and explicitly scavenged memory. Forced GC/scavenging is outside the timed load. RSS and the kernel high-water mark are approximate process-wide readings; samples can miss transient peaks. This does not measure real-client buffering or establish an admission limit or absence of all leaks. The ordinary Linux test suite runs a 100-ms smoke case without memory/performance thresholds.
+
+Compare build settings with the same tests and benchmarks:
+
+```sh
+make test WASM_RUSTFLAGS='-Ctarget-feature=+simd128'
+CGO_ENABLED=0 go test -run '^$' -bench '^Benchmark(Phases|Rewrite|Instance)$' -benchtime=1s -count=3
+make test WASM_RUSTFLAGS='-Clink-arg=--initial-memory=2097152'
+CGO_ENABLED=0 go test -run '^$' -bench '^Benchmark(Phases|Rewrite|Instance)$' -benchtime=1s -count=3
+make build WASM_RUSTFLAGS=
+```
+
+`WASM_RUSTFLAGS` applies only to the Wasm build; it does not change the native oracle. Direct Go commands embed whichever artifact was built last, so restore the empty setting for baseline comparisons. Neither setting is selected by default. CI tests both variants on amd64 and arm64, including parity, limits, and terminal failures. The 32-MiB guest ceiling remains unchanged. A larger initial memory affects every instance, including small responses.
+
 ## Architecture contract
 
 - **Owner:** an isolated research harness. No Statute imports, configuration, resolved model, middleware ordering, or runtime dependency changes.
