@@ -1,0 +1,93 @@
+Raspberry Pi 5, linux/arm64, Go 1.27.1, Rust 1.97.1.
+Native and Go benchmarks ran sequentially. Each native case: 10 warmups,
+3 samples of 1000 iterations. Each Go case: 500ms/sample, 3 samples.
+Guest: 821a59adaacf94d28afe76e07b6a3012b05d64bd47cc1aacf35c8b81fec9dd18.
+
+Commands (from research/htmlrewrite):
+make bench-native NATIVE_BENCH_ITERATIONS=1000
+CGO_ENABLED=0 go test -run '^$' -bench 'Benchmark(Matrix|Instance|Parallel|FirstOutput)$' -benchtime=500ms -count=3
+
+BenchmarkNative/shape=dense/bytes=656/chunk=1 1000 56879 ns/op 11.53 MB/s
+BenchmarkNative/shape=dense/bytes=656/chunk=1 1000 56623 ns/op 11.59 MB/s
+BenchmarkNative/shape=dense/bytes=656/chunk=1 1000 56602 ns/op 11.59 MB/s
+BenchmarkNative/shape=dense/bytes=656/chunk=4096 1000 21757 ns/op 30.15 MB/s
+BenchmarkNative/shape=dense/bytes=656/chunk=4096 1000 21787 ns/op 30.11 MB/s
+BenchmarkNative/shape=dense/bytes=656/chunk=4096 1000 21720 ns/op 30.20 MB/s
+BenchmarkNative/shape=dense/bytes=41984/chunk=1 1000 3422696 ns/op 12.27 MB/s
+BenchmarkNative/shape=dense/bytes=41984/chunk=1 1000 3415486 ns/op 12.29 MB/s
+BenchmarkNative/shape=dense/bytes=41984/chunk=1 1000 3437933 ns/op 12.21 MB/s
+BenchmarkNative/shape=dense/bytes=41984/chunk=4096 1000 1205731 ns/op 34.82 MB/s
+BenchmarkNative/shape=dense/bytes=41984/chunk=4096 1000 1199438 ns/op 35.00 MB/s
+BenchmarkNative/shape=dense/bytes=41984/chunk=4096 1000 1192766 ns/op 35.20 MB/s
+BenchmarkNative/shape=sparse/bytes=671/chunk=1 1000 41681 ns/op 16.10 MB/s
+BenchmarkNative/shape=sparse/bytes=671/chunk=1 1000 42026 ns/op 15.97 MB/s
+BenchmarkNative/shape=sparse/bytes=671/chunk=1 1000 42037 ns/op 15.96 MB/s
+BenchmarkNative/shape=sparse/bytes=671/chunk=4096 1000 10051 ns/op 66.76 MB/s
+BenchmarkNative/shape=sparse/bytes=671/chunk=4096 1000 10067 ns/op 66.65 MB/s
+BenchmarkNative/shape=sparse/bytes=671/chunk=4096 1000 10049 ns/op 66.77 MB/s
+BenchmarkNative/shape=sparse/bytes=42976/chunk=1 1000 2439485 ns/op 17.62 MB/s
+BenchmarkNative/shape=sparse/bytes=42976/chunk=1 1000 2427321 ns/op 17.71 MB/s
+BenchmarkNative/shape=sparse/bytes=42976/chunk=1 1000 2428377 ns/op 17.70 MB/s
+BenchmarkNative/shape=sparse/bytes=42976/chunk=4096 1000 407893 ns/op 105.36 MB/s
+BenchmarkNative/shape=sparse/bytes=42976/chunk=4096 1000 408068 ns/op 105.32 MB/s
+BenchmarkNative/shape=sparse/bytes=42976/chunk=4096 1000 407392 ns/op 105.49 MB/s
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkMatrix/shape=dense/bytes=656/chunk=1/buffered=false-4         	     212	   2887978 ns/op	   0.23 MB/s	       305.0 callbacks/op	 3175387 B/op	    4712 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=1/buffered=false-4         	     231	   2582433 ns/op	   0.25 MB/s	       305.0 callbacks/op	 3174753 B/op	    4710 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=1/buffered=false-4         	     224	   2610881 ns/op	   0.25 MB/s	       305.0 callbacks/op	 3173551 B/op	    4708 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=1/buffered=true-4          	     219	   2737700 ns/op	   0.24 MB/s	       144.0 callbacks/op	 3172397 B/op	    4548 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=1/buffered=true-4          	     235	   2626448 ns/op	   0.25 MB/s	       144.0 callbacks/op	 3172781 B/op	    4549 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=1/buffered=true-4          	     234	   2586790 ns/op	   0.25 MB/s	       144.0 callbacks/op	 3172398 B/op	    4548 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=4096/buffered=false-4      	     388	   1678218 ns/op	   0.39 MB/s	       209.0 callbacks/op	 3046990 B/op	    1337 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=4096/buffered=false-4      	     364	   1633752 ns/op	   0.40 MB/s	       209.0 callbacks/op	 3047027 B/op	    1337 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=4096/buffered=false-4      	     376	   1612715 ns/op	   0.41 MB/s	       209.0 callbacks/op	 3047015 B/op	    1337 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=4096/buffered=true-4       	     396	   1674257 ns/op	   0.39 MB/s	         1.000 callbacks/op	 3043073 B/op	    1125 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=4096/buffered=true-4       	     362	   1556102 ns/op	   0.42 MB/s	         1.000 callbacks/op	 3043100 B/op	    1125 allocs/op
+BenchmarkMatrix/shape=dense/bytes=656/chunk=4096/buffered=true-4       	     405	   1573150 ns/op	   0.42 MB/s	         1.000 callbacks/op	 3043070 B/op	    1125 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=1/buffered=false-4       	       7	  79087204 ns/op	   0.53 MB/s	     19457 callbacks/op	11615307 B/op	  230566 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=1/buffered=false-4       	       7	  77595224 ns/op	   0.54 MB/s	     19457 callbacks/op	11596937 B/op	  230533 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=1/buffered=false-4       	       7	  79023386 ns/op	   0.53 MB/s	     19457 callbacks/op	11584704 B/op	  230509 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=1/buffered=true-4        	       7	  74399810 ns/op	   0.56 MB/s	      9216 callbacks/op	11574386 B/op	  220393 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=1/buffered=true-4        	       7	  78227268 ns/op	   0.54 MB/s	      9216 callbacks/op	11510820 B/op	  220268 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=1/buffered=true-4        	       7	  76504325 ns/op	   0.55 MB/s	      9216 callbacks/op	11510827 B/op	  220268 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=4096/buffered=false-4    	      33	  17635911 ns/op	   2.38 MB/s	     13314 callbacks/op	 3476380 B/op	   14498 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=4096/buffered=false-4    	      32	  17319300 ns/op	   2.42 MB/s	     13314 callbacks/op	 3476407 B/op	   14498 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=4096/buffered=false-4    	      33	  18613334 ns/op	   2.26 MB/s	     13314 callbacks/op	 3476405 B/op	   14498 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=4096/buffered=true-4     	      36	  16185588 ns/op	   2.59 MB/s	        11.00 callbacks/op	 3454541 B/op	    1189 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=4096/buffered=true-4     	      38	  15590217 ns/op	   2.69 MB/s	        11.00 callbacks/op	 3454441 B/op	    1188 allocs/op
+BenchmarkMatrix/shape=dense/bytes=41984/chunk=4096/buffered=true-4     	      33	  16769928 ns/op	   2.50 MB/s	        11.00 callbacks/op	 3454484 B/op	    1189 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=1/buffered=false-4        	     207	   2770322 ns/op	   0.24 MB/s	       575.0 callbacks/op	 3175538 B/op	    5051 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=1/buffered=false-4        	     236	   2490677 ns/op	   0.27 MB/s	       575.0 callbacks/op	 3175484 B/op	    5051 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=1/buffered=false-4        	     217	   2736022 ns/op	   0.25 MB/s	       575.0 callbacks/op	 3175485 B/op	    5051 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=1/buffered=true-4         	     210	   2925669 ns/op	   0.23 MB/s	       564.0 callbacks/op	 3175475 B/op	    5042 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=1/buffered=true-4         	     225	   2630322 ns/op	   0.26 MB/s	       564.0 callbacks/op	 3175471 B/op	    5041 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=1/buffered=true-4         	     229	   2737449 ns/op	   0.25 MB/s	       564.0 callbacks/op	 3175489 B/op	    5042 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=4096/buffered=false-4     	     396	   1533139 ns/op	   0.44 MB/s	        15.00 callbacks/op	 3041891 B/op	    1139 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=4096/buffered=false-4     	     366	   1477808 ns/op	   0.45 MB/s	        15.00 callbacks/op	 3041957 B/op	    1139 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=4096/buffered=false-4     	     400	   1400475 ns/op	   0.48 MB/s	        15.00 callbacks/op	 3041979 B/op	    1139 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=4096/buffered=true-4      	     375	   1612344 ns/op	   0.42 MB/s	         1.000 callbacks/op	 3041692 B/op	    1124 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=4096/buffered=true-4      	     374	   1439940 ns/op	   0.47 MB/s	         1.000 callbacks/op	 3041683 B/op	    1124 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=671/chunk=4096/buffered=true-4      	     428	   1501402 ns/op	   0.45 MB/s	         1.000 callbacks/op	 3041731 B/op	    1124 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=1/buffered=false-4      	       8	  69785622 ns/op	   0.62 MB/s	     37313 callbacks/op	11723314 B/op	  253323 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=1/buffered=false-4      	       8	  71517736 ns/op	   0.60 MB/s	     37313 callbacks/op	11723310 B/op	  253323 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=1/buffered=false-4      	       8	  68110991 ns/op	   0.63 MB/s	     37313 callbacks/op	11723314 B/op	  253323 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=1/buffered=true-4       	       8	  68767129 ns/op	   0.62 MB/s	     36992 callbacks/op	11721006 B/op	  253003 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=1/buffered=true-4       	       7	  71777701 ns/op	   0.60 MB/s	     36992 callbacks/op	11720998 B/op	  253003 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=1/buffered=true-4       	       7	  72201795 ns/op	   0.60 MB/s	     36992 callbacks/op	11721058 B/op	  253003 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=4096/buffered=false-4   	     112	   5289061 ns/op	   8.13 MB/s	       459.0 callbacks/op	 3188879 B/op	    1638 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=4096/buffered=false-4   	     100	   5613250 ns/op	   7.66 MB/s	       459.0 callbacks/op	 3188970 B/op	    1639 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=4096/buffered=false-4   	     100	   6077417 ns/op	   7.07 MB/s	       459.0 callbacks/op	 3188954 B/op	    1639 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=4096/buffered=true-4    	      94	   5569596 ns/op	   7.72 MB/s	        11.00 callbacks/op	 3250995 B/op	    1188 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=4096/buffered=true-4    	     100	   5179890 ns/op	   8.30 MB/s	        11.00 callbacks/op	 3251026 B/op	    1188 allocs/op
+BenchmarkMatrix/shape=sparse/bytes=42976/chunk=4096/buffered=true-4    	     100	   5356542 ns/op	   8.02 MB/s	        11.00 callbacks/op	 3251026 B/op	    1188 allocs/op
+BenchmarkInstance-4                                                    	     429	   1307817 ns/op	 3039716 B/op	    1112 allocs/op
+BenchmarkInstance-4                                                    	     501	   1328039 ns/op	 3039723 B/op	    1112 allocs/op
+BenchmarkInstance-4                                                    	     368	   1436446 ns/op	 3039737 B/op	    1112 allocs/op
+BenchmarkParallel-4                                                    	     122	   5885378 ns/op	   7.13 MB/s	 3454220 B/op	    1187 allocs/op
+BenchmarkParallel-4                                                    	     117	   6131677 ns/op	   6.85 MB/s	 3454223 B/op	    1187 allocs/op
+BenchmarkParallel-4                                                    	     114	   5896294 ns/op	   7.12 MB/s	 3454166 B/op	    1187 allocs/op
+BenchmarkFirstOutput-4                                                 	      34	  15673254 ns/op	   2733399 first-byte-ns/op	 3139110 B/op	    1185 allocs/op
+BenchmarkFirstOutput-4                                                 	      32	  16435836 ns/op	   2889196 first-byte-ns/op	 3139072 B/op	    1185 allocs/op
+BenchmarkFirstOutput-4                                                 	      36	  15943135 ns/op	   2685566 first-byte-ns/op	 3139116 B/op	    1185 allocs/op

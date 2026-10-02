@@ -25,6 +25,7 @@ type outputSink struct {
 	writer  io.Writer
 	limit   int
 	written int
+	calls   int
 	err     error
 }
 
@@ -37,8 +38,10 @@ func newEngine(ctx context.Context) (*engine, error) {
 	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler().
 		WithMemoryLimitPages(512).WithCloseOnContextDone(true))
 	_, err := runtime.NewHostModuleBuilder("sink").NewFunctionBuilder().
-		WithFunc(func(ctx context.Context, module api.Module, pointer, length uint32) {
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, module api.Module, stack []uint64) {
+			pointer, length := api.DecodeU32(stack[0]), api.DecodeU32(stack[1])
 			sink := ctx.Value(sinkKey{}).(*outputSink)
+			sink.calls++
 			bytes, ok := module.Memory().Read(pointer, length)
 			if !ok {
 				sink.err = errors.New("guest emitted an invalid memory range")
@@ -57,7 +60,7 @@ func newEngine(ctx context.Context) (*engine, error) {
 				// The Rust sink is infallible; wazero turns this panic into a call error.
 				panic(sink.err)
 			}
-		}).Export("emit").Instantiate(ctx)
+		}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, nil).Export("emit").Instantiate(ctx)
 	if err != nil {
 		_ = runtime.Close(context.Background())
 		return nil, fmt.Errorf("instantiate output sink: %w", err)
@@ -74,14 +77,19 @@ func (e *engine) close() error { return e.runtime.Close(context.Background()) }
 
 // A stream has one caller; concurrent responses use independent instances.
 type stream struct {
-	module api.Module
-	ctx    context.Context
-	sink   *outputSink
-	input  uint32
-	done   bool
+	module    api.Module
+	functions map[string]api.Function
+	ctx       context.Context
+	sink      *outputSink
+	input     uint32
+	done      bool
 }
 
 func (e *engine) newStream(ctx context.Context, writer io.Writer, limit int) (*stream, error) {
+	return e.newStreamMode(ctx, writer, limit, true)
+}
+
+func (e *engine) newStreamMode(ctx context.Context, writer io.Writer, limit int, buffered bool) (*stream, error) {
 	if writer == nil || limit < 0 {
 		return nil, errors.New("invalid output sink")
 	}
@@ -91,8 +99,21 @@ func (e *engine) newStream(ctx context.Context, writer io.Writer, limit int) (*s
 	if err != nil {
 		return nil, fmt.Errorf("instantiate rewriter: %w", err)
 	}
-	s := &stream{module: module, ctx: ctx, sink: sink}
-	if err := s.invoke("create"); err != nil {
+	s := &stream{module: module, ctx: ctx, sink: sink, functions: make(map[string]api.Function, 3)}
+	// Function handles carry call state, so reuse stays within one stream.
+	for _, name := range []string{"create", "write", "finish"} {
+		fn := module.ExportedFunction(name)
+		if fn == nil {
+			_ = s.close()
+			return nil, fmt.Errorf("guest is missing %s", name)
+		}
+		s.functions[name] = fn
+	}
+	var mode uint64
+	if buffered {
+		mode = 1
+	}
+	if err := s.invoke("create", mode); err != nil {
 		return nil, err
 	}
 	pointer, err := module.ExportedFunction("input_pointer").Call(ctx)
@@ -108,7 +129,12 @@ func (s *stream) invoke(name string, args ...uint64) error {
 	if s.done {
 		return errors.New("rewriter is closed or finished")
 	}
-	result, err := s.module.ExportedFunction(name).Call(s.ctx, args...)
+	fn := s.functions[name]
+	if fn == nil {
+		_ = s.close()
+		return fmt.Errorf("unknown guest operation %q", name)
+	}
+	result, err := fn.Call(s.ctx, args...)
 	if err == nil && (len(result) != 1 || result[0] != 0) {
 		err = fmt.Errorf("guest %s failed: %v", name, result)
 	}

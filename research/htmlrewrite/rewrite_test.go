@@ -28,23 +28,28 @@ func testEngine(t testing.TB) *engine {
 }
 
 func rewrite(e *engine, input []byte, chunk int) ([]byte, error) {
+	output, _, err := rewriteMode(e, input, chunk, true)
+	return output, err
+}
+
+func rewriteMode(e *engine, input []byte, chunk int, buffered bool) ([]byte, int, error) {
 	var output bytes.Buffer
-	s, err := e.newStream(context.Background(), &output, 8<<20)
+	s, err := e.newStreamMode(context.Background(), &output, 8<<20, buffered)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer s.close()
 	for len(input) > 0 {
 		n := min(chunk, len(input))
 		if err := s.write(input[:n]); err != nil {
-			return nil, err
+			return nil, s.sink.calls, err
 		}
 		input = input[n:]
 	}
 	if err := s.finish(); err != nil {
-		return nil, err
+		return nil, s.sink.calls, err
 	}
-	return output.Bytes(), nil
+	return output.Bytes(), s.sink.calls, nil
 }
 
 func TestStreamingTransform(t *testing.T) {
@@ -84,6 +89,8 @@ func TestNativeParityAndChunkBoundaries(t *testing.T) {
 		`<div class="remove"><a class="rewrite">nested</a></div><a class="rewrite">x</a>`,
 		`<script>var x = "<a class='rewrite'>";</script><textarea>&amp;</textarea>`,
 		"",
+		string(benchmarkInput("dense", 1024)),
+		string(benchmarkInput("sparse", 1024)),
 	}
 	for i, input := range inputs {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
@@ -100,9 +107,11 @@ func TestNativeParityAndChunkBoundaries(t *testing.T) {
 				t.Fatalf("native oracle: %v", err)
 			}
 			for _, chunk := range []int{1, 2, 7, 4096, chunkSize + 1} {
-				got, err := rewrite(e, []byte(input), chunk)
-				if err != nil || !bytes.Equal(got, want) {
-					t.Fatalf("chunk %d: error %v, got %q, want %q", chunk, err, got, want)
+				for _, buffered := range []bool{false, true} {
+					got, _, err := rewriteMode(e, []byte(input), chunk, buffered)
+					if err != nil || !bytes.Equal(got, want) {
+						t.Fatalf("chunk %d buffered %v: error %v, got %q, want %q", chunk, buffered, err, got, want)
+					}
 				}
 			}
 		})
@@ -242,7 +251,7 @@ func TestGuestRejectsInvalidLifecycle(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []uint64
-	}{{"create", nil}, {"write", []uint64{chunkSize + 1}}} {
+	}{{"create", []uint64{1}}, {"write", []uint64{chunkSize + 1}}} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, err := e.newStream(context.Background(), io.Discard, 4096)
 			if err != nil {
@@ -336,9 +345,11 @@ func FuzzChunkBoundaries(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input []byte, size uint16) {
 		input = input[:min(len(input), 8192)]
 		want, baselineErr := rewrite(e, input, chunkSize)
-		got, err := rewrite(e, input, int(size)%256+1)
-		if (err == nil) != (baselineErr == nil) || (err == nil && !bytes.Equal(got, want)) {
-			t.Fatalf("chunking changed result: %q / %v; baseline %q / %v", got, err, want, baselineErr)
+		for _, buffered := range []bool{false, true} {
+			got, _, err := rewriteMode(e, input, int(size)%256+1, buffered)
+			if (err == nil) != (baselineErr == nil) || (err == nil && !bytes.Equal(got, want)) {
+				t.Fatalf("chunking changed result: %q / %v; baseline %q / %v", got, err, want, baselineErr)
+			}
 		}
 	})
 }

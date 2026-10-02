@@ -3,12 +3,54 @@ use lol_html::{HtmlRewriter, MemorySettings, Settings, element};
 use std::cell::RefCell;
 
 const INPUT_SIZE: usize = 65536;
+#[cfg(target_arch = "wasm32")]
+const OUTPUT_SIZE: usize = 16384;
 static mut INPUT: [u8; INPUT_SIZE] = [0; INPUT_SIZE];
 type Rewriter = HtmlRewriter<'static, fn(&[u8])>;
 
 thread_local! {
     static REWRITER: RefCell<Option<Rewriter>> = const { RefCell::new(None) };
     static OUTPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(target_arch = "wasm32")]
+struct Batch {
+    bytes: [u8; OUTPUT_SIZE],
+    length: usize,
+    enabled: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Batch {
+    fn flush(&mut self) {
+        if self.length != 0 {
+            unsafe { emit(self.bytes.as_ptr() as u32, self.length as u32) };
+            self.length = 0;
+        }
+    }
+
+    fn write(&mut self, mut bytes: &[u8]) {
+        if !self.enabled {
+            unsafe { emit(bytes.as_ptr() as u32, bytes.len() as u32) };
+            return;
+        }
+        while !bytes.is_empty() {
+            let count = bytes.len().min(OUTPUT_SIZE - self.length);
+            self.bytes[self.length..self.length + count].copy_from_slice(&bytes[..count]);
+            self.length += count;
+            bytes = &bytes[count..];
+            if self.length == OUTPUT_SIZE {
+                self.flush();
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static BATCH: RefCell<Batch> = const { RefCell::new(Batch {
+        bytes: [0; OUTPUT_SIZE], length: 0, enabled: true,
+    }) };
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -19,11 +61,14 @@ unsafe extern "C" {
 
 fn output(bytes: &[u8]) {
     #[cfg(target_arch = "wasm32")]
-    unsafe {
-        emit(bytes.as_ptr() as u32, bytes.len() as u32)
-    };
+    BATCH.with_borrow_mut(|batch| batch.write(bytes));
     #[cfg(not(target_arch = "wasm32"))]
     OUTPUT.with_borrow_mut(|out| out.extend_from_slice(bytes));
+}
+
+fn flush_output() {
+    #[cfg(target_arch = "wasm32")]
+    BATCH.with_borrow_mut(Batch::flush);
 }
 
 fn settings() -> Settings<'static, 'static> {
@@ -43,11 +88,19 @@ fn settings() -> Settings<'static, 'static> {
 // One mutable parser per instance. The host destroys the instance after any
 // error; it never pools a partially consumed or poisoned parser.
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
-pub extern "C" fn create() -> u32 {
+pub extern "C" fn create(buffered: u32) -> u32 {
+    if buffered > 1 {
+        return 5;
+    }
     REWRITER.with_borrow_mut(|slot| {
         if slot.is_some() {
             return 1;
         }
+        #[cfg(target_arch = "wasm32")]
+        BATCH.with_borrow_mut(|batch| {
+            batch.enabled = buffered == 1;
+            batch.length = 0;
+        });
         *slot = Some(HtmlRewriter::new(settings(), output as fn(&[u8])));
         0
     })
@@ -73,6 +126,7 @@ pub extern "C" fn write(length: u32) -> u32 {
             .as_mut()
             .is_some_and(|rewriter| rewriter.write(input).is_ok());
         if ok {
+            flush_output();
             0
         } else {
             *slot = None;
@@ -86,6 +140,7 @@ pub extern "C" fn finish() -> u32 {
     REWRITER.with_borrow_mut(|slot| match slot.take() {
         Some(rewriter) => {
             if rewriter.end().is_ok() {
+                flush_output();
                 0
             } else {
                 4
