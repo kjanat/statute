@@ -35,8 +35,13 @@ type engine struct {
 }
 
 func newEngine(ctx context.Context) (*engine, error) {
-	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler().
+	return newEngineConfigured(ctx, wazero.NewRuntimeConfigCompiler().
 		WithMemoryLimitPages(512).WithCloseOnContextDone(true))
+}
+
+// Alternate configuration is used only for controlled research comparisons.
+func newEngineConfigured(ctx context.Context, config wazero.RuntimeConfig) (*engine, error) {
+	runtime := wazero.NewRuntimeWithConfig(ctx, config)
 	_, err := runtime.NewHostModuleBuilder("sink").NewFunctionBuilder().
 		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, module api.Module, stack []uint64) {
 			pointer, length := api.DecodeU32(stack[0]), api.DecodeU32(stack[1])

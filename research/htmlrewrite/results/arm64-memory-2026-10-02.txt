@@ -1,0 +1,30 @@
+Raspberry Pi 5, linux/arm64, Go 1.27.1, Rust 1.97.1, GOMAXPROCS=4.
+Dense 41984-byte fixture, 4096-byte input chunks, io.Discard output.
+Each round has a fresh deadline, shared compiled engine, and fresh instances.
+Sampling interval: 25ms. All memory sizes in bytes. RSS/HWM are approximate.
+
+BASELINE: make memory LOAD_DURATION=20s LOAD_ROUNDS=3 LOAD_WORKERS=4
+Guest: 821a59adaacf94d28afe76e07b6a3012b05d64bd47cc1aacf35c8b81fec9dd18
+before_engine {"heap_alloc":252480,"heap_inuse":753664,"heap_released":2981888,"total_alloc":480560,"num_gc":1,"goroutines":2,"rss":8404992,"process_hwm":8404992}
+compiled_idle {"heap_alloc":996232,"heap_inuse":1769472,"heap_released":4710400,"total_alloc":21535312,"num_gc":7,"goroutines":2,"rss":15712256,"process_hwm":30523392}
+round_1 {"completed":3828,"interrupted":4,"elapsed_ns":20009895359,"sampled_peak_heap":34932232,"sampled_peak_rss":49463296,"samples":801}
+round_1_post_gc {"heap_alloc":1260376,"heap_inuse":2154496,"heap_released":23912448,"total_alloc":12055460224,"num_gc":1267,"goroutines":2,"rss":31490048,"process_hwm":48185344}
+round_2 {"completed":3883,"interrupted":4,"elapsed_ns":20001168449,"sampled_peak_heap":37814512,"sampled_peak_rss":57032704,"samples":800}
+round_2_post_gc {"heap_alloc":1260688,"heap_inuse":2170880,"heap_released":20103168,"total_alloc":24261413928,"num_gc":2298,"goroutines":2,"rss":43810816,"process_hwm":54968320}
+round_3 {"completed":3826,"interrupted":4,"elapsed_ns":20010872710,"sampled_peak_heap":34893120,"sampled_peak_rss":55312384,"samples":801}
+round_3_post_gc {"heap_alloc":1257880,"heap_inuse":2220032,"heap_released":20496384,"total_alloc":36290242200,"num_gc":3383,"goroutines":2,"rss":43450368,"process_hwm":54968320}
+closed_post_gc {"heap_alloc":334536,"heap_inuse":991232,"heap_released":28033024,"total_alloc":36290253768,"num_gc":3384,"goroutines":2,"rss":34095104,"process_hwm":54968320}
+closed_scavenged {"heap_alloc":333896,"heap_inuse":933888,"heap_released":44695552,"total_alloc":36290266912,"num_gc":3385,"goroutines":2,"rss":17448960,"process_hwm":54968320}
+
+INITIAL 2 MIB: make memory WASM_RUSTFLAGS='-Clink-arg=--initial-memory=2097152' LOAD_DURATION=20s LOAD_ROUNDS=3 LOAD_WORKERS=4
+config {"arch":"arm64","duration_ns":20000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"6f96fdad91c0a4b0abf08d6749d82539522a0f1eb6368301baa3b9996c8868d8","input_bytes":41984,"rounds":3,"workers":4}
+before_engine {"heap_alloc":252960,"heap_inuse":761856,"heap_released":2957312,"total_alloc":481040,"num_gc":1,"goroutines":2,"rss":8437760,"process_hwm":8437760}
+compiled_idle {"heap_alloc":991008,"heap_inuse":1761280,"heap_released":4571136,"total_alloc":21530088,"num_gc":7,"goroutines":2,"rss":32849920,"process_hwm":32849920}
+round_1 {"completed":4302,"interrupted":4,"elapsed_ns":20017082527,"sampled_peak_heap":49518624,"sampled_peak_rss":53624832,"samples":801}
+round_1_post_gc {"heap_alloc":1251552,"heap_inuse":2154496,"heap_released":34881536,"total_alloc":9840497848,"num_gc":850,"goroutines":2,"rss":30097408,"process_hwm":52019200}
+round_2 {"completed":4207,"interrupted":4,"elapsed_ns":20002729169,"sampled_peak_heap":45438096,"sampled_peak_rss":58048512,"samples":799}
+round_2_post_gc {"heap_alloc":1266256,"heap_inuse":2195456,"heap_released":31293440,"total_alloc":19442564376,"num_gc":1643,"goroutines":2,"rss":34357248,"process_hwm":56803328}
+round_3 {"completed":4256,"interrupted":4,"elapsed_ns":20012307808,"sampled_peak_heap":45401792,"sampled_peak_rss":59703296,"samples":799}
+round_3_post_gc {"heap_alloc":1266640,"heap_inuse":2236416,"heap_released":17940480,"total_alloc":29156278424,"num_gc":2312,"goroutines":2,"rss":51118080,"process_hwm":57999360}
+closed_post_gc {"heap_alloc":343888,"heap_inuse":991232,"heap_released":22331392,"total_alloc":29156289992,"num_gc":2313,"goroutines":2,"rss":43991040,"process_hwm":57999360}
+closed_scavenged {"heap_alloc":343248,"heap_inuse":958464,"heap_released":52346880,"total_alloc":29156303136,"num_gc":2314,"goroutines":2,"rss":14893056,"process_hwm":57999360}

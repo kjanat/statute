@@ -42,5 +42,15 @@ jobs:
         run: make fuzz
       - name: Benchmark smoke tests
         run: make bench-smoke
+      - name: Memory probe smoke test
+        run: make memory LOAD_DURATION=1s LOAD_ROUNDS=2 LOAD_WORKERS=2
       - name: Artifact identity
         run: sha256sum artifact/rewriter.wasm
+      - name: SIMD experiment parity and limits
+        run: |
+          make test WASM_RUSTFLAGS='-Ctarget-feature=+simd128'
+          sha256sum artifact/rewriter.wasm
+      - name: Initial-memory experiment parity and limits
+        run: |
+          make test WASM_RUSTFLAGS='-Clink-arg=--initial-memory=2097152'
+          sha256sum artifact/rewriter.wasm
