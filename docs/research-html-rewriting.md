@@ -4,6 +4,8 @@ Status: **engine feasibility demonstrated; no production API proposed yet**. Thi
 
 ## What works
 
+The [HTTP experiment](research-html-http.md) now exercises consumer-selected failure policy, streaming, and existing Statute middleware. The measurements and coverage below describe the earlier engine-only phase.
+
 [The runnable harness](../research/htmlrewrite/README.md) compiles LOL HTML 3.0.1 to `wasm32-unknown-unknown` and executes it with wazero 1.12.0 from cgo-free Go. There is no WASI, JavaScript glue, or subprocess on the rewrite path. The native Rust executable is an output oracle used by tests only.
 
 The harness rewrites an attribute, inserts markup, and removes selected elements. Transformed bytes reach the writer before input EOF. Each stream gets its own parser and guest memory while sharing the compiled module. Sixteen concurrent test streams preserve their independent contents.
