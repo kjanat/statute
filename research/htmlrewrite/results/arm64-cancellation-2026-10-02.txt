@@ -1,0 +1,107 @@
+Linux arm64, Raspberry Pi 5, Go 1.27.1, wazero v1.12.0 compiler engine.
+Warm invocation benchmark; default GOMAXPROCS=4. Interruption tests explicitly use 1 and 4.
+Commands (research/htmlrewrite):
+CGO_ENABLED=0 go test -v -timeout=2m ./cancelprobe
+CGO_ENABLED=0 go test -run '^$' -bench . -benchtime=1s -count=3 ./cancelprobe
+
+=== RUN   TestEquivalentWork
+=== RUN   TestEquivalentWork/batch=1/cancel=true
+=== RUN   TestEquivalentWork/batch=1/cancel=false
+=== RUN   TestEquivalentWork/batch=16/cancel=true
+=== RUN   TestEquivalentWork/batch=16/cancel=false
+=== RUN   TestEquivalentWork/batch=256/cancel=true
+=== RUN   TestEquivalentWork/batch=256/cancel=false
+--- PASS: TestEquivalentWork (0.02s)
+    --- PASS: TestEquivalentWork/batch=1/cancel=true (0.00s)
+    --- PASS: TestEquivalentWork/batch=1/cancel=false (0.00s)
+    --- PASS: TestEquivalentWork/batch=16/cancel=true (0.00s)
+    --- PASS: TestEquivalentWork/batch=16/cancel=false (0.00s)
+    --- PASS: TestEquivalentWork/batch=256/cancel=true (0.01s)
+    --- PASS: TestEquivalentWork/batch=256/cancel=false (0.01s)
+=== RUN   TestCapabilities
+--- PASS: TestCapabilities (0.00s)
+=== RUN   TestActiveInterruption
+=== RUN   TestActiveInterruption/procs=1
+=== RUN   TestActiveInterruption/procs=1/batch=1/context
+    probe_test.go:203: n=20 stop_p50=62.278µs stop_p95=94.685µs stop_max=127.963µs trigger_lag_p50=19.134453ms trigger_lag_max=20.628216ms
+=== RUN   TestActiveInterruption/procs=1/batch=1/module
+    probe_test.go:203: n=20 stop_p50=47.463µs stop_p95=130.241µs stop_max=276.259µs trigger_lag_p50=19.142898ms trigger_lag_max=23.128572ms
+=== RUN   TestActiveInterruption/procs=1/batch=1/runtime
+    probe_test.go:203: n=20 stop_p50=47.204µs stop_p95=161.87µs stop_max=266.501µs trigger_lag_p50=19.142342ms trigger_lag_max=40.200667ms
+=== RUN   TestActiveInterruption/procs=1/batch=16/context
+    probe_test.go:203: n=20 stop_p50=46.63µs stop_p95=70.482µs stop_max=505.353µs trigger_lag_p50=19.13273ms trigger_lag_max=19.158138ms
+=== RUN   TestActiveInterruption/procs=1/batch=16/module
+    probe_test.go:203: n=20 stop_p50=44.833µs stop_p95=78.426µs stop_max=93.612µs trigger_lag_p50=19.142416ms trigger_lag_max=21.694143ms
+=== RUN   TestActiveInterruption/procs=1/batch=16/runtime
+    probe_test.go:203: n=20 stop_p50=54.519µs stop_p95=71.203µs stop_max=76.001µs trigger_lag_p50=19.13549ms trigger_lag_max=19.158842ms
+=== RUN   TestActiveInterruption/procs=1/batch=256/context
+    probe_test.go:203: n=20 stop_p50=56.148µs stop_p95=85.981µs stop_max=292.093µs trigger_lag_p50=19.1441ms trigger_lag_max=39.261998ms
+=== RUN   TestActiveInterruption/procs=1/batch=256/module
+    probe_test.go:203: n=20 stop_p50=60.666µs stop_p95=101.519µs stop_max=149.797µs trigger_lag_p50=19.139342ms trigger_lag_max=22.70022ms
+=== RUN   TestActiveInterruption/procs=1/batch=256/runtime
+    probe_test.go:203: n=20 stop_p50=56.889µs stop_p95=80.445µs stop_max=151.445µs trigger_lag_p50=19.14273ms trigger_lag_max=19.498564ms
+=== RUN   TestActiveInterruption/procs=4
+=== RUN   TestActiveInterruption/procs=4/batch=1/context
+    probe_test.go:203: n=20 stop_p50=21.5µs stop_p95=64.093µs stop_max=421.501µs trigger_lag_p50=68.076µs trigger_lag_max=1.44019ms
+=== RUN   TestActiveInterruption/procs=4/batch=1/module
+    probe_test.go:203: n=20 stop_p50=13.204µs stop_p95=28.778µs stop_max=34.556µs trigger_lag_p50=67.428µs trigger_lag_max=2.890416ms
+=== RUN   TestActiveInterruption/procs=4/batch=1/runtime
+    probe_test.go:203: n=20 stop_p50=18.537µs stop_p95=40.149µs stop_max=339.834µs trigger_lag_p50=69.021µs trigger_lag_max=370.373µs
+=== RUN   TestActiveInterruption/procs=4/batch=16/context
+    probe_test.go:203: n=20 stop_p50=30.778µs stop_p95=86.333µs stop_max=2.075079ms trigger_lag_p50=76.243µs trigger_lag_max=368.707µs
+=== RUN   TestActiveInterruption/procs=4/batch=16/module
+    probe_test.go:203: n=20 stop_p50=16.222µs stop_p95=26.482µs stop_max=44.167µs trigger_lag_p50=70.54µs trigger_lag_max=508.708µs
+=== RUN   TestActiveInterruption/procs=4/batch=16/runtime
+    probe_test.go:203: n=20 stop_p50=22.129µs stop_p95=44.592µs stop_max=74.185µs trigger_lag_p50=69.021µs trigger_lag_max=816.264µs
+=== RUN   TestActiveInterruption/procs=4/batch=256/context
+    probe_test.go:203: n=20 stop_p50=37.333µs stop_p95=100.333µs stop_max=106.334µs trigger_lag_p50=82.632µs trigger_lag_max=2.975601ms
+=== RUN   TestActiveInterruption/procs=4/batch=256/module
+    probe_test.go:203: n=20 stop_p50=28.333µs stop_p95=303.89µs stop_max=322.26µs trigger_lag_p50=82.836µs trigger_lag_max=754.56µs
+=== RUN   TestActiveInterruption/procs=4/batch=256/runtime
+    probe_test.go:203: n=20 stop_p50=38.759µs stop_p95=113.519µs stop_max=114.204µs trigger_lag_p50=86.929µs trigger_lag_max=1.758284ms
+--- PASS: TestActiveInterruption (8.01s)
+    --- PASS: TestActiveInterruption/procs=1 (7.37s)
+        --- PASS: TestActiveInterruption/procs=1/batch=1/context (0.82s)
+        --- PASS: TestActiveInterruption/procs=1/batch=1/module (0.84s)
+        --- PASS: TestActiveInterruption/procs=1/batch=1/runtime (0.84s)
+        --- PASS: TestActiveInterruption/procs=1/batch=16/context (0.81s)
+        --- PASS: TestActiveInterruption/procs=1/batch=16/module (0.81s)
+        --- PASS: TestActiveInterruption/procs=1/batch=16/runtime (0.81s)
+        --- PASS: TestActiveInterruption/procs=1/batch=256/context (0.82s)
+        --- PASS: TestActiveInterruption/procs=1/batch=256/module (0.81s)
+        --- PASS: TestActiveInterruption/procs=1/batch=256/runtime (0.81s)
+    --- PASS: TestActiveInterruption/procs=4 (0.64s)
+        --- PASS: TestActiveInterruption/procs=4/batch=1/context (0.04s)
+        --- PASS: TestActiveInterruption/procs=4/batch=1/module (0.04s)
+        --- PASS: TestActiveInterruption/procs=4/batch=1/runtime (0.04s)
+        --- PASS: TestActiveInterruption/procs=4/batch=16/context (0.05s)
+        --- PASS: TestActiveInterruption/procs=4/batch=16/module (0.05s)
+        --- PASS: TestActiveInterruption/procs=4/batch=16/runtime (0.04s)
+        --- PASS: TestActiveInterruption/procs=4/batch=256/context (0.13s)
+        --- PASS: TestActiveInterruption/procs=4/batch=256/module (0.12s)
+        --- PASS: TestActiveInterruption/procs=4/batch=256/runtime (0.14s)
+PASS
+ok  	statute.kjanat.dev/research/htmlrewrite/cancelprobe	8.032s
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite/cancelprobe
+BenchmarkLoop/batch=1/cancel=true-4         	     390	   3146791 ns/op	     65536 steps/op	       218.0 wasm-bytes	     388 B/op	       5 allocs/op
+BenchmarkLoop/batch=1/cancel=true-4         	     382	   3105432 ns/op	     65536 steps/op	       218.0 wasm-bytes	     300 B/op	       5 allocs/op
+BenchmarkLoop/batch=1/cancel=true-4         	     368	   3204478 ns/op	     65536 steps/op	       218.0 wasm-bytes	     220 B/op	       5 allocs/op
+BenchmarkLoop/batch=1/cancel=false-4        	   10000	    111436 ns/op	     65536 steps/op	       218.0 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=1/cancel=false-4        	   10000	    111048 ns/op	     65536 steps/op	       218.0 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=1/cancel=false-4        	   10000	    113118 ns/op	     65536 steps/op	       218.0 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=16/cancel=true-4        	    5096	    239342 ns/op	     65536 steps/op	      1570 wasm-bytes	     212 B/op	       5 allocs/op
+BenchmarkLoop/batch=16/cancel=true-4        	    4779	    235577 ns/op	     65536 steps/op	      1570 wasm-bytes	     208 B/op	       5 allocs/op
+BenchmarkLoop/batch=16/cancel=true-4        	    5049	    236416 ns/op	     65536 steps/op	      1570 wasm-bytes	     208 B/op	       5 allocs/op
+BenchmarkLoop/batch=16/cancel=false-4       	   10000	    115342 ns/op	     65536 steps/op	      1570 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=16/cancel=false-4       	   10574	    113088 ns/op	     65536 steps/op	      1570 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=16/cancel=false-4       	   10000	    113719 ns/op	     65536 steps/op	      1570 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=256/cancel=true-4       	    9802	    123645 ns/op	     65536 steps/op	     23171 wasm-bytes	     209 B/op	       5 allocs/op
+BenchmarkLoop/batch=256/cancel=true-4       	    9978	    123074 ns/op	     65536 steps/op	     23171 wasm-bytes	     209 B/op	       5 allocs/op
+BenchmarkLoop/batch=256/cancel=true-4       	    9928	    125712 ns/op	     65536 steps/op	     23171 wasm-bytes	     209 B/op	       5 allocs/op
+BenchmarkLoop/batch=256/cancel=false-4      	   10000	    111048 ns/op	     65536 steps/op	     23171 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=256/cancel=false-4      	   10000	    114267 ns/op	     65536 steps/op	     23171 wasm-bytes	      32 B/op	       2 allocs/op
+BenchmarkLoop/batch=256/cancel=false-4      	   10000	    112924 ns/op	     65536 steps/op	     23171 wasm-bytes	      32 B/op	       2 allocs/op
+PASS
+ok  	statute.kjanat.dev/research/htmlrewrite/cancelprobe	21.115s

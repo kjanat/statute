@@ -19,7 +19,7 @@ test: build
 	cargo clippy --manifest-path guest/Cargo.toml --locked --all-targets -- -D warnings
 
 fuzz: build
-	CGO_ENABLED=0 go test -run '^$$' -fuzz '^FuzzChunkBoundaries$$' -fuzztime=10s -parallel=1 ./...
+	CGO_ENABLED=0 go test -run '^$$' -fuzz '^FuzzChunkBoundaries$$' -fuzztime=10s -parallel=1 .
 
 bench: build
 	CGO_ENABLED=0 go test -run '^$$' -bench . -benchmem ./...

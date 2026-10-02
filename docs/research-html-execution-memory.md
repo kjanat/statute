@@ -60,6 +60,6 @@ The [harness instructions](../research/htmlrewrite/README.md#execution-and-memor
 
 ## Decision and next experiment
 
-Keep cancellation and fresh-instance isolation. The next focused performance task is a wazero reproducer that separates termination-check overhead from the remaining guest execution cost, followed by measurement of any fix that preserves interruption. Validate promising SIMD/memory settings across larger and malformed documents and amd64 before adopting them.
+Keep cancellation and fresh-instance isolation. The [parser-independent wazero follow-up](research-wazero-cancellation.md) now separates termination-check overhead from HTML parsing and measures active-call interruption, including cancellation-trigger scheduling delay. The next performance step is evaluating a runtime improvement that preserves both interruption and scheduling. Validate promising SIMD/memory settings across larger and malformed documents and amd64 before adopting them.
 
 Pooling would address construction/allocation cost, but it cannot remove the measured guest-feed cost and still needs a reset/discard/isolation contract. Large-document, slow-writer, longer soak, and cross-host artifact-reproducibility work remain open. HTTP middleware and a public rewriting API require the separate integration contract in #114.
