@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add a parser-independent Wasm cancellation reproducer with equivalent loop-shape benchmarks and active-call interruption/isolation tests. Record checkpoint-density costs separately from cancellation-trigger scheduling delay without weakening HTML engine safety settings.
+
 - Extend HTML-rewriting research with execution-phase timings, cancellation-cost controls, Linux sustained-memory probes, and SIMD/initial-memory comparisons. Preserve the default engine policy while recording measured costs and limits.
 
 - Add an isolated LOL HTML/Wasm research harness with streaming, native-parity, resource-limit, and instance-isolation checks. Profile and reduce callback overhead with typed host calls, bounded output batching, and stream-owned function handles. Record native/Wasm benchmark samples and the remaining work before any HTML-rewriting API can ship.

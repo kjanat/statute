@@ -31,6 +31,10 @@ jobs:
         with:
           go-version-file: research/htmlrewrite/go.mod
           cache-dependency-path: research/htmlrewrite/go.sum
+      - name: Parser-independent cancellation reproducer
+        run: |
+          CGO_ENABLED=0 go test -v -timeout=2m ./cancelprobe
+          CGO_ENABLED=0 go test -run '^$' -bench . -benchtime=500ms -count=3 ./cancelprobe
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - name: Build and test cgo-free host and native oracle
