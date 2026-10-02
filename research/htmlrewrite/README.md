@@ -48,7 +48,13 @@ make build WASM_RUSTFLAGS=
 
 ## Architecture contract
 
-- **Owner:** an isolated research harness. No Statute imports, configuration, resolved model, middleware ordering, or runtime dependency changes.
+The [HTTP integration experiment](../../docs/research-html-http.md) adds a private
+route-owned transport adapter and tests consumer-selected fail-open/fail-closed
+behavior. Separate-process integration tests use the local Statute module to
+exercise its real Cache, Retry, and Compress middleware. The engine-only
+boundaries below remain unchanged; the HTTP adapter is not a production API.
+
+- **Owner:** an isolated research harness. Only the HTTP integration tests import Statute; production configuration, resolved model, middleware ordering, and runtime dependencies are unchanged.
 - **Invariants:** one parser per response; byte ordering preserved; no raw-input fallback following a rewrite error; no filesystem, network, WASI, or JavaScript guest imports.
 - **Boundaries:** Go context/writer → guest input memory → LOL HTML → synchronous host output callback. The native executable uses the same crate and rewrite policy as the guest.
 - **Failure:** invalid lifecycle calls, parser errors, memory/output limits, canceled calls, and writer errors terminate that instance. Previously emitted bytes cannot be rolled back. Closing the shared engine closes its instances.
