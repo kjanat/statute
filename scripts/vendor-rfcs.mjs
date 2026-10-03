@@ -55,11 +55,11 @@ async function readManifest(dir) {
 function validateHTML(bytes, number) {
 	const html = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 	// Reject error/challenge pages, wrong RFCs, and visibly truncated downloads.
-	// This is a fetch sanity check, not an HTML sanitizer or an authenticity proof.
+	// Sanitization and document authentication are outside this sanity check.
 	const modern = /^\s*<!doctype html\s*>/i.test(html)
 		&& new RegExp(`<title>\\s*RFC ${number}(?=[:\\s<])[^<]*</title>`, 'i').test(html)
 		&& /<\/html>\s*$/i.test(html);
-	// Older RFC Editor HTML is an annotated <pre> fragment, not an HTML5 page.
+	// Older RFC Editor HTML uses annotated <pre> fragments.
 	const legacy = /^\s*<pre>/i.test(html)
 		&& new RegExp(`^Request for Comments: ${number}(?:\\s|$)`, 'm').test(html.slice(0, 4096))
 		&& /<\/pre>\s*$/i.test(html);

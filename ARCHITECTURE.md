@@ -131,13 +131,26 @@ the Vary schema replaces incompatible variants. Compression adds Accept-Encoding
 variance at commitment even when it negotiates identity, so an outer cache sees
 the same selection dimensions for every encoding.
 
+Compression negotiates against the actual response. It preserves acceptable
+origin coding stacks without decoding, and only generates an allowed gzip or
+Brotli representation when transformation is permitted. Explicit encoding
+exclusions are authoritative: a successful response with no acceptable coding
+becomes an empty 406. Malformed Accept-Encoding is an empty 400 before origin
+dispatch. Existing bodyless statuses remain bodyless; denials and upstream
+errors keep their status for auth/Retry, dropping an unacceptable error body.
+An outer compressor selects the representation before ETag evaluates the
+original read conditions. Rejected renders retain their 406 status.
+
 Explicit ETag middleware owns a buffered inner representation. It clones a
 GET/HEAD request into an unconditional, range-free GET render, hashes successful
 200 output, and evaluates the original read preconditions against that result.
 HEAD sends headers only; the render stays inside the route and does not re-enter
 listener observation. Encoding outside the hashing stage weakens the validator;
 hashing outside encoding covers encoded bytes. Representation headers follow the
-same ownership on GET and HEAD. Buffered middleware discards informational 1xx
+same ownership on GET and HEAD. Inside an ETag render, compression defers codec
+flushes until completion. Encoded bytes and their strong validator are independent
+of proxy flush timing. Compression outside that buffered render retains
+streaming flushes. Buffered middleware discards informational 1xx
 statuses while retaining the final response, and upgrade requests bypass Cache,
 ETag, and compression.
 

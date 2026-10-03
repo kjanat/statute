@@ -1,6 +1,7 @@
 package statute
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"maps"
@@ -9,6 +10,9 @@ import (
 
 	"statute.kjanat.dev/internal/httpprecondition"
 )
+
+// Buffered renders have no streaming flush boundary to expose to the client.
+type bufferedETagRenderKey struct{}
 
 // etagHandler hashes a complete inner GET representation. HEAD renders that
 // same path internally and omits delivery. Original preconditions are evaluated
@@ -19,16 +23,22 @@ func etagHandler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		render := r.Clone(r.Context())
+		render := r.Clone(context.WithValue(r.Context(), bufferedETagRenderKey{}, true))
 		render.Method = http.MethodGet
 		httpprecondition.Clear(render.Header)
 		buf := newResponseBuffer()
 		next.ServeHTTP(buf, render)
 		completeETagContentType(buf)
+		coding, acceptable := selectETagEncoding(r, buf)
+		if !acceptable {
+			buf.status = http.StatusNotAcceptable
+			stripUnacceptableRepresentation(buf.header)
+			buf.body.Reset()
+		}
 		if buf.status == http.StatusOK {
 			sum := sha256.Sum256(buf.body.Bytes())
 			etag := `"` + hex.EncodeToString(sum[:16]) + `"`
-			if encoded, _ := r.Context().Value(compressedRepresentationKey{}).(bool); encoded {
+			if coding != "" {
 				etag = "W/" + etag
 			}
 			deleteHeaderFold(buf.header, "ETag")
@@ -38,7 +48,7 @@ func etagHandler(next http.Handler) http.Handler {
 			if status := httpprecondition.Status(r.Header, buf.header); status != 0 {
 				maps.Copy(w.Header(), buf.header)
 				deleteHeaderFold(w.Header(), "Content-Length")
-				for _, name := range []string{"Content-Range", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest", "Transfer-Encoding", "Trailer"} {
+				for _, name := range []string{"Content-Range", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, headerTransferEncoding, headerTrailer} {
 					deleteHeaderFold(w.Header(), name)
 				}
 				if status != http.StatusNotModified {
@@ -50,6 +60,15 @@ func etagHandler(next http.Handler) http.Handler {
 		}
 		replayETagResponse(w, r, buf)
 	})
+}
+
+// An outer compressor must select the representation before read conditions
+// can turn a successful render into a bodyless 304 or 412.
+func selectETagEncoding(r *http.Request, buf *responseBuffer) (string, bool) {
+	if n, ok := r.Context().Value(compressedRepresentationKey{}).(*compressionNegotiator); ok && buf.status == http.StatusOK {
+		return n.selectCoding(buf.header, buf.status)
+	}
+	return "", true
 }
 
 // Infer a missing representation type before suppressing HEAD delivery.

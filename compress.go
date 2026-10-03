@@ -19,8 +19,8 @@ import (
 type compressedRepresentationKey struct{}
 
 // compressHandler negotiates response compression based on the request's
-// Accept-Encoding. Brotli is preferred when both client and server advertise
-// support; otherwise gzip is chosen. Identity (no compression) is the fallback.
+// Accept-Encoding and the actual representation. Explicit coding exclusions
+// are respected; Brotli wins quality ties between the supported codecs.
 func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Handler {
 	wantGzip, wantBrotli := compressionAlgorithms(algos)
 	if !wantGzip && !wantBrotli {
@@ -34,15 +34,14 @@ func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Hand
 		}
 		// Identity and encoded output share one negotiation dimension.
 		ww := &headerResponseWriter{ResponseWriter: w, ops: vary}
-		ae := r.Header.Get("Accept-Encoding")
-		switch {
-		case wantBrotli && strings.Contains(ae, "br"):
-			serveCompressed(ww, r, next, "br")
-		case wantGzip && strings.Contains(ae, "gzip"):
-			serveGzip(ww, r, next)
-		default:
-			next.ServeHTTP(ww, r)
+		prefs, valid := parseAcceptEncoding(r.Header)
+		if !valid {
+			stripUnacceptableRepresentation(ww.Header())
+			ww.WriteHeader(http.StatusBadRequest)
+			return
 		}
+		n := &compressionNegotiator{prefs: prefs, gzip: wantGzip, brotli: wantBrotli, transform: cacheControlAllows(r.Header, "no-transform")}
+		serveCompressed(ww, r, next, n)
 		ww.applyOps() // A normal empty response commits after the handler returns.
 	})
 }
@@ -59,17 +58,18 @@ func compressionAlgorithms(algos []resolved.CompressAlgo) (gzipEnabled, brotliEn
 	return
 }
 
-func serveCompressed(w http.ResponseWriter, r *http.Request, next http.Handler, coding string) {
-	cw := &compressResponseWriter{ResponseWriter: w, coding: coding, head: r.Method == http.MethodHead, transform: cacheControlAllows(r.Header, "no-transform")}
+func serveCompressed(w http.ResponseWriter, r *http.Request, next http.Handler, n *compressionNegotiator) {
+	cw := &compressResponseWriter{ResponseWriter: w, negotiation: n, head: r.Method == http.MethodHead}
+	cw.buffered, _ = r.Context().Value(bufferedETagRenderKey{}).(bool)
 	returned := false
 	defer func() { cw.finish(returned) }()
-	r = r.WithContext(context.WithValue(r.Context(), compressedRepresentationKey{}, true))
+	r = r.WithContext(context.WithValue(r.Context(), compressedRepresentationKey{}, n))
 	next.ServeHTTP(cw, r)
 	returned = true
 }
 
 func serveGzip(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	serveCompressed(w, r, next, "gzip")
+	compressHandler([]resolved.CompressAlgo{resolved.Gzip}, next).ServeHTTP(w, r)
 }
 
 var (
@@ -91,8 +91,10 @@ type compressResponseWriter struct {
 	brotli          *brotli.Writer
 	status          int
 	coding          string
+	negotiation     *compressionNegotiator
 	head            bool
-	transform       bool
+	buffered        bool
+	rejected        bool
 	hijacked        bool
 	encoded         bool
 	droppedTrailers []string
@@ -106,7 +108,7 @@ func (c *compressResponseWriter) Write(b []byte) (int, error) {
 	if c.bodyless() {
 		return 0, http.ErrBodyNotAllowed
 	}
-	if c.head {
+	if c.head || c.rejected {
 		return len(b), nil
 	}
 	if c.w == nil {
@@ -122,6 +124,7 @@ func (c *compressResponseWriter) WriteHeader(code int) {
 	if code >= 200 || code == http.StatusSwitchingProtocols {
 		c.status = code
 		c.startEncoding()
+		code = c.status
 	}
 	c.ResponseWriter.WriteHeader(code)
 }
@@ -143,13 +146,28 @@ func (c *compressResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // Final response headers decide whether a fresh coding is applicable.
 func (c *compressResponseWriter) startEncoding() {
 	h := c.Header()
-	if !c.shouldEncode() {
+	if c.bodyless() {
 		return
 	}
+	coding, acceptable := c.negotiation.selectCoding(h, c.status)
+	if !acceptable {
+		c.rejected = true
+		// Preserve denials and upstream failures for auth and Retry, without
+		// sending their unacceptable body representation.
+		if c.status < http.StatusBadRequest {
+			c.status = http.StatusNotAcceptable
+		}
+		c.droppedTrailers = stripUnacceptableRepresentation(h)
+		return
+	}
+	if coding == "" {
+		return
+	}
+	c.coding = coding
 	c.encoded = true
 	c.droppedTrailers = stripCompressionTrailers(h)
 	deleteHeaderFold(h, "Content-Length")
-	for _, name := range []string{"Content-Encoding", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest", "Accept-Ranges"} {
+	for _, name := range []string{"Content-Encoding", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, "Accept-Ranges"} {
 		deleteHeaderFold(h, name)
 	}
 	h.Set("Content-Encoding", c.coding)
@@ -162,7 +180,7 @@ func (c *compressResponseWriter) startEncoding() {
 	if c.head {
 		return
 	}
-	if c.coding == "gzip" {
+	if c.coding == codingGzip {
 		c.gzip = gzipPool.Get().(*gzip.Writer)
 		c.gzip.Reset(c.ResponseWriter)
 		c.w = c.gzip
@@ -173,19 +191,18 @@ func (c *compressResponseWriter) startEncoding() {
 	}
 }
 
-func (c *compressResponseWriter) shouldEncode() bool {
-	h := c.Header()
-	encoding, _ := cacheHeaderValues(h, "Content-Encoding")
-	_, partial := cacheHeaderValues(h, "Content-Range")
-	encoded := strings.TrimSpace(strings.Join(encoding, ","))
-	return !c.bodyless() && c.status != http.StatusPartialContent && !partial && c.transform && cacheControlAllows(h, "no-transform") && (encoded == "" || strings.EqualFold(encoded, "identity"))
-}
-
 func (c *compressResponseWriter) finish(returned bool) {
 	if returned && c.status == 0 && !c.hijacked {
 		c.WriteHeader(http.StatusOK)
 	}
 	c.finishTrailers()
+	if c.rejected {
+		c.finishRejection()
+	}
+	c.finishCodecs(returned)
+}
+
+func (c *compressResponseWriter) finishCodecs(returned bool) {
 	if c.gzip != nil {
 		if !returned || c.hijacked {
 			c.gzip.Reset(io.Discard)
@@ -207,6 +224,9 @@ func (c *compressResponseWriter) finish(returned bool) {
 func (c *compressResponseWriter) Flush() {
 	if c.status == 0 {
 		c.WriteHeader(http.StatusOK)
+	}
+	if c.buffered {
+		return
 	}
 	if f, ok := c.w.(interface{ Flush() error }); ok && !c.bodyless() {
 		_ = f.Flush()

@@ -114,17 +114,45 @@ are ignored when the selected response has no valid Last-Modified value.
 
 The first declared middleware is outermost. `With(ETag(), Compress(Gzip))`
 hashes encoded bytes and supplies a strong tag for that encoding.
+Inside that buffered render, compression defers intermediate flushes until
+completion: proxy scheduling cannot change the compressed bytes or their tag.
+Compression without an outer ETag still flushes progressively.
 `With(Compress(Gzip), ETag())` hashes identity bytes and supplies a weak tag for
 compressed delivery. Both produce GET/HEAD-equivalent validators at that pipeline
 position. Outer compression omits the identity Content-Length on HEAD; it is not
 the encoded length. HEAD and 304 responses carry no compressed body.
 
-Compression leaves already-encoded and partial responses untouched and honors
-request/response `no-transform`; malformed cache directives also prevent a new
-encoding. It removes identity length/digests/range support when encoding starts.
+Compression preserves acceptable origin encodings without decoding, including
+codings it cannot generate itself. Partial responses and request/response
+`no-transform` prevent new encoding; malformed cache directives do too.
+It removes identity length/digests/range support when encoding starts.
 Announced and late representation trailers are also removed after encoding;
 unrelated trailers and untouched bypass responses retain their trailers.
 An aborted handler propagates its panic without finishing a compressed stream.
+
+`Accept-Encoding` is parsed across all field lines, case-insensitively, with
+quality values and wildcard/specific exclusions. Gzip and Brotli are selected by
+quality; Brotli wins ties. Explicit identity preference can win over an encoder;
+otherwise identity is the fallback when allowed. No field or an empty field
+keeps an identity origin response unencoded. An absent field also permits any
+existing origin coding, while an empty field permits identity only. Repeated
+codings use their lowest quality; exclusions take precedence over higher duplicate
+weights. `x-gzip` is treated as `gzip`.
+
+Qualities allow zero to three decimal places in the 0 to 1 range; the leading-dot
+form `.5` is accepted as an interoperability extension. Invalid tokens, weights,
+or extra parameters produce an empty 400 before calling the inner handler.
+If no acceptable representation can be produced or preserved, an otherwise
+successful response becomes an empty 406: for example, `zstd, identity;q=0`
+with an identity origin and only gzip/Brotli available. An acceptable origin
+zstd response passes through. Response headers always include
+`Vary: Accept-Encoding`, including identity and rejection paths.
+
+Already-bodyless statuses such as 204 and 304 require no payload coding and keep
+their status. Upstream errors and auth denials also keep their status so Retry
+and authentication retain their meaning; an unacceptable error body is omitted.
+With explicit ETag rendering, negotiation precedes evaluation of the original
+conditions. Rejected renders retain 406 even with `If-None-Match: *`.
 
 Cache can sit on either side: an inner Cache can supply the GET render, while an
 outer Cache delegates conditional requests to ETag. Upgrade requests bypass these

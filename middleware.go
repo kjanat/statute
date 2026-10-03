@@ -122,6 +122,7 @@ func (*compressMW) statuteMiddleware() {}
 
 // Compress returns a response-compression middleware that negotiates one of
 // the listed algorithms based on the request's Accept-Encoding header.
+// Explicit exclusions are respected; unavailable representations produce 406.
 func Compress(algos ...CompressAlgo) *compressMW {
 	return &compressMW{algos: append([]CompressAlgo(nil), algos...)}
 }

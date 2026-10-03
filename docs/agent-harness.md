@@ -15,8 +15,8 @@ Every agent reads:
 
 For HTTP protocol work, use the [vendored RFC HTML sources](rfc-sources.md).
 `make check-rfcs` verifies the local corpus offline; fetch explicitly when adding
-or refreshing a source. Preserve upstream bytes and cite the RFC section rather
-than treating the snapshot date as proof that no errata or updates exist.
+or refreshing a source. Preserve upstream bytes, cite the RFC section, and check
+for subsequent errata and updates separately.
 
 `CLAUDE.md` points Claude-based runners at the same contract. `.claude/agents` and
 `.agents/agents` both expose the shared [`agents/`](../agents/) role prompts; the

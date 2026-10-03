@@ -26,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Respect Accept-Encoding qualities, wildcards, and explicit exclusions against the actual response. Preserve acceptable origin codings, reject unavailable successful representations with an empty 406, reject malformed preferences with 400, and keep encoding-aware Cache/ETag behavior independent of middleware order.
+
+- Stabilize compressed ETags across GET and HEAD by deferring intermediate codec flushes inside buffered ETag renders. Preserve progressive flushing on ordinary compressed streams.
+
 - Remove origin representation trailers when compression changes the response bytes; retain unrelated trailers and preserve trailers on no-transform bypasses.
 
 - Honor case-insensitive custom-transport headers when checking HTML rewrite eligibility, including duplicate content types, encodings, ranges, and trailer declarations.

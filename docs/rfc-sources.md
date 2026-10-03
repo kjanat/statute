@@ -1,8 +1,8 @@
 # Vendored RFC sources
 
 Statute keeps unmodified RFC Editor **HTML** snapshots in
-[`docs/rfc/`](../docs/rfc/). They are research/reference material, not runtime
-assets. Open a snapshot in a browser to navigate its section anchors, or search
+[`docs/rfc/`](../docs/rfc/). They are offline research references. Open a snapshot
+in a browser to navigate its section anchors, or search
 its HTML with `rg`. External links and any external assets still require a network.
 
 The initial corpus covers HTTP semantics (9110), caching (9111), HTTP/1.1 (9112),
@@ -26,8 +26,8 @@ make check-rfcs                      # verify local bytes, without network acces
 make test-rfcs                       # test the tooling, without network access
 ```
 
-`scripts/vendor-rfcs.mjs` resolves its default directory relative to itself, not
-the current working directory. `fetch` accepts only positive RFC numbers and uses
+`scripts/vendor-rfcs.mjs` resolves its default directory relative to itself.
+`fetch` accepts only positive RFC numbers and uses
 `https://www.rfc-editor.org/rfc/rfc<N>.html`. It applies a 30-second timeout and
 10-MiB limit per document, rejects redirects and unexpected/incomplete HTML, and
 downloads the complete selection before replacing any file. Fetch errors leave
@@ -46,7 +46,7 @@ separately when making protocol decisions.
 CI checks the corpus and runs fixture-based tooling tests offline. Normal builds
 never download RFCs. Formatters exclude the HTML so upstream bytes and notices
 remain intact; Docker build contexts exclude the corpus. Wiki sync publishes this
-guide, not the HTML documents.
+guide and excludes the HTML documents.
 
 Git also disables line-ending conversion for the snapshots, so verification works
 with Windows checkouts as well as Unix checkouts. Both modern RFC HTML pages and
@@ -58,8 +58,7 @@ The fetch/provenance approach is adapted from
 [micro509's RFC tooling at 2c85ad5](https://github.com/kjanat/micro509/blob/2c85ad5aac33597fe7350af413c31c6a9e076e55/scripts/fetch-spec.bun.ts)
 and its
 [resource provenance helper](https://github.com/kjanat/micro509/blob/2c85ad5aac33597fe7350af413c31c6a9e076e55/scripts/spec/resource.ts).
-Statute uses Node built-ins rather than importing its Bun/DreamCLI stack or
-text-conversion tools.
+Statute implements this with Node built-ins and stores the HTML directly.
 
 Each RFC retains its complete copyright and license notices. The vendored RFCs
 remain subject to those notices and the referenced IETF Trust terms, **not**

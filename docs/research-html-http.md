@@ -228,6 +228,13 @@ encoded delivery. HEAD follows the same inner render and returns the same ETag.
 Outer compression omits the identity length from HEAD because it is not the
 encoded length. Compression emits no encoded body for HEAD or 304.
 
+Compression inside the ETag render defers codec flushes until completion. This
+prevents proxy flush scheduling from changing otherwise identical encoded bytes
+and therefore GET/HEAD validators. `TestETagCompressionIgnoresFlushBoundaries`
+varies flush boundaries deterministically for gzip and Brotli;
+`TestCompressionWithoutETagStillFlushes` proves that ordinary streams still
+deliver decodable output before their handlers return.
+
 The shared read-condition evaluator implements strong If-Match, weak
 If-None-Match, wildcard/list syntax, date conditions, and precedence from
 [RFC 9110 section 13.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-13.2).
@@ -282,23 +289,27 @@ delivers its rewritten tail and the separate Statute process exits successfully.
 The HTTP audit currently has the following evidence. These are private-experiment
 proofs; the public API and production go/no-go decision stay open.
 
-| Obligation                                                | Evidence / boundary                                                                                                                                                                                                       |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Media type, charset, encoding, status eligibility         | `TestHTTPEligibility`, `TestHTTPNoncanonicalHTMLHeaders`, and `TestHTTPAmbiguousHeadersAndLateTrailers`; explicit route rejection/bypass before transformation                                                            |
-| Full-representation requests and original read conditions | `TestHTTPFullRepresentationRequest`, `TestHTTPUnsolicitedRepresentations`, `TestHTTPSelectedRepresentationConditions`, and `internal/httpprecondition` tests; ranges are deliberately ignored and full responses selected |
-| HEAD with and without generated validators                | `TestHTTPHeadRepresentation`, `TestHTTPStatuteHeadMetadata`, `TestHTTPStatuteETagRepresentation`; only explicit ETag renders GET internally                                                                               |
-| Cache selection and no-transform                          | `TestHTTPStatuteWarmCacheNoTransform`, `TestHTTPStatuteCacheVaryCompression`, and `cache_representation_test.go`; both middleware orders and identity/coded variants                                                      |
-| Manual metadata and Retry                                 | `TestHTTPConfigRepresentationHeaders`, `TestHTTPStatuteConflictingHeadersPreventStartup`, `TestHTTPStatuteMiddlewareInteractions`; no duplicate transformation on successful retry                                        |
-| Compression and trailers                                  | `TestHTTPStatuteCompressionPreservesBypass`, `TestHTTPStatuteCompressedBypassTrailers`, `TestCompressRepresentationTrailers`; origin coding bypass, bodyless output, digest removal, and unrelated trailer preservation   |
-| Cancellation, timeout, shutdown, and admission release    | `TestHTTPAdmissionCancellationAndShutdown`, `TestHTTPDeadlineAndKnownLength`, `TestHTTPDisconnectReleasesInstance`, `TestHTTPStatuteProtocolInterruption`; HTTP/1, HTTP/2, and HTTP/3 interruption evidence               |
-| Pull-driven reads and upgrades                            | `TestHTTPPullAndUnknownLengthLimit`, `TestHTTPUpgradePreservesDuplexBody`; bounded read-ahead and duplex-body preservation                                                                                                |
-| Docker generation and response lifetime                   | `TestHTTPDockerRewriteLifetime`, `TestHTTPDockerRouterPolicyChange`, `TestHTTPDockerLeaseCoversRewrittenResponseEnd`; private hook described below                                                                        |
-| Final outcome observation                                 | `TestHTTPStatuteAbortedStreamObservation` and listener tests; status, bytes, abort/I/O-error signals, filter precedence, and one external HEAD observation                                                                |
+| Obligation                                                | Evidence / boundary                                                                                                                                                                                                                           |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Media type, charset, encoding, status eligibility         | `TestHTTPEligibility`, `TestHTTPNoncanonicalHTMLHeaders`, and `TestHTTPAmbiguousHeadersAndLateTrailers`; explicit route rejection/bypass before transformation                                                                                |
+| Full-representation requests and original read conditions | `TestHTTPFullRepresentationRequest`, `TestHTTPUnsolicitedRepresentations`, `TestHTTPSelectedRepresentationConditions`, and `internal/httpprecondition` tests; ranges are deliberately ignored and full responses selected                     |
+| HEAD with and without generated validators                | `TestHTTPHeadRepresentation`, `TestHTTPStatuteHeadMetadata`, `TestHTTPStatuteETagRepresentation`; only explicit ETag renders GET internally                                                                                                   |
+| Cache selection and no-transform                          | `TestHTTPStatuteWarmCacheNoTransform`, `TestHTTPStatuteCacheVaryCompression`, and `cache_representation_test.go`; both middleware orders and identity/coded variants                                                                          |
+| Manual metadata and Retry                                 | `TestHTTPConfigRepresentationHeaders`, `TestHTTPStatuteConflictingHeadersPreventStartup`, `TestHTTPStatuteMiddlewareInteractions`; no duplicate transformation on successful retry                                                            |
+| Compression and trailers                                  | `TestHTTPStatuteCompressionPreservesBypass`, `TestHTTPStatuteCompressedBypassTrailers`, `TestCompressRepresentationTrailers`; origin coding bypass, bodyless output, digest removal, and unrelated trailer preservation                       |
+| Encoding negotiation and validator stability              | `TestHTTPStatuteCompressionNegotiation`, `TestHTTPStatutePreservesAcceptedOriginCoding`, `TestHTTPStatuteETagRepresentation`, and root negotiation/flush tests; exclusions, quality, variants, 406, and flush-independent GET/HEAD validators |
+| Cancellation, timeout, shutdown, and admission release    | `TestHTTPAdmissionCancellationAndShutdown`, `TestHTTPDeadlineAndKnownLength`, `TestHTTPDisconnectReleasesInstance`, `TestHTTPStatuteProtocolInterruption`; HTTP/1, HTTP/2, and HTTP/3 interruption evidence                                   |
+| Pull-driven reads and upgrades                            | `TestHTTPPullAndUnknownLengthLimit`, `TestHTTPUpgradePreservesDuplexBody`; bounded read-ahead and duplex-body preservation                                                                                                                    |
+| Docker generation and response lifetime                   | `TestHTTPDockerRewriteLifetime`, `TestHTTPDockerRouterPolicyChange`, `TestHTTPDockerLeaseCoversRewrittenResponseEnd`; private hook described below                                                                                            |
+| Final outcome observation                                 | `TestHTTPStatuteAbortedStreamObservation` and listener tests; status, bytes, abort/I/O-error signals, filter precedence, and one external HEAD observation                                                                                    |
 
-The HTTP gate remains open for `Accept-Encoding` negotiation: the current
-Compress selector uses substrings and ignores quality values. Its behavior when
-every available coding, including identity, is excluded also needs an explicit
-decision. Hosted validation of the complete changes is pending. Public
+`Compress` parses Accept-Encoding qualities, repeated fields/codings, and
+wildcards. It preserves acceptable origin
+encodings and rejects a successful response with an empty 406 when no allowed
+representation can be delivered. Malformed preferences produce 400. The precise
+selection, duplicate, bodyless-status, and error-response contracts are documented
+under [body-derived ETags and compression](production.md#body-derived-etags).
+Hosted validation of the complete changes is pending. Public
 rewrite-specific instrumentation, real slow-client load budgets, and public
 configuration remain separate production gates.
 

@@ -11,10 +11,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/andybalholm/brotli"
 )
 
 func TestHTTPStatuteETagRepresentation(t *testing.T) {
 	var badRender atomic.Bool
+	var renders atomic.Uint64
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			badRender.Store(true)
@@ -26,16 +29,24 @@ func TestHTTPStatuteETagRepresentation(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("ETag", `"origin"`)
-		_, _ = io.WriteString(w, `<a class="rewrite">page</a>`)
+		render := renders.Add(1)
+		if render%2 == 0 {
+			w.(http.Flusher).Flush()
+		}
+		_, _ = io.WriteString(w, `<a class="rewrite">`)
+		if render%3 == 0 {
+			w.(http.Flusher).Flush()
+		}
+		_, _ = io.WriteString(w, `page</a>`)
 	}))
 	defer origin.Close()
 	endpoint := startHTTPStatute(t, origin.URL)
 	client := &http.Client{Transport: &http.Transport{DisableCompression: true}, Timeout: 5 * time.Second}
 	defer client.CloseIdleConnections()
-	for _, path := range []string{"/etag", "/etag-cache", "/cache-etag", "/etag-compress", "/compress-etag"} {
+	for _, path := range []string{"/etag", "/etag-cache", "/cache-etag", "/etag-compress", "/compress-etag", "/etag-compress-br", "/compress-etag-br"} {
 		t.Run(path, func(t *testing.T) {
 			req := httpTestRequest(t, "GET", endpoint+path)
-			req.Header.Set("Accept-Encoding", "gzip")
+			req.Header.Set("Accept-Encoding", "gzip, br")
 			res, err := client.Do(req)
 			if err != nil {
 				t.Fatal(err)
@@ -57,15 +68,21 @@ func TestHTTPStatuteETagRepresentation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if res.Header.Get("Content-Encoding") == "br" {
+				selected, err = io.ReadAll(brotli.NewReader(strings.NewReader(string(body))))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if strings.Count(string(selected), "<em>inserted</em>") != 1 {
 				t.Fatal("validator did not cover a single rewritten representation")
 			}
-			if path == "/etag-compress" {
+			if strings.HasPrefix(path, "/etag-compress") {
 				selected = body
 			}
 			sum := sha256.Sum256(selected)
 			want := `"` + hex.EncodeToString(sum[:16]) + `"`
-			if path == "/compress-etag" {
+			if strings.HasPrefix(path, "/compress-etag") {
 				want = "W/" + want
 			}
 			if res.Header.Get("ETag") != want {
@@ -85,7 +102,7 @@ func assertHTTPETagCondition(t *testing.T, client *http.Client, endpoint, method
 	t.Helper()
 	for _, conditional := range []bool{false, true} {
 		req := httpTestRequest(t, method, endpoint)
-		req.Header.Set("Accept-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip, br")
 		req.Header.Set("Range", "bytes=0-1")
 		req.Header.Set("If-Range", `"origin"`)
 		req.Header.Set("If-Modified-Since", "Wed, 21 Oct 2015 07:28:00 GMT")
@@ -113,7 +130,7 @@ func assertHTTPETagCondition(t *testing.T, client *http.Client, endpoint, method
 					t.Fatalf("%s %s differs from GET: %v / %v", method, name, res.Header, getHeader)
 				}
 			}
-			if !strings.HasSuffix(endpoint, "/compress-etag") && res.Header.Get("Content-Length") != getHeader.Get("Content-Length") {
+			if !strings.Contains(endpoint, "/compress-etag") && res.Header.Get("Content-Length") != getHeader.Get("Content-Length") {
 				t.Fatal("buffered GET/HEAD representation lengths differ")
 			}
 		}

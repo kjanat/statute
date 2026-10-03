@@ -162,7 +162,7 @@ func TestCompressPreservesSelectedRepresentation(t *testing.T) {
 		request, response http.Header
 	}{
 		{name: "encoded", response: http.Header{"content-encoding": {"gzip"}}},
-		{name: "unknown coding", response: http.Header{"Content-Encoding": {"unknown"}}},
+		{name: "unknown coding", request: http.Header{"Accept-Encoding": {"gzip, unknown"}}, response: http.Header{"Content-Encoding": {"unknown"}}},
 		{name: "response no-transform", response: http.Header{"Cache-Control": {"no-transform"}}},
 		{name: "request no-transform", request: http.Header{"Cache-Control": {"no-transform"}}},
 		{name: "invalid policy", response: http.Header{"Cache-Control": {`extension="unclosed`}}},
@@ -182,8 +182,8 @@ func TestCompressPreservesSelectedRepresentation(t *testing.T) {
 				_, _ = io.WriteString(w, "body")
 			})
 			req := httptest.NewRequest("GET", "/", nil)
-			maps.Copy(req.Header, tc.request)
 			req.Header.Set("Accept-Encoding", "gzip")
+			maps.Copy(req.Header, tc.request)
 			got := runRequest(t, compressHandler([]resolved.CompressAlgo{resolved.Gzip}, base), req)
 			if got.Body.String() != "body" || got.Header().Get("ETag") != `"original"` || got.Header().Get("Content-Length") != "4" {
 				t.Fatalf("changed selected representation: %v %q", got.Header(), got.Body.String())
