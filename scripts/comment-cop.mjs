@@ -1,86 +1,22 @@
 #!/usr/bin/env node
 // @ts-check
-// Comment Cop: flags prose a pull request adds to comments and Markdown,
-// and resolves its own stale review threads.
-//
-// Three entry points, one scanner:
-//
-//   - GitHub Actions: `.github/workflows/comment-cop.yml` imports this file
-//     and calls the default export with the `actions/github-script` objects.
-//   - Working tree (the default): `node scripts/comment-cop.mjs`, or
-//     `make comment-cop`, or `... <base-ref>` to compare against something
-//     other than the merge base with master. Scans the local diff,
-//     uncommitted and untracked files included. No token, no network;
-//     exits 1 on any finding, so it gates a push before the PR exists.
-//   - A pull request: `node scripts/comment-cop.mjs kjanat/statute 72`
-//     Requires Node >= 24.2 (for `import.meta.main`) or Bun, and a
-//     `GITHUB_TOKEN` in the environment.
-//
-// Pull-request runs are DRY RUN unless `--apply` is passed: they scan, print
-// every finding and every thread that would be resolved, and call no mutating
-// API. `--local` never has anything to post and ignores `--apply`.
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
-/* ------------------------------------------------------------------- types */
+/** @typedef {'go' | 'js' | 'hash' | 'md'} Lang */
+/** @typedef {{path: string, start: number, end: number, text: string, reasons: string[]}} Group */
+/** @typedef {{start: number, end: number, lang: Lang, topLevel: boolean, doc: boolean, lines: string[]}} PendingGroup */
+/** @typedef {{id: string, isResolved: boolean, path: string, comments: {nodes: Array<{body: string, viewerDidAuthor: boolean}>}}} ReviewThread */
+/** @typedef {{repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: boolean, endCursor: string | null}, nodes: ReviewThread[]}}}}} ReviewThreadsResponse */
+/** @typedef {{owner: string, repo: string, pull_number: number, commit_id?: string, event?: string, body?: string, comments: Array<{path: string, line: number, side: string, body: string, start_line?: number, start_side?: string}>}} ReviewParams */
+/** @typedef {{paginate: (route: unknown, params: Record<string, unknown>) => Promise<any[]>, graphql: (query: string, variables?: Record<string, unknown>) => Promise<any>, request: (url: string, options?: any) => Promise<{data: any}>, rest: {pulls: {listFiles: unknown, createReview: (params: ReviewParams) => Promise<unknown>}}}} GithubClient */
+/** @typedef {{info: (message: string) => void, warning: (message: string) => void}} CoreLike */
+/** @typedef {{repo: {owner: string, repo: string}, payload: {pull_request: {number: number, head: {sha: string}}}}} ContextLike */
+/** @typedef {{github: GithubClient, context: ContextLike, core: CoreLike, dryRun?: boolean}} RunArguments */
+/** @typedef {{character: '`' | '~', length: number} | null} Fence */
 
-/**
- * One flagged comment block, located in the head-side file.
- * @typedef {object} Group
- * @property {string} path
- * @property {number} start
- * @property {number} end
- * @property {string} text
- * @property {string[]} reasons
- */
-
-/**
- * A comment block under construction while walking a patch.
- * @typedef {object} PendingGroup
- * @property {number} start
- * @property {number} end
- * @property {Lang} lang
- * @property {boolean} topLevel
- * @property {boolean} doc
- * @property {boolean} maybeDoc
- * @property {string[]} lines
- */
-
-/**
- * How a file carries prose. `go` and `js` both use slash comments but only
- * Go has a doc-comment contract; `hash` covers YAML, shell, and friends;
- * `md` has no comment wrapper at all, the paragraph is the block.
- * @typedef {'go' | 'js' | 'hash' | 'md'} Lang
- */
-
-/**
- * The subset of the `actions/github-script` Octokit client this script uses.
- * The local shim in this file implements exactly these four call shapes.
- * @typedef {object} GithubClient
- * @property {(route: unknown, params: Record<string, unknown>) => Promise<any[]>} paginate
- * @property {(query: string, variables?: Record<string, unknown>) => Promise<any>} graphql
- * @property {{pulls: {listFiles: unknown, createReviewComment: (params: Record<string, unknown>) => Promise<unknown>}}} rest
- */
-
-/**
- * The subset of `@actions/core` this script uses.
- * @typedef {object} CoreLike
- * @property {(message: string) => void} info
- * @property {(message: string) => void} warning
- */
-
-/**
- * The subset of the workflow context this script reads.
- * @typedef {object} ContextLike
- * @property {{owner: string, repo: string}} repo
- * @property {{pull_request: {number: number, head: {sha: string}}}} payload
- */
-
-/* -------------------------------------------------------------- heuristics */
-
-// Prose lives in comments and in Markdown alike. Formats with no comment
-// syntax, machine-owned files, key material and path lists are skipped.
 /** @type {Array<[RegExp, Lang]>} */
 const LANGS = [
 	[/\.go$/, 'go'],
@@ -90,11 +26,57 @@ const LANGS = [
 	[/\.md$/, 'md'],
 ];
 
-/**
- * How this path carries prose, or null when it carries none.
- * @param {string} path
- * @returns {Lang | null}
- */
+const CONTRAST_GUIDANCE =
+	'Check whether the comparison explains a real constraint. If it does, keep it; otherwise describe the chosen behavior directly.';
+
+/** @type {Array<[string, RegExp, string]>} */
+const TELLS = [
+	[
+		'em dash',
+		/[—–]/,
+		'For ordinary prose, consider a comma, colon, parentheses, or separate sentence. Preserve punctuation that is part of quoted material.',
+	],
+	['"X, not Y"', /,[\s]+not\s+\S/, CONTRAST_GUIDANCE],
+	['"X rather than Y"', /\brather than\b/i, CONTRAST_GUIDANCE],
+	['"X instead of Y"', /\b(?:instead of|as opposed to)\b/i, CONTRAST_GUIDANCE],
+	['"not just X but Y"', /\bnot (?:just|merely|only|because)\b[^.]{0,80}?\bbut\b/i, CONTRAST_GUIDANCE],
+	[
+		'emphatic cleft',
+		/\b(?:which|that) is (?:what|why|how)\b|\bexactly (?:what|why|how|the)\b/i,
+		'Consider stating the behavior or reason directly. Keep the emphasis if it carries a meaningful distinction.',
+	],
+	[
+		'filler phrase',
+		/\b(?:in other words|it(?:'s| is) (?:worth noting|important to note)|that said|under the hood|at its core|(?:simply put|put simply)|in short|in essence|bottom line|needless to say|when it comes to|at the end of the day|think of (?:it|this) as|no more,? no less|(?:that|which) is to say|here(?:'s| is) (?:why|the thing)|the (?:whole|entire) point|the key (?:insight|takeaway))\b/i,
+		'Check whether the introductory phrase adds meaning. If the explanation reads clearly without it, omit the phrase.',
+	],
+	[
+		'inflated diction',
+		/\b(?:leverag(?:e|es|ing)|utiliz(?:e|es|ing)|seamless(?:ly)?|delv(?:e|es|ing)|myriad|plethora|robust|comprehensive(?:ly)?|crucial(?:ly)?|vital(?:ly)?|elegant(?:ly)?|powerful(?:ly)?|intuitive(?:ly)?|nuanced|holistic|granular|meticulous|facilitat(?:e|es|ing)|streamlin(?:e|es|ing)|empower(?:s|ing)?|cutting[-\s]edge|state[-\s]of[-\s]the[-\s]art|arguably|essentially|fundamentally|a wealth of)\b/i,
+		'Consider a plain, precise term. Keep the existing word if it has a specific technical meaning here.',
+	],
+	[
+		'connective glue',
+		/\b(?:moreover|furthermore|conversely|as such|it turns out|notably|importantly)\b/i,
+		'Check whether the transition helps connect the surrounding points. It can be omitted when that connection is already clear.',
+	],
+	[
+		'counterfactual justification',
+		/\bso\b[^.]{0,60}\b(?:cannot|can't|could not|never|would)\b|\bwithout\b[^.]{0,70}\bwould\b|\bwould otherwise\b|\botherwise\b[^.]{0,70}\bwould\b|\bso that\b|\b(?:which|that) (?:prevents|keeps|stops)\b/i,
+		'An explanation of a consequence or failure mode can be useful. Keep it when it documents a non-obvious constraint; otherwise state the behavior directly.',
+	],
+	[
+		'paste artifact',
+		/[“”‘’]|[\u00A0\u00AD\u200B-\u200D\uFEFF]/,
+		'Check typographic quotes and nonstandard whitespace for accidental pasted characters. Preserve intentional examples and quotations.',
+	],
+];
+
+const TOP_LEVEL_DECL = /^(?:package|const|func|type|var)\b/;
+const DASH_AS_SUBJECT = /[`'"][—–][`'"]|\b(?:em|en)[-\s]dash|U\+201[34]/i;
+const MD_ITEM = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\||>\s)/;
+
+/** @param {string} path @returns {Lang | null} */
 function langFor(path) {
 	for (const [pattern, lang] of LANGS) {
 		if (pattern.test(path)) return lang;
@@ -102,231 +84,162 @@ function langFor(path) {
 	return null;
 }
 
-// Length measures ordinary comments only. Doc comments are read without the
-// code at hand, where line count says nothing about quality.
-const MIN_LINES = 3;
-
-// go.dev/doc/comment: a doc comment appears immediately before a top-level
-// package, const, func, type, or var declaration, with no blank line between.
-const TOP_LEVEL_DECL = /^(?:package|const|func|type|var)\b/;
-
-// Matched against the block's joined text, so a wrapped construction still
-// reads as one sentence. These apply at any length and any position.
-/** @type {Array<[string, RegExp]>} */
-const TELLS = [
-	['em dash', /[—–]/],
-	['"X, not Y"', /,[\s]+not\s+\S/],
-	['"X rather than Y"', /\brather than\b/i],
-	['"X instead of Y"', /\b(?:instead of|as opposed to)\b/i],
-	['"not just X but Y"', /\bnot (?:just|merely|only|because)\b[^.]{0,80}?\bbut\b/i],
-	[
-		'emphatic cleft',
-		/\b(?:which|that) is (?:what|why|how)\b|\bexactly (?:what|why|how|the)\b/i,
-	],
-	[
-		'filler phrase',
-		/\b(?:in other words|it(?:'s| is) (?:worth noting|important to note)|that said|under the hood|at its core|(?:simply put|put simply)|in short|in essence|bottom line|needless to say|when it comes to|at the end of the day|think of (?:it|this) as|no more,? no less|(?:that|which) is to say|here(?:'s| is) (?:why|the thing)|the (?:whole|entire) point|the key (?:insight|takeaway))\b/i,
-	],
-	[
-		'inflated diction',
-		/\b(?:leverag(?:e|es|ing)|utiliz(?:e|es|ing)|seamless(?:ly)?|delv(?:e|es|ing)|myriad|plethora|robust|comprehensive(?:ly)?|crucial(?:ly)?|vital(?:ly)?|elegant(?:ly)?|powerful(?:ly)?|intuitive(?:ly)?|nuanced|holistic|granular|meticulous|facilitat(?:e|es|ing)|streamlin(?:e|es|ing)|empower(?:s|ing)?|cutting[-\s]edge|state[-\s]of[-\s]the[-\s]art|arguably|essentially|fundamentally|a wealth of)\b/i,
-	],
-	[
-		'connective glue',
-		/\b(?:moreover|furthermore|conversely|as such|it turns out|notably|importantly)\b/i,
-	],
-	[
-		'counterfactual justification',
-		/\bso\b[^.]{0,60}\b(?:cannot|can't|could not|never|would)\b|\bwithout\b[^.]{0,70}\bwould\b|\bwould otherwise\b|\botherwise\b[^.]{0,70}\bwould\b|\bso that\b|\b(?:which|that) (?:prevents|keeps|stops)\b/i,
-	],
-	// Not typed by hand. These arrive by paste.
-	['paste artifact', /[“”‘’]|[\u00A0\u00AD\u200B-\u200D\uFEFF]/],
-];
-
-// A comment about the character has to be able to print it.
-const DASH_AS_SUBJECT = /[`'"][—–][`'"]|\b(?:em|en)[-\s]dash|U\+201[34]/i;
-
-const FENCE = /^\s*(?:```|~~~)/;
-
-// A list, heading or table row is its own block. Markdown puts no blank line
-// between items, and a whole list reported as one finding is unreadable.
-const MD_ITEM = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\||>\s)/;
-
-const JSDOC_TAG = /^\s*\*\s*@\w+/;
-
-/**
- * @param {string} line
- * @param {Lang} lang
- * @returns {boolean}
- */
+/** @param {string} line @param {Lang} lang */
 function isCommentLine(line, lang) {
-	const t = line.trimStart();
-
-	if (lang === 'hash') {
-		return t.startsWith('#') && !t.startsWith('#!');
-	}
-
-	if (t.startsWith('//')) return true;
-	if (t.startsWith('/*')) return true;
-	if (t === '*' || t === '*/' || t.startsWith('* ')) return true;
-
-	return false;
+	const text = line.trimStart();
+	if (lang === 'hash') return text.startsWith('#') && !text.startsWith('#!');
+	return text.startsWith('//')
+		|| text.startsWith('/*')
+		|| text === '*'
+		|| text === '*/'
+		|| text.startsWith('* ');
 }
 
-/**
- * Whether this block is documentation the language's own tooling reads: a Go
- * doc comment, or a JSDoc block. Both are written for someone without the
- * code in front of them, so neither is measured by length.
- * @param {PendingGroup} cur
- * @param {string} nextLine
- * @returns {boolean}
- */
-function isDocBlock(cur, nextLine) {
-	if (cur.doc) return true;
-
-	// A `*` fragment is either JSDoc past its `/**` or an ordinary block
-	// comment past its `/*`. A tag tells the two apart.
-	if (cur.maybeDoc && cur.lines.some(line => JSDOC_TAG.test(line))) return true;
-
-	// TOP_LEVEL_DECL matches JavaScript's const and var too, hence the guard.
-	return cur.lang === 'go' && cur.topLevel && TOP_LEVEL_DECL.test(nextLine);
-}
-
-/**
- * @param {string} line
- * @returns {string}
- */
+/** @param {string} line */
 function stripCommentPrefix(line) {
 	return line
 		.trimStart()
 		.replace(/^\/\/\s?/, '')
-		.replace(/^\/\*\s?/, '')
+		.replace(/^\/\*\*?\s?/, '')
 		.replace(/^#\s?/, '')
 		.replace(/^\*\s?/, '')
 		.trim();
 }
 
-/**
- * Every reason this block is flagged, in reporting order.
- * @param {PendingGroup} cur
- * @param {string} nextLine
- * @returns {string[]}
- */
-function reasonsFor(cur, nextLine) {
-	const reasons = [];
-
-	// Length measures a comment against the code beside it. A Markdown
-	// paragraph has no code beside it, so there is nothing to measure.
+/** @param {PendingGroup} group @param {string} nextLine @param {string[] | undefined} sourceLines */
+function isDocBlock(group, nextLine, sourceLines) {
 	if (
-		cur.lang !== 'md'
-		&& cur.lines.length >= MIN_LINES
-		&& !isDocBlock(cur, nextLine)
-	) {
-		reasons.push(`${cur.lines.length} lines`);
+		group.doc || (group.lines[0]?.trimStart().startsWith('*') && group.lines.some(line => /^\s*\*\s*@\w+/.test(line)))
+	) return true;
+	if (group.lang !== 'go') return false;
+	let firstLine = group.lines[0];
+	if (sourceLines !== undefined) {
+		let before = group.start - 1;
+		let after = group.end;
+		while (before > 0 && isCommentLine(sourceLines[before - 1], 'go')) before--;
+		while (after < sourceLines.length && isCommentLine(sourceLines[after], 'go')) after++;
+		firstLine = sourceLines[before] ?? firstLine;
+		nextLine = sourceLines[after] ?? nextLine;
+	}
+	if (group.topLevel && TOP_LEVEL_DECL.test(nextLine)) return true;
+	const field = /^\s+([A-Za-z_]\w*)\s+(?:[A-Za-z_*]|\[)/.exec(nextLine)?.[1];
+	return field !== undefined && stripCommentPrefix(firstLine).startsWith(`${field} `);
+}
+
+/** @param {PendingGroup} group @param {string} nextLine @param {string[] | undefined} sourceLines */
+function reasonsFor(group, nextLine, sourceLines) {
+	const reasons = [];
+	if (group.lang !== 'md' && group.lines.length >= 3 && !isDocBlock(group, nextLine, sourceLines)) {
+		reasons.push(`${group.lines.length} lines`);
 	}
 
-	const text = cur.lang === 'md'
-		? cur.lines.join(' ')
-		: cur.lines.map(stripCommentPrefix).join(' ');
-
+	const text = group.lang === 'md'
+		? group.lines.join(' ')
+		: group.lines.map(stripCommentPrefix).join(' ');
 	for (const [name, pattern] of TELLS) {
 		if (!pattern.test(text)) continue;
 		if (name === 'em dash' && DASH_AS_SUBJECT.test(text)) continue;
 		reasons.push(name);
 	}
-
 	return reasons;
 }
 
-/**
- * @param {string} path
- * @param {string} patch
- * @returns {Group[]}
- */
-function groupsFromPatch(path, patch) {
+/** @param {Fence} fence @param {string} line @returns {Fence} */
+function updateFence(fence, line) {
+	const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+	if (match === null) return fence;
+	const run = match[1];
+	const character = run[0];
+	if (character !== '`' && character !== '~') return fence;
+	if (fence === null) return { character, length: run.length };
+	if (character === fence.character && run.length >= fence.length && match[2].trim() === '') return null;
+	return fence;
+}
+
+/** @param {string} source @param {number} line */
+function fenceBefore(source, line) {
+	/** @type {Fence} */
+	let fence = null;
+	for (const content of source.split('\n').slice(0, Math.max(0, line - 1))) {
+		fence = updateFence(fence, content);
+	}
+	return fence;
+}
+
+/** @param {string} path @param {string} patch @param {string} [source] @returns {Group[]} */
+export function groupsFromPatch(path, patch, source) {
+	const lang = langFor(path);
+	if (lang === null) return [];
+	const markdown = lang === 'md';
+	const sourceLines = source?.split('\n');
 	/** @type {Group[]} */
-	const out = [];
-
-	const lang = langFor(path) ?? 'js';
-	const md = lang === 'md';
-	let newLine = 0;
-	let inFence = false;
+	const groups = [];
 	/** @type {PendingGroup | null} */
-	let cur = null;
-
-	// A Markdown block is a paragraph: unblank, unfenced, unindented.
-	/** @param {string} content */
-	const inBlock = content => {
-		if (!md) return isCommentLine(content, lang);
-		if (FENCE.test(content)) {
-			inFence = !inFence;
-			return false;
-		}
-		return !inFence && content.trim() !== '' && !/^(?: {4}|\t)/.test(content);
-	};
+	let pending = null;
+	let newLine = 0;
+	/** @type {Fence} */
+	let fence = null;
 
 	/** @param {string} nextLine */
 	const flush = nextLine => {
-		if (cur) {
-			const reasons = reasonsFor(cur, nextLine);
-
+		if (pending !== null) {
+			const reasons = reasonsFor(pending, nextLine, sourceLines);
 			if (reasons.length > 0) {
-				out.push({
+				groups.push({
 					path,
-					start: cur.start,
-					end: cur.end,
-					text: cur.lines.join('\n'),
+					start: pending.start,
+					end: pending.end,
+					text: pending.lines.join('\n'),
 					reasons,
 				});
 			}
 		}
+		pending = null;
+	};
 
-		cur = null;
+	/** @param {string} content */
+	const startsBlock = content => {
+		if (!markdown) return isCommentLine(content, lang);
+		const nextFence = updateFence(fence, content);
+		if (nextFence !== fence) {
+			fence = nextFence;
+			return false;
+		}
+		return fence === null && content.trim() !== '' && !/^(?: {4}|\t)/.test(content);
 	};
 
 	for (const raw of patch.split('\n')) {
 		if (raw.startsWith('@@')) {
 			flush('');
-
-			// Hunks are discontiguous. Carrying fence state across one lets a
-			// single unclosed fence blank the rest of the file.
-			inFence = false;
-
 			const match = /\+(\d+)/.exec(raw);
-			newLine = match ? Number.parseInt(match[1], 10) : 1;
+			newLine = match === null ? 1 : Number.parseInt(match[1], 10);
+			fence = markdown && source !== undefined ? fenceBefore(source, newLine) : null;
 			continue;
 		}
 
 		if (raw.startsWith('+')) {
 			const content = raw.slice(1);
-
-			if (inBlock(content)) {
-				const t = content.trimStart();
-
-				// A JSDoc opener and a Markdown item start their own block.
-				if (cur && (md ? MD_ITEM.test(content) : t.startsWith('/**'))) {
+			if (startsBlock(content)) {
+				const text = content.trimStart();
+				if (pending !== null && (markdown ? MD_ITEM.test(content) : text.startsWith('/**'))) {
 					flush(content);
 				}
-
-				if (cur) {
-					cur.end = newLine;
-					cur.lines.push(content);
-				} else {
-					cur = {
+				if (pending === null) {
+					pending = {
 						start: newLine,
 						end: newLine,
 						lang,
 						topLevel: !/^[\t ]/.test(content),
-						doc: t.startsWith('/**'),
-						// A hunk can open mid-block, past the `/**`.
-						maybeDoc: t.startsWith('*'),
+						doc: text.startsWith('/**'),
 						lines: [content],
 					};
+				} else {
+					pending.end = newLine;
+					pending.lines.push(content);
 				}
 			} else {
 				flush(content);
 			}
-
 			newLine++;
 			continue;
 		}
@@ -335,47 +248,207 @@ function groupsFromPatch(path, patch) {
 			flush('');
 			continue;
 		}
+		if (raw.startsWith('\\')) continue;
 
-		if (raw.startsWith('\\')) {
-			// "\ No newline at end of file"
-			continue;
-		}
-
-		// Context line: ends the run, and is the declaration lookahead.
 		const content = raw.startsWith(' ') ? raw.slice(1) : raw;
-		if (md && FENCE.test(content)) inFence = !inFence;
+		if (markdown) fence = updateFence(fence, content);
 		flush(content);
 		newLine++;
 	}
 
 	flush('');
-	return out;
+	return groups;
 }
 
-/**
- * Marker key identifying one finding across runs. Existing review threads
- * carry this exact derivation; changing it orphans them.
- * @param {Group} group
- * @returns {string}
- */
-const keyFor = group => `${group.path}:${createHash('sha256').update(group.text).digest('hex').slice(0, 12)}`;
+/** @param {Group} group */
+export const keyFor = group =>
+	createHash('sha256')
+		.update(group.path)
+		.update('\0')
+		.update(String(group.start))
+		.update('\0')
+		.update(group.text)
+		.digest('hex')
+		.slice(0, 16);
 
-/**
- * @param {Group} group
- * @returns {string}
- */
-const bodyFor = group =>
-	`<!-- statute-comment-cop:${keyFor(group)} -->\n`
-	+ `Flagged for: ${group.reasons.join(', ')}.\n\n`
-	+ `This comment is doing too much of the code's job. `
-	+ `Prefer making the ownership, state, or control flow explicit in code and keep only the non-obvious constraint here.`;
+/** @param {Group} group */
+const legacyKeyFor = group => `${group.path}:${createHash('sha256').update(group.text).digest('hex').slice(0, 12)}`;
 
-/**
- * @param {unknown} error
- * @returns {string}
- */
+/** @type {'RIGHT'} */
+const RIGHT = 'RIGHT';
+
+/** @param {string} reason */
+function guidanceFor(reason) {
+	if (/^\d+ lines$/.test(reason)) {
+		return 'This is a length-only flag. Check whether each line adds useful context; a necessary explanation can stay.';
+	}
+	return TELLS.find(([name]) => name === reason)?.[2] ?? 'Review the flagged wording in context.';
+}
+
+/** @param {Group} group */
+export function bodyFor(group) {
+	const guidance = [...new Set(group.reasons.map(guidanceFor))];
+	const advice = guidance.length === 1 ? guidance[0] : guidance.map(text => `- ${text}`).join('\n');
+	return `<!-- statute-comment-cop:${keyFor(group)} -->\n`
+		+ `Flagged for: ${group.reasons.join(', ')}.\n\n${advice}\n\n`
+		+ `<sub>Comment Cop is intentionally sensitive; its suggestions are advisory. `
+		+ `If this is a false positive, you are welcome to resolve this thread without changing the text.</sub>`
+		+ `<br><sub>Any AI agents are only allowed to resolve the comment if it is a false positive and need to justify the closure with a reply. Otherwise fix it. Comment-cop will resolve it automatically on next push.</sub>`;
+}
+
+/** @param {unknown} error */
 function errorMessage(error) {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** @param {unknown} value @param {string} name */
+function requiredString(value, name) {
+	if (typeof value !== 'string' || value === '') throw new Error(`${name} is required`);
+	return value;
+}
+
+/** @param {RunArguments} args */
+export default async function run({ github, context, core, dryRun = false }) {
+	const pullRequest = context.payload.pull_request;
+	if (pullRequest === undefined) throw new Error('pull_request payload is required');
+
+	const owner = context.repo.owner;
+	const repo = context.repo.repo;
+	const pullNumber = pullRequest.number;
+	const headSha = requiredString(pullRequest.head.sha, 'pull request head SHA');
+	const files = await github.paginate(github.rest.pulls.listFiles, {
+		owner,
+		repo,
+		pull_number: pullNumber,
+		per_page: 100,
+	});
+
+	/** @type {Group[]} */
+	const groups = [];
+	const unscannedPaths = new Set();
+	for (const file of files) {
+		if (file.status === 'removed' || langFor(file.filename) === null) continue;
+		if (file.filename.startsWith('vendor/') || file.filename.includes('/vendor/')) continue;
+		if (file.patch === undefined) {
+			unscannedPaths.add(file.filename);
+			core.warning(`No patch available for ${file.filename}; skipping comment scan.`);
+			continue;
+		}
+
+		let source;
+		if (file.filename.endsWith('.go') || langFor(file.filename) === 'md') {
+			try {
+				const contentsUrl = requiredString(file.contents_url, `contents URL for ${file.filename}`);
+				const response = await github.request(contentsUrl, {
+					headers: { accept: 'application/vnd.github.raw+json' },
+				});
+				if (typeof response.data !== 'string') throw new Error(`Invalid contents of ${file.filename}`);
+				source = response.data;
+			} catch (error) {
+				unscannedPaths.add(file.filename);
+				core.warning(`Could not read ${file.filename}; skipping comment scan: ${errorMessage(error)}`);
+				continue;
+			}
+		}
+		groups.push(...groupsFromPatch(file.filename, file.patch, source));
+	}
+
+	const presentKeys = new Set(groups.flatMap(group => [keyFor(group), legacyKeyFor(group)]));
+	const seenKeys = new Set();
+	/** @type {string[]} */
+	const staleThreadIds = [];
+	let after = null;
+	for (;;) {
+		/** @type {ReviewThreadsResponse} */
+		const response = await github.graphql(
+			`query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
+				repository(owner: $owner, name: $repo) {
+					pullRequest(number: $pr) {
+						reviewThreads(first: 100, after: $after) {
+							pageInfo { hasNextPage endCursor }
+							nodes { id isResolved path comments(first: 1) { nodes { body viewerDidAuthor } } }
+						}
+					}
+				}
+			}`,
+			{ owner, repo, pr: pullNumber, after },
+		);
+		const page = response.repository.pullRequest.reviewThreads;
+		for (const thread of page.nodes) {
+			const comment = thread.comments.nodes[0];
+			if (comment === undefined || !comment.viewerDidAuthor) continue;
+			const match = /<!-- statute-comment-cop:(.+) -->/.exec(comment.body);
+			if (match === null) continue;
+			const key = match[1];
+			seenKeys.add(key);
+			if (!thread.isResolved && !presentKeys.has(key) && !unscannedPaths.has(thread.path)) {
+				staleThreadIds.push(thread.id);
+			}
+		}
+		if (!page.pageInfo.hasNextPage) break;
+		after = page.pageInfo.endCursor;
+	}
+
+	let resolved = 0;
+	for (const id of staleThreadIds) {
+		if (dryRun) {
+			core.info(`[dry-run] would resolve stale thread ${id}`);
+			continue;
+		}
+		try {
+			await github.graphql(
+				`mutation($id: ID!) {
+					resolveReviewThread(input: {threadId: $id}) { thread { id } }
+				}`,
+				{ id },
+			);
+			resolved++;
+		} catch (error) {
+			core.warning(`Could not resolve Comment Cop thread ${id}: ${errorMessage(error)}`);
+		}
+	}
+
+	const comments = groups.filter(group => !seenKeys.has(keyFor(group)) && !seenKeys.has(legacyKeyFor(group))).map(
+		group => ({
+			path: group.path,
+			line: group.end,
+			side: RIGHT,
+			body: bodyFor(group),
+			...(group.start < group.end
+				? { start_line: group.start, start_side: RIGHT }
+				: {}),
+		}),
+	);
+	if (dryRun) {
+		for (const group of groups) {
+			core.info(`[dry-run] ${group.path}:${group.start}-${group.end} [${group.reasons.join(', ')}]\n${group.text}`);
+		}
+		core.info(
+			comments.length > 0
+				? `[dry-run] would submit one review with ${comments.length} new finding(s); nothing posted.`
+				: '[dry-run] no new findings; no review to submit.',
+		);
+		return;
+	}
+	let posted = 0;
+	if (comments.length > 0) {
+		try {
+			await github.rest.pulls.createReview({
+				owner,
+				repo,
+				pull_number: pullNumber,
+				commit_id: headSha,
+				event: 'COMMENT',
+				body: 'Please review the flagged wording in the inline comments.',
+				comments,
+			});
+			posted = comments.length;
+		} catch (error) {
+			core.warning(`Could not submit Comment Cop review: ${errorMessage(error)}`);
+		}
+	}
+
+	core.info(`Comment Cop: ${posted} posted, ${resolved} stale threads resolved, ${groups.length} present.`);
 }
 
 /* -------------------------------------------------------------- local scan */
@@ -444,10 +517,10 @@ function scanLocal(base) {
 	const groups = [];
 
 	for (const name of tracked) {
-		groups.push(...groupsFromPatch(name, git(['diff', '-U3', from, '--', name])));
+		groups.push(...groupsFromPatch(name, git(['diff', '-U3', from, '--', name]), readFileSync(name, 'utf8')));
 	}
 	for (const name of untracked) {
-		groups.push(...groupsFromPatch(name, untrackedPatch(name)));
+		groups.push(...groupsFromPatch(name, untrackedPatch(name), readFileSync(name, 'utf8')));
 	}
 
 	const scope = `${tracked.length + untracked.length} file(s) vs ${from.slice(0, 12)}`;
@@ -468,268 +541,31 @@ function scanLocal(base) {
 	return 1;
 }
 
-/* ------------------------------------------------------------------ runner */
-
-/**
- * Scan the pull request diff, resolve stale Comment Cop threads, and post one
- * review comment per new finding.
- *
- * @param {object} options
- * @param {GithubClient} options.github
- * @param {ContextLike} options.context
- * @param {CoreLike} options.core
- * @param {boolean} [options.dryRun] report findings without calling any mutating API
- * @returns {Promise<void>}
- */
-export default async function run({ github, context, core, dryRun = false }) {
-	const owner = context.repo.owner;
-	const repo = context.repo.repo;
-	const pull_number = context.payload.pull_request.number;
-	const headSha = context.payload.pull_request.head.sha;
-
-	const files = await github.paginate(
-		github.rest.pulls.listFiles,
-		{
-			owner,
-			repo,
-			pull_number,
-			per_page: 100,
-		},
-	);
-
-	/** @type {Group[]} */
-	const groups = [];
-
-	for (const file of files) {
-		if (file.status === 'removed') continue;
-		if (langFor(file.filename) === null) continue;
-
-		// Never police vendored code if it appears in a PR.
-		if (
-			file.filename.startsWith('vendor/')
-			|| file.filename.includes('/vendor/')
-		) {
-			continue;
-		}
-
-		if (!file.patch) {
-			core.warning(
-				`No patch available for ${file.filename}; skipping comment scan.`,
-			);
-			continue;
-		}
-
-		for (const group of groupsFromPatch(file.filename, file.patch)) {
-			groups.push(group);
-		}
-	}
-
-	const presentKeys = new Set(groups.map(keyFor));
-
-	if (dryRun) {
-		core.info(`[dry-run] ${groups.length} comment group(s) currently present:`);
-		for (const group of groups) {
-			core.info(`[dry-run]   ${group.path}:${group.start}-${group.end} key=${keyFor(group)}`);
-			for (const line of group.text.split('\n')) core.info(`[dry-run]     | ${line}`);
-		}
-	}
-
-	// Existing Comment Cop review threads are used both to avoid
-	// duplicate comments and to resolve findings automatically once
-	// their corresponding block disappears from the current diff.
-	const threads = [];
-
-	{
-		const query = `
-			query(
-				$owner: String!
-				$repo: String!
-				$pr: Int!
-				$after: String
-			) {
-				repository(owner: $owner, name: $repo) {
-					pullRequest(number: $pr) {
-						reviewThreads(first: 100, after: $after) {
-							pageInfo {
-								hasNextPage
-								endCursor
-							}
-							nodes {
-								id
-								isResolved
-								comments(first: 1) {
-									nodes {
-										body
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		`;
-
-		/** @type {string | null} */
-		let after = null;
-
-		for (;;) {
-			const response = await github.graphql(query, {
-				owner,
-				repo,
-				pr: pull_number,
-				after,
-			});
-
-			const page = response.repository.pullRequest.reviewThreads;
-
-			threads.push(...page.nodes);
-
-			if (!page.pageInfo.hasNextPage) break;
-			after = page.pageInfo.endCursor;
-		}
-	}
-
-	/** @type {Set<string>} */
-	const seenKeys = new Set();
-	/** @type {string[]} */
-	const toResolve = [];
-
-	for (const thread of threads) {
-		const body = thread.comments.nodes[0]?.body ?? '';
-
-		const match = /<!-- statute-comment-cop:([^>\s]+) -->/.exec(body);
-
-		if (!match) continue;
-
-		const key = match[1];
-		seenKeys.add(key);
-
-		if (dryRun) {
-			core.info(
-				`[dry-run] existing cop thread ${thread.id} key=${key} `
-					+ `resolved=${thread.isResolved} stillPresent=${presentKeys.has(key)}`,
-			);
-		}
-
-		if (!thread.isResolved && !presentKeys.has(key)) {
-			toResolve.push(thread.id);
-		}
-	}
-
-	if (toResolve.length > 0) {
-		const mutation = `
-			mutation($id: ID!) {
-				resolveReviewThread(input: { threadId: $id }) {
-					thread {
-						id
-					}
-				}
-			}
-		`;
-
-		let resolved = 0;
-		let failed = 0;
-
-		for (const id of toResolve) {
-			if (dryRun) {
-				core.info(`[dry-run] would resolve stale thread ${id}`);
-				continue;
-			}
-
-			try {
-				await github.graphql(mutation, { id });
-				resolved++;
-			} catch (error) {
-				failed++;
-				core.warning(
-					`resolveReviewThread failed for ${id}: ${errorMessage(error)}`,
-				);
-			}
-		}
-
-		if (!dryRun) {
-			core.info(
-				`Stale Comment Cop threads: ${resolved} resolved, ${failed} failed.`,
-			);
-		}
-	}
-
-	const fresh = groups.filter(group => !seenKeys.has(keyFor(group)));
-
-	if (fresh.length === 0) {
-		core.info(
-			`No new comment groups to flag (${groups.length} currently present).`,
-		);
-		return;
-	}
-
-	let posted = 0;
-
-	for (const group of fresh) {
-		/** @type {Record<string, unknown>} */
-		const params = {
-			owner,
-			repo,
-			pull_number,
-			commit_id: headSha,
-			path: group.path,
-			line: group.end,
-			side: 'RIGHT',
-			body: bodyFor(group),
-		};
-
-		if (group.start < group.end) {
-			params.start_line = group.start;
-			params.start_side = 'RIGHT';
-		}
-
-		if (dryRun) {
-			core.info(
-				`[dry-run] would comment on ${group.path}:${group.start}-${group.end} key=${keyFor(group)}`,
-			);
-			continue;
-		}
-
-		try {
-			await github.rest.pulls.createReviewComment(params);
-			posted++;
-		} catch (error) {
-			core.warning(
-				`createReviewComment failed for ${group.path}:${group.start}-${group.end}: ${errorMessage(error)}`,
-			);
-		}
-	}
-
-	if (dryRun) {
-		core.info(`[dry-run] ${fresh.length} new finding(s); nothing posted.`);
-		return;
-	}
-
-	core.info(`Posted ${posted} Comment Cop review comment(s).`);
-}
-
 /* ------------------------------------------------------------- local entry */
 
 /**
- * Minimal fetch-based stand-in for the github-script Octokit client. It
- * implements only the four call shapes above; anything else is out of scope.
+ * Fetch-based client for the scanner's GitHub API operations.
  *
  * @param {string} token
  * @returns {GithubClient}
  */
-function localClient(token) {
+export function localClient(token) {
 	const API = 'https://api.github.com';
 
 	/**
 	 * @param {string} path
 	 * @param {RequestInit} [init]
+	 * @param {boolean} [raw]
 	 * @returns {Promise<any>}
 	 */
-	async function request(path, init) {
-		const response = await fetch(`${API}${path}`, {
+	async function request(path, init, raw = false) {
+		const url = new URL(path, API);
+		if (url.origin !== API) throw new Error('Refusing non-GitHub API URL');
+		const response = await fetch(url, {
 			...init,
+			redirect: 'error',
 			headers: {
-				accept: 'application/vnd.github+json',
+				accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
 				authorization: `Bearer ${token}`,
 				'content-type': 'application/json',
 				'x-github-api-version': '2022-11-28',
@@ -741,7 +577,7 @@ function localClient(token) {
 			throw new Error(`${init?.method ?? 'GET'} ${path} -> ${response.status} ${await response.text()}`);
 		}
 
-		return response.json();
+		return raw ? response.text() : response.json();
 	}
 
 	/** @param {Record<string, any>} params */
@@ -752,11 +588,12 @@ function localClient(token) {
 		);
 
 	return {
+		request: async url => ({ data: await request(url, undefined, true) }),
 		rest: {
 			pulls: {
 				listFiles,
-				createReviewComment: params =>
-					request(`/repos/${params.owner}/${params.repo}/pulls/${params.pull_number}/comments`, {
+				createReview: params =>
+					request(`/repos/${params.owner}/${params.repo}/pulls/${params.pull_number}/reviews`, {
 						method: 'POST',
 						body: JSON.stringify(params),
 					}),
@@ -791,7 +628,7 @@ function localClient(token) {
 	};
 }
 
-const USAGE = `comment-cop — flag paragraph-length implementation comments in Go source.
+const USAGE = `comment-cop — review added comments and Markdown prose.
 
 usage:
   comment-cop.mjs [<base-ref>]                 scan the working tree (default)

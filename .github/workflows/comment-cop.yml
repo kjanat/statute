@@ -42,7 +42,7 @@ jobs:
 
     concurrency:
       group: comment-cop-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
 
     steps:
       # actions/checkout under pull_request_target defaults to the base ref of
@@ -53,7 +53,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Scan diff for paragraph-length implementation comments
+      - name: Review added comments and Markdown
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |

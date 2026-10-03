@@ -166,6 +166,27 @@ an external start cannot clear quarantine. Keep event/reconnect/poll ordering in
 deterministic provider tests and real-Docker network scenarios. Event-only tests
 must leave `Refresh` unset and await observation before issuing routed demand.
 
+## Comment Cop
+
+Comment Cop submits new findings together in one review, with inline threads and
+guidance specific to each finding. Suggestions are advisory: necessary explanations
+and intentional quotations can stay. Agents must reply with a justification before
+resolving a false positive. Fix valid findings; the next scan resolves stale threads.
+
+Finding IDs include the path, starting line, and text. Moving unchanged prose may
+create a new finding. Existing legacy markers remain recognized during migration.
+The bot only manages threads authored by its current API identity. Files whose
+patch or required source cannot be read retain their existing threads.
+
+Run `make comment-cop` for a local scan and `make test-comment-cop` for offline
+regressions. The remote CLI, `node scripts/comment-cop.mjs OWNER/REPO NUMBER`,
+requires `GITHUB_TOKEN` and defaults to a read-only preview. `--apply` enables review
+submission and stale-thread resolution. GitHub Actions executes base-branch tooling;
+PR source is read as data for documentation and Markdown fence context.
+
+The scanner and grouped-review behavior incorporate
+[actionlint's adaptation](https://github.com/kjanat/actionlint/blob/9fae466c315e96e5c3c67531db4223cb8af7b367/.github/actions/comment-cop/comment-cop.mjs).
+
 ## Why the roles are separated
 
 A model that chose an architecture is very good at later explaining why that choice

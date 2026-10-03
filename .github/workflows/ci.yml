@@ -123,6 +123,7 @@ jobs:
       # comment-cop.yml runs only base-branch tooling, so a PR cannot
       # live-test its own copy; this is the enforceable check on it.
       - { name: typecheck, run: make typecheck }
+      - { name: Comment Cop tests, run: make test-comment-cop }
       - { name: RFC snapshot tooling, run: make test-rfcs check-rfcs }
   e2e:
     name: e2e regression
