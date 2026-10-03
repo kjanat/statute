@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add local RFC Editor HTML references with explicit refresh tooling, source/checksum provenance, and offline verification for HTTP protocol work.
+
 - Add a private HTTP HTML-rewriting experiment with explicit per-route fail-open/fail-closed policy, bounded fresh instances, and streaming/disconnect/shutdown tests. Exercise real Statute cache, retry, and compression in a separate process, and record the fail-open/no-store cache integration limitation.
 
 - Add a parser-independent Wasm cancellation reproducer with equivalent loop-shape benchmarks and active-call interruption/isolation tests. Record checkpoint-density costs separately from cancellation-trigger scheduling delay without weakening HTML engine safety settings.

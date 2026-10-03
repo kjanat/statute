@@ -13,6 +13,11 @@ Every agent reads:
    invariants.
 3. The current issue/PR and current target branch — never stale chat memory.
 
+For HTTP protocol work, use the [vendored RFC HTML sources](rfc-sources.md).
+`make check-rfcs` verifies the local corpus offline; fetch explicitly when adding
+or refreshing a source. Preserve upstream bytes and cite the RFC section rather
+than treating the snapshot date as proof that no errata or updates exist.
+
 `CLAUDE.md` points Claude-based runners at the same contract. `.claude/agents` and
 `.agents/agents` both expose the shared [`agents/`](../agents/) role prompts; the
 existing skill symlinks continue to expose [`skills/`](../skills/).

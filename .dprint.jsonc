@@ -1,4 +1,5 @@
 {
+  "excludes": ["docs/rfc/**"],
   "markup": { "associations": ["!**/*.svg"] },
   "yaml": { "printWidth": 160 },
   "svg": { "associations": ["**/*.svg"] },
