@@ -250,7 +250,10 @@ metadata describing those bytes. On a rewrite-enabled route, raw
 `SetResponseHeader` and `AddResponseHeader` (append) operations cannot inject
 `Content-Type`, `Content-Length`, `Content-Encoding`, `ETag`, `Last-Modified`,
 `Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`, `Accept-Ranges`,
-`Content-Range`, `Transfer-Encoding`, or `Trailer`. Explicit removal is allowed.
+`Content-Range`, `Transfer-Encoding`, or `Trailer`. Removal remains subject to
+the final producer's requirements: the shared route validator rejects response
+Content-Encoding Set/Add/Remove with enabled compression, including assembled
+Docker chains. Removing a validator or length remains allowed.
 CSP, cookies, custom headers, and actual compression stages are unaffected.
 There is no last-writer-wins exception, even for a conflicting operation followed
 by removal. Reordering middleware or adding Retry does not change validation.
