@@ -339,7 +339,7 @@ Middleware:
 - **`Timeout(dur)`** — wraps the handler in `http.TimeoutHandler`. Returns 503 when exceeded.
 - **`RateLimit(rate).Per(key)`** — token bucket per key. Rate format is `"N/unit"` where unit is `s`, `min`, `h`. Keys: `ClientIP` (default), `HostHeader`.
 - **`Retry(max, OnStatus(...))`** — retries upstream calls up to `max` attempts when the response status matches one of the listed codes. Skips for non-idempotent methods (POST, PATCH), gRPC, SSE, WebSocket upgrades, and bodies > 1 MiB. Buffers smaller bodies to replay on retry.
-- **`Cache(ttl)`** — in-process cache for 2xx GET/HEAD responses. Replace with a real LRU for high-cardinality deployments.
+- **`Cache(ttl)`**: in-process cache for 2xx GET/HEAD responses; request/response `no-store` prevents storage, including route-added response policy. See [cache behavior and limitations](docs/production.md#response-cache). Replace with a real LRU for high-cardinality deployments.
 - **`Compress(Gzip, Brotli)`** — negotiates content encoding via `Accept-Encoding`. Brotli preferred when the client advertises both.
 - **`ETag()`** — adds an SHA-256-based ETag to 200 responses; answers 304 on `If-None-Match` match.
 - **`SetRequestHeader(name, value)`, `AddRequestHeader(name, value)`, `RemoveRequestHeader(name)`** — rewrite the request before it reaches the proxy or file handler. Names are canonicalised and values validated when the config resolves, so a bad header is a startup error rather than a malformed request.

@@ -8,10 +8,8 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-// cacheHandler is a tiny in-process response cache. It stores 2xx GET/HEAD
-// responses for the configured TTL, keyed on the request host + URI. Entries
-// are not size-bounded; for production deployments with large response bodies
-// or high cardinality, swap this for a real LRU.
+// cacheHandler stores permitted 2xx GET/HEAD responses by method, host, and URI.
+// Entries expire by TTL; their count and body sizes are unbounded.
 func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	ttl := m.CacheTTL
 	if ttl <= 0 {
@@ -28,9 +26,12 @@ func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			entry.replay(w)
 			return
 		}
+		requestAllowsStorage := cacheControlAllowsStorage(r.Header)
 		buf := newResponseBuffer()
 		next.ServeHTTP(buf, r)
-		if buf.status >= 200 && buf.status < 300 {
+		if buf.status >= 200 && buf.status < 300 &&
+			requestAllowsStorage && cacheControlAllowsStorage(buf.Header()) &&
+			cacheControlAllowsStorage(responseHeadersForCache(r.Context(), buf.Header())) {
 			c.put(key, buf)
 		}
 		buf.replay(w)

@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Honor request and response `Cache-Control: no-store` before storing response-cache entries, including route-added response headers. Preserve fail-open HTML-rewrite delivery without retaining bypassed responses; later requests can recover and cache successfully rewritten output.
+
 - Request exact-version indexing directly from pkg.go.dev before release verification, and avoid cached version-list responses while polling.
 
 ## [0.7.1] - 2026-09-29
