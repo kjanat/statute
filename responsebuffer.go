@@ -8,8 +8,7 @@ import (
 
 // responseBuffer captures status, headers, and body so middleware can inspect
 // the response before committing it to the wire. It implements http.Flusher
-// as a no-op because we deliberately defer flushing until replay; streaming
-// responses bypass middleware that buffers.
+// as a no-op. All body bytes are buffered until replay.
 type responseBuffer struct {
 	header      http.Header
 	status      int
@@ -26,6 +25,9 @@ func (b *responseBuffer) Header() http.Header { return b.header }
 
 // WriteHeader records the status code once; later calls are ignored.
 func (b *responseBuffer) WriteHeader(code int) {
+	if code < 200 && code != http.StatusSwitchingProtocols {
+		return
+	}
 	if b.wroteHeader {
 		return
 	}
@@ -47,7 +49,7 @@ func (b *responseBuffer) Flush() {}
 
 // replay copies the buffered response into the real ResponseWriter.
 func (b *responseBuffer) replay(w http.ResponseWriter) {
-	maps.Copy(w.Header(), b.header)
+	maps.Copy(w.Header(), b.header.Clone())
 	w.WriteHeader(b.status)
 	_, _ = w.Write(b.body.Bytes())
 }

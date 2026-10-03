@@ -130,6 +130,7 @@ type etagMW struct{}
 
 func (*etagMW) statuteMiddleware() {}
 
-// ETag returns a middleware that adds ETag headers to static file responses
-// and serves 304 Not Modified for matching If-None-Match requests.
+// ETag buffers and hashes GET representations. HEAD renders the inner GET path
+// to compute the same validator, then omits its body. Preconditions use that
+// representation; middleware order determines whether hashing sees encoding.
 func ETag() *etagMW { return &etagMW{} }

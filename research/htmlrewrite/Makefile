@@ -15,6 +15,10 @@ build:
 test: build
 	CGO_ENABLED=0 go test ./...
 	CGO_ENABLED=0 go vet ./...
+	CGO_ENABLED=0 go test -tags htmlrewrite_research -run '^TestHTTPDocker' .
+	CGO_ENABLED=0 go -C ../.. test -tags htmlrewrite_research ./internal/researchroute
+	CGO_ENABLED=0 go -C ../.. test -tags htmlrewrite_research -run '^TestResearchRoute' .
+	CGO_ENABLED=0 go vet -tags htmlrewrite_research ./...
 	cargo fmt --manifest-path guest/Cargo.toml --check
 	cargo clippy --manifest-path guest/Cargo.toml --locked --all-targets -- -D warnings
 

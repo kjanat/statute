@@ -2,14 +2,15 @@ package statute
 
 import (
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
 	"statute.kjanat.dev/resolved"
 )
 
-// cacheHandler stores permitted 2xx GET/HEAD responses by method, host, and URI.
-// Entries expire by TTL; their count and body sizes are unbounded.
+// cacheHandler stores permitted full GET/HEAD responses by method, host, URI,
+// and Vary. Entries expire by TTL; their count and body sizes are unbounded.
 func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	ttl := m.CacheTTL
 	if ttl <= 0 {
@@ -17,22 +18,25 @@ func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	}
 	c := newTTLCache(ttl)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !cacheRequestEligible(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		key := r.Method + " " + r.Host + r.URL.RequestURI()
-		if entry := c.get(key); entry != nil {
+		if entry := c.get(key, r.Header); entry != nil {
 			entry.replay(w)
 			return
 		}
-		requestAllowsStorage := cacheControlAllowsStorage(r.Header)
+		requestHeaders := r.Header.Clone()
+		requestAllowsStorage := cacheControlAllowsStorage(requestHeaders)
 		buf := newResponseBuffer()
 		next.ServeHTTP(buf, r)
-		if buf.status >= 200 && buf.status < 300 &&
+		projected := responseHeadersForCache(r.Context(), buf.Header())
+		vary, reusable := cacheVary(buf.Header(), projected)
+		if cacheResponseEligible(buf) && reusable &&
 			requestAllowsStorage && cacheControlAllowsStorage(buf.Header()) &&
-			cacheControlAllowsStorage(responseHeadersForCache(r.Context(), buf.Header())) {
-			c.put(key, buf)
+			cacheControlAllowsStorage(projected) {
+			c.put(key, requestHeaders, vary, buf)
 		}
 		buf.replay(w)
 	})
@@ -40,37 +44,49 @@ func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 
 type ttlCache struct {
 	ttl     time.Duration
-	mu      sync.RWMutex
-	entries map[string]cacheEntry
+	mu      sync.Mutex
+	entries map[string][]cacheEntry
 }
 
 type cacheEntry struct {
 	buf     *responseBuffer
 	expires time.Time
+	vary    []cacheVaryField
 }
 
 func newTTLCache(ttl time.Duration) *ttlCache {
-	return &ttlCache{ttl: ttl, entries: make(map[string]cacheEntry)}
+	return &ttlCache{ttl: ttl, entries: make(map[string][]cacheEntry)}
 }
 
-func (c *ttlCache) get(key string) *responseBuffer {
-	c.mu.RLock()
-	e, ok := c.entries[key]
-	c.mu.RUnlock()
-	if !ok {
-		return nil
-	}
-	if time.Now().After(e.expires) {
-		c.mu.Lock()
-		delete(c.entries, key)
-		c.mu.Unlock()
-		return nil
-	}
-	return e.buf
-}
-
-func (c *ttlCache) put(key string, buf *responseBuffer) {
+func (c *ttlCache) get(key string, headers http.Header) *responseBuffer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = cacheEntry{buf: buf, expires: time.Now().Add(c.ttl)}
+	now := time.Now()
+	entries := slices.DeleteFunc(c.entries[key], func(e cacheEntry) bool { return !now.Before(e.expires) })
+	if len(entries) == 0 {
+		delete(c.entries, key)
+	} else {
+		c.entries[key] = entries
+	}
+	for _, e := range entries {
+		if e.matches(headers) {
+			return e.buf
+		}
+	}
+	return nil
+}
+
+func (c *ttlCache) put(key string, headers http.Header, names []string, buf *responseBuffer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	entry := cacheEntry{buf: buf, expires: now.Add(c.ttl)}
+	for _, name := range names {
+		values, present := cacheHeaderValues(headers, name)
+		entry.vary = append(entry.vary, cacheVaryField{name: name, values: values, present: present})
+	}
+	entries := slices.DeleteFunc(c.entries[key], func(e cacheEntry) bool {
+		return !now.Before(e.expires) || !e.sameVary(entry) || e.matches(headers)
+	})
+	c.entries[key] = append(entries, entry)
 }

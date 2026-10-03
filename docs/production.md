@@ -56,7 +56,10 @@ proxies supplied through `Handle` routes.
 ## Response cache
 
 `Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,
-keyed by method, host, and request URI. The configured TTL controls expiry.
+keyed by method, host, request URI, and response `Vary` selection. The configured
+TTL controls expiry. Each stored variant records a copy of its selecting request
+header values, distinguishing absent from empty fields. Comparison is exact;
+equivalent but differently spelled field values can cause an extra miss.
 
 Request or response `Cache-Control: no-store` prevents storing a new entry.
 Every field value is checked, with case-insensitive directive names and quoted
@@ -71,15 +74,63 @@ applied. A route-added no-store therefore prevents storage. Removing or replacin
 an origin no-store header cannot authorize storing that response. Actual response
 headers are still applied once when the final response is committed.
 
+Conditional headers (`If-Match`, `If-None-Match`, `If-Modified-Since`,
+`If-Unmodified-Since`), `Range`/`If-Range`, request `no-cache`/`no-transform`, and
+malformed request Cache-Control bypass both lookup and storage. Downstream
+middleware or the origin must evaluate them; a warm entry cannot bypass that
+policy. These requests do not purge an existing unconditional entry.
+
+Vary selection uses the union of origin and projected route response-header
+operations, including any origin fields removed by route configuration.
+Repeated/case-insensitive field names are normalized. `Vary: *`, invalid Vary,
+206 responses, and responses carrying Content-Range are delivered without
+storage. A changed Vary field set replaces incompatible variants for that key.
+Compression declares `Vary: Accept-Encoding` even for identity responses; both
+Cache/Compress orders preserve encoded versus identity selection.
+
 For a temporary fail-open HTML-rewrite bypass, the original response is delivered
 with no-store and discarded after delivery. The next request reaches the origin
 again; a supported, successfully rewritten response can then be cached normally.
 
 This remains a small TTL cache: entries are unbounded, responses are buffered,
-and it does not implement Vary-aware keys, private-response isolation, no-cache
-revalidation, or origin freshness calculations. Use it only for responses safe
-to share under its method/host/URI key. Avoid it for personalized or streaming
+and it does not implement private-response isolation, conditional revalidation
+of stored entries, or origin freshness calculations. Response no-cache handling
+is not implemented; use it only for responses safe to share for the configured
+TTL under their selected Vary keys. Avoid it for personalized or streaming
 routes; use a suitable cache implementation for broader HTTP caching needs.
+
+## Body-derived ETags
+
+`ETag()` buffers the inner GET response and hashes successful status-200 bytes.
+For HEAD it clones the request, renders that same inner GET, computes the same
+validator, and sends headers only. This can do the full work of a GET; buffering
+is unbounded. It remains one external HEAD in access logs and request metrics.
+Request authentication, negotiation, context, and route selection are retained.
+The render clone removes read preconditions and ranges; the original request is
+evaluated against the completed representation afterward. Matching If-None-Match
+(including weak/list/wildcard forms) yields 304; a failed strong If-Match yields
+412. Invalid entity-tag syntax yields 400. Date conditions obey precedence and
+are ignored when the selected response has no valid Last-Modified value.
+
+The first declared middleware is outermost. `With(ETag(), Compress(Gzip))`
+hashes encoded bytes and supplies a strong tag for that encoding.
+`With(Compress(Gzip), ETag())` hashes identity bytes and supplies a weak tag for
+compressed delivery. Both produce GET/HEAD-equivalent validators at that pipeline
+position. Outer compression omits the identity Content-Length on HEAD; it is not
+the encoded length. HEAD and 304 responses carry no compressed body.
+
+Compression leaves already-encoded and partial responses untouched and honors
+request/response `no-transform`; malformed cache directives also prevent a new
+encoding. It removes identity length/digests/range support when encoding starts.
+Announced and late representation trailers are also removed after encoding;
+unrelated trailers and untouched bypass responses retain their trailers.
+An aborted handler propagates its panic without finishing a compressed stream.
+
+Cache can sit on either side: an inner Cache can supply the GET render, while an
+outer Cache delegates conditional requests to ETag. Upgrade requests bypass these
+representation stages. A render error/panic publishes no generated validator or
+partial buffered content. Choose streaming delivery without ETag when buffering
+or HEAD rendering cost is undesirable.
 
 ## Running on low ports as a non-root user
 

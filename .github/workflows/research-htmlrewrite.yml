@@ -2,11 +2,21 @@ name: HTML rewrite research
 on:
   pull_request:
     paths:
+      - "*.go"
+      - go.mod
+      - go.sum
+      - internal/**
+      - resolved/**
       - research/htmlrewrite/**
       - .github/workflows/research-htmlrewrite.yml
   push:
     branches: [master]
     paths:
+      - "*.go"
+      - go.mod
+      - go.sum
+      - internal/**
+      - resolved/**
       - research/htmlrewrite/**
       - .github/workflows/research-htmlrewrite.yml
   workflow_dispatch:
@@ -41,7 +51,11 @@ jobs:
         run: make test
       - name: Race detector
         if: matrix.runner == 'ubuntu-latest'
-        run: go test -race ./...
+        run: |
+          go test -race ./...
+          go test -race -tags htmlrewrite_research -run '^TestHTTPDocker' .
+          go -C ../.. test -race -tags htmlrewrite_research ./internal/researchroute
+          go -C ../.. test -race -tags htmlrewrite_research -run '^TestResearchRoute' .
       - name: Fuzz chunk boundaries
         run: make fuzz
       - name: Benchmark smoke tests

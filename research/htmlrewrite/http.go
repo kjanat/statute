@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"statute.kjanat.dev/internal/httpprecondition"
 )
 
 type failurePolicy uint8
@@ -85,16 +87,19 @@ func newRewriteTransport(e *httpEngine, base http.RoundTripper, p httpPolicy) (*
 	return &rewriteTransport{owner: e, base: base, policy: p}, nil
 }
 
-func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *rewriteTransport) RoundTrip(req *http.Request) (response *http.Response, resultErr error) {
 	if (req.Method != http.MethodGet && req.Method != http.MethodHead) || req.Header.Get("Upgrade") != "" {
 		return t.base.RoundTrip(req)
 	}
+	defer func() {
+		if resultErr == nil && response != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
+			applyReadConditions(req, response)
+		}
+	}()
 	// The timer also bounds upstream reads. It lives until response-body close.
 	ctx, cancel := context.WithTimeout(req.Context(), t.policy.timeout)
 	clone := req.Clone(ctx)
-	for _, name := range []string{"If-None-Match", "If-Modified-Since", "Range", "If-Range"} {
-		deleteHeader(clone.Header, name)
-	}
+	httpprecondition.Clear(clone.Header)
 	res, err := t.base.RoundTrip(clone)
 	if err != nil {
 		cancel()
@@ -111,27 +116,30 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if res.StatusCode != http.StatusOK {
 		return res, nil
 	}
-	if len(res.Header.Values("Content-Type")) > 1 {
+	types := responseHeaderValues(res.Header, "Content-Type")
+	if len(types) > 1 {
 		return t.reject(res, errors.New("ambiguous response content type"))
 	}
-	media, params, mediaErr := mime.ParseMediaType(res.Header.Get("Content-Type"))
+	contentType := strings.Join(types, ",")
+	media, params, mediaErr := mime.ParseMediaType(contentType)
 	if mediaErr == nil && media != "text/html" {
 		return res, nil
 	}
-	if res.Header.Get("Content-Type") == "" {
+	if contentType == "" {
 		return res, nil
 	}
+	encoding := strings.Trim(strings.Join(responseHeaderValues(res.Header, "Content-Encoding"), ","), " \t")
 	var unsupported error
 	switch {
 	case mediaErr != nil:
 		unsupported = errors.New("invalid response content type")
 	case params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8") && !strings.EqualFold(params["charset"], "us-ascii"):
 		unsupported = errors.New("unsupported HTML charset")
-	case strings.Join(res.Header.Values("Content-Encoding"), ",") != "" && !strings.EqualFold(strings.Join(res.Header.Values("Content-Encoding"), ","), "identity"):
+	case encoding != "" && !strings.EqualFold(encoding, "identity"):
 		unsupported = errors.New("unsupported HTML content encoding")
 	case !cacheControlPermitsTransform(req.Header) || !cacheControlPermitsTransform(res.Header):
 		unsupported = errors.New("HTML transformation forbidden or cache directives invalid")
-	case res.Header.Get("Content-Range") != "" || len(res.Trailer) != 0 || res.Header.Get("Trailer") != "":
+	case len(responseHeaderValues(res.Header, "Content-Range")) != 0 || len(res.Trailer) != 0 || len(responseHeaderValues(res.Header, "Trailer")) != 0:
 		unsupported = errors.New("HTML ranges and trailers are unsupported")
 	case res.ContentLength > t.policy.inputLimit:
 		unsupported = errors.New("HTML input limit exceeded")
@@ -168,6 +176,29 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return res, nil
 }
 
+// Evaluate against the representation that was actually selected: transformed
+// streams have no origin validators; untouched/bypassed responses retain theirs.
+func applyReadConditions(req *http.Request, res *http.Response) {
+	status := httpprecondition.Status(req.Header, res.Header)
+	if status == 0 {
+		return
+	}
+	_ = res.Body.Close()
+	res.Body = http.NoBody
+	res.ContentLength = 0
+	res.TransferEncoding = nil
+	res.Trailer = nil
+	res.StatusCode = status
+	res.Status = fmt.Sprintf("%d %s", status, http.StatusText(status))
+	res.Header = res.Header.Clone()
+	for _, field := range []string{"Content-Length", "Transfer-Encoding", "Trailer", "Content-Range", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest"} {
+		deleteHeader(res.Header, field)
+	}
+	if status != http.StatusNotModified {
+		deleteHeader(res.Header, "Content-Encoding")
+	}
+}
+
 func stripOriginMetadata(res *http.Response) {
 	res.ContentLength = -1
 	res.Header = res.Header.Clone()
@@ -178,6 +209,16 @@ func stripOriginMetadata(res *http.Response) {
 }
 
 // Custom RoundTrippers can supply noncanonical header-map keys.
+func responseHeaderValues(h http.Header, name string) []string {
+	var values []string
+	for key, fields := range h {
+		if strings.EqualFold(key, name) {
+			values = append(values, fields...)
+		}
+	}
+	return values
+}
+
 func deleteHeader(h http.Header, name string) {
 	for key := range h {
 		if strings.EqualFold(key, name) {

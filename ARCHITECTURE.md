@@ -122,6 +122,25 @@ storage prohibition. Retry re-entry shares the immutable route operations;
 neither projection nor cache hits apply them to the actual response early.
 No-store skips storage while preserving delivery and the route's failure policy.
 
+Cache delegates conditional, range, request no-cache/no-transform, and malformed
+cache-policy requests to the downstream producer without looking up or replacing
+entries. Stored variants match the request values selected by the union of origin
+and projected route Vary fields. Wildcard/invalid Vary and partial representations
+cannot be stored. An entry owns its copied request-key values and expiry; changing
+the Vary schema replaces incompatible variants. Compression adds Accept-Encoding
+variance at commitment even when it negotiates identity, so an outer cache sees
+the same selection dimensions for every encoding.
+
+Explicit ETag middleware owns a buffered inner representation. It clones a
+GET/HEAD request into an unconditional, range-free GET render, hashes successful
+200 output, and evaluates the original read preconditions against that result.
+HEAD sends headers only; the render stays inside the route and does not re-enter
+listener observation. Encoding outside the hashing stage weakens the validator;
+hashing outside encoding covers encoded bytes. Representation headers follow the
+same ownership on GET and HEAD. Buffered middleware discards informational 1xx
+statuses while retaining the final response, and upgrade requests bypass Cache,
+ETag, and compression.
+
 ## Docker discovery
 
 Docker labels are external input. Statute keeps the trust boundary in code:

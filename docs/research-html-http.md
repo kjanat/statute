@@ -55,17 +55,25 @@ responses whose handler unwinds with `http.ErrAbortHandler`.
 - The experiment accepts identity-encoded HTML. It does not implement an input
   gzip/Brotli decoder; unsupported encodings follow the route's failure policy.
   Existing downstream gzip can compress successfully transformed output.
-- For non-upgrade GET/HEAD requests, a cloned request drops `If-None-Match`,
-  `If-Modified-Since`, `Range`, and `If-Range` to request a complete representation.
-  The caller's request is unchanged. Other preconditions remain intact. This
+- For non-upgrade GET/HEAD requests, a cloned request drops read preconditions
+  (`If-Match`, `If-Unmodified-Since`, `If-None-Match`, `If-Modified-Since`),
+  `Range`, and `If-Range` to obtain a complete representation.
+  The caller's request is unchanged. This
   also sacrifices upstream revalidation/range optimization for non-HTML responses
   on that route, because the content type is not known until the response arrives.
   This is deliberately one upstream request per attempt: it performs no probe or
-  conditional refetch and generates no rewritten validators. `If-Match` and
-  `If-Unmodified-Since` remain origin preconditions; an origin 412 passes through.
-  Accept negotiation and every Vary field are retained. Statute's TTL Cache still
-  lacks Vary-aware keys and general conditional evaluation; routes needing those
-  semantics require a cache that implements them.
+  conditional refetch and generates no rewritten validators. The adapter then
+  evaluates the original conditions against the selected representation.
+  Rewritten streams have no origin validator/date: a tag-valued If-Match fails
+  with 412, tag-valued If-None-Match cannot match, and date conditions are ignored.
+  Wildcards still evaluate existence (If-None-Match `*` gives 304). Untouched and
+  fail-open responses use their retained metadata. Normal non-2xx outcomes take
+  precedence; malformed tag lists give 400. A conditional response consumes no
+  body and releases any admitted instance. All ranges are deliberately ignored
+  and served as full representations; no partial rewritten response is generated.
+  Accept negotiation and every Vary field are retained. Statute's TTL Cache now
+  selects Vary variants and delegates conditional/range requests downstream;
+  the downstream representation producer evaluates their original conditions.
 - Transformed responses discard origin length, ETag, Last-Modified, digest,
   encoding, and Accept-Ranges metadata. Rejection/bypass decisions happen before
   those changes. Request and origin no-transform are respected; strict routes reject that
@@ -151,6 +159,14 @@ that marker; quic-go handles `http.ErrAbortHandler` by resetting the stream.
 both pool proxies and custom `Handle` proxies. Docker generation integration
 remains separate work.
 
+`TestHTTPStatuteProtocolInterruption` repeats the rewrite/disconnect/output-limit
+matrix through a separate Statute process's actual HTTP/2 and HTTP/3 listeners.
+It verifies the negotiated protocol, rewritten output before origin EOF, protocol
+stream-reset errors, and origin-request release. A successful subsequent rewrite
+under a single-instance admission limit proves that interruption releases the
+engine slot. Both route failure policies are covered; the child owns and shuts
+down its listeners and engine.
+
 `TestHTTPStatuteAbortedStreamObservation` runs the rewriter in a separate Statute
 process, receives a rewritten prefix before the origin connection fails, and
 checks the client read error, JSON access record, and Prometheus endpoint. The
@@ -185,6 +201,41 @@ cache entry. The origin is called exactly twice. This resolves the demonstrated
 bypass-retention bug; [other cache limitations](production.md#response-cache)
 remain explicit.
 
+`TestHTTPStatuteWarmCacheNoTransform` warms a rewritten cache entry, then proves
+that request no-transform still reaches the strict/open decision and cannot
+replace the ordinary entry. A quoted extension value containing the same text
+does not bypass the cache. `TestHTTPStatuteCacheVaryCompression` selects language
+and encoding variants through both Cache/Compress orders, checks decoded rewritten
+bytes and encoding headers, and verifies origin call counts across repeated hits.
+
+Root regressions cover all six conditional/range fields, both Cache/Retry orders,
+projected Vary, absence versus empty/multivalue request headers, immutable key
+snapshots, per-variant expiry, changed Vary schemas, and non-storage of partial or
+unselectable responses. The original cache failed these selection/bypass tests.
+
+### Generated validators
+
+Explicit `ETag()` renders a cloned internal GET for HEAD, through the same
+inner representation-producing path. The original method/headers stay unchanged;
+render-only precondition/range removal prevents short-circuiting before the bytes
+exist. It hashes that rendered representation, evaluates the original request,
+and suppresses all body delivery to the HEAD client. Listener observation counts
+one external HEAD request. Rewriting without ETag remains body-free for HEAD.
+Both Cache orders and compression positions have unit and real-process tests.
+`With(ETag(), Compress(...))` hashes encoded bytes and emits a strong validator;
+`With(Compress(...), ETag())` hashes identity bytes and emits a weak validator for
+encoded delivery. HEAD follows the same inner render and returns the same ETag.
+Outer compression omits the identity length from HEAD because it is not the
+encoded length. Compression emits no encoded body for HEAD or 304.
+
+The shared read-condition evaluator implements strong If-Match, weak
+If-None-Match, wildcard/list syntax, date conditions, and precedence from
+[RFC 9110 section 13.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-13.2).
+GET/HEAD validators are computed at the ETag stage's pipeline position; the first
+declared middleware is outermost. Rendering is buffered and costs the same work
+as that inner GET, including a Wasm instance for rewritten HTML. Streaming routes
+without ETag keep the original body-free HEAD path.
+
 ## Manual representation headers
 
 The chosen contract is fail-fast: whoever produces the final bytes owns the
@@ -206,24 +257,90 @@ validator for arbitrary transformations hidden inside application handlers.
 Public rewrite configuration must carry this ownership into canonical Resolve
 validation before release, including dynamically generated routes. A generated
 validator stage needs its own correct representation semantics; permitting
-compression here does not establish Cache/ETag composition.
+compression here is separate from the Cache/ETag composition tests above.
+
+`TestHTTPStatuteCompressionPreservesBypass` verifies that downstream compression
+preserves fail-open encoded bytes exactly and leaves a no-transform response
+unencoded. Root tests cover response/request no-transform, malformed directives,
+partial responses, bodyless statuses, and compressor reuse after an abort.
+`TestHTTPStatuteCompressedBypassTrailers` exercises HTML bypassed because it
+announces trailers: downstream gzip preserves the original HTML and no-store,
+removes the now-stale identity digest, and retains the unrelated completion
+trailer. Root tests cover gzip/Brotli, announced and late trailers, noncanonical
+header keys, buffered composition, and no-transform bypass.
+Eligibility also reads custom-transport header keys case-insensitively:
+`TestHTTPNoncanonicalHTMLHeaders` proves eligible HTML is transformed, and
+`TestHTTPAmbiguousHeadersAndLateTrailers` rejects or bypasses hidden duplicate
+media types, encodings, range metadata, and trailer declarations under the
+selected route policy.
+`TestHTTPStatuteDrainsRewrittenStream` starts shutdown with a rewritten stream
+open, observes TCP ingress refusal, then releases the origin. The existing stream
+delivers its rewritten tail and the separate Statute process exits successfully.
 
 ## Remaining gate
 
-The experiment establishes the first HTTP path and explicit per-route failure
-choice. It does not complete the whole HTTP checklist: Docker generation and
-workload-lifetime interactions, complete
-conditional/range representation semantics and their middleware interactions,
-public rewrite-specific instrumentation, Statute HTTP/2/3 listener integration, real slow-client load budgets, and public configuration
-remain to be addressed. The public API and production go/no-go decision stay open.
+The HTTP audit currently has the following evidence. These are private-experiment
+proofs; the public API and production go/no-go decision stay open.
+
+| Obligation                                                | Evidence / boundary                                                                                                                                                                                                       |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Media type, charset, encoding, status eligibility         | `TestHTTPEligibility`, `TestHTTPNoncanonicalHTMLHeaders`, and `TestHTTPAmbiguousHeadersAndLateTrailers`; explicit route rejection/bypass before transformation                                                            |
+| Full-representation requests and original read conditions | `TestHTTPFullRepresentationRequest`, `TestHTTPUnsolicitedRepresentations`, `TestHTTPSelectedRepresentationConditions`, and `internal/httpprecondition` tests; ranges are deliberately ignored and full responses selected |
+| HEAD with and without generated validators                | `TestHTTPHeadRepresentation`, `TestHTTPStatuteHeadMetadata`, `TestHTTPStatuteETagRepresentation`; only explicit ETag renders GET internally                                                                               |
+| Cache selection and no-transform                          | `TestHTTPStatuteWarmCacheNoTransform`, `TestHTTPStatuteCacheVaryCompression`, and `cache_representation_test.go`; both middleware orders and identity/coded variants                                                      |
+| Manual metadata and Retry                                 | `TestHTTPConfigRepresentationHeaders`, `TestHTTPStatuteConflictingHeadersPreventStartup`, `TestHTTPStatuteMiddlewareInteractions`; no duplicate transformation on successful retry                                        |
+| Compression and trailers                                  | `TestHTTPStatuteCompressionPreservesBypass`, `TestHTTPStatuteCompressedBypassTrailers`, `TestCompressRepresentationTrailers`; origin coding bypass, bodyless output, digest removal, and unrelated trailer preservation   |
+| Cancellation, timeout, shutdown, and admission release    | `TestHTTPAdmissionCancellationAndShutdown`, `TestHTTPDeadlineAndKnownLength`, `TestHTTPDisconnectReleasesInstance`, `TestHTTPStatuteProtocolInterruption`; HTTP/1, HTTP/2, and HTTP/3 interruption evidence               |
+| Pull-driven reads and upgrades                            | `TestHTTPPullAndUnknownLengthLimit`, `TestHTTPUpgradePreservesDuplexBody`; bounded read-ahead and duplex-body preservation                                                                                                |
+| Docker generation and response lifetime                   | `TestHTTPDockerRewriteLifetime`, `TestHTTPDockerRouterPolicyChange`, `TestHTTPDockerLeaseCoversRewrittenResponseEnd`; private hook described below                                                                        |
+| Final outcome observation                                 | `TestHTTPStatuteAbortedStreamObservation` and listener tests; status, bytes, abort/I/O-error signals, filter precedence, and one external HEAD observation                                                                |
+
+The HTTP gate remains open for `Accept-Encoding` negotiation: the current
+Compress selector uses substrings and ignores quality values. Its behavior when
+every available coding, including identity, is excluded also needs an explicit
+decision. Hosted validation of the complete changes is pending. Public
+rewrite-specific instrumentation, real slow-client load budgets, and public
+configuration remain separate production gates.
+
+### Private Docker integration
+
+The `htmlrewrite_research` build tag enables a private, internal test seam.
+It captures policy per Docker route at generation construction, carries it on
+the request inside the existing workload request scope, and applies the private
+adapter around the real selected pool transport. Shared pools retain no route
+policy. The factory is fixed before startup. Ordinary builds use identity helpers
+and contain neither the hook registry nor a Wasm dependency. This adds no public
+middleware constructor, resolved field, or label.
+
+`TestHTTPDockerRewriteLifetime` observes a separate Statute process through HTTP
+and a deterministic Docker API fixture. A rewritten stream holds its workload
+past the idle window; completing it permits idle stop. A replacement immutable
+container reaches idle independently while the old stream remains open, and
+old-stream completion does not prevent subsequent activation/idle settlement.
+Plain and rewritten routes sharing the successor pool retain separate policy.
+`TestHTTPDockerRouterPolicyChange` replaces router labels on the same binding:
+new requests see the new route policy, the old stream retains its captured policy
+through its tail, and the lease remains held until that stream ends.
+`TestHTTPDockerLeaseCoversRewrittenResponseEnd` holds the final response EOF
+after both the origin and rewriter have finished. Idle stop remains blocked
+until the downstream response completes or is canceled. Both completion paths
+then permit idle stop.
+
+The seam marks errors introduced by the route response stage separately from
+underlying transport failures. `TestResearchRouteFailureDoesNotDemotePool` proves
+that rejection leaves shared backend health alone while upstream 503s retain
+failure accounting. This tests the private composition and must be retained in
+the eventual public design. It does not replace real-Docker crash/recovery tests
+or settle the public middleware API.
 
 From `research/htmlrewrite`:
 
 ```sh
 make test
 CGO_ENABLED=0 go test -run '^TestHTTP' -count=5 -timeout=90s .
+CGO_ENABLED=0 go test -tags htmlrewrite_research -run '^TestHTTPDocker' -count=5 .
 ```
 
-The research module uses a local replacement of the root Statute module only for
-the subprocess integration tests. Ordinary Statute builds acquire no Wasm/Rust
+The research module uses a local replacement of the root Statute module for
+the shared precondition helper and subprocess tests. Ordinary Statute builds acquire no Wasm/Rust
 dependency. The guest still builds explicitly with the pinned Rust toolchain.

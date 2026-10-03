@@ -24,6 +24,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Remove origin representation trailers when compression changes the response bytes; retain unrelated trailers and preserve trailers on no-transform bypasses.
+
+- Honor case-insensitive custom-transport headers when checking HTML rewrite eligibility, including duplicate content types, encodings, ranges, and trailer declarations.
+
+- Generate HEAD ETags by rendering the inner GET representation and suppressing body delivery. Evaluate original read conditions after hashing, preserve Cache ordering, distinguish encoded strong validators from weak identity validators under compression, and retain one external request observation. Remove stale compressed lengths, suppress compressor output on bodyless responses, and preserve already-encoded, partial, and no-transform responses.
+
+- Keep cached representations distinct by Vary, including hoisted route headers and identity/compressed variants. Delegate conditional, range, no-cache, no-transform, and malformed cache-policy requests downstream. Never retain partial responses or wildcard/invalid Vary; preserve existing no-store behavior.
+
 - Reject manual representation-header injection during private HTML experiment configuration. Allow explicit removal and unrelated response headers without overriding configuration silently or blocking downstream compression.
 
 - Record aborted responses in access logs and request metrics while preserving stream cancellation. Retain the committed status, use status zero for pre-header aborts, and expose body-byte counts and bounded abort/body-I/O-error signals. Keep status filters authoritative and retain optimized body-copy delegation.

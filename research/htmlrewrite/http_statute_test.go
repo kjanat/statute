@@ -27,7 +27,11 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	if os.Getenv("STATUTE_HTML_HTTP_CHILD") != "1" {
 		return
 	}
-	e, err := newHTTPEngine(context.Background(), 4)
+	limit := 4
+	if os.Getenv("STATUTE_HTML_HTTP_SINGLE_INSTANCE") == "1" {
+		limit = 1
+	}
+	e, err := newHTTPEngine(context.Background(), limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +39,11 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	base := &http.Transport{DisableCompression: true}
 	defer base.CloseIdleConnections()
 	makeProxy := func(policy failurePolicy) http.Handler {
-		rt := httpTestTransport(t, e, base, testHTTPPolicy(policy))
+		p := testHTTPPolicy(policy)
+		if os.Getenv("STATUTE_HTML_HTTP_SMALL_OUTPUT") == "1" {
+			p.outputLimit = 1024
+		}
+		rt := httpTestTransport(t, e, base, p)
 		return httpTestProxy(t, os.Getenv("STATUTE_HTML_HTTP_ORIGIN"), rt)
 	}
 	strict, open := makeProxy(failClosed), makeProxy(failOpen)
@@ -47,11 +55,20 @@ func TestHTTPStatuteProcess(t *testing.T) {
 		Observability: observability,
 		Listeners:     statute.Listeners{statute.HTTP(os.Getenv("STATUTE_HTML_HTTP_ADDR"))},
 		Routes: statute.Routes{
+			statute.Match("/etag").Handle(strict).With(statute.ETag()),
+			statute.Match("/etag-cache").Handle(strict).With(statute.ETag(), statute.Cache("1m")),
+			statute.Match("/cache-etag").Handle(strict).With(statute.Cache("1m"), statute.ETag()),
+			statute.Match("/etag-compress").Handle(strict).With(statute.ETag(), statute.Compress(statute.Gzip)),
+			statute.Match("/compress-etag").Handle(strict).With(statute.Compress(statute.Gzip), statute.ETag()),
 			statute.Match("/headers").Handle(strict).With(statute.RemoveResponseHeader("ETag"), statute.RemoveResponseHeader("Content-Length"), statute.SetResponseHeader("Content-Security-Policy", "default-src 'self'"), statute.AddResponseHeader("Set-Cookie", "key=value"), statute.Compress(statute.Gzip)),
+			statute.Match("/vary-cached").Handle(strict).With(statute.Cache("1m")),
+			statute.Match("/vary-compressed").Handle(strict).With(statute.Cache("1m"), statute.Compress(statute.Gzip)),
+			statute.Match("/compressed-vary").Handle(strict).With(statute.Compress(statute.Gzip), statute.Cache("1m")),
 			statute.Match("/cached").Handle(strict).With(statute.Cache("1m")),
 			statute.Match("/bypass-cached").Handle(open).With(statute.Cache("1m")),
 			statute.Match("/retry").Handle(strict).With(statute.Retry(2, statute.OnStatus(503))),
 			statute.Match("/compressed").Handle(strict).With(statute.Compress(statute.Gzip)),
+			statute.Match("/open-compressed").Handle(open).With(statute.Compress(statute.Gzip)),
 			statute.Match("/open").Handle(open),
 			statute.Match("/*").Handle(strict),
 		},
@@ -61,6 +78,25 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	if name := os.Getenv("STATUTE_HTML_HTTP_CONFLICT"); name != "" {
 		cfg.Routes[0].With(statute.SetResponseHeader(name, "invalid"))
 	}
+	if os.Getenv("STATUTE_HTML_HTTP_SHUTDOWN_CONTROL") == "1" {
+		control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		cfg.Routes = append(statute.Routes{statute.Match("/_research/shutdown").Handle(control)}, cfg.Routes...)
+	}
+	if cert := os.Getenv("STATUTE_HTML_HTTP_CERT"); cert != "" {
+		addr := os.Getenv("STATUTE_HTML_HTTP_ADDR")
+		cfg.Listeners = statute.Listeners{statute.HTTPS(addr,
+			statute.StaticTLS(cert, os.Getenv("STATUTE_HTML_HTTP_KEY")), statute.HTTP2(), statute.HTTP3(addr))}
+	}
+	configureHTTPDockerExperiment(t, &cfg, e)
 	if err := validateHTTPConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +111,11 @@ func startHTTPStatute(t *testing.T, origin string) string {
 
 func startHTTPStatuteWithMetrics(t *testing.T, origin, metricsAddr string) (string, *processOutput) {
 	t.Helper()
+	return startHTTPStatuteConfigured(t, origin, metricsAddr, nil)
+}
+
+func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []string) (string, *processOutput) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +127,7 @@ func startHTTPStatuteWithMetrics(t *testing.T, origin, metricsAddr string) (stri
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHTTPStatuteProcess$", "-test.v")
 	cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN="+origin, "STATUTE_HTML_HTTP_ADDR="+addr, "STATUTE_HTML_HTTP_METRICS="+metricsAddr)
+	cmd.Env = append(cmd.Env, env...)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
