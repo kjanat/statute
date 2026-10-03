@@ -11,12 +11,12 @@ import (
 )
 
 // accessLogMiddleware writes a single JSON line per request to the configured
-// destination. The line is written after the response is committed so that
-// upstream errors and final status codes are visible.
+// destination after handler exit, including aborts. Panic values propagate
+// to the server without being included in the access record.
 //
 // When SampleRate < 1.0, successful (2xx, 3xx) requests are sampled at the
-// configured rate. Errors (4xx, 5xx) are always logged so misbehaving paths
-// remain visible even at low sampling rates.
+// configured rate. Errors and aborted responses bypass sampling within the
+// configured status filter.
 func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler {
 	if !cfg.Enabled || cfg.Writer == nil {
 		return next
@@ -35,34 +35,48 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 		// The holder lets the route-level RequestID middleware hand its
 		// identifier back up to this listener-level wrapper.
 		r, rid := installRIDHolder(r)
+		defer func() {
+			sample := rate
+			if !ww.returned || ww.bodyError {
+				sample = 1
+			}
+			if !shouldLog(ww.observedStatus(), sample, cfg.Statuses) {
+				return
+			}
+			entry := accessLogEntry(r, ww, start)
+			id := rid.id
+			if id == "" {
+				id = inherited
+			}
+			if id != "" {
+				entry["request_id"] = id
+			}
+			addVerifiedClientCert(entry, r)
+			enc.Encode(entry)
+		}()
 		next.ServeHTTP(ww, r)
-		if !shouldLog(ww.status, rate, cfg.Statuses) {
-			return
-		}
-		entry := map[string]any{
-			"ts":            start.UTC().Format(time.RFC3339Nano),
-			"method":        r.Method,
-			"host":          r.Host,
-			"path":          r.URL.Path,
-			"query":         r.URL.RawQuery,
-			"remote":        clientIP(r),
-			"user_agent":    r.UserAgent(),
-			"referer":       r.Referer(),
-			"status":        ww.status,
-			"duration_us":   time.Since(start).Microseconds(),
-			"proto":         r.Proto,
-			"forwarded_for": r.Header.Get("X-Forwarded-For"),
-		}
-		id := rid.id
-		if id == "" {
-			id = inherited
-		}
-		if id != "" {
-			entry["request_id"] = id
-		}
-		addVerifiedClientCert(entry, r)
-		enc.Encode(entry)
+		ww.returned = true
 	})
+}
+
+func accessLogEntry(r *http.Request, ww *statusRecorder, start time.Time) map[string]any {
+	return map[string]any{
+		"ts":            start.UTC().Format(time.RFC3339Nano),
+		"method":        r.Method,
+		"host":          r.Host,
+		"path":          r.URL.Path,
+		"query":         r.URL.RawQuery,
+		"remote":        clientIP(r),
+		"user_agent":    r.UserAgent(),
+		"referer":       r.Referer(),
+		"status":        ww.observedStatus(),
+		"body_bytes":    ww.bytes,
+		"aborted":       !ww.returned,
+		"body_error":    ww.bodyError,
+		"duration_us":   time.Since(start).Microseconds(),
+		"proto":         r.Proto,
+		"forwarded_for": r.Header.Get("X-Forwarded-For"),
+	}
 }
 
 func addVerifiedClientCert(entry map[string]any, r *http.Request) {

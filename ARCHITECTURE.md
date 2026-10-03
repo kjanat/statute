@@ -550,6 +550,14 @@ Listener-level observability wraps the routed content path. Access logging and
 metrics use the final response status, including handlers that emit informational
 1xx responses before the final status.
 
+Observations run on handler exit, including panic unwinding. They preserve a
+committed status and use zero when an aborted handler committed none; they do
+not swallow or replace `http.ErrAbortHandler`. Body-byte counts use the counts
+returned by writer operations. Aborted and recorded body-I/O-error outcomes are
+separate bounded signals, with no response content or panic/error text.
+Access-log status filters remain authoritative; within them failed outcomes
+bypass sampling even if a 200 response had already begun.
+
 Access logs may describe a verified TLS client certificate from the request's
 connection state. Enforcement remains in the TLS handshake.
 

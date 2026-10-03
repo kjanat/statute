@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -38,9 +39,15 @@ func TestHTTPStatuteProcess(t *testing.T) {
 		return httpTestProxy(t, os.Getenv("STATUTE_HTML_HTTP_ORIGIN"), rt)
 	}
 	strict, open := makeProxy(failClosed), makeProxy(failOpen)
-	statute.Run(statute.Config{
-		Listeners: statute.Listeners{statute.HTTP(os.Getenv("STATUTE_HTML_HTTP_ADDR"))},
+	var observability statute.Observability
+	if addr := os.Getenv("STATUTE_HTML_HTTP_METRICS"); addr != "" {
+		observability = statute.Observability{AccessLog: statute.JSONLog(statute.Stdout), Metrics: statute.Prometheus(addr, "/metrics")}
+	}
+	cfg := statute.Config{
+		Observability: observability,
+		Listeners:     statute.Listeners{statute.HTTP(os.Getenv("STATUTE_HTML_HTTP_ADDR"))},
 		Routes: statute.Routes{
+			statute.Match("/headers").Handle(strict).With(statute.RemoveResponseHeader("ETag"), statute.RemoveResponseHeader("Content-Length"), statute.SetResponseHeader("Content-Security-Policy", "default-src 'self'"), statute.AddResponseHeader("Set-Cookie", "key=value"), statute.Compress(statute.Gzip)),
 			statute.Match("/cached").Handle(strict).With(statute.Cache("1m")),
 			statute.Match("/bypass-cached").Handle(open).With(statute.Cache("1m")),
 			statute.Match("/retry").Handle(strict).With(statute.Retry(2, statute.OnStatus(503))),
@@ -50,10 +57,23 @@ func TestHTTPStatuteProcess(t *testing.T) {
 		},
 		Defaults: statute.Defaults{ReadHeaderTimeout: "2s", WriteTimeout: "5s"},
 		Shutdown: statute.Shutdown{GracePeriod: "2s", DrainListeners: true},
-	})
+	}
+	if name := os.Getenv("STATUTE_HTML_HTTP_CONFLICT"); name != "" {
+		cfg.Routes[0].With(statute.SetResponseHeader(name, "invalid"))
+	}
+	if err := validateHTTPConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	statute.Run(cfg)
 }
 
 func startHTTPStatute(t *testing.T, origin string) string {
+	t.Helper()
+	endpoint, _ := startHTTPStatuteWithMetrics(t, origin, "")
+	return endpoint
+}
+
+func startHTTPStatuteWithMetrics(t *testing.T, origin, metricsAddr string) (string, *processOutput) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -65,13 +85,13 @@ func startHTTPStatute(t *testing.T, origin string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHTTPStatuteProcess$", "-test.v")
-	cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN="+origin, "STATUTE_HTML_HTTP_ADDR="+addr)
+	cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN="+origin, "STATUTE_HTML_HTTP_ADDR="+addr, "STATUTE_HTML_HTTP_METRICS="+metricsAddr)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	var stdout bytes.Buffer
+	var stdout processOutput
 	cmd.Stdout = &stdout
 	if err = cmd.Start(); err != nil {
 		cancel()
@@ -108,7 +128,24 @@ func startHTTPStatute(t *testing.T, origin string) string {
 	case <-ctx.Done():
 		t.Fatal("Statute did not become ready")
 	}
-	return "http://" + addr
+	return "http://" + addr, &stdout
+}
+
+type processOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (o *processOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.Write(p)
+}
+
+func (o *processOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
 }
 
 func TestHTTPStatuteMiddlewareInteractions(t *testing.T) {

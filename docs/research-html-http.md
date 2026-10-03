@@ -29,8 +29,10 @@ readable again, even under fail-open policy.
 
 Route-owned atomic counters record rewritten, bypassed, rejected, and failed
 streams. They contain no response content. `rewritten` counts admitted rewrites;
-`failed` can subsequently increment for the same stream. Production metrics and
-access-log integration are still pending.
+`failed` can subsequently increment for the same stream. These rewrite-specific
+counters remain private. Listener [access logs and metrics](observability.md)
+record committed status, body-byte counts, aborts, and body I/O errors, including
+responses whose handler unwinds with `http.ErrAbortHandler`.
 
 ## Experimental eligibility and HTTP behavior
 
@@ -149,6 +151,14 @@ that marker; quic-go handles `http.ErrAbortHandler` by resetting the stream.
 both pool proxies and custom `Handle` proxies. Docker generation integration
 remains separate work.
 
+`TestHTTPStatuteAbortedStreamObservation` runs the rewriter in a separate Statute
+process, receives a rewritten prefix before the origin connection fails, and
+checks the client read error, JSON access record, and Prometheus endpoint. The
+committed 200 remains visible with an abort and the emitted prefix's byte count;
+page contents never enter the access record. Unit tests cover pre-header and
+informational-only aborts, partial writer failures, optimized/fallback body copies,
+normal responses, unchanged panic propagation, and filter/sampling precedence.
+
 `TestHTTPStatuteMiddlewareInteractions` launches a separate Statute process and
 observes it through HTTP and its readiness/exit logs. The process routes private
 reverse proxies through existing `Handle` routes. It uses the real Cache, Retry,
@@ -175,13 +185,36 @@ cache entry. The origin is called exactly twice. This resolves the demonstrated
 bypass-retention bug; [other cache limitations](production.md#response-cache)
 remain explicit.
 
+## Manual representation headers
+
+The chosen contract is fail-fast: whoever produces the final bytes owns the
+metadata describing those bytes. On a rewrite-enabled route, raw
+`SetResponseHeader` and `AddResponseHeader` (append) operations cannot inject
+`Content-Type`, `Content-Length`, `Content-Encoding`, `ETag`, `Last-Modified`,
+`Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`, `Accept-Ranges`,
+`Content-Range`, `Transfer-Encoding`, or `Trailer`. Explicit removal is allowed.
+CSP, cookies, custom headers, and actual compression stages are unaffected.
+There is no last-writer-wins exception, even for a conflicting operation followed
+by removal. Reordering middleware or adding Retry does not change validation.
+
+The private subprocess configuration gate resolves the configuration and checks
+ordinary and fallback routes before calling `Run`. Tests cover both operations,
+mixed-case names, order, removal, non-rewriting siblings, rejected startup, and
+real rewritten/compressed responses with allowed headers. This gate recognizes
+the experiment's direct reverse-proxy actions; it is not a public Statute
+validator for arbitrary transformations hidden inside application handlers.
+Public rewrite configuration must carry this ownership into canonical Resolve
+validation before release, including dynamically generated routes. A generated
+validator stage needs its own correct representation semantics; permitting
+compression here does not establish Cache/ETag composition.
+
 ## Remaining gate
 
 The experiment establishes the first HTTP path and explicit per-route failure
 choice. It does not complete the whole HTTP checklist: Docker generation and
-workload-lifetime interactions, hoisted response-header conflicts, complete
+workload-lifetime interactions, complete
 conditional/range representation semantics and their middleware interactions,
-production observability, Statute HTTP/2/3 listener integration, real slow-client load budgets, and public configuration
+public rewrite-specific instrumentation, Statute HTTP/2/3 listener integration, real slow-client load budgets, and public configuration
 remain to be addressed. The public API and production go/no-go decision stay open.
 
 From `research/htmlrewrite`:

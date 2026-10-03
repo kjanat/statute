@@ -609,15 +609,24 @@ func TestStatusRecorderReadFrom(t *testing.T) {
 	if got := rec.Body.String(); got != "payload" {
 		t.Errorf("body: got %q", got)
 	}
+	if ww.bytes != 7 || ww.bodyError {
+		t.Fatalf("copy observation: bytes=%d error=%v", ww.bytes, ww.bodyError)
+	}
+}
 
+func TestStatusRecorderReadFromFallback(t *testing.T) {
+	t.Parallel()
 	// Without a ReaderFrom underneath, the copy falls back to a plain write.
 	plain := httptest.NewRecorder()
-	ww = &statusRecorder{ResponseWriter: plain, status: 200}
+	ww := &statusRecorder{ResponseWriter: plain, status: 200}
 	if _, err := io.Copy(ww, plainReader{strings.NewReader("payload")}); err != nil {
 		t.Fatalf("copy: %v", err)
 	}
 	if got := plain.Body.String(); got != "payload" {
 		t.Errorf("fallback body: got %q", got)
+	}
+	if ww.bytes != 7 || ww.bodyError {
+		t.Fatalf("fallback observation: bytes=%d error=%v", ww.bytes, ww.bodyError)
 	}
 }
 

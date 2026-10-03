@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Reject manual representation-header injection during private HTML experiment configuration. Allow explicit removal and unrelated response headers without overriding configuration silently or blocking downstream compression.
+
+- Record aborted responses in access logs and request metrics while preserving stream cancellation. Retain the committed status, use status zero for pre-header aborts, and expose body-byte counts and bounded abort/body-I/O-error signals. Keep status filters authoritative and retain optimized body-copy delegation.
+
 - Abort HTTP/3 proxy streams when an upstream body fails after headers have been sent. Preserve truncation errors for clients of both built-in proxies and custom reverse-proxy handlers.
 
 - Correct HEAD metadata and request/response `Cache-Control: no-transform` handling in the private HTML-rewriting experiment. Omit original representation metadata for eligible HEAD responses without reading content or allocating a rewriter. Parse quoted cache extensions without inventing directives, and apply the route's explicit failure policy to unreadable cache directives before consuming HTML.
