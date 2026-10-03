@@ -112,11 +112,37 @@ type duplexBody struct{ bytes.Buffer }
 
 func (*duplexBody) Close() error { return nil }
 
+func TestHTTPNoncanonicalHTMLHeaders(t *testing.T) {
+	e := httpTestEngine(t, 1)
+	base := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, ContentLength: -1,
+			Header: http.Header{"content-type": {"text/html; charset=UTF-8"}, "content-encoding": {" identity \t"}},
+			Body:   io.NopCloser(strings.NewReader(`<a class="rewrite">page</a>`))}, nil
+	})
+	rt := httpTestTransport(t, e, base, testHTTPPolicy(failClosed))
+	res, err := rt.RoundTrip(httpTestRequest(t, "GET", "http://example.test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil || !strings.Contains(string(body), "<em>inserted</em>") || rt.rewritten.Load() != 1 {
+		t.Fatalf("noncanonical HTML bypassed: %q %v", body, err)
+	}
+	if len(responseHeaderValues(res.Header, "Content-Encoding")) != 0 {
+		t.Fatal("origin encoding survived rewriting")
+	}
+}
+
 func TestHTTPAmbiguousHeadersAndLateTrailers(t *testing.T) {
 	e := httpTestEngine(t, 1)
 	for _, h := range []http.Header{
 		{"Content-Type": {"text/html", "application/json"}},
 		{"Content-Type": {"text/html"}, "Content-Encoding": {"identity", "gzip"}},
+		{"Content-Type": {"text/html"}, "content-type": {"application/json"}},
+		{"content-type": {"text/html"}, "content-encoding": {"gzip"}},
+		{"Content-Type": {"text/html"}, "content-range": {"bytes 0-8/20"}},
+		{"Content-Type": {"text/html"}, "trailer": {"Content-Digest"}},
 	} {
 		for _, policy := range []failurePolicy{failOpen, failClosed} {
 			base := roundTripFunc(func(*http.Request) (*http.Response, error) {

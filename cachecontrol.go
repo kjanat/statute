@@ -2,6 +2,7 @@ package statute
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"golang.org/x/net/http/httpguts"
@@ -10,10 +11,14 @@ import (
 // cacheControlAllowsStorage checks no-store across all field values. Invalid
 // syntax declines storage; unknown well-formed extensions leave it unchanged.
 func cacheControlAllowsStorage(h http.Header) bool {
+	return cacheControlAllows(h, "no-store")
+}
+
+func cacheControlAllows(h http.Header, forbidden ...string) bool {
 	for name, values := range h {
 		if strings.EqualFold(name, "Cache-Control") {
 			for _, value := range values {
-				if !cacheControlFieldAllowsStorage(value) {
+				if !cacheControlFieldAllows(value, forbidden...) {
 					return false
 				}
 			}
@@ -23,6 +28,10 @@ func cacheControlAllowsStorage(h http.Header) bool {
 }
 
 func cacheControlFieldAllowsStorage(value string) bool {
+	return cacheControlFieldAllows(value, "no-store")
+}
+
+func cacheControlFieldAllows(value string, forbidden ...string) bool {
 	for {
 		value = strings.TrimLeft(value, " \t,")
 		if value == "" {
@@ -33,7 +42,7 @@ func cacheControlFieldAllowsStorage(value string) bool {
 			end = len(value)
 		}
 		name := value[:end]
-		if !httpguts.ValidHeaderFieldName(name) || strings.EqualFold(name, "no-store") {
+		if !httpguts.ValidHeaderFieldName(name) || slices.ContainsFunc(forbidden, func(field string) bool { return strings.EqualFold(name, field) }) {
 			return false
 		}
 		value = strings.TrimLeft(value[end:], " \t")

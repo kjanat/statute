@@ -122,6 +122,38 @@ storage prohibition. Retry re-entry shares the immutable route operations;
 neither projection nor cache hits apply them to the actual response early.
 No-store skips storage while preserving delivery and the route's failure policy.
 
+Cache delegates conditional, range, request no-cache/no-transform, and malformed
+cache-policy requests to the downstream producer without looking up or replacing
+entries. Stored variants match the request values selected by the union of origin
+and projected route Vary fields. Wildcard/invalid Vary and partial representations
+cannot be stored. An entry owns its copied request-key values and expiry; changing
+the Vary schema replaces incompatible variants. Compression adds Accept-Encoding
+variance at commitment even when it negotiates identity, so an outer cache sees
+the same selection dimensions for every encoding.
+
+Compression negotiates against the actual response. It preserves acceptable
+origin coding stacks without decoding, and only generates an allowed gzip or
+Brotli representation when transformation is permitted. Explicit encoding
+exclusions are authoritative: a successful response with no acceptable coding
+becomes an empty 406. Malformed Accept-Encoding is an empty 400 before origin
+dispatch. Existing bodyless statuses remain bodyless; denials and upstream
+errors keep their status for auth/Retry, dropping an unacceptable error body.
+An outer compressor selects the representation before ETag evaluates the
+original read conditions. Rejected renders retain their 406 status.
+
+Explicit ETag middleware owns a buffered inner representation. It clones a
+GET/HEAD request into an unconditional, range-free GET render, hashes successful
+200 output, and evaluates the original read preconditions against that result.
+HEAD sends headers only; the render stays inside the route and does not re-enter
+listener observation. Encoding outside the hashing stage weakens the validator;
+hashing outside encoding covers encoded bytes. Representation headers follow the
+same ownership on GET and HEAD. Inside an ETag render, compression defers codec
+flushes until completion. Encoded bytes and their strong validator are independent
+of proxy flush timing. Compression outside that buffered render retains
+streaming flushes. Buffered middleware discards informational 1xx
+statuses while retaining the final response, and upgrade requests bypass Cache,
+ETag, and compression.
+
 ## Docker discovery
 
 Docker labels are external input. Statute keeps the trust boundary in code:
@@ -550,12 +582,27 @@ Listener-level observability wraps the routed content path. Access logging and
 metrics use the final response status, including handlers that emit informational
 1xx responses before the final status.
 
+Observations run on handler exit, including panic unwinding. They preserve a
+committed status and use zero when an aborted handler committed none; they do
+not swallow or replace `http.ErrAbortHandler`. Body-byte counts use the counts
+returned by writer operations. Aborted and recorded body-I/O-error outcomes are
+separate bounded signals, with no response content or panic/error text.
+Access-log status filters remain authoritative; within them failed outcomes
+bypass sampling even if a 200 response had already begun.
+
 Access logs may describe a verified TLS client certificate from the request's
 connection state. Enforcement remains in the TLS handshake.
 
 Response-writer wrappers must preserve interfaces needed by streaming and efficient
 copy paths, such as flushing and `io.ReaderFrom`, when the underlying writer
 supports them.
+
+The HTTP/3 listener supplies its companion `*http.Server` as the standard
+`http.ServerContextKey` value. This enables the standard reverse proxy's
+body-copy error abort path for both pool proxies and custom handlers. quic-go
+owns panic recovery and converts `http.ErrAbortHandler` into a stream reset;
+an interrupted upstream body must not become a successfully completed response.
+The context bridge acquires no resources and leaves socket ownership unchanged.
 
 Status filtering, sampling, and "always log errors" rules are separate policies.
 When adding a filter, define their precedence explicitly; do not let an old general

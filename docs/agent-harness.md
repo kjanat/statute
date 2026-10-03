@@ -13,6 +13,11 @@ Every agent reads:
    invariants.
 3. The current issue/PR and current target branch — never stale chat memory.
 
+For HTTP protocol work, use the [vendored RFC HTML sources](rfc-sources.md).
+`make check-rfcs` verifies the local corpus offline; fetch explicitly when adding
+or refreshing a source. Preserve upstream bytes, cite the RFC section, and check
+for subsequent errata and updates separately.
+
 `CLAUDE.md` points Claude-based runners at the same contract. `.claude/agents` and
 `.agents/agents` both expose the shared [`agents/`](../agents/) role prompts; the
 existing skill symlinks continue to expose [`skills/`](../skills/).
@@ -160,6 +165,27 @@ not administrative intent, grant retirement does not end mutation ownership, and
 an external start cannot clear quarantine. Keep event/reconnect/poll ordering in
 deterministic provider tests and real-Docker network scenarios. Event-only tests
 must leave `Refresh` unset and await observation before issuing routed demand.
+
+## Comment Cop
+
+Comment Cop submits new findings together in one review, with inline threads and
+guidance specific to each finding. Suggestions are advisory: necessary explanations
+and intentional quotations can stay. Agents must reply with a justification before
+resolving a false positive. Fix valid findings; the next scan resolves stale threads.
+
+Finding IDs include the path, starting line, and text. Moving unchanged prose may
+create a new finding. Existing legacy markers remain recognized during migration.
+The bot only manages threads authored by its current API identity. Files whose
+patch or required source cannot be read retain their existing threads.
+
+Run `make comment-cop` for a local scan and `make test-comment-cop` for offline
+regressions. The remote CLI, `node scripts/comment-cop.mjs OWNER/REPO NUMBER`,
+requires `GITHUB_TOKEN` and defaults to a read-only preview. `--apply` enables review
+submission and stale-thread resolution. GitHub Actions executes base-branch tooling;
+PR source is read as data for documentation and Markdown fence context.
+
+The scanner and grouped-review behavior incorporate
+[actionlint's adaptation](https://github.com/kjanat/actionlint/blob/9fae466c315e96e5c3c67531db4223cb8af7b367/.github/actions/comment-cop/comment-cop.mjs).
 
 ## Why the roles are separated
 

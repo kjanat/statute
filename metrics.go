@@ -21,6 +21,9 @@ type stats struct {
 
 	durationSum   atomic.Uint64 // accumulated microseconds
 	durationCount atomic.Uint64
+	responseBytes atomic.Uint64
+	aborted       atomic.Uint64
+	bodyErrors    atomic.Uint64
 }
 
 func newStats() *stats { return &stats{} }
@@ -62,6 +65,15 @@ func (s *stats) WritePrometheus(w io.Writer) {
 	pf("# HELP statute_request_duration_microseconds_count Count of observed requests.\n")
 	pf("# TYPE statute_request_duration_microseconds_count counter\n")
 	pf("statute_request_duration_microseconds_count %d\n", s.durationCount.Load())
+	pf("# HELP statute_response_body_bytes_total Body bytes accepted by response writers.\n")
+	pf("# TYPE statute_response_body_bytes_total counter\n")
+	pf("statute_response_body_bytes_total %d\n", s.responseBytes.Load())
+	pf("# HELP statute_requests_aborted_total Handlers that did not return normally.\n")
+	pf("# TYPE statute_requests_aborted_total counter\n")
+	pf("statute_requests_aborted_total %d\n", s.aborted.Load())
+	pf("# HELP statute_response_body_errors_total Responses with a recorded body I/O error.\n")
+	pf("# TYPE statute_response_body_errors_total counter\n")
+	pf("statute_response_body_errors_total %d\n", s.bodyErrors.Load())
 }
 
 // metricsMiddleware wraps a handler and observes status + duration into stats.
@@ -69,8 +81,18 @@ func metricsMiddleware(s *stats, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := &statusRecorder{ResponseWriter: w, status: 200}
+		defer func() {
+			s.Observe(ww.observedStatus(), time.Since(start))
+			s.responseBytes.Add(uint64(max(ww.bytes, 0)))
+			if !ww.returned {
+				s.aborted.Add(1)
+			}
+			if ww.bodyError {
+				s.bodyErrors.Add(1)
+			}
+		}()
 		next.ServeHTTP(ww, r)
-		s.Observe(ww.status, time.Since(start))
+		ww.returned = true
 	})
 }
 
@@ -78,6 +100,17 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
+	bytes       int64
+	bodyError   bool
+	returned    bool
+}
+
+// No final status exists when a handler aborts before commitment.
+func (s *statusRecorder) observedStatus() int {
+	if !s.returned && !s.wroteHeader {
+		return 0
+	}
+	return s.status
 }
 
 // WriteHeader records the first final status written, then forwards it. A
@@ -107,7 +140,10 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
 	}
-	return s.ResponseWriter.Write(b)
+	n, err := s.ResponseWriter.Write(b)
+	s.bytes += int64(n)
+	s.bodyError = s.bodyError || err != nil
+	return n, err
 }
 
 // ReadFrom treats the copy like Write — an un-preceded one is an implicit
@@ -117,10 +153,16 @@ func (s *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
 	}
+	var n int64
+	var err error
 	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
-		return rf.ReadFrom(r)
+		n, err = rf.ReadFrom(r)
+	} else {
+		n, err = io.Copy(s.ResponseWriter, r)
 	}
-	return io.Copy(s.ResponseWriter, r)
+	s.bytes += n
+	s.bodyError = s.bodyError || err != nil
+	return n, err
 }
 
 // Unwrap exposes the underlying writer to http.ResponseController, so

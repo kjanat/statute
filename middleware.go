@@ -122,6 +122,7 @@ func (*compressMW) statuteMiddleware() {}
 
 // Compress returns a response-compression middleware that negotiates one of
 // the listed algorithms based on the request's Accept-Encoding header.
+// Explicit exclusions are respected; unavailable representations produce 406.
 func Compress(algos ...CompressAlgo) *compressMW {
 	return &compressMW{algos: append([]CompressAlgo(nil), algos...)}
 }
@@ -130,6 +131,7 @@ type etagMW struct{}
 
 func (*etagMW) statuteMiddleware() {}
 
-// ETag returns a middleware that adds ETag headers to static file responses
-// and serves 304 Not Modified for matching If-None-Match requests.
+// ETag buffers and hashes GET representations. HEAD renders the inner GET path
+// to compute the same validator, then omits its body. Preconditions use that
+// representation; middleware order determines whether hashing sees encoding.
 func ETag() *etagMW { return &etagMW{} }

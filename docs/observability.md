@@ -10,24 +10,27 @@ Observability: statute.Observability{
 }
 ```
 
-One JSON line per request, written to the configured destination (`Stdout`, `Stderr`, or any `io.Writer` via the `LogWriter` type). The line is written **after** the response is committed, so the final status reflects upstream errors and timeouts.
+One JSON line per selected request, written to the configured destination (`Stdout`, `Stderr`, or any `io.Writer` via the `LogWriter` type). Recording runs when the handler returns or unwinds, including streaming aborts.
 
 ### Fields
 
-| Field           | Type   | Description                                                                                                                                                                                    |
-| --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ts`            | string | Request start time, RFC 3339 with nanosecond precision, UTC.                                                                                                                                   |
-| `method`        | string | HTTP method.                                                                                                                                                                                   |
-| `host`          | string | Host header value as received.                                                                                                                                                                 |
-| `path`          | string | URL path (no query).                                                                                                                                                                           |
-| `query`         | string | Raw query string (no leading `?`).                                                                                                                                                             |
-| `remote`        | string | Best-effort client IP. See "client IP attribution" below.                                                                                                                                      |
-| `user_agent`    | string | `User-Agent` header.                                                                                                                                                                           |
-| `referer`       | string | `Referer` header.                                                                                                                                                                              |
-| `status`        | int    | Response status code as committed to the client.                                                                                                                                               |
-| `duration_us`   | int64  | Wall-clock duration from request start until the handler returns — for most requests that is when the response is committed; for a hijacked upgrade it is when the tunneled connection closes. |
-| `proto`         | string | Protocol version, e.g. `HTTP/1.1`, `HTTP/2.0`.                                                                                                                                                 |
-| `forwarded_for` | string | Raw `X-Forwarded-For` header (full chain, not parsed).                                                                                                                                         |
+| Field           | Type   | Description                                                                                                                                  |
+| --------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`            | string | Request start time, RFC 3339 with nanosecond precision, UTC.                                                                                 |
+| `method`        | string | HTTP method.                                                                                                                                 |
+| `host`          | string | Host header value as received.                                                                                                               |
+| `path`          | string | URL path (no query).                                                                                                                         |
+| `query`         | string | Raw query string (no leading `?`).                                                                                                           |
+| `remote`        | string | Best-effort client IP. See "client IP attribution" below.                                                                                    |
+| `user_agent`    | string | `User-Agent` header.                                                                                                                         |
+| `referer`       | string | `Referer` header.                                                                                                                            |
+| `status`        | int    | Committed response status, or zero if an aborted handler committed no final status.                                                          |
+| `body_bytes`    | int64  | Body-byte counts returned by response-writer operations.                                                                                     |
+| `aborted`       | bool   | Handler did not return normally, including proxy stream aborts.                                                                              |
+| `body_error`    | bool   | A response-writer Write or ReadFrom operation returned an I/O error.                                                                         |
+| `duration_us`   | int64  | Elapsed time from request start until handler return or panic unwinding. For a proxied upgrade, this spans the tunneled connection lifetime. |
+| `proto`         | string | Protocol version, e.g. `HTTP/1.1`, `HTTP/2.0`.                                                                                               |
+| `forwarded_for` | string | Raw `X-Forwarded-For` header (full chain, not parsed).                                                                                       |
 
 ### Client IP attribution
 
@@ -45,7 +48,7 @@ The `remote` field comes from `clientIP()`, which resolves in order:
 AccessLog: statute.JSONLog(statute.Stdout).Sample(0.1)
 ```
 
-`Sample(rate)` records a fraction of successful (status < 400) requests. Errors are always logged regardless. This means your error log volume stays informative even at low sampling rates — you see every 5xx, every 4xx, and a representative slice of successes.
+`Sample(rate)` records a fraction of successful (status < 400) requests. Within the status filter, 4xx/5xx responses, aborted handlers, and recorded body I/O errors always log. A stream aborted after a 200 header therefore remains visible at low sample rates.
 
 Recommended rates by traffic volume:
 
@@ -68,13 +71,26 @@ The filter is a hard gate ahead of every other logging rule, including "errors a
 ```text
 status range filter
 ↓ if allowed:
-    >=400 → always log
-    <400  → sampling applies
+    >=400, aborted, or body I/O error → always log
+    otherwise                       → sampling applies
 ```
 
 So `Statuses("200-299")` really does suppress 500s — errors **within the selected ranges** are never sampled out, and everything outside the ranges is never logged at all. Filtering applies to the final status as committed to the client: the recorder ignores 1xx interim responses, so a 103 → 404 exchange filters as 404. Two commit edge cases are honoured — a `Flush` before any `WriteHeader` commits an implicit 200 (a later `WriteHeader(500)` cannot change what the client saw, so the filter sees 200), and 101 Switching Protocols is final, not interim, so a handler-written 101 filters as 101. A proxied upgrade takes the same path from the other side: the reverse proxy hijacks the connection and writes the 101 handshake directly to it, bypassing the response writer — but the recorder implements `Hijack` itself, so a successful hijack before any committed response latches 101. Proxied WebSocket upgrades therefore log and count as 101, and `Statuses("101")` matches them alongside handler-written 101s. The recorded duration still spans the whole tunneled connection lifetime, since the proxy's handler only returns when the tunnel closes.
 
 `Resolve` rejects malformed or out-of-range (`[100, 599]`) inputs and normalizes the rest — sorted ascending, overlapping and adjacent ranges merged — and the canonical ranges appear in the exported schema.
+
+A pre-header abort records status zero. Because status filters select HTTP status
+codes, they exclude that outcome; omit the filter to retain pre-header failures.
+Aborting after a committed 200 retains 200 and sets `aborted: true`. The abort
+still reaches the HTTP server and terminates the response. Panic and I/O error
+text are excluded from these fields.
+
+Body-byte counts cover completed writer operations, including optimized body
+copies. They measure bytes accepted by the writer, without claiming delivery or
+client acknowledgement. They exclude headers and data written through hijacked
+connections. Compression is counted at the listener's outer writer. An upstream
+read failure can produce an abort without a writer I/O error; the two outcome
+signals overlap and must not be added as disjoint error counts.
 
 ## Metrics
 
@@ -94,6 +110,9 @@ Prometheus exposition format on a separate listener. The metrics listener is int
 | `statute_requests_by_status_total{status="..."}`    | counter | Requests broken down by response status code.                                                                             |
 | `statute_request_duration_microseconds_sum`         | counter | Sum of request durations in microseconds.                                                                                 |
 | `statute_request_duration_microseconds_count`       | counter | Count of observed requests.                                                                                               |
+| `statute_response_body_bytes_total`                 | counter | Sum of response-writer body-byte counts.                                                                                  |
+| `statute_requests_aborted_total`                    | counter | Handlers that did not return normally.                                                                                    |
+| `statute_response_body_errors_total`                | counter | Responses with a recorded writer/copy I/O error.                                                                          |
 | `statute_docker_workload_activations_total`         | counter | Accepted activation/readiness attempts, including observe-only adoption.                                                  |
 | `statute_docker_workload_activation_failures_total` | counter | Failed start/readiness attempts; excludes cancellation, supersession, and stale observe-only stopped observations.        |
 | `statute_docker_workload_idle_stops_total`          | counter | Successfully settled idle shutdowns; not retries, rejections, or cleanup stops.                                           |

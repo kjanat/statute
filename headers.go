@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -276,5 +277,13 @@ func (w *headerResponseWriter) applyOps() {
 	h := w.Header()
 	for _, op := range w.ops {
 		applyHeaderOp(h, op.op, op.name, op.value)
+	}
+}
+
+func deleteHeaderFold(h http.Header, name string) {
+	for key := range h {
+		if strings.EqualFold(key, name) {
+			delete(h, key)
+		}
 	}
 }

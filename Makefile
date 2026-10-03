@@ -21,6 +21,7 @@ E2E_SOAK_TIMEOUT       ?= 120m
 COMMENT_COP_BASE       ?=
 
 .PHONY: all help comment-cop test test-race fmt-check lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff check-cloudflare-cidrs generate-cloudflare-cidrs typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
+.PHONY: vendor-rfcs check-rfcs test-rfcs test-comment-cop
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -134,7 +135,19 @@ typecheck: ## Strict-typecheck scripts/ (installs dev deps on first run)
 	@test -d node_modules || npm ci --no-audit --no-fund
 	npm run typecheck
 
-comment-cop: ## Flag paragraph-length Go comments in the working tree
+vendor-rfcs: ## Fetch RFC Editor HTML snapshots (RFCS="9110 9111" selects documents)
+	node scripts/vendor-rfcs.mjs fetch $(RFCS)
+
+check-rfcs: ## Verify vendored RFC HTML and provenance offline
+	node scripts/vendor-rfcs.mjs check
+
+test-rfcs: ## Test RFC vendoring without network access
+	node --test scripts/vendor-rfcs.test.mjs
+
+test-comment-cop: ## Test review batching and comment scanning offline
+	node --test scripts/comment-cop.test.mjs
+
+comment-cop: ## Flag added comment and Markdown prose in the working tree
 	node scripts/comment-cop.mjs $(COMMENT_COP_BASE)
 
 tidy: ## Run go mod tidy

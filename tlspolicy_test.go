@@ -323,7 +323,7 @@ func TestHTTP3ServerCarriesTLSPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	h3, err := srv.buildHTTP3Server(r.Listeners[0], nil, new(atomic.Bool))
+	h3, err := srv.buildHTTP3Server(r.Listeners[0], srv.listeners[0], new(atomic.Bool))
 	if err != nil {
 		t.Fatalf("buildHTTP3Server: %v", err)
 	}

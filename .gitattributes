@@ -1,0 +1,2 @@
+# Preserve downloaded bytes on every platform; these are upstream references.
+docs/rfc/*.html -text linguist-vendored

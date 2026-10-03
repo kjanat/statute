@@ -44,10 +44,22 @@ CGO_ENABLED=0 go build -o statute ./examples/basic
 
 statute does not use cgo itself, but Go's default DNS resolver does in some configurations. `CGO_ENABLED=0` forces Go's pure-Go resolver, which produces a fully-static binary you can run from `scratch` containers.
 
+## Streaming failures
+
+If a proxied response body fails after response headers are committed, Statute
+aborts that response. HTTP/2 and HTTP/3 reset the affected stream; HTTP/1.1 closes
+the connection. Clients must treat a body-read error as an incomplete response,
+even if the already-received status was 200. A committed response cannot be
+replaced with a new error status. This also applies to standard Go reverse
+proxies supplied through `Handle` routes.
+
 ## Response cache
 
 `Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,
-keyed by method, host, and request URI. The configured TTL controls expiry.
+keyed by method, host, request URI, and response `Vary` selection. The configured
+TTL controls expiry. Each stored variant records a copy of its selecting request
+header values, distinguishing absent from empty fields. Comparison is exact;
+equivalent but differently spelled field values can cause an extra miss.
 
 Request or response `Cache-Control: no-store` prevents storing a new entry.
 Every field value is checked, with case-insensitive directive names and quoted
@@ -62,15 +74,91 @@ applied. A route-added no-store therefore prevents storage. Removing or replacin
 an origin no-store header cannot authorize storing that response. Actual response
 headers are still applied once when the final response is committed.
 
+Conditional headers (`If-Match`, `If-None-Match`, `If-Modified-Since`,
+`If-Unmodified-Since`), `Range`/`If-Range`, request `no-cache`/`no-transform`, and
+malformed request Cache-Control bypass both lookup and storage. Downstream
+middleware or the origin must evaluate them; a warm entry cannot bypass that
+policy. These requests do not purge an existing unconditional entry.
+
+Vary selection uses the union of origin and projected route response-header
+operations, including any origin fields removed by route configuration.
+Repeated/case-insensitive field names are normalized. `Vary: *`, invalid Vary,
+206 responses, and responses carrying Content-Range are delivered without
+storage. A changed Vary field set replaces incompatible variants for that key.
+Compression declares `Vary: Accept-Encoding` even for identity responses; both
+Cache/Compress orders preserve encoded versus identity selection.
+
 For a temporary fail-open HTML-rewrite bypass, the original response is delivered
 with no-store and discarded after delivery. The next request reaches the origin
 again; a supported, successfully rewritten response can then be cached normally.
 
 This remains a small TTL cache: entries are unbounded, responses are buffered,
-and it does not implement Vary-aware keys, private-response isolation, no-cache
-revalidation, or origin freshness calculations. Use it only for responses safe
-to share under its method/host/URI key. Avoid it for personalized or streaming
+and it does not implement private-response isolation, conditional revalidation
+of stored entries, or origin freshness calculations. Response no-cache handling
+is not implemented; use it only for responses safe to share for the configured
+TTL under their selected Vary keys. Avoid it for personalized or streaming
 routes; use a suitable cache implementation for broader HTTP caching needs.
+
+## Body-derived ETags
+
+`ETag()` buffers the inner GET response and hashes successful status-200 bytes.
+For HEAD it clones the request, renders that same inner GET, computes the same
+validator, and sends headers only. This can do the full work of a GET; buffering
+is unbounded. It remains one external HEAD in access logs and request metrics.
+Request authentication, negotiation, context, and route selection are retained.
+The render clone removes read preconditions and ranges; the original request is
+evaluated against the completed representation afterward. Matching If-None-Match
+(including weak/list/wildcard forms) yields 304; a failed strong If-Match yields
+412. Invalid entity-tag syntax yields 400. Date conditions obey precedence and
+are ignored when the selected response has no valid Last-Modified value.
+
+The first declared middleware is outermost. `With(ETag(), Compress(Gzip))`
+hashes encoded bytes and supplies a strong tag for that encoding.
+Inside that buffered render, compression defers intermediate flushes until
+completion: proxy scheduling cannot change the compressed bytes or their tag.
+Compression without an outer ETag still flushes progressively.
+`With(Compress(Gzip), ETag())` hashes identity bytes and supplies a weak tag for
+compressed delivery. Both produce GET/HEAD-equivalent validators at that pipeline
+position. Outer compression omits the identity Content-Length on HEAD; it is not
+the encoded length. HEAD and 304 responses carry no compressed body.
+
+Compression preserves acceptable origin encodings without decoding, including
+codings it cannot generate itself. Partial responses and request/response
+`no-transform` prevent new encoding; malformed cache directives do too.
+It removes identity length/digests/range support when encoding starts.
+Announced and late representation trailers are also removed after encoding;
+unrelated trailers and untouched bypass responses retain their trailers.
+An aborted handler propagates its panic without finishing a compressed stream.
+
+`Accept-Encoding` is parsed across all field lines, case-insensitively, with
+quality values and wildcard/specific exclusions. Gzip and Brotli are selected by
+quality; Brotli wins ties. Explicit identity preference can win over an encoder;
+otherwise identity is the fallback when allowed. No field or an empty field
+keeps an identity origin response unencoded. An absent field also permits any
+existing origin coding, while an empty field permits identity only. Repeated
+codings use their lowest quality; exclusions take precedence over higher duplicate
+weights. `x-gzip` is treated as `gzip`.
+
+Qualities allow zero to three decimal places in the 0 to 1 range; the leading-dot
+form `.5` is accepted as an interoperability extension. Invalid tokens, weights,
+or extra parameters produce an empty 400 before calling the inner handler.
+If no acceptable representation can be produced or preserved, an otherwise
+successful response becomes an empty 406: for example, `zstd, identity;q=0`
+with an identity origin and only gzip/Brotli available. An acceptable origin
+zstd response passes through. Response headers always include
+`Vary: Accept-Encoding`, including identity and rejection paths.
+
+Already-bodyless statuses such as 204 and 304 require no payload coding and keep
+their status. Upstream errors and auth denials also keep their status so Retry
+and authentication retain their meaning; an unacceptable error body is omitted.
+With explicit ETag rendering, negotiation precedes evaluation of the original
+conditions. Rejected renders retain 406 even with `If-None-Match: *`.
+
+Cache can sit on either side: an inner Cache can supply the GET render, while an
+outer Cache delegates conditional requests to ETag. Upgrade requests bypass these
+representation stages. A render error/panic publishes no generated validator or
+partial buffered content. Choose streaming delivery without ETag when buffering
+or HEAD rendering cost is undesirable.
 
 ## Running on low ports as a non-root user
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -26,7 +27,11 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	if os.Getenv("STATUTE_HTML_HTTP_CHILD") != "1" {
 		return
 	}
-	e, err := newHTTPEngine(context.Background(), 4)
+	limit := 4
+	if os.Getenv("STATUTE_HTML_HTTP_SINGLE_INSTANCE") == "1" {
+		limit = 1
+	}
+	e, err := newHTTPEngine(context.Background(), limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,26 +39,86 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	base := &http.Transport{DisableCompression: true}
 	defer base.CloseIdleConnections()
 	makeProxy := func(policy failurePolicy) http.Handler {
-		rt := httpTestTransport(t, e, base, testHTTPPolicy(policy))
+		p := testHTTPPolicy(policy)
+		if os.Getenv("STATUTE_HTML_HTTP_SMALL_OUTPUT") == "1" {
+			p.outputLimit = 1024
+		}
+		rt := httpTestTransport(t, e, base, p)
 		return httpTestProxy(t, os.Getenv("STATUTE_HTML_HTTP_ORIGIN"), rt)
 	}
 	strict, open := makeProxy(failClosed), makeProxy(failOpen)
-	statute.Run(statute.Config{
-		Listeners: statute.Listeners{statute.HTTP(os.Getenv("STATUTE_HTML_HTTP_ADDR"))},
+	var observability statute.Observability
+	if addr := os.Getenv("STATUTE_HTML_HTTP_METRICS"); addr != "" {
+		observability = statute.Observability{AccessLog: statute.JSONLog(statute.Stdout), Metrics: statute.Prometheus(addr, "/metrics")}
+	}
+	cfg := statute.Config{
+		Observability: observability,
+		Listeners:     statute.Listeners{statute.HTTP(os.Getenv("STATUTE_HTML_HTTP_ADDR"))},
 		Routes: statute.Routes{
+			statute.Match("/etag").Handle(strict).With(statute.ETag()),
+			statute.Match("/etag-cache").Handle(strict).With(statute.ETag(), statute.Cache("1m")),
+			statute.Match("/cache-etag").Handle(strict).With(statute.Cache("1m"), statute.ETag()),
+			statute.Match("/etag-compress").Handle(strict).With(statute.ETag(), statute.Compress(statute.Gzip)),
+			statute.Match("/etag-compress-br").Handle(strict).With(statute.ETag(), statute.Compress(statute.Brotli)),
+			statute.Match("/compress-etag").Handle(strict).With(statute.Compress(statute.Gzip), statute.ETag()),
+			statute.Match("/compress-etag-br").Handle(strict).With(statute.Compress(statute.Brotli), statute.ETag()),
+			statute.Match("/negotiate-cached").Handle(strict).With(statute.Cache("1m"), statute.Compress(statute.Gzip, statute.Brotli)),
+			statute.Match("/cached-negotiate").Handle(strict).With(statute.Compress(statute.Gzip, statute.Brotli), statute.Cache("1m")),
+			statute.Match("/headers").Handle(strict).With(statute.RemoveResponseHeader("ETag"), statute.RemoveResponseHeader("Content-Length"), statute.SetResponseHeader("Content-Security-Policy", "default-src 'self'"), statute.AddResponseHeader("Set-Cookie", "key=value"), statute.Compress(statute.Gzip)),
+			statute.Match("/vary-cached").Handle(strict).With(statute.Cache("1m")),
+			statute.Match("/vary-compressed").Handle(strict).With(statute.Cache("1m"), statute.Compress(statute.Gzip)),
+			statute.Match("/compressed-vary").Handle(strict).With(statute.Compress(statute.Gzip), statute.Cache("1m")),
 			statute.Match("/cached").Handle(strict).With(statute.Cache("1m")),
 			statute.Match("/bypass-cached").Handle(open).With(statute.Cache("1m")),
 			statute.Match("/retry").Handle(strict).With(statute.Retry(2, statute.OnStatus(503))),
 			statute.Match("/compressed").Handle(strict).With(statute.Compress(statute.Gzip)),
+			statute.Match("/open-compressed").Handle(open).With(statute.Compress(statute.Gzip)),
 			statute.Match("/open").Handle(open),
 			statute.Match("/*").Handle(strict),
 		},
 		Defaults: statute.Defaults{ReadHeaderTimeout: "2s", WriteTimeout: "5s"},
 		Shutdown: statute.Shutdown{GracePeriod: "2s", DrainListeners: true},
-	})
+	}
+	if name := os.Getenv("STATUTE_HTML_HTTP_CONFLICT"); name != "" {
+		cfg.Routes[0].With(statute.SetResponseHeader(name, "invalid"))
+	}
+	if os.Getenv("STATUTE_HTML_HTTP_SHUTDOWN_CONTROL") == "1" {
+		control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		cfg.Routes = append(statute.Routes{statute.Match("/_research/shutdown").Handle(control)}, cfg.Routes...)
+	}
+	if cert := os.Getenv("STATUTE_HTML_HTTP_CERT"); cert != "" {
+		addr := os.Getenv("STATUTE_HTML_HTTP_ADDR")
+		cfg.Listeners = statute.Listeners{statute.HTTPS(addr,
+			statute.StaticTLS(cert, os.Getenv("STATUTE_HTML_HTTP_KEY")), statute.HTTP2(), statute.HTTP3(addr))}
+	}
+	configureHTTPDockerExperiment(t, &cfg, e)
+	if err := validateHTTPConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	statute.Run(cfg)
 }
 
 func startHTTPStatute(t *testing.T, origin string) string {
+	t.Helper()
+	endpoint, _ := startHTTPStatuteWithMetrics(t, origin, "")
+	return endpoint
+}
+
+func startHTTPStatuteWithMetrics(t *testing.T, origin, metricsAddr string) (string, *processOutput) {
+	t.Helper()
+	return startHTTPStatuteConfigured(t, origin, metricsAddr, nil)
+}
+
+func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []string) (string, *processOutput) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -65,13 +130,14 @@ func startHTTPStatute(t *testing.T, origin string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHTTPStatuteProcess$", "-test.v")
-	cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN="+origin, "STATUTE_HTML_HTTP_ADDR="+addr)
+	cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN="+origin, "STATUTE_HTML_HTTP_ADDR="+addr, "STATUTE_HTML_HTTP_METRICS="+metricsAddr)
+	cmd.Env = append(cmd.Env, env...)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	var stdout bytes.Buffer
+	var stdout processOutput
 	cmd.Stdout = &stdout
 	if err = cmd.Start(); err != nil {
 		cancel()
@@ -108,7 +174,24 @@ func startHTTPStatute(t *testing.T, origin string) string {
 	case <-ctx.Done():
 		t.Fatal("Statute did not become ready")
 	}
-	return "http://" + addr
+	return "http://" + addr, &stdout
+}
+
+type processOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (o *processOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.Write(p)
+}
+
+func (o *processOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
 }
 
 func TestHTTPStatuteMiddlewareInteractions(t *testing.T) {
@@ -198,5 +281,47 @@ func TestHTTPStatuteMiddlewareInteractions(t *testing.T) {
 		if bypassCalls.Load() != 2 {
 			t.Fatal("recovery must refetch once and then hit the rewritten cache entry")
 		}
+	}
+}
+
+func TestHTTPStatuteNoTransform(t *testing.T) {
+	const input = `<a class="rewrite">page</a>`
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", r.Header.Get("X-Test-Cache-Control"))
+		_, _ = io.WriteString(w, input)
+	}))
+	defer origin.Close()
+	endpoint := startHTTPStatute(t, origin.URL)
+	client := &http.Client{Timeout: 5 * time.Second}
+	defer client.CloseIdleConnections()
+	for _, tc := range []struct {
+		name, path, requestCache, responseCache string
+		status                                  int
+		rewritten                               bool
+	}{
+		{"request closed", "/strict", "no-transform", "public", 502, false},
+		{"request open", "/open", "no-transform", "public", 200, false},
+		{"response closed", "/strict", "", "no-transform", 502, false},
+		{"response open", "/open", "", "no-transform", 200, false},
+		{"quoted extension", "/strict", `extension="a, no-transform, b"`, `extension="a, no-transform, b"`, 200, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httpTestRequest(t, "GET", endpoint+tc.path)
+			req.Header.Set("Cache-Control", tc.requestCache)
+			req.Header.Set("X-Test-Cache-Control", tc.responseCache)
+			res, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			b, err := io.ReadAll(res.Body)
+			if err != nil || res.StatusCode != tc.status || bytes.Contains(b, []byte("inserted")) != tc.rewritten {
+				t.Fatalf("status=%d body=%q err=%v", res.StatusCode, b, err)
+			}
+			if tc.status == 200 && !tc.rewritten && (string(b) != input || !strings.Contains(strings.Join(res.Header.Values("Cache-Control"), ","), "no-store")) {
+				t.Fatal("bypass must preserve content and prohibit storage")
+			}
+		})
 	}
 }

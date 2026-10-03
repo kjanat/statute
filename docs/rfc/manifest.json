@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "number": 9110,
+      "url": "https://www.rfc-editor.org/rfc/rfc9110.html",
+      "file": "rfc9110.html",
+      "sha256": "d431760660ea44e130f6e919dab216df2d0b3a490567a98089267523368fe1e5",
+      "bytes": 1187554,
+      "fetchedAt": "2026-10-03T16:12:49.415Z"
+    },
+    {
+      "number": 9111,
+      "url": "https://www.rfc-editor.org/rfc/rfc9111.html",
+      "file": "rfc9111.html",
+      "sha256": "ce91ee9848d2b9ac46386b0f0cbd4bfd9c0cd1948ebc363834cadc7e0997f3d7",
+      "bytes": 232630,
+      "fetchedAt": "2026-10-03T16:12:49.579Z"
+    },
+    {
+      "number": 9112,
+      "url": "https://www.rfc-editor.org/rfc/rfc9112.html",
+      "file": "rfc9112.html",
+      "sha256": "587ec383523df5a9713f2f4192199876af1d6d4a260ce996e0a1f9e4f19dde42",
+      "bytes": 280426,
+      "fetchedAt": "2026-10-03T16:12:49.737Z"
+    },
+    {
+      "number": 9113,
+      "url": "https://www.rfc-editor.org/rfc/rfc9113.html",
+      "file": "rfc9113.html",
+      "sha256": "df5a65a455e7060a7e23a361f7bd7ce7bca2685d246b687623ce2c7068d80d42",
+      "bytes": 444603,
+      "fetchedAt": "2026-10-03T16:12:49.900Z"
+    },
+    {
+      "number": 9114,
+      "url": "https://www.rfc-editor.org/rfc/rfc9114.html",
+      "file": "rfc9114.html",
+      "sha256": "9295268c32dacf5298a199016f95d75a7c649f83450eb38905c12de6cd12cd66",
+      "bytes": 388636,
+      "fetchedAt": "2026-10-03T16:12:50.075Z"
+    },
+    {
+      "number": 9530,
+      "url": "https://www.rfc-editor.org/rfc/rfc9530.html",
+      "file": "rfc9530.html",
+      "sha256": "abb5c7efc7be66748e70aa7aad7762ca7b53a42d12920bc8d37dbd0b1b1c6d6e",
+      "bytes": 168984,
+      "fetchedAt": "2026-10-03T16:12:50.246Z"
+    }
+  ]
+}

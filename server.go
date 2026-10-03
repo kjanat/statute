@@ -193,7 +193,7 @@ func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler)
 		if l.HTTP3Addr == "" {
 			continue
 		}
-		h3, err := s.buildHTTP3Server(l, handler, h3Alive)
+		h3, err := s.buildHTTP3Server(l, hs, h3Alive)
 		if err != nil {
 			return fmt.Errorf("listener %s http3: %w", l.Addr, err)
 		}
@@ -1239,7 +1239,7 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 			// is registered, the propagator is a no-op.
 			otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
 		},
-		Transport: transport,
+		Transport: researchProxyTransport(transport),
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode >= http.StatusInternalServerError {
 				recordFailure(resp.Request)
@@ -1251,7 +1251,7 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 			// would hand unauthenticated clients a pool-wide demotion
 			// lever; deadlines and genuine transport failures still
 			// count.
-			if !errors.Is(r.Context().Err(), context.Canceled) {
+			if !errors.Is(r.Context().Err(), context.Canceled) && researchBackendFailure(err) {
 				recordFailure(r)
 			}
 			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)

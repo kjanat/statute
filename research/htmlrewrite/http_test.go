@@ -156,14 +156,15 @@ func TestHTTPEligibility(t *testing.T) {
 		reject                                     bool
 	}{
 		{"html", "GET", "text/html", "", "", 200, false, false},
-		{"head", "HEAD", "text/html", "unknown", "", 200, false, false},
+		{"head unsupported", "HEAD", "text/html", "unknown", "", 200, false, true},
+		{"head", "HEAD", "text/html", "", "", 200, false, false},
+		{"post", "POST", "text/html", "unknown", "", 200, false, false},
 		{"json", "GET", "application/json", "unknown", "", 200, false, false},
 		{"sse", "GET", "text/event-stream", "", "", 200, false, false},
 		{"grpc", "GET", "application/grpc", "", "", 200, false, false},
 		{"upgrade", "GET", "text/html", "", "", 101, false, false},
-		{"partial", "GET", "text/html", "", "", 206, false, false},
 		{"bodyless", "GET", "text/html", "", "", 204, false, false},
-		{"not modified", "GET", "", "", "", 304, false, false},
+		{"precondition failed", "GET", "text/html", "", "", 412, false, false},
 		{"missing", "GET", "", "", "", 200, false, false},
 		{"charset", "GET", "text/html; charset=latin1", "", "", 200, false, true},
 		{"encoding", "GET", "text/html", "gzip", "", 200, false, true},

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add local RFC Editor HTML references with explicit refresh tooling, source/checksum provenance, and offline verification for HTTP protocol work.
+
 - Add a private HTTP HTML-rewriting experiment with explicit per-route fail-open/fail-closed policy, bounded fresh instances, and streaming/disconnect/shutdown tests. Exercise real Statute cache, retry, and compression in a separate process, and record the fail-open/no-store cache integration limitation.
 
 - Add a parser-independent Wasm cancellation reproducer with equivalent loop-shape benchmarks and active-call interruption/isolation tests. Record checkpoint-density costs separately from cancellation-trigger scheduling delay without weakening HTML engine safety settings.
@@ -23,6 +25,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Reuse a native Docker Engine client for e2e container operations and batch repeated network observations inside the client actor. Keep Compose topology declarations, preserve observation-only workload checks, and fail explicitly on unsupported daemon selection or cleanup errors.
 
 ### Fixed
+
+- Respect Accept-Encoding qualities, wildcards, and explicit exclusions against the actual response. Preserve acceptable origin codings, reject unavailable successful representations with an empty 406, reject malformed preferences with 400, and keep encoding-aware Cache/ETag behavior independent of middleware order.
+
+- Stabilize compressed ETags across GET and HEAD by deferring intermediate codec flushes inside buffered ETag renders. Preserve progressive flushing on ordinary compressed streams.
+
+- Remove origin representation trailers when compression changes the response bytes; retain unrelated trailers and preserve trailers on no-transform bypasses.
+
+- Honor case-insensitive custom-transport headers when checking HTML rewrite eligibility, including duplicate content types, encodings, ranges, and trailer declarations.
+
+- Generate HEAD ETags by rendering the inner GET representation and suppressing body delivery. Evaluate original read conditions after hashing, preserve Cache ordering, distinguish encoded strong validators from weak identity validators under compression, and retain one external request observation. Remove stale compressed lengths, suppress compressor output on bodyless responses, and preserve already-encoded, partial, and no-transform responses.
+
+- Keep cached representations distinct by Vary, including hoisted route headers and identity/compressed variants. Delegate conditional, range, no-cache, no-transform, and malformed cache-policy requests downstream. Never retain partial responses or wildcard/invalid Vary; preserve existing no-store behavior.
+
+- Reject manual representation-header injection during private HTML experiment configuration. Allow explicit removal and unrelated response headers without overriding configuration silently or blocking downstream compression.
+
+- Record aborted responses in access logs and request metrics while preserving stream cancellation. Retain the committed status, use status zero for pre-header aborts, and expose body-byte counts and bounded abort/body-I/O-error signals. Keep status filters authoritative and retain optimized body-copy delegation.
+
+- Abort HTTP/3 proxy streams when an upstream body fails after headers have been sent. Preserve truncation errors for clients of both built-in proxies and custom reverse-proxy handlers.
+
+- Correct HEAD metadata and request/response `Cache-Control: no-transform` handling in the private HTML-rewriting experiment. Omit original representation metadata for eligible HEAD responses without reading content or allocating a rewriter. Parse quoted cache extensions without inventing directives, and apply the route's explicit failure policy to unreadable cache directives before consuming HTML.
 
 - Honor request and response `Cache-Control: no-store` before storing response-cache entries, including route-added response headers. Preserve fail-open HTML-rewrite delivery without retaining bypassed responses; later requests can recover and cache successfully rewritten output.
 
