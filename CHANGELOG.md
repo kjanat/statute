@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Abort HTTP/3 proxy streams when an upstream body fails after headers have been sent. Preserve truncation errors for clients of both built-in proxies and custom reverse-proxy handlers.
+
+- Correct HEAD metadata and request/response `Cache-Control: no-transform` handling in the private HTML-rewriting experiment. Omit original representation metadata for eligible HEAD responses without reading content or allocating a rewriter. Parse quoted cache extensions without inventing directives, and apply the route's explicit failure policy to unreadable cache directives before consuming HTML.
+
 - Honor request and response `Cache-Control: no-store` before storing response-cache entries, including route-added response headers. Preserve fail-open HTML-rewrite delivery without retaining bypassed responses; later requests can recover and cache successfully rewritten output.
 
 ## [0.7.2] - 2026-09-29

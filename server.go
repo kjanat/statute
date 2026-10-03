@@ -193,7 +193,7 @@ func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler)
 		if l.HTTP3Addr == "" {
 			continue
 		}
-		h3, err := s.buildHTTP3Server(l, handler, h3Alive)
+		h3, err := s.buildHTTP3Server(l, hs, h3Alive)
 		if err != nil {
 			return fmt.Errorf("listener %s http3: %w", l.Addr, err)
 		}

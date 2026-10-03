@@ -200,3 +200,45 @@ func TestHTTPStatuteMiddlewareInteractions(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPStatuteNoTransform(t *testing.T) {
+	const input = `<a class="rewrite">page</a>`
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", r.Header.Get("X-Test-Cache-Control"))
+		_, _ = io.WriteString(w, input)
+	}))
+	defer origin.Close()
+	endpoint := startHTTPStatute(t, origin.URL)
+	client := &http.Client{Timeout: 5 * time.Second}
+	defer client.CloseIdleConnections()
+	for _, tc := range []struct {
+		name, path, requestCache, responseCache string
+		status                                  int
+		rewritten                               bool
+	}{
+		{"request closed", "/strict", "no-transform", "public", 502, false},
+		{"request open", "/open", "no-transform", "public", 200, false},
+		{"response closed", "/strict", "", "no-transform", 502, false},
+		{"response open", "/open", "", "no-transform", 200, false},
+		{"quoted extension", "/strict", `extension="a, no-transform, b"`, `extension="a, no-transform, b"`, 200, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httpTestRequest(t, "GET", endpoint+tc.path)
+			req.Header.Set("Cache-Control", tc.requestCache)
+			req.Header.Set("X-Test-Cache-Control", tc.responseCache)
+			res, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			b, err := io.ReadAll(res.Body)
+			if err != nil || res.StatusCode != tc.status || bytes.Contains(b, []byte("inserted")) != tc.rewritten {
+				t.Fatalf("status=%d body=%q err=%v", res.StatusCode, b, err)
+			}
+			if tc.status == 200 && !tc.rewritten && (string(b) != input || !strings.Contains(strings.Join(res.Header.Values("Cache-Control"), ","), "no-store")) {
+				t.Fatal("bypass must preserve content and prohibit storage")
+			}
+		})
+	}
+}

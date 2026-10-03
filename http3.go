@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"statute.kjanat.dev/resolved"
@@ -59,7 +60,7 @@ func (h *http3Server) shutdown(ctx context.Context, conn net.PacketConn) error {
 	return err
 }
 
-func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler, alive *atomic.Bool) (*http3Server, error) {
+func (s *server) buildHTTP3Server(l *resolved.Listener, parent *http.Server, alive *atomic.Bool) (*http3Server, error) {
 	addr := strings.TrimSuffix(l.HTTP3Addr, "/udp")
 	if addr == "" {
 		return nil, fmt.Errorf("http3 listener address is empty")
@@ -78,8 +79,13 @@ func (s *server) buildHTTP3Server(l *resolved.Listener, content http.Handler, al
 
 	srv := &http3.Server{
 		Addr:      addr,
-		Handler:   content,
+		Handler:   parent.Handler,
 		TLSConfig: tlsCfg,
+		// ReverseProxy needs this marker to abort failed body copies;
+		// quic-go recovers ErrAbortHandler and resets the stream.
+		ConnContext: func(ctx context.Context, _ *quic.Conn) context.Context {
+			return context.WithValue(ctx, http.ServerContextKey, parent)
+		},
 	}
 	return &http3Server{srv: srv, addr: addr, alive: alive}, nil
 }

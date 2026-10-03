@@ -86,14 +86,14 @@ func newRewriteTransport(e *httpEngine, base http.RoundTripper, p httpPolicy) (*
 }
 
 func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Method != http.MethodGet || req.Header.Get("Upgrade") != "" {
+	if (req.Method != http.MethodGet && req.Method != http.MethodHead) || req.Header.Get("Upgrade") != "" {
 		return t.base.RoundTrip(req)
 	}
 	// The timer also bounds upstream reads. It lives until response-body close.
 	ctx, cancel := context.WithTimeout(req.Context(), t.policy.timeout)
 	clone := req.Clone(ctx)
 	for _, name := range []string{"If-None-Match", "If-Modified-Since", "Range", "If-Range"} {
-		clone.Header.Del(name)
+		deleteHeader(clone.Header, name)
 	}
 	res, err := t.base.RoundTrip(clone)
 	if err != nil {
@@ -101,6 +101,13 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 	res.Body = &cancelBody{ReadCloser: res.Body, cancel: cancel}
+	if res.StatusCode == http.StatusNotModified || res.StatusCode == http.StatusPartialContent {
+		// Conditions were removed, so neither status describes the requested
+		// full representation. Fail-open cannot repair this protocol error.
+		t.rejected.Add(1)
+		_ = res.Body.Close()
+		return nil, errors.New("unsolicited conditional or partial upstream response")
+	}
 	if res.StatusCode != http.StatusOK {
 		return res, nil
 	}
@@ -122,8 +129,8 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		unsupported = errors.New("unsupported HTML charset")
 	case strings.Join(res.Header.Values("Content-Encoding"), ",") != "" && !strings.EqualFold(strings.Join(res.Header.Values("Content-Encoding"), ","), "identity"):
 		unsupported = errors.New("unsupported HTML content encoding")
-	case hasNoTransform(res.Header):
-		unsupported = errors.New("HTML response forbids transformation")
+	case !cacheControlPermitsTransform(req.Header) || !cacheControlPermitsTransform(res.Header):
+		unsupported = errors.New("HTML transformation forbidden or cache directives invalid")
 	case res.Header.Get("Content-Range") != "" || len(res.Trailer) != 0 || res.Header.Get("Trailer") != "":
 		unsupported = errors.New("HTML ranges and trailers are unsupported")
 	case res.ContentLength > t.policy.inputLimit:
@@ -131,6 +138,14 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	if unsupported != nil {
 		return t.reject(res, unsupported)
+	}
+	if req.Method == http.MethodHead {
+		// HEAD describes the rewritten GET representation without generating it.
+		// Its length and validators are unknown, and no parser is needed.
+		_ = res.Body.Close()
+		res.Body = http.NoBody
+		stripOriginMetadata(res)
+		return res, nil
 	}
 
 	t.owner.mu.Lock()
@@ -149,13 +164,26 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	res.Body = b
 	t.rewritten.Add(1)
+	stripOriginMetadata(res)
+	return res, nil
+}
+
+func stripOriginMetadata(res *http.Response) {
 	res.ContentLength = -1
 	res.Header = res.Header.Clone()
 	// Origin validators describe the original representation.
 	for _, name := range []string{"Content-Length", "Content-Encoding", "ETag", "Last-Modified", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest", "Accept-Ranges"} {
-		res.Header.Del(name)
+		deleteHeader(res.Header, name)
 	}
-	return res, nil
+}
+
+// Custom RoundTrippers can supply noncanonical header-map keys.
+func deleteHeader(h http.Header, name string) {
+	for key := range h {
+		if strings.EqualFold(key, name) {
+			delete(h, key)
+		}
+	}
 }
 
 func (t *rewriteTransport) reject(res *http.Response, err error) (*http.Response, error) {
@@ -168,18 +196,6 @@ func (t *rewriteTransport) reject(res *http.Response, err error) (*http.Response
 	t.rejected.Add(1)
 	_ = res.Body.Close()
 	return nil, err
-}
-
-func hasNoTransform(h http.Header) bool {
-	for _, value := range h.Values("Cache-Control") {
-		for _, directive := range strings.Split(value, ",") {
-			name, _, _ := strings.Cut(strings.TrimSpace(directive), "=")
-			if strings.EqualFold(name, "no-transform") {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 type cancelBody struct {

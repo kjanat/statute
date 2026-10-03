@@ -44,6 +44,15 @@ CGO_ENABLED=0 go build -o statute ./examples/basic
 
 statute does not use cgo itself, but Go's default DNS resolver does in some configurations. `CGO_ENABLED=0` forces Go's pure-Go resolver, which produces a fully-static binary you can run from `scratch` containers.
 
+## Streaming failures
+
+If a proxied response body fails after response headers are committed, Statute
+aborts that response. HTTP/2 and HTTP/3 reset the affected stream; HTTP/1.1 closes
+the connection. Clients must treat a body-read error as an incomplete response,
+even if the already-received status was 200. A committed response cannot be
+replaced with a new error status. This also applies to standard Go reverse
+proxies supplied through `Handle` routes.
+
 ## Response cache
 
 `Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,

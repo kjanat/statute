@@ -557,6 +557,13 @@ Response-writer wrappers must preserve interfaces needed by streaming and effici
 copy paths, such as flushing and `io.ReaderFrom`, when the underlying writer
 supports them.
 
+The HTTP/3 listener supplies its companion `*http.Server` as the standard
+`http.ServerContextKey` value. This enables the standard reverse proxy's
+body-copy error abort path for both pool proxies and custom handlers. quic-go
+owns panic recovery and converts `http.ErrAbortHandler` into a stream reset;
+an interrupted upstream body must not become a successfully completed response.
+The context bridge acquires no resources and leaves socket ownership unchanged.
+
 Status filtering, sampling, and "always log errors" rules are separate policies.
 When adding a filter, define their precedence explicitly; do not let an old general
 rule silently override an explicit user filter.
