@@ -22,6 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Reuse a native Docker Engine client for e2e container operations and batch repeated network observations inside the client actor. Keep Compose topology declarations, preserve observation-only workload checks, and fail explicitly on unsupported daemon selection or cleanup errors.
 
+### Fixed
+
+- Honor request and response `Cache-Control: no-store` before storing response-cache entries, including route-added response headers. Preserve fail-open HTML-rewrite delivery without retaining bypassed responses; later requests can recover and cache successfully rewritten output.
+
 ## [0.7.2] - 2026-09-29
 
 ### Changed
@@ -29,8 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Update Go dependencies, including gRPC 1.84.0, quic-go 0.63.0, OpenTelemetry 1.46.0, Brotli 1.2.5, and the Go networking, cryptography, and analysis packages. Synchronize the Traefik oracle dependencies while retaining the Kubernetes-compatible kube-openapi revision.
 
 ### Fixed
-
-- Honor request and response `Cache-Control: no-store` before storing response-cache entries, including route-added response headers. Preserve fail-open HTML-rewrite delivery without retaining bypassed responses; later requests can recover and cache successfully rewritten output.
 
 - Request exact-version indexing directly from pkg.go.dev before release verification, and avoid cached version-list responses while polling.
 
