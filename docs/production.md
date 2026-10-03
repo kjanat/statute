@@ -44,6 +44,34 @@ CGO_ENABLED=0 go build -o statute ./examples/basic
 
 statute does not use cgo itself, but Go's default DNS resolver does in some configurations. `CGO_ENABLED=0` forces Go's pure-Go resolver, which produces a fully-static binary you can run from `scratch` containers.
 
+## Response cache
+
+`Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,
+keyed by method, host, and request URI. The configured TTL controls expiry.
+
+Request or response `Cache-Control: no-store` prevents storing a new entry.
+Every field value is checked, with case-insensitive directive names and quoted
+extension arguments handled correctly. Malformed directives also skip storage;
+the response is still served normally. Request no-store can use an existing
+entry; it does not purge that entry or force origin revalidation, as specified by
+[RFC 9111 section 5.2.1.5](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.1.5).
+
+Route response-header operations are hoisted outside Cache and Retry. Cache
+checks both the downstream response and a copy with those ordered operations
+applied. A route-added no-store therefore prevents storage. Removing or replacing
+an origin no-store header cannot authorize storing that response. Actual response
+headers are still applied once when the final response is committed.
+
+For a temporary fail-open HTML-rewrite bypass, the original response is delivered
+with no-store and discarded after delivery. The next request reaches the origin
+again; a supported, successfully rewritten response can then be cached normally.
+
+This remains a small TTL cache: entries are unbounded, responses are buffered,
+and it does not implement Vary-aware keys, private-response isolation, no-cache
+revalidation, or origin freshness calculations. Use it only for responses safe
+to share under its method/host/URI key. Avoid it for personalized or streaming
+routes; use a suitable cache implementation for broader HTTP caching needs.
+
 ## Running on low ports as a non-root user
 
 Binding to ports below 1024 (`:80`, `:443`) traditionally requires root on Linux. Three options, in order of preference:

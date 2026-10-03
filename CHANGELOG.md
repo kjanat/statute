@@ -22,6 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Reuse a native Docker Engine client for e2e container operations and batch repeated network observations inside the client actor. Keep Compose topology declarations, preserve observation-only workload checks, and fail explicitly on unsupported daemon selection or cleanup errors.
 
+### Fixed
+
+- Honor request and response `Cache-Control: no-store` before storing response-cache entries, including route-added response headers. Preserve fail-open HTML-rewrite delivery without retaining bypassed responses; later requests can recover and cache successfully rewritten output.
+
 ## [0.7.2] - 2026-09-29
 
 ### Changed

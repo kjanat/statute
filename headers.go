@@ -175,6 +175,7 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 			r = r.WithContext(context.WithValue(r.Context(), forwardedOpsKey{}, forwardedOps))
 		}
 		if len(responseOps) > 0 {
+			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, responseOps))
 			w = &headerResponseWriter{ResponseWriter: w, ops: responseOps}
 		}
 		next.ServeHTTP(w, r)
@@ -182,6 +183,22 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 }
 
 type forwardedOpsKey struct{}
+
+type responseHeaderOpsKey struct{}
+
+// responseHeadersForCache projects hoisted operations onto a copy for cache
+// admission. The response writer still applies them once at final commitment.
+func responseHeadersForCache(ctx context.Context, h http.Header) http.Header {
+	ops, _ := ctx.Value(responseHeaderOpsKey{}).([]headerOp)
+	if len(ops) == 0 {
+		return h
+	}
+	projected := h.Clone()
+	for _, op := range ops {
+		applyHeaderOp(projected, op.op, op.name, op.value)
+	}
+	return projected
+}
 
 // forwardedOpsFromContext returns the route's X-Forwarded-* operations, or nil
 // when it declared none. The reverse proxy calls this after SetXForwarded to

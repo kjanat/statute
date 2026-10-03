@@ -117,17 +117,19 @@ already transformed attempt. Cache sits outside the private handler and stores
 its result. It does not establish arbitrary middleware-order equivalence or
 introduce route policy into Statute's shared pool handlers.
 
-## Integration finding: fail-open and Cache
+## Resolved integration finding: fail-open and Cache
 
-The current Statute cache stores successful responses without checking
-`Cache-Control: no-store`. The subprocess test reproduces this explicitly:
-an unsupported-charset response passes under fail-open policy with no-store,
-then a second request receives that cached unmodified response even though the
-origin would now return supported HTML.
+The initial experiment found that Cache stored a fail-open response despite its
+`Cache-Control: no-store`, preventing a later request from attempting rewriting
+again. Cache now honors no-store on requests, downstream responses, and the
+projected route response headers before storing an entry.
 
-The test records the current cache behavior. Production integration must ensure
-bypassed responses do not become reusable transformed cache entries. No production
-cache behavior is changed here.
+The subprocess test now proves recovery across three requests: the first serves
+an unsupported-charset response unchanged with no-store, the second reaches the
+origin and receives one rewritten result, and the third replays that rewritten
+cache entry. The origin is called exactly twice. This resolves the demonstrated
+bypass-retention bug; [other cache limitations](production.md#response-cache)
+remain explicit.
 
 ## Remaining gate
 
@@ -136,8 +138,7 @@ choice. It does not complete the whole HTTP checklist: Docker generation and
 workload-lifetime interactions, hoisted response-header conflicts, complete
 conditional/range/HEAD representation semantics, production observability,
 HTTP/2/3 interruption, real slow-client load budgets, and public configuration
-remain to be addressed. The fail-open/cache finding must be resolved before that
-combination is supported. The public API and production go/no-go decision stay open.
+remain to be addressed. The public API and production go/no-go decision stay open.
 
 From `research/htmlrewrite`:
 

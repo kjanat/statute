@@ -113,6 +113,15 @@ repeat them per attempt. Consequences that changes must preserve:
 Do not move a transform into the ordinary wrapper chain without re-evaluating every
 re-entry path.
 
+Response-cache admission belongs to each route's Cache instance. Request or
+downstream response `Cache-Control: no-store` prohibits new storage. Cache also
+projects the route's hoisted response-header operations onto a copy before
+admission, so route-added no-store is effective even though actual header
+operations run only at final commitment. A projection cannot erase a downstream
+storage prohibition. Retry re-entry shares the immutable route operations;
+neither projection nor cache hits apply them to the actual response early.
+No-store skips storage while preserving delivery and the route's failure policy.
+
 ## Docker discovery
 
 Docker labels are external input. Statute keeps the trust boundary in code:

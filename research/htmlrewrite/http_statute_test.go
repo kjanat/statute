@@ -183,15 +183,20 @@ func TestHTTPStatuteMiddlewareInteractions(t *testing.T) {
 	if status != 502 {
 		t.Fatal("closed policy")
 	}
-	// Current Cache ignores no-store. This characterizes a production blocker;
-	// do not advertise fail-open/cache compatibility until it is resolved.
-	for range 2 {
-		status, h, b := get("/bypass-cached", false)
-		if status != 200 || bytes.Contains(b, []byte("inserted")) || !strings.Contains(h.Get("Cache-Control"), "no-store") {
-			t.Fatal("update documented cache finding")
-		}
+	status, h, b := get("/bypass-cached", false)
+	if status != 200 || bytes.Contains(b, []byte("inserted")) || !strings.Contains(h.Get("Cache-Control"), "no-store") {
+		t.Fatal("first response must bypass rewriting with no-store")
 	}
 	if bypassCalls.Load() != 1 {
-		t.Fatal("cache behavior changed; revisit no-store integration finding")
+		t.Fatal("first bypass did not reach origin once")
+	}
+	for range 2 {
+		status, h, b = get("/bypass-cached", false)
+		if status != 200 || bytes.Count(b, []byte("<em>inserted</em>")) != 1 || strings.Contains(h.Get("Cache-Control"), "no-store") {
+			t.Fatal("recovery must serve one rewritten result")
+		}
+		if bypassCalls.Load() != 2 {
+			t.Fatal("recovery must refetch once and then hit the rewritten cache entry")
+		}
 	}
 }
