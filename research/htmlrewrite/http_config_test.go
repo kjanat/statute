@@ -51,7 +51,7 @@ func validateHTTPRoute(route *resolved.Route) error {
 			continue
 		}
 		if ownsRepresentationHeader(mw.HeaderName) {
-			return fmt.Errorf("middleware[%d]: cannot set or append %s on an HTML-rewriting route; the representation producer owns this header (removal is allowed)", i, mw.HeaderName)
+			return fmt.Errorf("middleware[%d]: cannot set or append %s on an HTML-rewriting route; the representation producer owns this header (compatible removal is allowed)", i, mw.HeaderName)
 		}
 	}
 	return nil
@@ -121,13 +121,17 @@ func TestHTTPConfigAllowedHeaders(t *testing.T) {
 }
 
 func TestHTTPStatuteConflictingHeadersPreventStartup(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHTTPStatuteProcess$")
-	cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN=http://127.0.0.1:1", "STATUTE_HTML_HTTP_ADDR=127.0.0.1:0", "STATUTE_HTML_HTTP_CONFLICT=eTaG")
-	out, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "representation producer owns this header") || strings.Contains(string(out), "statute: ready") {
-		t.Fatalf("expected configuration rejection before serving: %v\n%s", err, out)
+	for _, conflict := range []string{"STATUTE_HTML_HTTP_CONFLICT=eTaG", "STATUTE_HTML_HTTP_REMOVE_ENCODING=1"} {
+		t.Run(conflict, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHTTPStatuteProcess$")
+			cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN=http://127.0.0.1:1", "STATUTE_HTML_HTTP_ADDR=127.0.0.1:0", conflict)
+			out, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(out), "representation producer owns this header") || strings.Contains(string(out), "statute: ready") {
+				t.Fatalf("expected configuration rejection before serving: %v\n%s", err, out)
+			}
+		})
 	}
 }
 

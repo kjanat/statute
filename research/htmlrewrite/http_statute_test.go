@@ -82,6 +82,9 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	if name := os.Getenv("STATUTE_HTML_HTTP_CONFLICT"); name != "" {
 		cfg.Routes[0].With(statute.SetResponseHeader(name, "invalid"))
 	}
+	if os.Getenv("STATUTE_HTML_HTTP_REMOVE_ENCODING") == "1" {
+		cfg.Routes[0].With(statute.RemoveResponseHeader("Content-Encoding"), statute.Compress(statute.Gzip))
+	}
 	if os.Getenv("STATUTE_HTML_HTTP_SHUTDOWN_CONTROL") == "1" {
 		control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {

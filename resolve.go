@@ -1322,7 +1322,32 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 		}
 		out = append(out, rmw)
 	}
+	if err := validateMiddlewareRepresentation(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// Compression owns the coding of the final bytes. Hoisted header operations
+// commit outside the codec, irrespective of middleware declaration order.
+func validateMiddlewareRepresentation(mws []resolved.Middleware) error {
+	compresses := false
+	for _, mw := range mws {
+		if mw.Type == resolved.MWCompress && len(mw.CompressAlgos) != 0 {
+			compresses = true
+			break
+		}
+	}
+	if !compresses {
+		return nil
+	}
+	for i, mw := range mws {
+		writesHeader := mw.Type == resolved.MWSetResponseHeader || mw.Type == resolved.MWAddResponseHeader || mw.Type == resolved.MWRemoveResponseHeader
+		if writesHeader && strings.EqualFold(mw.HeaderName, "Content-Encoding") {
+			return fmt.Errorf("middleware[%d]: cannot modify Content-Encoding with Compress; the representation producer owns this header", i)
+		}
+	}
+	return nil
 }
 
 // Every surface middleware implements one of these resolver interfaces. Types

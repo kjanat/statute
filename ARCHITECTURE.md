@@ -141,6 +141,11 @@ errors keep their status for auth/Retry, dropping an unacceptable error body.
 An outer compressor selects the representation before ETag evaluates the
 original read conditions. Rejected renders retain their 406 status.
 
+Compression owns final Content-Encoding metadata. Configuration rejects raw
+response-header Set/Add/Remove operations for that header on a compression route,
+regardless of declaration order. The same check runs on assembled Docker chains
+before publication; conflicts use the existing per-route refusal envelope.
+
 Explicit ETag middleware owns a buffered inner representation. It clones a
 GET/HEAD request into an unconditional, range-free GET render, hashes successful
 200 output, and evaluates the original read preconditions against that result.

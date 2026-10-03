@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Reject response `Content-Encoding` Set/Add/Remove operations on routes using compression, including fallback routes and assembled Docker middleware chains. Prevent compressed bytes from being sent with missing or false coding metadata; refuse invalid Docker routes while preserving valid siblings.
+
 - Respect Accept-Encoding qualities, wildcards, and explicit exclusions against the actual response. Preserve acceptable origin codings, reject unavailable successful representations with an empty 406, reject malformed preferences with 400, and keep encoding-aware Cache/ETag behavior independent of middleware order.
 
 - Stabilize compressed ETags across GET and HEAD by deferring intermediate codec flushes inside buffered ETag renders. Preserve progressive flushing on ordinary compressed streams.
@@ -38,7 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Keep cached representations distinct by Vary, including hoisted route headers and identity/compressed variants. Delegate conditional, range, no-cache, no-transform, and malformed cache-policy requests downstream. Never retain partial responses or wildcard/invalid Vary; preserve existing no-store behavior.
 
-- Reject manual representation-header injection during private HTML experiment configuration. Allow explicit removal and unrelated response headers without overriding configuration silently or blocking downstream compression.
+- Reject manual representation-header injection during private HTML experiment configuration. Allow compatible removal and unrelated response headers without overriding configuration silently or blocking downstream compression.
 
 - Record aborted responses in access logs and request metrics while preserving stream cancellation. Retain the committed status, use status zero for pre-header aborts, and expose body-byte counts and bounded abort/body-I/O-error signals. Keep status filters authoritative and retain optimized body-copy delegation.
 

@@ -130,6 +130,16 @@ Announced and late representation trailers are also removed after encoding;
 unrelated trailers and untouched bypass responses retain their trailers.
 An aborted handler propagates its panic without finishing a compressed stream.
 
+Routes using enabled `Compress(...)` must not Set/Add/Remove the response `Content-Encoding`
+header: compression owns that metadata for the bytes it generates or preserves.
+Resolve rejects these combinations in either declaration order, including fallback
+routes and Docker middleware definitions. Docker also validates the complete chain
+after combining defaults, named middleware, and label hints; a conflicting route
+is refused without affecting valid siblings or falling through to a fallback.
+Removing `ETag` or `Content-Length` remains allowed, as do unrelated headers and
+request-header operations. Header operations on routes without compression are
+unchanged. An empty algorithm list disables compression and introduces no conflict.
+
 `Accept-Encoding` is parsed across all field lines, case-insensitively, with
 quality values and wildcard/specific exclusions. Gzip and Brotli are selected by
 quality; Brotli wins ties. Explicit identity preference can win over an encoder;
