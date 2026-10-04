@@ -12,7 +12,10 @@ The harness rewrites an attribute, inserts markup, and removes selected elements
 
 Tests compare chunked output with native LOL HTML on Unicode, entities, nested removals, comments, script/textarea content, malformed markup, and empty input. A separate fuzz target compares contiguous and fragmented guest input. Resource tests cover parser memory, linear-memory growth, output limits, short/failed writes, canceled calls, terminal-instance rejection, and engine shutdown.
 
-HTTP response rewriting remains untested. There is no Statute import, route option, middleware, `resolved` change, or new dependency in the main Go module.
+At this engine-only stage, HTTP response rewriting was untested. The subsequent
+[HTTP experiment](research-html-http.md) now tests real Statute responses, including
+middleware composition and Docker lifetimes. It remains private: there is no public
+rewrite route option or production Wasm dependency in the main Go module.
 
 ## Initial measurements before optimization
 
@@ -71,22 +74,42 @@ go tool pprof -top artifact/rewrite.test artifact/rewrite.cpu
 go tool pprof -top -alloc_space artifact/rewrite.test artifact/rewrite.mem
 ```
 
-## Decision
+## Initial experiment decision
 
 Continue engine research; **do not integrate this implementation into Statute yet**. Host-neutral Wasm is viable, but the current dense-rewrite cost and allocation volume are too large to justify a public middleware commitment without further measurement and optimization.
 
-The [execution/memory follow-up](research-html-execution-memory.md) narrows the remaining performance work to guest execution and termination-check overhead, records one-minute memory-load runs, and compares SIMD/initial-memory settings. Any reuse experiment still needs a reset and discard contract with isolation tests before it can replace fresh instances. The HTTP adapter and public route-scoped API require their own design.
+The [execution/memory follow-up](research-html-execution-memory.md) measures guest
+execution and termination-check overhead, records one-minute memory-load runs, and
+compares SIMD/initial-memory settings. The private HTTP adapter has since been
+implemented and validated. The public route-scoped API and production integration
+remain unimplemented. Fresh instances remain the baseline; mutable-instance reuse
+is optional work requiring a reset and discard contract with isolation tests.
 
-## #114 coverage and remaining work
+## Current #114 coverage and remaining work
 
-| Issue obligation                            | This experiment                                                                                                                          | Remaining before a production proposal                                                                                                               |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pin upstream, toolchain, artifact, licenses | Exact crate/toolchain/runtime pins, Cargo/Go checksums, explicit build, measured artifact hash, license inventory instructions           | Cross-host reproducibility, maintained embedded distribution, complete notices and supply-chain policy                                               |
-| cgo-free streaming proof                    | Selector/attribute/insertion/removal; output before EOF; no runtime subprocess                                                           | Configurable policy and Go callback/handle ABI                                                                                                       |
-| Parity, fuzzing, failure/lifetime/isolation | Direct/batched/native fixture parity, chunk fuzzing, batch bounds and terminal failures, controlled writer backpressure and cancellation | Larger malformed corpus, active-execution cancellation latency, future Go element-callback lifetimes, real downstream disconnects, leak/load testing |
-| Benchmarks                                  | Native/Wasm cases, phase/cancellation profiles, SIMD/memory controls, and one-minute four-worker heap/RSS/retention observations         | Larger documents, real slow clients, longer soaks, unsampled peaks, safe warm-instance reuse and stable platform comparisons                         |
-| amd64/arm64 portability                     | Initial PR CI passed on both architectures, including amd64 race tests; local follow-up measurements on arm64                            | Final-head CI, other supported OSes and cross-build/embedded distribution validation                                                                 |
-| HTTP integration                            | None; production behavior unchanged                                                                                                      | Compression and cache ordering, validators/length/ranges, Retry, HEAD/304, upgrades/SSE/gRPC, backpressure, disconnects, metrics, black-box cases    |
-| Go/no-go and public contract                | Go for further engine research, no-go for shipping this adapter                                                                          | Full issue-wide decision after the measurements and HTTP experiment; separate implementation contract                                                |
+| Issue obligation                            | This experiment                                                                                                                                        | Remaining before a production proposal                                                                                                               |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pin upstream, toolchain, artifact, licenses | Exact crate/toolchain/runtime pins, Cargo/Go checksums, explicit build, measured artifact hash, license inventory instructions                         | Cross-host reproducibility, maintained embedded distribution, complete notices and supply-chain policy                                               |
+| cgo-free streaming proof                    | Selector/attribute/insertion/removal; output before EOF; no runtime subprocess                                                                         | Configurable policy and Go callback/handle ABI                                                                                                       |
+| Parity, fuzzing, failure/lifetime/isolation | Native parity, chunk fuzzing, limits/isolation, active-call interruption, real HTTP disconnects and Docker response lifetimes                          | Callback lifetime/re-entry contract, larger malformed corpus and longer load testing                                                                 |
+| Benchmarks                                  | Native/Wasm cases, phase/cancellation profiles, SIMD/memory controls, and one-minute four-worker heap/RSS/retention observations                       | Larger documents, real slow clients, streamed/buffered paths, longer soaks, peak memory and explicit operating budgets                               |
+| amd64/arm64 portability                     | Linux compiler execution on both architectures, including amd64 race tests; #142 hosted checks passed                                                  | Production OS/architecture matrix and cross-build/embedded distribution validation                                                                   |
+| HTTP integration                            | Private integration covers Cache/Retry/ETag/compression, HEAD/conditions/ranges, protocol interruption, Docker lifetime and final response observation | Public surface/resolved/runtime/export/graph/lint integration, server-owned engine, configurable route programs and rewrite-specific instrumentation |
+| Go/no-go and public contract                | Engine feasibility and private HTTP integration demonstrated                                                                                           | Measured operating budget, issue-wide go/no-go and production implementation contract                                                                |
 
-Failures after emitted output cannot retract that prefix. The prototype closes the instance and does not append an unmodified suffix. How a future HTTP adapter reports or aborts a committed response remains an explicit design decision. This is not an HTML sanitizer, and users must not treat it as one.
+The [HTTP coverage matrix](research-html-http.md#remaining-gate) records the
+completed interaction proofs. [#114](https://github.com/kjanat/statute/issues/114)
+tracks the remaining delivery work. Earlier measurements above retain their
+original toolchain and fixture scope; they are not benchmarks of the latest build.
+
+The production design must address configurable transformations, Go callbacks,
+and response-producing route actions, including handlers and static files. No
+declarative-only or proxy-only initial-release restriction has been adopted.
+Missing prototype coverage is implementation work, not evidence that a route
+action must be excluded. Any proposed exclusion needs a concrete architectural
+or measured limitation. This does not promise complete Workers API parity.
+
+Failures after emitted output cannot retract that prefix. The HTTP adapter aborts
+the response and never appends an unmodified suffix, under either failure policy.
+Before transformation begins, consumers explicitly select rejection or untouched
+bypass for supported failure cases. This is not an HTML sanitizer.
