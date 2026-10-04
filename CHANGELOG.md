@@ -26,7 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Reject response `Content-Encoding` Set/Add/Remove operations on routes using compression, including fallback routes and assembled Docker middleware chains. Prevent compressed bytes from being sent with missing or false coding metadata; refuse invalid Docker routes while preserving valid siblings.
+- Reject response `Content-Encoding` Set/Add/Remove operations and RequestID output on routes using compression, including fallback routes and assembled Docker middleware chains. Prevent compressed bytes from being sent with missing or false coding metadata; refuse invalid Docker routes while preserving valid siblings.
 
 - Respect Accept-Encoding qualities, wildcards, and explicit exclusions against the actual response. Preserve acceptable origin codings, reject unavailable successful representations with an empty 406, reject malformed preferences with 400, and keep encoding-aware Cache/ETag behavior independent of middleware order.
 

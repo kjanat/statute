@@ -165,6 +165,11 @@ func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []
 		logs <- lines.String()
 	}()
 	t.Cleanup(func() {
+		if t.Failed() {
+			// Failed assertions may precede the HTTP shutdown request. Kill the
+			// child promptly; successful drain tests still require a clean exit.
+			cancel()
+		}
 		// The shutdown-control scenario signals through HTTP and must observe
 		// the child's clean exit. A second signal can kill it after Run returns.
 		if !slices.Contains(env, "STATUTE_HTML_HTTP_SHUTDOWN_CONTROL=1") {

@@ -1331,19 +1331,19 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 // Compression owns the coding of the final bytes. Hoisted header operations
 // commit outside the codec, irrespective of middleware declaration order.
 func validateMiddlewareRepresentation(mws []resolved.Middleware) error {
-	compresses := false
-	for _, mw := range mws {
-		if mw.Type == resolved.MWCompress && len(mw.CompressAlgos) != 0 {
-			compresses = true
-			break
-		}
-	}
+	compresses := slices.ContainsFunc(mws, func(mw resolved.Middleware) bool {
+		return mw.Type == resolved.MWCompress && len(mw.CompressAlgos) != 0
+	})
 	if !compresses {
 		return nil
 	}
 	for i, mw := range mws {
 		writesHeader := mw.Type == resolved.MWSetResponseHeader || mw.Type == resolved.MWAddResponseHeader || mw.Type == resolved.MWRemoveResponseHeader
-		if writesHeader && strings.EqualFold(mw.HeaderName, "Content-Encoding") {
+		header := mw.HeaderName
+		if mw.Type == resolved.MWRequestID {
+			writesHeader, header = true, mw.RequestIDHeader
+		}
+		if writesHeader && strings.EqualFold(header, "Content-Encoding") {
 			return fmt.Errorf("middleware[%d]: cannot modify Content-Encoding with Compress; the representation producer owns this header", i)
 		}
 	}

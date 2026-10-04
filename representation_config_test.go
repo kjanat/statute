@@ -18,6 +18,8 @@ func TestResolveCompressionHeaderConflict(t *testing.T) {
 		{"remove", RemoveResponseHeader("cOnTeNt-EnCoDiNg")},
 		{"set", SetResponseHeader("Content-Encoding", "identity")},
 		{"add", AddResponseHeader("Content-Encoding", "gzip")},
+		{"request ID", RequestID().Header("cOnTeNt-EnCoDiNg")},
+		{"forwarded request ID", RequestID().Header("Content-Encoding").From("X-Request-Id")},
 	} {
 		t.Run(op.name, func(t *testing.T) {
 			for _, codec := range []CompressAlgo{Gzip, Brotli} {
@@ -50,6 +52,7 @@ func TestResolveCompressionHeaderControls(t *testing.T) {
 		{SetResponseHeader("Content-Encoding", "gzip")},
 		{Compress(Gzip), RemoveResponseHeader("ETag"), RemoveResponseHeader("Content-Length"), SetResponseHeader("X-Test", "ok")},
 		{Compress(Gzip), RemoveRequestHeader("Content-Encoding")},
+		{Compress(Gzip), RequestID()},
 		{Compress(), RemoveResponseHeader("Content-Encoding")},
 	} {
 		if _, err := resolveMiddlewares(mws); err != nil {
@@ -76,6 +79,7 @@ func TestDockerAssembledCompressionHeaderConflict(t *testing.T) {
 		{"defaults", []resolved.Middleware{remove}, []resolved.Middleware{compress}, nil},
 		{"named", []resolved.Middleware{compress}, []resolved.Middleware{remove}, nil},
 		{"hints", nil, []resolved.Middleware{remove}, []resolved.Middleware{compress}},
+		{"request ID", nil, []resolved.Middleware{{Type: resolved.MWRequestID, RequestIDHeader: "cOnTeNt-EnCoDiNg", RequestIDFromHeader: "X-Request-Id"}}, []resolved.Middleware{compress}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &dockerProvider{cfg: &resolved.Docker{DefaultMiddleware: tc.defaults, Middleware: map[string][]resolved.Middleware{"policy": tc.named}}}

@@ -47,11 +47,14 @@ func validateHTTPRoute(route *resolved.Route) error {
 		return nil
 	}
 	for i, mw := range route.Middleware {
-		if mw.Type != resolved.MWSetResponseHeader && mw.Type != resolved.MWAddResponseHeader {
+		header := mw.HeaderName
+		if mw.Type == resolved.MWRequestID {
+			header = mw.RequestIDHeader
+		} else if mw.Type != resolved.MWSetResponseHeader && mw.Type != resolved.MWAddResponseHeader {
 			continue
 		}
-		if ownsRepresentationHeader(mw.HeaderName) {
-			return fmt.Errorf("middleware[%d]: cannot set or append %s on an HTML-rewriting route; the representation producer owns this header (compatible removal is allowed)", i, mw.HeaderName)
+		if ownsRepresentationHeader(header) {
+			return fmt.Errorf("middleware[%d]: cannot set or append %s on an HTML-rewriting route; the representation producer owns this header (compatible removal is allowed)", i, header)
 		}
 	}
 	return nil
@@ -74,7 +77,7 @@ func TestHTTPConfigRepresentationHeaders(t *testing.T) {
 		for _, op := range []struct {
 			name string
 			mw   statute.Middleware
-		}{{"set", statute.SetResponseHeader(strings.ToLower(name), "value")}, {"append", statute.AddResponseHeader(name, "value")}} {
+		}{{"set", statute.SetResponseHeader(strings.ToLower(name), "value")}, {"append", statute.AddResponseHeader(name, "value")}, {"request ID", statute.RequestID().Header(name)}} {
 			t.Run(name+"/"+op.name, func(t *testing.T) {
 				// Hoisting must not make declaration order or Retry a loophole.
 				for _, mws := range [][]statute.Middleware{

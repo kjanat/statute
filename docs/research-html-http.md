@@ -293,6 +293,11 @@ listener, and unexpected errors cannot satisfy the shutdown proof.
 The shutdown-control scenario owns its HTTP-triggered signal. Parent cleanup
 waits for a clean child exit without sending a second signal; the existing
 30-second process deadline still bounds a failed shutdown.
+If an assertion fails before shutdown is requested, cleanup cancels the child
+immediately. `TestHTTPStatuteFailedControlCleanup` verifies that path in a separate
+process and requires completion within ten seconds; successful drain tests still require a
+clean exit. Request-ID response headers obey the same representation-ownership
+checks as raw header injection.
 
 ## Remaining gate
 

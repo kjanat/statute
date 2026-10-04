@@ -132,6 +132,8 @@ An aborted handler propagates its panic without finishing a compressed stream.
 
 Routes using enabled `Compress(...)` must not Set/Add/Remove the response `Content-Encoding`
 header: compression owns that metadata for the bytes it generates or preserves.
+`RequestID().Header("Content-Encoding")` is also rejected because it writes the
+response header, including when its value comes from an inbound header.
 Resolve rejects these combinations in either declaration order, including fallback
 routes and Docker middleware definitions. Docker also validates the complete chain
 after combining defaults, named middleware, and label hints; a conflicting route

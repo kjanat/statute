@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
@@ -124,5 +126,25 @@ func TestPollHTTPListenerClosed(t *testing.T) {
 				t.Fatalf("error=%v want=%v probes=%d want=%d", err, tc.want, calls, len(tc.outcomes))
 			}
 		})
+	}
+}
+
+func TestHTTPStatuteFailedControlCleanup(t *testing.T) {
+	const marker = "STATUTE_HTML_HTTP_CLEANUP_FAILURE=1"
+	const failure = "intentional failure before control shutdown"
+	if os.Getenv("STATUTE_HTML_HTTP_CLEANUP_FAILURE") == "1" {
+		startHTTPStatuteConfigured(t, "http://127.0.0.1:1", "", []string{"STATUTE_HTML_HTTP_SHUTDOWN_CONTROL=1"})
+		t.Fatal(failure)
+	}
+	// Keep the outer process alive beyond its child's 30-second safety deadline
+	// so a regression can still reap that child before this test reports failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHTTPStatuteFailedControlCleanup$")
+	cmd.Env = append(os.Environ(), marker)
+	started := time.Now()
+	out, err := cmd.CombinedOutput()
+	if err == nil || ctx.Err() != nil || time.Since(started) >= 10*time.Second || !strings.Contains(string(out), failure) {
+		t.Fatalf("failed-path cleanup: error=%v context=%v\n%s", err, ctx.Err(), out)
 	}
 }
