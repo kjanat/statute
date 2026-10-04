@@ -324,9 +324,16 @@ encodings and rejects a successful response with an empty 406 when no allowed
 representation can be delivered. Malformed preferences produce 400. The precise
 selection, duplicate, bodyless-status, and error-response contracts are documented
 under [body-derived ETags and compression](production.md#body-derived-etags).
-Hosted validation of the complete changes is pending. Public
-rewrite-specific instrumentation, real slow-client load budgets, and public
-configuration remain separate production gates.
+Hosted validation passed for [#141](https://github.com/kjanat/statute/pull/141)
+and the [#142 follow-up](https://github.com/kjanat/statute/pull/142), including
+[amd64/arm64 research checks](https://github.com/kjanat/statute/actions/runs/37167718710)
+and [root tests, lint, lifecycle and e2e checks](https://github.com/kjanat/statute/actions/runs/37167718698).
+#142 also rejects compression metadata conflicts through RequestID and fixes
+shutdown-probe and subprocess-cleanup races. Public rewrite-specific
+instrumentation, real slow-client load budgets, and public configuration remain
+separate production gates. See the
+[current completion ledger](research-html-rewriting.md#current-114-coverage-and-remaining-work)
+for delivery work beyond this private experiment.
 
 ### Private Docker integration
 
