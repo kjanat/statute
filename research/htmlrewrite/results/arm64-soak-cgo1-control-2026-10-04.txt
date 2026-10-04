@@ -1,0 +1,27 @@
+Exploratory control: CGO_ENABLED=1 (default local Go setting).
+Build: go test -c -o artifact/http-load.test
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 3m -http-load-duration 60s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":60000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:242: http_result {"completed":20,"elapsed_ns":68077663935,"first_body_p50_ns":2314789688,"first_body_p95_ns":2416130855,"first_body_p99_ns":2464180929,"output_bytes":230686720,"requests_per_second":0.2937821136033081,"server_after_rss":190054400,"server_before_rss":46170112,"server_process_hwm":234078208,"server_sampled_peak_rss":234078208,"total_p50_ns":13578941195,"total_p95_ns":13680434365,"total_p99_ns":13729128396}
+--- PASS: TestHTTPLoad (72.54s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestMemoryLoad$' -test.v -test.timeout 5m -load-duration 60s -load-rounds 3 -load-workers 4 -load-count 32768 -load-shape dense
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:185: config {"arch":"arm64","duration_ns":60000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:192: before_engine {"heap_alloc":1891240,"heap_inuse":2441216,"heap_released":9617408,"total_alloc":8665360,"num_gc":3,"goroutines":2,"rss":22167552,"process_hwm":24100864}
+    memory_linux_test.go:203: compiled_idle {"heap_alloc":2645032,"heap_inuse":3416064,"heap_released":7380992,"total_alloc":29617944,"num_gc":8,"goroutines":2,"rss":46383104,"process_hwm":46383104}
+    memory_linux_test.go:209: round_1 {"completed":401,"interrupted":4,"elapsed_ns":60005609764,"sampled_peak_heap":26192944,"sampled_peak_rss":57196544,"samples":2348}
+    memory_linux_test.go:212: round_1_post_gc {"heap_alloc":2915688,"heap_inuse":3710976,"heap_released":15613952,"total_alloc":2556700792,"num_gc":271,"goroutines":2,"rss":52035584,"process_hwm":55738368}
+    memory_linux_test.go:209: round_2 {"completed":411,"interrupted":4,"elapsed_ns":60001590322,"sampled_peak_heap":31337656,"sampled_peak_rss":59949056,"samples":2361}
+    memory_linux_test.go:212: round_2_post_gc {"heap_alloc":2918176,"heap_inuse":3768320,"heap_released":18456576,"total_alloc":5147612344,"num_gc":524,"goroutines":2,"rss":49168384,"process_hwm":58425344}
+    memory_linux_test.go:209: round_3 {"completed":388,"interrupted":4,"elapsed_ns":60001189804,"sampled_peak_heap":27835968,"sampled_peak_rss":58802176,"samples":2361}
+    memory_linux_test.go:212: round_3_post_gc {"heap_alloc":2922024,"heap_inuse":3792896,"heap_released":16105472,"total_alloc":7589964072,"num_gc":757,"goroutines":2,"rss":51462144,"process_hwm":58425344}
+    memory_linux_test.go:219: closed_post_gc {"heap_alloc":695192,"heap_inuse":1269760,"heap_released":31703040,"total_alloc":7589976520,"num_gc":758,"goroutines":2,"rss":34029568,"process_hwm":58425344}
+    memory_linux_test.go:221: closed_scavenged {"heap_alloc":694584,"heap_inuse":1261568,"heap_released":36061184,"total_alloc":7589989664,"num_gc":759,"goroutines":2,"rss":29671424,"process_hwm":58425344}
+--- PASS: TestMemoryLoad (180.37s)
+PASS
+Exit: 0

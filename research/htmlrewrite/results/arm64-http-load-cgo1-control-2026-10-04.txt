@@ -1,0 +1,194 @@
+Exploratory control: CGO_ENABLED=1 (default local Go setting).
+Build: go test -c -o artifact/http-load.test
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"plain","output_bytes":1343488,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":2420,"elapsed_ns":5005542666,"first_body_p50_ns":3395545,"first_body_p95_ns":8580353,"first_body_p99_ns":12169472,"output_bytes":3251240960,"requests_per_second":483.46406403401136,"server_after_rss":33226752,"server_before_rss":45776896,"server_process_hwm":48922624,"server_sampled_peak_rss":48922624,"total_p50_ns":7564221,"total_p95_ns":15325017,"total_p99_ns":19509841}
+--- PASS: TestHTTPLoad (5.37s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"stream","output_bytes":2883584,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":32,"elapsed_ns":5406995861,"first_body_p50_ns":6983831,"first_body_p95_ns":22767163,"first_body_p99_ns":23433517,"output_bytes":92274688,"requests_per_second":5.918258645399026,"server_after_rss":37601280,"server_before_rss":45547520,"server_process_hwm":56803328,"server_sampled_peak_rss":56803328,"total_p50_ns":644019793,"total_p95_ns":784097338,"total_p99_ns":827236622}
+--- PASS: TestHTTPLoad (6.83s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"etag","output_bytes":2883584,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":35,"elapsed_ns":5497572917,"first_body_p50_ns":595383941,"first_body_p95_ns":803722067,"first_body_p99_ns":808187985,"output_bytes":100925440,"requests_per_second":6.366445798612406,"server_after_rss":73203712,"server_before_rss":45973504,"server_process_hwm":91340800,"server_sampled_peak_rss":91340800,"total_p50_ns":604023608,"total_p95_ns":811020269,"total_p99_ns":811352937}
+--- PASS: TestHTTPLoad (6.88s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"plain","output_bytes":1343488,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":16,"elapsed_ns":5259349791,"first_body_p50_ns":1729115,"first_body_p95_ns":5298938,"first_body_p99_ns":5298938,"output_bytes":21495808,"requests_per_second":3.0422011533402493,"server_after_rss":47054848,"server_before_rss":45072384,"server_process_hwm":47054848,"server_sampled_peak_rss":47054848,"total_p50_ns":1314024941,"total_p95_ns":1317718802,"total_p99_ns":1317718802}
+--- PASS: TestHTTPLoad (5.62s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"stream","output_bytes":2883584,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":8,"elapsed_ns":5662577008,"first_body_p50_ns":9193577,"first_body_p95_ns":17447300,"first_body_p99_ns":17447300,"output_bytes":23068672,"requests_per_second":1.4127843186410933,"server_after_rss":44990464,"server_before_rss":45694976,"server_process_hwm":56737792,"server_sampled_peak_rss":56737792,"total_p50_ns":2822561530,"total_p95_ns":2833503205,"total_p99_ns":2833503205}
+--- PASS: TestHTTPLoad (7.03s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"etag","output_bytes":2883584,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":8,"elapsed_ns":6836569195,"first_body_p50_ns":557751594,"first_body_p95_ns":645206480,"first_body_p99_ns":645206480,"output_bytes":23068672,"requests_per_second":1.1701775805693428,"server_after_rss":75202560,"server_before_rss":45776896,"server_process_hwm":86032384,"server_sampled_peak_rss":86032384,"total_p50_ns":3374275959,"total_p95_ns":3462151625,"total_p99_ns":3462151625}
+--- PASS: TestHTTPLoad (8.16s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"plain","output_bytes":1375232,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":2565,"elapsed_ns":5006658384,"first_body_p50_ns":3353508,"first_body_p95_ns":8010537,"first_body_p99_ns":10998840,"output_bytes":3527470080,"requests_per_second":512.3177583270079,"server_after_rss":32997376,"server_before_rss":44548096,"server_process_hwm":52903936,"server_sampled_peak_rss":52903936,"total_p50_ns":7199831,"total_p95_ns":14227978,"total_p99_ns":20454936}
+--- PASS: TestHTTPLoad (5.37s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"stream","output_bytes":1423360,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":96,"elapsed_ns":5176328362,"first_body_p50_ns":4349418,"first_body_p95_ns":15182183,"first_body_p99_ns":20080897,"output_bytes":136642560,"requests_per_second":18.545964105512827,"server_after_rss":52658176,"server_before_rss":46268416,"server_process_hwm":52658176,"server_sampled_peak_rss":52658176,"total_p50_ns":200431959,"total_p95_ns":282778907,"total_p99_ns":352258251}
+--- PASS: TestHTTPLoad (5.84s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"etag","output_bytes":1423360,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":111,"elapsed_ns":5128736861,"first_body_p50_ns":174341399,"first_body_p95_ns":238193268,"first_body_p99_ns":252725691,"output_bytes":157992960,"requests_per_second":21.64275590819788,"server_after_rss":49299456,"server_before_rss":46120960,"server_process_hwm":74612736,"server_sampled_peak_rss":74612736,"total_p50_ns":175903015,"total_p95_ns":239671271,"total_p99_ns":254054249}
+--- PASS: TestHTTPLoad (5.77s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"plain","output_bytes":1375232,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":16,"elapsed_ns":5385236908,"first_body_p50_ns":1861930,"first_body_p95_ns":6216478,"first_body_p99_ns":6216478,"output_bytes":22003712,"requests_per_second":2.9710856315775667,"server_after_rss":46727168,"server_before_rss":45531136,"server_process_hwm":46727168,"server_sampled_peak_rss":46727168,"total_p50_ns":1345390748,"total_p95_ns":1349274313,"total_p99_ns":1349274313}
+--- PASS: TestHTTPLoad (5.72s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"stream","output_bytes":1423360,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":16,"elapsed_ns":5593874566,"first_body_p50_ns":3971343,"first_body_p95_ns":12800714,"first_body_p99_ns":12800714,"output_bytes":22773760,"requests_per_second":2.860271500767863,"server_after_rss":44662784,"server_before_rss":45580288,"server_process_hwm":50118656,"server_sampled_peak_rss":50118656,"total_p50_ns":1394085341,"total_p95_ns":1403716955,"total_p99_ns":1403716955}
+--- PASS: TestHTTPLoad (6.29s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"etag","output_bytes":1423360,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":16,"elapsed_ns":6257530988,"first_body_p50_ns":157699917,"first_body_p95_ns":196556173,"first_body_p99_ns":196556173,"output_bytes":22773760,"requests_per_second":2.556919019767226,"server_after_rss":64323584,"server_before_rss":46006272,"server_process_hwm":68517888,"server_sampled_peak_rss":68517888,"total_p50_ns":1548177229,"total_p95_ns":1587030614,"total_p99_ns":1587030614}
+--- PASS: TestHTTPLoad (6.93s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"plain","output_bytes":5373952,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":669,"elapsed_ns":5016775109,"first_body_p50_ns":6348719,"first_body_p95_ns":16580056,"first_body_p99_ns":23123942,"output_bytes":3595173888,"requests_per_second":133.35259912285616,"server_after_rss":32882688,"server_before_rss":45400064,"server_process_hwm":48250880,"server_sampled_peak_rss":48250880,"total_p50_ns":28402287,"total_p95_ns":50271597,"total_p99_ns":57948632}
+--- PASS: TestHTTPLoad (5.41s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":9,"elapsed_ns":7005050429,"first_body_p50_ns":13091474,"first_body_p95_ns":27361878,"first_body_p99_ns":27361878,"output_bytes":103809024,"requests_per_second":1.2847873246909356,"server_after_rss":36798464,"server_before_rss":45465600,"server_process_hwm":50954240,"server_sampled_peak_rss":50954240,"total_p50_ns":2492957424,"total_p95_ns":2689741800,"total_p99_ns":2689741800}
+--- PASS: TestHTTPLoad (11.54s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":8,"elapsed_ns":6357143347,"first_body_p50_ns":3080567228,"first_body_p95_ns":3269596010,"first_body_p99_ns":3269596010,"output_bytes":92274688,"requests_per_second":1.2584268693225678,"server_after_rss":186335232,"server_before_rss":46415872,"server_process_hwm":203915264,"server_sampled_peak_rss":203915264,"total_p50_ns":3134207795,"total_p95_ns":3286619290,"total_p99_ns":3286619290}
+--- PASS: TestHTTPLoad (10.84s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"plain","output_bytes":5373952,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":4,"elapsed_ns":5258621424,"first_body_p50_ns":2507061,"first_body_p95_ns":13032326,"first_body_p99_ns":13032326,"output_bytes":21495808,"requests_per_second":0.7606556314824765,"server_after_rss":46972928,"server_before_rss":45416448,"server_process_hwm":46972928,"server_sampled_peak_rss":46972928,"total_p50_ns":5251399963,"total_p95_ns":5258492164,"total_p99_ns":5258492164}
+--- PASS: TestHTTPLoad (5.68s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":4,"elapsed_ns":11288352004,"first_body_p50_ns":8173760,"first_body_p95_ns":23392905,"first_body_p99_ns":23392905,"output_bytes":46137344,"requests_per_second":0.3543475609710443,"server_after_rss":47890432,"server_before_rss":45334528,"server_process_hwm":52920320,"server_sampled_peak_rss":48316416,"total_p50_ns":11272833617,"total_p95_ns":11287678781,"total_p99_ns":11287678781}
+--- PASS: TestHTTPLoad (15.80s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":4,"elapsed_ns":13822209563,"first_body_p50_ns":2456576386,"first_body_p95_ns":2557236579,"first_body_p99_ns":2557236579,"output_bytes":46137344,"requests_per_second":0.28938933256426713,"server_after_rss":172490752,"server_before_rss":45580288,"server_process_hwm":172490752,"server_sampled_peak_rss":172490752,"total_p50_ns":13721334945,"total_p95_ns":13822069675,"total_p99_ns":13822069675}
+--- PASS: TestHTTPLoad (18.26s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"plain","output_bytes":5500928,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":705,"elapsed_ns":5008375999,"first_body_p50_ns":6455830,"first_body_p95_ns":16020444,"first_body_p99_ns":22122477,"output_bytes":3878154240,"requests_per_second":140.7641918539591,"server_after_rss":32964608,"server_before_rss":44924928,"server_process_hwm":53002240,"server_sampled_peak_rss":53002240,"total_p50_ns":27063692,"total_p95_ns":45706567,"total_p99_ns":56850963}
+--- PASS: TestHTTPLoad (5.40s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"stream","output_bytes":5693440,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":28,"elapsed_ns":5719094561,"first_body_p50_ns":5774865,"first_body_p95_ns":20128583,"first_body_p99_ns":21729994,"output_bytes":159416320,"requests_per_second":4.895879881220939,"server_after_rss":49627136,"server_before_rss":45776896,"server_process_hwm":52527104,"server_sampled_peak_rss":52527104,"total_p50_ns":806063394,"total_p95_ns":900973907,"total_p99_ns":914477679}
+--- PASS: TestHTTPLoad (7.39s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"etag","output_bytes":5693440,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":30,"elapsed_ns":5595987201,"first_body_p50_ns":677038710,"first_body_p95_ns":851221256,"first_body_p99_ns":893526556,"output_bytes":170803200,"requests_per_second":5.360984384424435,"server_after_rss":71892992,"server_before_rss":46006272,"server_process_hwm":125763584,"server_sampled_peak_rss":125763584,"total_p50_ns":697456312,"total_p95_ns":857570770,"total_p99_ns":902588521}
+--- PASS: TestHTTPLoad (7.15s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"plain","output_bytes":5500928,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":4,"elapsed_ns":5386312665,"first_body_p50_ns":1854893,"first_body_p95_ns":13876328,"first_body_p99_ns":13876328,"output_bytes":22003712,"requests_per_second":0.7426230612255035,"server_after_rss":47218688,"server_before_rss":46039040,"server_process_hwm":47218688,"server_sampled_peak_rss":47218688,"total_p50_ns":5373882914,"total_p95_ns":5386150536,"total_p99_ns":5386150536}
+--- PASS: TestHTTPLoad (5.76s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"stream","output_bytes":5693440,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":4,"elapsed_ns":5580636845,"first_body_p50_ns":20143805,"first_body_p95_ns":23744036,"first_body_p99_ns":23744036,"output_bytes":22773760,"requests_per_second":0.716764073903827,"server_after_rss":47431680,"server_before_rss":44761088,"server_process_hwm":47431680,"server_sampled_peak_rss":47431680,"total_p50_ns":5571100324,"total_p95_ns":5580493586,"total_p99_ns":5580493586}
+--- PASS: TestHTTPLoad (7.19s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:139: http_config {"admission_ns":5000000000,"arch":"arm64","go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"etag","output_bytes":5693440,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:239: http_result {"completed":4,"elapsed_ns":6327839803,"first_body_p50_ns":660837376,"first_body_p95_ns":767338193,"first_body_p99_ns":767338193,"output_bytes":22773760,"requests_per_second":0.6321272542493283,"server_after_rss":120619008,"server_before_rss":45481984,"server_process_hwm":120619008,"server_sampled_peak_rss":120619008,"total_p50_ns":6221235264,"total_p95_ns":6327718951,"total_p99_ns":6327718951}
+--- PASS: TestHTTPLoad (7.86s)
+PASS
+Exit: 0

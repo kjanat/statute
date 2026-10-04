@@ -330,8 +330,9 @@ and the [#142 follow-up](https://github.com/kjanat/statute/pull/142), including
 and [root tests, lint, lifecycle and e2e checks](https://github.com/kjanat/statute/actions/runs/37167718698).
 #142 also rejects compression metadata conflicts through RequestID and fixes
 shutdown-probe and subprocess-cleanup races. Public rewrite-specific
-instrumentation, real slow-client load budgets, and public configuration remain
-separate production gates. See the
+instrumentation, production operating budgets, and public configuration remain
+separate production gates. The [HTTP load probe](research-html-load.md) measures
+larger documents and real paced clients against explicit candidate criteria. See the
 [current completion ledger](research-html-rewriting.md#current-114-coverage-and-remaining-work)
 for delivery work beyond this private experiment.
 

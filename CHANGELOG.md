@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add a research HTTP load probe comparing passthrough, streamed HTML rewriting, and buffered ETags with native-verified bodies, paced clients, latency percentiles, and separate-server RSS measurements. Extend the engine memory probe to larger dense/sparse documents.
+
 - Add local RFC Editor HTML references with explicit refresh tooling, source/checksum provenance, and offline verification for HTTP protocol work.
 
 - Add a private HTTP HTML-rewriting experiment with explicit per-route fail-open/fail-closed policy, bounded fresh instances, and streaming/disconnect/shutdown tests. Exercise real Statute cache, retry, and compression in a separate process, and record the fail-open/no-store cache integration limitation.

@@ -2,6 +2,11 @@
 
 This is the first engine experiment for [issue #114](https://github.com/kjanat/statute/issues/114). It adds no Statute middleware or public API. See the [research report](../../docs/research-html-rewriting.md) for results and remaining work.
 
+The [HTTP load report](../../docs/research-html-load.md) documents the larger-page,
+slow-client and buffered-ETag measurement contract. `make http-load` runs one
+Linux load cell with a separate Statute process; `make memory` accepts
+`LOAD_COUNT` and `LOAD_SHAPE` for larger engine-only retention probes.
+
 ## Run
 
 Install Go 1.27.1 and rustup, then run:
@@ -14,7 +19,7 @@ make bench
 make bench-native
 ```
 
-`rust-toolchain.toml` selects `nightly-2026-10-03` (Rust 1.101.0-nightly, commit `0abfedbc7cd4e725f126913880c95800394f7c37`), rustfmt, clippy, and the `wasm32-unknown-unknown` target. `make build` builds both the Wasm guest and native output oracle with the committed Cargo lockfile. It copies the guest to `artifact/rewriter.wasm` for Go embedding. The test target uses `CGO_ENABLED=0`; only the parity test launches the native oracle. Rewriting itself starts no subprocesses.
+`rust-toolchain.toml` selects `nightly-2026-10-03` (Rust 1.101.0-nightly, commit `0abfedbc7cd4e725f126913880c95800394f7c37`), rustfmt, clippy, and the `wasm32-unknown-unknown` target. `make build` builds both the Wasm guest and native output oracle with the committed Cargo lockfile. It copies the guest to `artifact/rewriter.wasm` for Go embedding. The test target uses `CGO_ENABLED=0`; parity tests and HTTP load setup launch the native oracle for expected output. Rewriting itself starts no subprocesses.
 
 The October 2 benchmark and memory samples used Rust 1.97.1. Those historical results retain their original toolchain attribution; they are not measurements of the current nightly artifact.
 

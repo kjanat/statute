@@ -3,8 +3,16 @@ WASM_RUSTFLAGS ?=
 LOAD_DURATION ?= 20s
 LOAD_ROUNDS ?= 3
 LOAD_WORKERS ?= 4
+LOAD_COUNT ?= 1024
+LOAD_SHAPE ?= dense
+HTTP_LOAD_DURATION ?= 5s
+HTTP_LOAD_COUNT ?= 32768
+HTTP_LOAD_SHAPE ?= dense
+HTTP_LOAD_WORKERS ?= 4
+HTTP_LOAD_MODE ?= stream
+HTTP_LOAD_PACE ?= 0s
 
-.PHONY: build test fuzz bench bench-native bench-smoke memory
+.PHONY: build test fuzz bench bench-native bench-smoke memory http-load
 
 build:
 	rustup show active-toolchain
@@ -38,4 +46,10 @@ bench-smoke: build
 # Run as one fresh process: compilation and other tests stay outside RSS data.
 memory: build
 	CGO_ENABLED=0 go test -c -o artifact/memory.test
-	./artifact/memory.test -test.run '^TestMemoryLoad$$' -test.v -test.timeout 10m -load-duration $(LOAD_DURATION) -load-rounds $(LOAD_ROUNDS) -load-workers $(LOAD_WORKERS)
+	./artifact/memory.test -test.run '^TestMemoryLoad$$' -test.v -test.timeout 10m -load-duration $(LOAD_DURATION) -load-rounds $(LOAD_ROUNDS) -load-workers $(LOAD_WORKERS) -load-count $(LOAD_COUNT) -load-shape $(LOAD_SHAPE)
+
+# Linux server-only RSS/HWM; the origin, native oracle and clients stay in the parent.
+http-load: build
+	@test "$$(uname -s)" = Linux || { echo "http-load requires Linux /proc memory observations" >&2; exit 1; }
+	CGO_ENABLED=0 go test -c -o artifact/http-load.test
+	./artifact/http-load.test -test.run '^TestHTTPLoad$$' -test.v -test.timeout 7m -http-load-duration $(HTTP_LOAD_DURATION) -http-load-count $(HTTP_LOAD_COUNT) -http-load-shape $(HTTP_LOAD_SHAPE) -http-load-workers $(HTTP_LOAD_WORKERS) -http-load-mode $(HTTP_LOAD_MODE) -http-load-pace $(HTTP_LOAD_PACE)
