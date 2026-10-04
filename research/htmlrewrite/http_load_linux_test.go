@@ -101,6 +101,14 @@ func loadQuantile(values []time.Duration, q float64) time.Duration {
 	return ordered[max(0, int(math.Ceil(q*float64(len(ordered))))-1)]
 }
 
+// Warm-up and recovery must finish verification before their memory boundary.
+func verifiedHTTPMemory(verify func() error, memory func() (uint64, uint64, error)) (uint64, uint64, error) {
+	if err := verify(); err != nil {
+		return 0, 0, err
+	}
+	return memory()
+}
+
 func TestHTTPLoad(t *testing.T) {
 	if *httpLoadDuration <= 0 || *httpLoadDuration > 5*time.Minute || *httpLoadCount < 1 || *httpLoadCount > 131072 ||
 		*httpLoadWorkers < 1 || *httpLoadWorkers > 4 || *httpLoadPace < 0 || *httpLoadPace > 32*time.Millisecond ||
@@ -153,13 +161,14 @@ func TestHTTPLoad(t *testing.T) {
 		}
 		return processMemory(string(data))
 	}
-	before, _, err := serverMemory()
-	if err != nil {
-		t.Fatal(err)
+	verify := func() error {
+		_, err := observeHTTP(t.Context(), client, endpoint, want, 0)
+		return err
 	}
-	// One verified warm request precedes measurement; cold compilation is separate.
-	if _, err := observeHTTP(t.Context(), client, endpoint, want, 0); err != nil {
-		t.Fatal(err)
+	// One verified warm request precedes the baseline and timed load.
+	before, _, err := verifiedHTTPMemory(verify, serverMemory)
+	if err != nil {
+		t.Fatalf("warm-up boundary: %v", err)
 	}
 	start := time.Now()
 	stop := start.Add(*httpLoadDuration)
@@ -240,16 +249,57 @@ sampling:
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Recovery is outside load timing but inside the final process high-water mark.
+	recovered, high, err := verifiedHTTPMemory(verify, serverMemory)
+	if err != nil {
+		t.Fatalf("post-load serving boundary: %v", err)
+	}
+	hwm = max(hwm, high)
 	logJSON("http_result", map[string]any{
 		"completed": len(observations), "elapsed_ns": elapsed, "output_bytes": delivered,
 		"requests_per_second": float64(len(observations)) / elapsed.Seconds(),
 		"first_body_p50_ns":   loadQuantile(first, .50), "first_body_p95_ns": loadQuantile(first, .95), "first_body_p99_ns": loadQuantile(first, .99),
 		"total_p50_ns": loadQuantile(total, .50), "total_p95_ns": loadQuantile(total, .95), "total_p99_ns": loadQuantile(total, .99),
 		"server_before_rss": before, "server_sampled_peak_rss": peakRSS, "server_process_hwm": hwm, "server_after_rss": after,
+		"server_recovery_rss": recovered,
 	})
-	// Completed load must leave the same process able to serve a verified response.
-	if _, err := observeHTTP(t.Context(), client, endpoint, want, 0); err != nil {
-		t.Fatalf("post-load serving: %v", err)
+}
+
+func TestVerifiedHTTPMemory(t *testing.T) {
+	for _, failure := range []string{"none", "verification", "memory"} {
+		t.Run(failure, func(t *testing.T) {
+			var events []string
+			fault := errors.New("boundary failure")
+			verify := func() error {
+				events = append(events, "verified")
+				if failure == "verification" {
+					return fault
+				}
+				return nil
+			}
+			memory := func() (uint64, uint64, error) {
+				events = append(events, "sampled")
+				if failure == "memory" {
+					return 0, 0, fault
+				}
+				return 100, 200, nil
+			}
+			rss, hwm, err := verifiedHTTPMemory(verify, memory)
+			wantEvents := []string{"verified", "sampled"}
+			if failure == "verification" {
+				wantEvents = wantEvents[:1]
+			}
+			if !slices.Equal(events, wantEvents) {
+				t.Fatalf("boundary order: %v, want %v", events, wantEvents)
+			}
+			if failure == "none" {
+				if err != nil || rss != 100 || hwm != 200 {
+					t.Fatalf("memory: %d/%d, %v", rss, hwm, err)
+				}
+			} else if !errors.Is(err, fault) || rss != 0 || hwm != 0 {
+				t.Fatalf("failed boundary: %d/%d, %v", rss, hwm, err)
+			}
+		})
 	}
 }
 

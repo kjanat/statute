@@ -21,7 +21,7 @@ The origin and clients still share the host's CPU and loopback network with Stat
 The shared fixture constructs the engine even for `plain`: that baseline includes
 resident compiled rewrite code. Compilation is outside the latency window in every mode.
 
-One verified request warms the server. A closed-loop workload then admits requests
+One verified request warms the server before the RSS baseline is sampled. A closed-loop workload then admits requests
 for the configured duration and drains those already admitted. Throughput uses the
 actual elapsed time including drain. Nearest-rank p50/p95/p99 values describe
 completed requests; low sample counts are printed and cannot establish tail SLOs.
@@ -29,9 +29,13 @@ First-body latency runs from HTTP dispatch until the first actual body read.
 Slow clients pace bytes at 16 KiB per configured interval, independently of socket
 read fragmentation. Kernel/network buffering permits read-ahead.
 
-Server RSS is sampled every 25 ms. Linux process HWM includes compilation, warm-up
-and the entire child lifetime; it is not a sampled peak or a per-response heap
-bound. Post-load RSS is reported without forcing server GC. The separate engine
+Server RSS is sampled every 25 ms during load and drain. The final Linux process
+HWM covers startup, compilation, warm-up, load, drain and the verified recovery
+request, through the final sample before shutdown. It is not a sampled peak or a
+per-response heap bound. RSS is reported separately after warm-up
+(`server_before_rss`), after load/drain (`server_after_rss`), and after recovery
+(`server_recovery_rss`), without forcing server GC. Recovery is excluded from
+load throughput and latency. The separate engine
 memory probe records Go allocation/heap metrics and post-GC retained memory across
 rounds. It uses a discard sink, so its memory is not an ETag/cache budget.
 
@@ -81,14 +85,14 @@ remain explicit measurements.
 
 ## Pi 5 matrix results (2026-10-04)
 
-[Raw commands and results](../research/htmlrewrite/results/arm64-http-load-2026-10-04.txt)
+[Corrected-sampling commands and results](../research/htmlrewrite/results/arm64-http-load-boundaries-2026-10-04.txt)
 record all 24 cells: two sizes, two match densities, three response paths, and
 fast/paced consumers, with four clients per cell. Go 1.27.1,
 Rust nightly-2026-10-03 (1.101.0-nightly, commit 0abfedbc7), Linux arm64,
 GOMAXPROCS=4, CGO_ENABLED=0; default guest SHA-256
 `598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef`.
 These runs were sequential on the development Pi with background workloads;
-about 8.1 GiB of host swap was occupied before the run. They are not isolated-host
+about 8.7 GiB of host swap was occupied before this rerun. They are not isolated-host
 capacity certification. RSS excludes swapped-out pages; it is not total committed
 memory. No cancellation or isolation controls were disabled.
 
@@ -96,10 +100,10 @@ Fast-client p95 times are milliseconds; HWM is server process MiB:
 
 | Input           | Plain total | Stream first body | Stream total | ETag first body | ETag total | Stream / ETag HWM |
 | --------------- | ----------: | ----------------: | -----------: | --------------: | ---------: | ----------------: |
-| 1.28 MiB dense  |        14.5 |              19.7 |        757.2 |           675.9 |      683.4 |       50.0 / 77.4 |
-| 5.13 MiB dense  |        49.2 |              22.5 |       2628.5 |          2616.5 |     2647.6 |      47.7 / 195.2 |
-| 1.31 MiB sparse |        15.0 |              20.6 |        307.2 |           266.5 |      270.2 |       51.4 / 67.2 |
-| 5.25 MiB sparse |        47.9 |              22.7 |        913.6 |           761.9 |      770.4 |      50.7 / 130.8 |
+| 1.28 MiB dense  |        15.6 |              14.9 |        917.6 |           711.4 |      717.2 |       47.8 / 85.1 |
+| 5.13 MiB dense  |        47.6 |              17.9 |       2729.9 |          2768.2 |     2792.7 |      47.1 / 200.4 |
+| 1.31 MiB sparse |        14.3 |              12.8 |        276.6 |           228.7 |      230.7 |       51.4 / 68.2 |
+| 5.25 MiB sparse |        45.0 |              22.3 |        986.1 |           826.4 |      833.4 |      52.0 / 124.2 |
 
 All matrix cells passed response verification and post-load serving, and met the
 candidate timing/HWM criteria above. The larger dense input expands to 11 MiB;
@@ -110,7 +114,7 @@ streamed path; ETag first renders and hashes the entire body.
 The slow large-document cells completed only four responses each. Their p95/p99
 is the maximum of four observations; larger samples are required to establish a tail SLO. Raw
 sample counts and elapsed times must accompany any comparison. The larger dense
-ETag high-water mark reached 195.2 MiB versus 47.7 MiB for streaming in the fast
+ETag high-water mark reached 200.4 MiB versus 47.1 MiB for streaming in the fast
 case. A parser-admission cap alone therefore cannot be presented as a total
 response-buffer/cache memory budget.
 
@@ -118,12 +122,14 @@ response-buffer/cache memory budget.
 
 The same raw-results file includes a 60-second admission window for the larger
 dense ETag route with four paced consumers. It completed 20 verified responses
-in 67.95 seconds including drain, with 13.70-second completion p95 and a
-241.9-MiB process HWM. The child served another verified response after the load.
+in 67.80 seconds including drain, with 13.62-second completion p95 and a
+220.1-MiB process HWM sampled after verified recovery. The post-recovery RSS was
+207.1 MiB; load-only sampled peak RSS was 220.1 MiB.
 That fits the candidate ceiling but leaves little headroom for unrelated server
 work. Neither this result nor parser admission supplies a total server memory cap.
 
-Three subsequent 60-second engine-only rounds on the 1.28-MiB dense document
+The unchanged [engine-only measurements](../research/htmlrewrite/results/arm64-http-load-2026-10-04.txt)
+contain three 60-second rounds on the 1.28-MiB dense document. They
 completed 406, 408 and 415 rewrites. Each round interrupted and joined four
 in-flight rewrites at its deadline. Post-GC heap was 2,890,744 / 2,892,288 /
 2,891,936 bytes, with two goroutines at every boundary. The final-minus-first
@@ -135,8 +141,11 @@ boundaries; production retention must also be evaluated without forced GC.
 The initial local build used Go's default CGO_ENABLED=1. Its
 [matrix](../research/htmlrewrite/results/arm64-http-load-cgo1-control-2026-10-04.txt)
 and [soak](../research/htmlrewrite/results/arm64-soak-cgo1-control-2026-10-04.txt)
-are retained as labelled exploratory controls. All results summarized above were
-rerun with CGO_ENABLED=0. The probes now emit Go build settings automatically.
+are retained as labelled exploratory controls. The original cgo-free file also
+retains the pre-fix HTTP measurements: its baseline precedes warm-up and its HWM
+precedes recovery. The corrected-sampling file supersedes those HTTP memory
+observations; the engine-only results are unaffected. All results summarized
+above use CGO_ENABLED=0. The probes emit Go build settings automatically.
 
 ## Outcome and implementation consequence
 
