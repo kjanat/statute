@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,6 +82,9 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	}
 	if name := os.Getenv("STATUTE_HTML_HTTP_CONFLICT"); name != "" {
 		cfg.Routes[0].With(statute.SetResponseHeader(name, "invalid"))
+	}
+	if os.Getenv("STATUTE_HTML_HTTP_REMOVE_ENCODING") == "1" {
+		cfg.Routes[0].With(statute.RemoveResponseHeader("Content-Encoding"), statute.Compress(statute.Gzip))
 	}
 	if os.Getenv("STATUTE_HTML_HTTP_SHUTDOWN_CONTROL") == "1" {
 		control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +165,16 @@ func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []
 		logs <- lines.String()
 	}()
 	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		if t.Failed() {
+			// Failed assertions may precede the HTTP shutdown request. Kill the
+			// child promptly; successful drain tests still require a clean exit.
+			cancel()
+		}
+		// The shutdown-control scenario signals through HTTP and must observe
+		// the child's clean exit. A second signal can kill it after Run returns.
+		if !slices.Contains(env, "STATUTE_HTML_HTTP_SHUTDOWN_CONTROL=1") {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
 		logText := <-logs
 		err := cmd.Wait()
 		cancel()

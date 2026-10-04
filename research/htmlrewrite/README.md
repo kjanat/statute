@@ -14,7 +14,9 @@ make bench
 make bench-native
 ```
 
-`rust-toolchain.toml` selects Rust 1.97.1, rustfmt, clippy, and the `wasm32-unknown-unknown` target. `make build` builds both the Wasm guest and native output oracle with the committed Cargo lockfile. It copies the guest to `artifact/rewriter.wasm` for Go embedding. The test target uses `CGO_ENABLED=0`; only the parity test launches the native oracle. Rewriting itself starts no subprocesses.
+`rust-toolchain.toml` selects `nightly-2026-10-03` (Rust 1.101.0-nightly, commit `0abfedbc7cd4e725f126913880c95800394f7c37`), rustfmt, clippy, and the `wasm32-unknown-unknown` target. `make build` builds both the Wasm guest and native output oracle with the committed Cargo lockfile. It copies the guest to `artifact/rewriter.wasm` for Go embedding. The test target uses `CGO_ENABLED=0`; only the parity test launches the native oracle. Rewriting itself starts no subprocesses.
+
+The October 2 benchmark and memory samples used Rust 1.97.1. Those historical results retain their original toolchain attribution; they are not measurements of the current nightly artifact.
 
 The generated Wasm and Cargo target directory are ignored. This research build needs Rust; ordinary Statute builds do not. Neither root `go test ./...` nor root `make fuzz` includes this separate module. The dedicated research workflow runs it on Linux amd64 and arm64; amd64 also runs the Go race detector. `make bench-smoke` exercises every benchmark with minimal iterations in CI.
 
@@ -81,11 +83,11 @@ Context cancellation is enabled for guest execution. Tests cover cancellation be
 | Component | Pin                                                                     | License                                                       |
 | --------- | ----------------------------------------------------------------------- | ------------------------------------------------------------- |
 | LOL HTML  | crates.io `lol_html = "=3.0.1"`; archive checksum in `guest/Cargo.lock` | BSD-3-Clause                                                  |
-| Rust      | 1.97.1, `wasm32-unknown-unknown`, release/LTO/panic-abort               | MIT OR Apache-2.0; bundled components have additional notices |
+| Rust      | `nightly-2026-10-03`, `wasm32-unknown-unknown`, release/LTO/panic-abort | MIT OR Apache-2.0; bundled components have additional notices |
 | wazero    | `github.com/tetratelabs/wazero v1.12.0`; `go.sum`                       | Apache-2.0                                                    |
 | Harness   | this repository revision                                                | MIT                                                           |
 
-Source references: [LOL HTML 3.0.1](https://docs.rs/crate/lol_html/3.0.1/source/), [wazero v1.12.0](https://github.com/wazero/wazero/tree/v1.12.0), [Rust licenses](https://github.com/rust-lang/rust/blob/1.97.1/COPYRIGHT).
+Source references: [LOL HTML 3.0.1](https://docs.rs/crate/lol_html/3.0.1/source/), [wazero v1.12.0](https://github.com/wazero/wazero/tree/v1.12.0), [Rust licenses](https://github.com/rust-lang/rust/blob/0abfedbc7cd4e725f126913880c95800394f7c37/COPYRIGHT).
 
 Inspect the complete locked Rust license inventory with:
 

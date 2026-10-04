@@ -250,7 +250,10 @@ metadata describing those bytes. On a rewrite-enabled route, raw
 `SetResponseHeader` and `AddResponseHeader` (append) operations cannot inject
 `Content-Type`, `Content-Length`, `Content-Encoding`, `ETag`, `Last-Modified`,
 `Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`, `Accept-Ranges`,
-`Content-Range`, `Transfer-Encoding`, or `Trailer`. Explicit removal is allowed.
+`Content-Range`, `Transfer-Encoding`, or `Trailer`. Removal remains subject to
+the final producer's requirements: the shared route validator rejects response
+Content-Encoding Set/Add/Remove with enabled compression, including assembled
+Docker chains. Removing a validator or length remains allowed.
 CSP, cookies, custom headers, and actual compression stages are unaffected.
 There is no last-writer-wins exception, even for a conflicting operation followed
 by removal. Reordering middleware or adding Retry does not change validation.
@@ -283,6 +286,18 @@ selected route policy.
 `TestHTTPStatuteDrainsRewrittenStream` starts shutdown with a rewritten stream
 open, observes TCP ingress refusal, then releases the origin. The existing stream
 delivers its rewritten tail and the separate Statute process exits successfully.
+The ingress probe retries connection resets within its one-second deadline;
+only connection refusal establishes closure. `TestPollHTTPListenerClosed`
+injects reset/open/refused sequences and checks that persistent resets, an open
+listener, and unexpected errors cannot satisfy the shutdown proof.
+The shutdown-control scenario owns its HTTP-triggered signal. Parent cleanup
+waits for a clean child exit without sending a second signal; the existing
+30-second process deadline still bounds a failed shutdown.
+If an assertion fails before shutdown is requested, cleanup cancels the child
+immediately. `TestHTTPStatuteFailedControlCleanup` verifies that path in a separate
+process and requires completion within ten seconds; successful drain tests still require a
+clean exit. Request-ID response headers obey the same representation-ownership
+checks as raw header injection.
 
 ## Remaining gate
 

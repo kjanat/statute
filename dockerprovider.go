@@ -1048,7 +1048,11 @@ func (p *dockerProvider) routeMiddleware(svc *docker.Service, m docker.Matcher, 
 		}
 		out = append(out, chain...)
 	}
-	return append(out, hints...), ""
+	out = append(out, hints...)
+	if err := validateMiddlewareRepresentation(out); err != nil {
+		return nil, fmt.Sprintf("service %q: %v, dropping route %s%s", svc.Name, err, m.Host, m.Path)
+	}
+	return out, ""
 }
 
 // parseCompressAlgos parses a "gzip,br" style label value.

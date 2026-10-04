@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     defaults:
@@ -50,7 +50,7 @@ jobs:
       - name: Build and test cgo-free host and native oracle
         run: make test
       - name: Race detector
-        if: matrix.runner == 'ubuntu-latest'
+        if: runner.arch == 'X64'
         run: |
           go test -race ./...
           go test -race -tags htmlrewrite_research -run '^TestHTTPDocker' .
