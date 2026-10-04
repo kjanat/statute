@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -164,7 +165,11 @@ func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []
 		logs <- lines.String()
 	}()
 	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		// The shutdown-control scenario signals through HTTP and must observe
+		// the child's clean exit. A second signal can kill it after Run returns.
+		if !slices.Contains(env, "STATUTE_HTML_HTTP_SHUTDOWN_CONTROL=1") {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
 		logText := <-logs
 		err := cmd.Wait()
 		cancel()

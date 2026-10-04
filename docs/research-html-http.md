@@ -286,6 +286,13 @@ selected route policy.
 `TestHTTPStatuteDrainsRewrittenStream` starts shutdown with a rewritten stream
 open, observes TCP ingress refusal, then releases the origin. The existing stream
 delivers its rewritten tail and the separate Statute process exits successfully.
+The ingress probe retries connection resets within its one-second deadline;
+only connection refusal establishes closure. `TestPollHTTPListenerClosed`
+injects reset/open/refused sequences and checks that persistent resets, an open
+listener, and unexpected errors cannot satisfy the shutdown proof.
+The shutdown-control scenario owns its HTTP-triggered signal. Parent cleanup
+waits for a clean child exit without sending a second signal; the existing
+30-second process deadline still bounds a failed shutdown.
 
 ## Remaining gate
 

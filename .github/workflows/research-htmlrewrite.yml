@@ -50,7 +50,7 @@ jobs:
       - name: Build and test cgo-free host and native oracle
         run: make test
       - name: Race detector
-        if: matrix.runner == 'ubuntu-latest'
+        if: runner.arch == 'X64'
         run: |
           go test -race ./...
           go test -race -tags htmlrewrite_research -run '^TestHTTPDocker' .
