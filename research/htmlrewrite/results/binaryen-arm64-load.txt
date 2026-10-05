@@ -1,0 +1,207 @@
+# Raspberry Pi 5 arm64, 2026-10-05; phase: load
+# Raw runner output. See docs/research-html-binaryen.md for environment and method.
+
+{"variant":"baseline","bytes":574007,"sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":11284404394,"first_body_p50_ns":12194281,"first_body_p95_ns":20128628,"first_body_p99_ns":20128628,"output_bytes":46137344,"requests_per_second":0.3544715219641392,"server_after_rss":46268416,"server_before_rss":34357248,"server_process_hwm":52936704,"server_recovery_rss":35471360,"server_sampled_peak_rss":46268416,"total_p50_ns":11275381285,"total_p95_ns":11284161393,"total_p99_ns":11284161393}
+--- PASS: TestHTTPLoad (15.77s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":13774137962,"first_body_p50_ns":2279982431,"first_body_p95_ns":2509231104,"first_body_p99_ns":2509231104,"output_bytes":46137344,"requests_per_second":0.2903992983833307,"server_after_rss":185286656,"server_before_rss":73891840,"server_process_hwm":193773568,"server_recovery_rss":106790912,"server_sampled_peak_rss":185286656,"total_p50_ns":13544202417,"total_p95_ns":13773635443,"total_p99_ns":13773635443}
+--- PASS: TestHTTPLoad (18.19s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":3000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:202: before_engine {"heap_alloc":1886712,"heap_inuse":2736128,"heap_released":9191424,"total_alloc":8668640,"num_gc":3,"goroutines":2,"rss":22020096,"process_hwm":23052288}
+    memory_linux_test.go:213: compiled_idle {"heap_alloc":2634288,"heap_inuse":3637248,"heap_released":7069696,"total_alloc":29615504,"num_gc":8,"goroutines":2,"rss":45957120,"process_hwm":45957120}
+    memory_linux_test.go:219: round_1 {"completed":18,"interrupted":4,"elapsed_ns":3016737145,"sampled_peak_heap":23488160,"sampled_peak_rss":54231040,"samples":120}
+    memory_linux_test.go:222: round_1_post_gc {"heap_alloc":2874920,"heap_inuse":3923968,"heap_released":21307392,"total_alloc":162927608,"num_gc":24,"goroutines":2,"rss":44941312,"process_hwm":54214656}
+    memory_linux_test.go:219: round_2 {"completed":19,"interrupted":4,"elapsed_ns":3012020768,"sampled_peak_heap":27834560,"sampled_peak_rss":56033280,"samples":120}
+    memory_linux_test.go:222: round_2_post_gc {"heap_alloc":2875584,"heap_inuse":3907584,"heap_released":32497664,"total_alloc":298401712,"num_gc":39,"goroutines":2,"rss":33718272,"process_hwm":54280192}
+    memory_linux_test.go:219: round_3 {"completed":16,"interrupted":4,"elapsed_ns":3006178630,"sampled_peak_heap":24986360,"sampled_peak_rss":54181888,"samples":119}
+    memory_linux_test.go:222: round_3_post_gc {"heap_alloc":2878304,"heap_inuse":3940352,"heap_released":19038208,"total_alloc":422434936,"num_gc":52,"goroutines":2,"rss":47218688,"process_hwm":54280192}
+    memory_linux_test.go:229: closed_post_gc {"heap_alloc":651104,"heap_inuse":1531904,"heap_released":35422208,"total_alloc":422446328,"num_gc":53,"goroutines":2,"rss":28983296,"process_hwm":54280192}
+    memory_linux_test.go:231: closed_scavenged {"heap_alloc":650576,"heap_inuse":1507328,"heap_released":38076416,"total_alloc":422459472,"num_gc":54,"goroutines":2,"rss":26329088,"process_hwm":54280192}
+--- PASS: TestMemoryLoad (9.38s)
+PASS
+
+Exit: 0
+{"variant":"o3","bytes":498624,"sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":11280537626,"first_body_p50_ns":15876473,"first_body_p95_ns":15923251,"first_body_p99_ns":15923251,"output_bytes":46137344,"requests_per_second":0.3545930285078418,"server_after_rss":45645824,"server_before_rss":34226176,"server_process_hwm":63225856,"server_recovery_rss":35586048,"server_sampled_peak_rss":45645824,"total_p50_ns":11272068426,"total_p95_ns":11280420774,"total_p99_ns":11280420774}
+--- PASS: TestHTTPLoad (15.68s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":13596206827,"first_body_p50_ns":2314311074,"first_body_p95_ns":2331026697,"first_body_p99_ns":2331026697,"output_bytes":46137344,"requests_per_second":0.29419970223287634,"server_after_rss":189120512,"server_before_rss":103202816,"server_process_hwm":189317120,"server_recovery_rss":189317120,"server_sampled_peak_rss":189120512,"total_p50_ns":13578742092,"total_p95_ns":13595973327,"total_p99_ns":13595973327}
+--- PASS: TestHTTPLoad (17.89s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":3000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:202: before_engine {"heap_alloc":1886728,"heap_inuse":2449408,"heap_released":9592832,"total_alloc":8668640,"num_gc":3,"goroutines":2,"rss":21446656,"process_hwm":25018368}
+    memory_linux_test.go:213: compiled_idle {"heap_alloc":2549656,"heap_inuse":3350528,"heap_released":6373376,"total_alloc":51358392,"num_gc":9,"goroutines":2,"rss":63389696,"process_hwm":63389696}
+    memory_linux_test.go:219: round_1 {"completed":20,"interrupted":4,"elapsed_ns":3013293375,"sampled_peak_heap":23108600,"sampled_peak_rss":63766528,"samples":118}
+    memory_linux_test.go:222: round_1_post_gc {"heap_alloc":2740248,"heap_inuse":3637248,"heap_released":23552000,"total_alloc":191420224,"num_gc":26,"goroutines":2,"rss":46071808,"process_hwm":62029824}
+    memory_linux_test.go:219: round_2 {"completed":20,"interrupted":4,"elapsed_ns":3018080589,"sampled_peak_heap":25258792,"sampled_peak_rss":54329344,"samples":120}
+    memory_linux_test.go:222: round_2_post_gc {"heap_alloc":2753272,"heap_inuse":3678208,"heap_released":16441344,"total_alloc":333532936,"num_gc":41,"goroutines":2,"rss":54231040,"process_hwm":62029824}
+    memory_linux_test.go:219: round_3 {"completed":20,"interrupted":4,"elapsed_ns":3016962682,"sampled_peak_heap":24829232,"sampled_peak_rss":55214080,"samples":120}
+    memory_linux_test.go:222: round_3_post_gc {"heap_alloc":2757000,"heap_inuse":3743744,"heap_released":20357120,"total_alloc":474835320,"num_gc":56,"goroutines":2,"rss":50331648,"process_hwm":62029824}
+    memory_linux_test.go:229: closed_post_gc {"heap_alloc":651168,"heap_inuse":1286144,"heap_released":29663232,"total_alloc":474847768,"num_gc":57,"goroutines":2,"rss":38043648,"process_hwm":62029824}
+    memory_linux_test.go:231: closed_scavenged {"heap_alloc":650608,"heap_inuse":1261568,"heap_released":43671552,"total_alloc":474860912,"num_gc":58,"goroutines":2,"rss":25231360,"process_hwm":62029824}
+--- PASS: TestMemoryLoad (9.48s)
+PASS
+
+Exit: 0
+{"variant":"oz","bytes":485011,"sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":11288909999,"first_body_p50_ns":9783759,"first_body_p95_ns":23923563,"first_body_p99_ns":23923563,"output_bytes":46137344,"requests_per_second":0.3543300460677187,"server_after_rss":45907968,"server_before_rss":53411840,"server_process_hwm":70565888,"server_recovery_rss":35569664,"server_sampled_peak_rss":53411840,"total_p50_ns":11274254343,"total_p95_ns":11288854833,"total_p99_ns":11288854833}
+--- PASS: TestHTTPLoad (15.66s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":13505757947,"first_body_p50_ns":2162374895,"first_body_p95_ns":2240947556,"first_body_p99_ns":2240947556,"output_bytes":46137344,"requests_per_second":0.29616997547986634,"server_after_rss":197967872,"server_before_rss":103022592,"server_process_hwm":198017024,"server_recovery_rss":198017024,"server_sampled_peak_rss":197967872,"total_p50_ns":13426473320,"total_p95_ns":13505694965,"total_p99_ns":13505694965}
+--- PASS: TestHTTPLoad (17.84s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":3000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:202: before_engine {"heap_alloc":1882192,"heap_inuse":2736128,"heap_released":9297920,"total_alloc":8664136,"num_gc":3,"goroutines":2,"rss":21676032,"process_hwm":23379968}
+    memory_linux_test.go:213: compiled_idle {"heap_alloc":2536760,"heap_inuse":3604480,"heap_released":2875392,"total_alloc":50539488,"num_gc":9,"goroutines":2,"rss":62750720,"process_hwm":62750720}
+    memory_linux_test.go:219: round_1 {"completed":16,"interrupted":4,"elapsed_ns":3011538363,"sampled_peak_heap":24676536,"sampled_peak_rss":63160320,"samples":119}
+    memory_linux_test.go:222: round_1_post_gc {"heap_alloc":2730904,"heap_inuse":3907584,"heap_released":30138368,"total_alloc":172240352,"num_gc":24,"goroutines":2,"rss":36290560,"process_hwm":61538304}
+    memory_linux_test.go:219: round_2 {"completed":17,"interrupted":4,"elapsed_ns":3022074699,"sampled_peak_heap":21926368,"sampled_peak_rss":51314688,"samples":120}
+    memory_linux_test.go:222: round_2_post_gc {"heap_alloc":2734160,"heap_inuse":3874816,"heap_released":16506880,"total_alloc":296685264,"num_gc":39,"goroutines":2,"rss":49938432,"process_hwm":61538304}
+    memory_linux_test.go:219: round_3 {"completed":20,"interrupted":4,"elapsed_ns":3012000813,"sampled_peak_heap":24520976,"sampled_peak_rss":55803904,"samples":120}
+    memory_linux_test.go:222: round_3_post_gc {"heap_alloc":2741440,"heap_inuse":3883008,"heap_released":20324352,"total_alloc":436495184,"num_gc":56,"goroutines":2,"rss":45023232,"process_hwm":61538304}
+    memory_linux_test.go:229: closed_post_gc {"heap_alloc":649072,"heap_inuse":1540096,"heap_released":36675584,"total_alloc":436507632,"num_gc":57,"goroutines":2,"rss":28082176,"process_hwm":61538304}
+    memory_linux_test.go:231: closed_scavenged {"heap_alloc":648480,"heap_inuse":1531904,"heap_released":39133184,"total_alloc":436519272,"num_gc":58,"goroutines":2,"rss":25657344,"process_hwm":61538304}
+--- PASS: TestMemoryLoad (9.46s)
+PASS
+
+Exit: 0
+{"variant":"oz-twice","bytes":484633,"sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":11281956390,"first_body_p50_ns":11519373,"first_body_p95_ns":20983483,"first_body_p99_ns":20983483,"output_bytes":46137344,"requests_per_second":0.3545484366120653,"server_after_rss":47382528,"server_before_rss":77955072,"server_process_hwm":80707584,"server_recovery_rss":35848192,"server_sampled_peak_rss":80707584,"total_p50_ns":11274521525,"total_p95_ns":11281850631,"total_p99_ns":11281850631}
+--- PASS: TestHTTPLoad (15.72s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":13600476023,"first_body_p50_ns":2206845126,"first_body_p95_ns":2335608807,"first_body_p99_ns":2335608807,"output_bytes":46137344,"requests_per_second":0.29410735280408795,"server_after_rss":201408512,"server_before_rss":73777152,"server_process_hwm":204177408,"server_recovery_rss":204177408,"server_sampled_peak_rss":201408512,"total_p50_ns":13471639305,"total_p95_ns":13600366356,"total_p99_ns":13600366356}
+--- PASS: TestHTTPLoad (17.95s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":3000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:202: before_engine {"heap_alloc":1881856,"heap_inuse":2605056,"heap_released":9379840,"total_alloc":8663768,"num_gc":3,"goroutines":2,"rss":21544960,"process_hwm":23494656}
+    memory_linux_test.go:213: compiled_idle {"heap_alloc":2536280,"heap_inuse":3489792,"heap_released":7618560,"total_alloc":50523064,"num_gc":10,"goroutines":2,"rss":62291968,"process_hwm":62291968}
+    memory_linux_test.go:219: round_1 {"completed":20,"interrupted":4,"elapsed_ns":3012049207,"sampled_peak_heap":23082152,"sampled_peak_rss":62455808,"samples":118}
+    memory_linux_test.go:222: round_1_post_gc {"heap_alloc":2735624,"heap_inuse":3792896,"heap_released":21446656,"total_alloc":190873672,"num_gc":26,"goroutines":2,"rss":49020928,"process_hwm":60375040}
+    memory_linux_test.go:219: round_2 {"completed":20,"interrupted":4,"elapsed_ns":3002692395,"sampled_peak_heap":21439104,"sampled_peak_rss":52232192,"samples":121}
+    memory_linux_test.go:222: round_2_post_gc {"heap_alloc":2743784,"heap_inuse":3801088,"heap_released":21381120,"total_alloc":330199272,"num_gc":44,"goroutines":2,"rss":49184768,"process_hwm":60375040}
+    memory_linux_test.go:219: round_3 {"completed":20,"interrupted":4,"elapsed_ns":3008720667,"sampled_peak_heap":24112976,"sampled_peak_rss":53460992,"samples":116}
+    memory_linux_test.go:222: round_3_post_gc {"heap_alloc":2747232,"heap_inuse":3809280,"heap_released":23396352,"total_alloc":471167832,"num_gc":61,"goroutines":2,"rss":47202304,"process_hwm":60375040}
+    memory_linux_test.go:229: closed_post_gc {"heap_alloc":654304,"heap_inuse":1425408,"heap_released":32702464,"total_alloc":471179224,"num_gc":62,"goroutines":2,"rss":34963456,"process_hwm":60375040}
+    memory_linux_test.go:231: closed_scavenged {"heap_alloc":653728,"heap_inuse":1417216,"heap_released":43335680,"total_alloc":471190864,"num_gc":63,"goroutines":2,"rss":25624576,"process_hwm":60375040}
+--- PASS: TestMemoryLoad (9.42s)
+PASS
+
+Exit: 0
+{"variant":"rereloop-o3","bytes":497765,"sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":11294749199,"first_body_p50_ns":14072766,"first_body_p95_ns":29682092,"first_body_p99_ns":29682092,"output_bytes":46137344,"requests_per_second":0.3541468632481142,"server_after_rss":45547520,"server_before_rss":34275328,"server_process_hwm":63291392,"server_recovery_rss":35307520,"server_sampled_peak_rss":45547520,"total_p50_ns":11276234072,"total_p95_ns":11294672606,"total_p99_ns":11294672606}
+--- PASS: TestHTTPLoad (15.72s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":13589755600,"first_body_p50_ns":2236446977,"first_body_p95_ns":2325226363,"first_body_p99_ns":2325226363,"output_bytes":46137344,"requests_per_second":0.29433936251215587,"server_after_rss":185237504,"server_before_rss":76218368,"server_process_hwm":194461696,"server_recovery_rss":106070016,"server_sampled_peak_rss":185237504,"total_p50_ns":13500543046,"total_p95_ns":13589516841,"total_p99_ns":13589516841}
+--- PASS: TestHTTPLoad (17.99s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":3000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:202: before_engine {"heap_alloc":1887192,"heap_inuse":2629632,"heap_released":9109504,"total_alloc":8669104,"num_gc":3,"goroutines":2,"rss":21725184,"process_hwm":23937024}
+    memory_linux_test.go:213: compiled_idle {"heap_alloc":2548168,"heap_inuse":3538944,"heap_released":3309568,"total_alloc":50647880,"num_gc":10,"goroutines":2,"rss":62439424,"process_hwm":62439424}
+    memory_linux_test.go:219: round_1 {"completed":17,"interrupted":4,"elapsed_ns":3010082524,"sampled_peak_heap":22574528,"sampled_peak_rss":62668800,"samples":120}
+    memory_linux_test.go:222: round_1_post_gc {"heap_alloc":2741912,"heap_inuse":3842048,"heap_released":19963904,"total_alloc":177725344,"num_gc":24,"goroutines":2,"rss":46252032,"process_hwm":61374464}
+    memory_linux_test.go:219: round_2 {"completed":20,"interrupted":4,"elapsed_ns":3022464327,"sampled_peak_heap":24610904,"sampled_peak_rss":54263808,"samples":118}
+    memory_linux_test.go:222: round_2_post_gc {"heap_alloc":2748056,"heap_inuse":3833856,"heap_released":19070976,"total_alloc":318712576,"num_gc":39,"goroutines":2,"rss":47218688,"process_hwm":61374464}
+    memory_linux_test.go:219: round_3 {"completed":20,"interrupted":4,"elapsed_ns":3012540977,"sampled_peak_heap":25488616,"sampled_peak_rss":54755328,"samples":121}
+    memory_linux_test.go:222: round_3_post_gc {"heap_alloc":2753240,"heap_inuse":3833856,"heap_released":14172160,"total_alloc":460372288,"num_gc":54,"goroutines":2,"rss":52150272,"process_hwm":61374464}
+    memory_linux_test.go:229: closed_post_gc {"heap_alloc":649296,"heap_inuse":1458176,"heap_released":21250048,"total_alloc":460384784,"num_gc":55,"goroutines":2,"rss":42450944,"process_hwm":61374464}
+    memory_linux_test.go:231: closed_scavenged {"heap_alloc":648688,"heap_inuse":1425408,"heap_released":36356096,"total_alloc":460397928,"num_gc":56,"goroutines":2,"rss":28213248,"process_hwm":61374464}
+--- PASS: TestMemoryLoad (9.47s)
+PASS
+
+Exit: 0
+{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":11293608047,"first_body_p50_ns":20156778,"first_body_p95_ns":28321757,"first_body_p99_ns":28321757,"output_bytes":46137344,"requests_per_second":0.3541826476847271,"server_after_rss":46350336,"server_before_rss":51101696,"server_process_hwm":71270400,"server_recovery_rss":35667968,"server_sampled_peak_rss":51101696,"total_p50_ns":11280997524,"total_p95_ns":11293433270,"total_p99_ns":11293433270}
+--- PASS: TestHTTPLoad (15.72s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":13554769754,"first_body_p50_ns":2276510625,"first_body_p95_ns":2289857519,"first_body_p99_ns":2289857519,"output_bytes":46137344,"requests_per_second":0.29509907380164857,"server_after_rss":200294400,"server_before_rss":73875456,"server_process_hwm":200294400,"server_recovery_rss":200294400,"server_sampled_peak_rss":200294400,"total_p50_ns":13540838913,"total_p95_ns":13554145437,"total_p99_ns":13554145437}
+--- PASS: TestHTTPLoad (17.81s)
+PASS
+
+Exit: 0
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":3000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:202: before_engine {"heap_alloc":1881376,"heap_inuse":2449408,"heap_released":5431296,"total_alloc":8663288,"num_gc":3,"goroutines":2,"rss":21659648,"process_hwm":22904832}
+    memory_linux_test.go:213: compiled_idle {"heap_alloc":2532592,"heap_inuse":3375104,"heap_released":4030464,"total_alloc":49987440,"num_gc":10,"goroutines":2,"rss":61800448,"process_hwm":61800448}
+    memory_linux_test.go:219: round_1 {"completed":20,"interrupted":4,"elapsed_ns":3013721721,"sampled_peak_heap":22903904,"sampled_peak_rss":61931520,"samples":119}
+    memory_linux_test.go:222: round_1_post_gc {"heap_alloc":2731440,"heap_inuse":3735552,"heap_released":16343040,"total_alloc":190548456,"num_gc":25,"goroutines":2,"rss":48873472,"process_hwm":60751872}
+    memory_linux_test.go:219: round_2 {"completed":20,"interrupted":4,"elapsed_ns":3012595961,"sampled_peak_heap":23290624,"sampled_peak_rss":50413568,"samples":121}
+    memory_linux_test.go:222: round_2_post_gc {"heap_alloc":2732752,"heap_inuse":3727360,"heap_released":19234816,"total_alloc":332923192,"num_gc":43,"goroutines":2,"rss":47136768,"process_hwm":60751872}
+    memory_linux_test.go:219: round_3 {"completed":19,"interrupted":4,"elapsed_ns":3003545687,"sampled_peak_heap":24570272,"sampled_peak_rss":54935552,"samples":121}
+    memory_linux_test.go:222: round_3_post_gc {"heap_alloc":2733368,"heap_inuse":3710976,"heap_released":14352384,"total_alloc":469652352,"num_gc":57,"goroutines":2,"rss":50954240,"process_hwm":60751872}
+    memory_linux_test.go:229: closed_post_gc {"heap_alloc":643744,"heap_inuse":1261568,"heap_released":21889024,"total_alloc":469664800,"num_gc":58,"goroutines":2,"rss":42844160,"process_hwm":60751872}
+    memory_linux_test.go:231: closed_scavenged {"heap_alloc":643168,"heap_inuse":1253376,"heap_released":39321600,"total_alloc":469677944,"num_gc":59,"goroutines":2,"rss":25444352,"process_hwm":60751872}
+--- PASS: TestMemoryLoad (9.43s)
+PASS
+
+Exit: 0

@@ -1,0 +1,309 @@
+# Raspberry Pi 5 arm64, 2026-10-05; phase: bench
+# Raw runner output. See docs/research-html-binaryen.md for environment and method.
+
+{"variant":"baseline","bytes":574007,"sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     507	   1339337 ns/op	 3040155 B/op	    1125 allocs/op
+BenchmarkFirstOutput-4   	      33	  16693290 ns/op	   2925618 first-byte-ns/op	 3139828 B/op	    1200 allocs/op
+BenchmarkOptimizer/dense/16-4         	     321	   1763854 ns/op	   0.37 MB/s	 3041870 B/op	    1135 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      39	  16047745 ns/op	   2.62 MB/s	 3139469 B/op	    1196 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 459340211 ns/op	   2.92 MB/s	 6214168 B/op	    3133 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     385	   1559257 ns/op	   0.43 MB/s	 3041183 B/op	    1135 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5684824 ns/op	   7.56 MB/s	 3093365 B/op	    1195 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       4	 127989131 ns/op	  10.74 MB/s	 4739948 B/op	    3163 allocs/op
+BenchmarkColdEngine-4                 	       2	 330753680 ns/op	20924504 B/op	   43269 allocs/op
+PASS
+
+Exit: 0
+{"variant":"o3","bytes":498624,"sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     476	   1287905 ns/op	 3042770 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      39	  15878566 ns/op	   2772700 first-byte-ns/op	 3142220 B/op	    1279 allocs/op
+BenchmarkOptimizer/dense/16-4         	     369	   1565428 ns/op	   0.42 MB/s	 3044503 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      34	  16786169 ns/op	   2.50 MB/s	 3142189 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 446356116 ns/op	   3.01 MB/s	 6213392 B/op	    3183 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     346	   1576348 ns/op	   0.43 MB/s	 3043770 B/op	    1214 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5445889 ns/op	   7.89 MB/s	 3095991 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 121668873 ns/op	  11.30 MB/s	 4742484 B/op	    3239 allocs/op
+BenchmarkColdEngine-4                 	       2	 404499366 ns/op	42667000 B/op	  122711 allocs/op
+PASS
+
+Exit: 0
+{"variant":"oz","bytes":485011,"sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     333	   1586353 ns/op	 3042840 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      37	  15600469 ns/op	   2660716 first-byte-ns/op	 3143043 B/op	    1280 allocs/op
+BenchmarkOptimizer/dense/16-4         	     360	   1797993 ns/op	   0.36 MB/s	 3044445 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      38	  15899703 ns/op	   2.64 MB/s	 3142193 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 442408286 ns/op	   3.04 MB/s	 6216300 B/op	    3189 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     391	   1546694 ns/op	   0.43 MB/s	 3043799 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5076315 ns/op	   8.47 MB/s	 3095904 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 119939729 ns/op	  11.47 MB/s	 4742297 B/op	    3241 allocs/op
+BenchmarkColdEngine-4                 	       2	 391102113 ns/op	41848000 B/op	  120644 allocs/op
+PASS
+
+Exit: 0
+{"variant":"oz-twice","bytes":484633,"sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     475	   1262335 ns/op	 3042687 B/op	    1204 allocs/op
+BenchmarkFirstOutput-4   	      39	  15803447 ns/op	   2781203 first-byte-ns/op	 3142782 B/op	    1280 allocs/op
+BenchmarkOptimizer/dense/16-4         	     340	   1623988 ns/op	   0.40 MB/s	 3044470 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      36	  15744826 ns/op	   2.67 MB/s	 3142300 B/op	    1277 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 459402864 ns/op	   2.92 MB/s	 6221320 B/op	    3211 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     373	   1616942 ns/op	   0.41 MB/s	 3043786 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     117	   5000086 ns/op	   8.60 MB/s	 3095920 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 117933526 ns/op	  11.66 MB/s	 4742134 B/op	    3238 allocs/op
+BenchmarkColdEngine-4                 	       2	 390034530 ns/op	41831608 B/op	  120582 allocs/op
+PASS
+
+Exit: 0
+{"variant":"rereloop-o3","bytes":497765,"sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     524	   1232065 ns/op	 3042746 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      38	  15433873 ns/op	   2480800 first-byte-ns/op	 3142279 B/op	    1279 allocs/op
+BenchmarkOptimizer/dense/16-4         	     324	   1889063 ns/op	   0.35 MB/s	 3044449 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      36	  19541681 ns/op	   2.15 MB/s	 3142324 B/op	    1278 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 487056192 ns/op	   2.76 MB/s	 6218596 B/op	    3221 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     295	   2184851 ns/op	   0.31 MB/s	 3043728 B/op	    1214 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   7065263 ns/op	   6.08 MB/s	 3096050 B/op	    1276 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 124381545 ns/op	  11.06 MB/s	 4742531 B/op	    3247 allocs/op
+BenchmarkColdEngine-4                 	       2	 445217368 ns/op	41957508 B/op	  122404 allocs/op
+PASS
+
+Exit: 0
+{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     411	   1506581 ns/op	 3042766 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      39	  15781426 ns/op	   2647845 first-byte-ns/op	 3142281 B/op	    1279 allocs/op
+BenchmarkOptimizer/dense/16-4         	     348	   1809493 ns/op	   0.36 MB/s	 3044507 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      37	  15975792 ns/op	   2.63 MB/s	 3142484 B/op	    1277 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 446542594 ns/op	   3.01 MB/s	 6216884 B/op	    3216 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     307	   1697580 ns/op	   0.40 MB/s	 3043814 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5400880 ns/op	   7.96 MB/s	 3096075 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 120403413 ns/op	  11.42 MB/s	 4740881 B/op	    3233 allocs/op
+BenchmarkColdEngine-4                 	       2	 385431070 ns/op	41296408 B/op	  121956 allocs/op
+PASS
+
+Exit: 0
+{"variant":"oz","bytes":485011,"sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     436	   1470831 ns/op	 3042852 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      38	  15919146 ns/op	   2823261 first-byte-ns/op	 3142161 B/op	    1278 allocs/op
+BenchmarkOptimizer/dense/16-4         	     343	   1834699 ns/op	   0.36 MB/s	 3044481 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      36	  15553165 ns/op	   2.70 MB/s	 3142286 B/op	    1277 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 446619596 ns/op	   3.01 MB/s	 6220560 B/op	    3247 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     385	   1517861 ns/op	   0.44 MB/s	 3043798 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     111	   5262976 ns/op	   8.17 MB/s	 3095970 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 119015485 ns/op	  11.56 MB/s	 4741913 B/op	    3242 allocs/op
+BenchmarkColdEngine-4                 	       2	 379513774 ns/op	41847860 B/op	  120642 allocs/op
+PASS
+
+Exit: 0
+{"variant":"oz-twice","bytes":484633,"sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     434	   1370252 ns/op	 3042826 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      40	  15638028 ns/op	   2639421 first-byte-ns/op	 3142348 B/op	    1280 allocs/op
+BenchmarkOptimizer/dense/16-4         	     360	   1768693 ns/op	   0.37 MB/s	 3044455 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      33	  15803748 ns/op	   2.66 MB/s	 3142145 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 445522502 ns/op	   3.02 MB/s	 6213168 B/op	    3181 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     342	   1633578 ns/op	   0.41 MB/s	 3043819 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5106131 ns/op	   8.42 MB/s	 3096044 B/op	    1276 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 117574112 ns/op	  11.70 MB/s	 4742230 B/op	    3238 allocs/op
+BenchmarkColdEngine-4                 	       2	 393532429 ns/op	41831484 B/op	  120580 allocs/op
+PASS
+
+Exit: 0
+{"variant":"rereloop-o3","bytes":497765,"sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     512	   1439821 ns/op	 3042809 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      38	  15709835 ns/op	   2748084 first-byte-ns/op	 3142134 B/op	    1278 allocs/op
+BenchmarkOptimizer/dense/16-4         	     276	   2217653 ns/op	   0.30 MB/s	 3044438 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      39	  15725863 ns/op	   2.67 MB/s	 3142144 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 449419982 ns/op	   2.99 MB/s	 6216160 B/op	    3206 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     384	   1445042 ns/op	   0.46 MB/s	 3043706 B/op	    1214 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5359407 ns/op	   8.02 MB/s	 3095929 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 121010630 ns/op	  11.36 MB/s	 4742766 B/op	    3237 allocs/op
+BenchmarkColdEngine-4                 	       2	 430738302 ns/op	41957648 B/op	  122406 allocs/op
+PASS
+
+Exit: 0
+{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     428	   1364085 ns/op	 3042833 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      37	  15922710 ns/op	   2707414 first-byte-ns/op	 3142499 B/op	    1279 allocs/op
+BenchmarkOptimizer/dense/16-4         	     355	   1705724 ns/op	   0.38 MB/s	 3044457 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      38	  16254245 ns/op	   2.58 MB/s	 3142356 B/op	    1278 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 444506828 ns/op	   3.02 MB/s	 6217984 B/op	    3224 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     404	   1404605 ns/op	   0.48 MB/s	 3043815 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5268709 ns/op	   8.16 MB/s	 3095895 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 120308858 ns/op	  11.43 MB/s	 4741220 B/op	    3236 allocs/op
+BenchmarkColdEngine-4                 	       2	 384861000 ns/op	41296408 B/op	  121956 allocs/op
+PASS
+
+Exit: 0
+{"variant":"baseline","bytes":574007,"sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     367	   1434333 ns/op	 3040173 B/op	    1125 allocs/op
+BenchmarkFirstOutput-4   	      37	  15830963 ns/op	   2544025 first-byte-ns/op	 3139758 B/op	    1199 allocs/op
+BenchmarkOptimizer/dense/16-4         	     331	   1778760 ns/op	   0.37 MB/s	 3041827 B/op	    1135 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      39	  16140451 ns/op	   2.60 MB/s	 3139412 B/op	    1195 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 463330528 ns/op	   2.90 MB/s	 6224872 B/op	    3229 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     398	   1538918 ns/op	   0.44 MB/s	 3041159 B/op	    1135 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5557054 ns/op	   7.73 MB/s	 3093447 B/op	    1196 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       4	 128298002 ns/op	  10.72 MB/s	 4737754 B/op	    3148 allocs/op
+BenchmarkColdEngine-4                 	       2	 334591864 ns/op	20924380 B/op	   43267 allocs/op
+PASS
+
+Exit: 0
+{"variant":"o3","bytes":498624,"sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     387	   1312588 ns/op	 3042766 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      38	  15753185 ns/op	   2668163 first-byte-ns/op	 3142729 B/op	    1280 allocs/op
+BenchmarkOptimizer/dense/16-4         	     277	   1828383 ns/op	   0.36 MB/s	 3044519 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      38	  15931362 ns/op	   2.64 MB/s	 3142176 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 469726958 ns/op	   2.86 MB/s	 6217984 B/op	    3224 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     327	   1563241 ns/op	   0.43 MB/s	 3043817 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5474198 ns/op	   7.85 MB/s	 3096005 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       4	 131264470 ns/op	  10.48 MB/s	 4743828 B/op	    3258 allocs/op
+BenchmarkColdEngine-4                 	       2	 406242660 ns/op	42667000 B/op	  122711 allocs/op
+PASS
+
+Exit: 0
+{"variant":"rereloop-o3","bytes":497765,"sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     361	   1399463 ns/op	 3042827 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      38	  15853200 ns/op	   2716121 first-byte-ns/op	 3142238 B/op	    1279 allocs/op
+BenchmarkOptimizer/dense/16-4         	     350	   1755378 ns/op	   0.37 MB/s	 3044494 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      38	  16316129 ns/op	   2.57 MB/s	 3142108 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 443506904 ns/op	   3.03 MB/s	 6214924 B/op	    3198 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     375	   1598220 ns/op	   0.42 MB/s	 3043770 B/op	    1214 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5472884 ns/op	   7.85 MB/s	 3096021 B/op	    1276 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       4	 125131288 ns/op	  10.99 MB/s	 4743800 B/op	    3258 allocs/op
+BenchmarkColdEngine-4                 	       2	 409330472 ns/op	41957640 B/op	  122406 allocs/op
+PASS
+
+Exit: 0
+{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     450	   1567099 ns/op	 3042782 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      36	  15438132 ns/op	   2520602 first-byte-ns/op	 3142174 B/op	    1278 allocs/op
+BenchmarkOptimizer/dense/16-4         	     307	   1836586 ns/op	   0.36 MB/s	 3044492 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      36	  15835965 ns/op	   2.65 MB/s	 3142100 B/op	    1275 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 444448100 ns/op	   3.02 MB/s	 6222144 B/op	    3237 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     422	   1539052 ns/op	   0.44 MB/s	 3043779 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5042951 ns/op	   8.52 MB/s	 3095983 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 119985052 ns/op	  11.46 MB/s	 4742908 B/op	    3250 allocs/op
+BenchmarkColdEngine-4                 	       2	 395177800 ns/op	41296416 B/op	  121956 allocs/op
+PASS
+
+Exit: 0
+{"variant":"baseline","bytes":574007,"sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     398	   1536055 ns/op	 3040211 B/op	    1125 allocs/op
+BenchmarkFirstOutput-4   	      37	  15997468 ns/op	   2693296 first-byte-ns/op	 3139781 B/op	    1200 allocs/op
+BenchmarkOptimizer/dense/16-4         	     351	   1738919 ns/op	   0.38 MB/s	 3041849 B/op	    1135 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      39	  16456183 ns/op	   2.55 MB/s	 3139477 B/op	    1196 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 460307889 ns/op	   2.92 MB/s	 6221616 B/op	    3165 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     385	   1516952 ns/op	   0.44 MB/s	 3041138 B/op	    1135 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5623075 ns/op	   7.64 MB/s	 3093341 B/op	    1195 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       4	 128240452 ns/op	  10.72 MB/s	 4739096 B/op	    3160 allocs/op
+BenchmarkColdEngine-4                 	       2	 331119214 ns/op	20924380 B/op	   43267 allocs/op
+PASS
+
+Exit: 0
+{"variant":"o3","bytes":498624,"sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     433	   1291502 ns/op	 3042769 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      39	  15736667 ns/op	   2637304 first-byte-ns/op	 3142329 B/op	    1278 allocs/op
+BenchmarkOptimizer/dense/16-4         	     409	   1639855 ns/op	   0.40 MB/s	 3044465 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      34	  15920885 ns/op	   2.64 MB/s	 3142208 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 446769162 ns/op	   3.01 MB/s	 6221028 B/op	    3234 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     367	   1668100 ns/op	   0.40 MB/s	 3043807 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5295902 ns/op	   8.11 MB/s	 3095898 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       4	 125405068 ns/op	  10.97 MB/s	 4744434 B/op	    3263 allocs/op
+BenchmarkColdEngine-4                 	       2	 397070518 ns/op	42667000 B/op	  122711 allocs/op
+PASS
+
+Exit: 0
+{"variant":"oz","bytes":485011,"sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     493	   1271117 ns/op	 3042813 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      34	  15469583 ns/op	   2578636 first-byte-ns/op	 3142120 B/op	    1278 allocs/op
+BenchmarkOptimizer/dense/16-4         	     349	   1764437 ns/op	   0.37 MB/s	 3044513 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      37	  15613417 ns/op	   2.69 MB/s	 3142268 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 446543034 ns/op	   3.01 MB/s	 6217760 B/op	    3222 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     444	   1678562 ns/op	   0.40 MB/s	 3043798 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5222388 ns/op	   8.23 MB/s	 3095959 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 116922573 ns/op	  11.76 MB/s	 4743342 B/op	    3250 allocs/op
+BenchmarkColdEngine-4                 	       2	 387419492 ns/op	41848000 B/op	  120644 allocs/op
+PASS
+
+Exit: 0
+{"variant":"oz-twice","bytes":484633,"sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+goos: linux
+goarch: arm64
+pkg: statute.kjanat.dev/research/htmlrewrite
+BenchmarkInstance-4      	     387	   1408773 ns/op	 3042833 B/op	    1205 allocs/op
+BenchmarkFirstOutput-4   	      38	  16311223 ns/op	   2744891 first-byte-ns/op	 3142512 B/op	    1279 allocs/op
+BenchmarkOptimizer/dense/16-4         	     378	   1633453 ns/op	   0.40 MB/s	 3044438 B/op	    1215 allocs/op
+BenchmarkOptimizer/dense/1024-4       	      37	  15341083 ns/op	   2.74 MB/s	 3142349 B/op	    1276 allocs/op
+BenchmarkOptimizer/dense/32768-4      	       2	 450671912 ns/op	   2.98 MB/s	 6217528 B/op	    3204 allocs/op
+BenchmarkOptimizer/sparse/16-4        	     421	   1448378 ns/op	   0.46 MB/s	 3043793 B/op	    1215 allocs/op
+BenchmarkOptimizer/sparse/1024-4      	     100	   5310860 ns/op	   8.09 MB/s	 3095982 B/op	    1275 allocs/op
+BenchmarkOptimizer/sparse/32768-4     	       5	 115798431 ns/op	  11.88 MB/s	 4741398 B/op	    3235 allocs/op
+BenchmarkColdEngine-4                 	       2	 377012040 ns/op	41831600 B/op	  120582 allocs/op
+PASS
+
+Exit: 0

@@ -1,0 +1,315 @@
+# Raspberry Pi 5 arm64, 2026-10-05; phase: build
+# Raw runner output. See docs/research-html-binaryen.md for environment and method.
+
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "--version"
+wasm-opt version 133 (version_133)
+
+Exit: 0
+$ rustc "--version" "--verbose"
+rustc 1.101.0-nightly (db8f076d2 2026-10-03)
+binary: rustc
+commit-hash: db8f076d2619ce2585b0380dda06e8da25a40da4
+commit-date: 2026-10-03
+host: aarch64-unknown-linux-gnu
+release: 1.101.0-nightly
+LLVM version: 23.1.1
+
+Exit: 0
+$ go "version"
+go version go1.27.1 linux/arm64
+
+Exit: 0
+$ make "build" "WASM_RUSTFLAGS="
+rustup show active-toolchain
+nightly-2026-10-04-aarch64-unknown-linux-gnu (overridden by '/home/kjanat/statute/research/htmlrewrite/rust-toolchain.toml')
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='' cargo build --manifest-path guest/Cargo.toml --locked --release --lib --target wasm32-unknown-unknown -j 1
+cargo build --manifest-path guest/Cargo.toml --locked --release --bin statute-htmlrewrite-spike -j 1
+install -Dm644 guest/target/wasm32-unknown-unknown/release/statute_htmlrewrite_spike.wasm artifact/rewriter.wasm
+    Finished `release` profile [optimized] target(s) in 0.07s
+    Finished `release` profile [optimized] target(s) in 0.03s
+
+Exit: 0
+{"variant":"baseline","bytes":574007,"sha256":"9611994c63f3f447c11750f0e368f44547486860b5b7743666064aefe1976781"}
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--metrics"
+Metrics
+total
+ [exports]      : 5
+ [funcs]        : 737
+ [globals]      : 1
+ [imports]      : 1
+ [memories]     : 1
+ [memory-data]  : 177024
+ [table-data]   : 351
+ [tables]       : 1
+ [tags]         : 0
+ [total]        : 171505
+ [vars]         : 3126
+ Binary         : 26040
+ Block          : 10046
+ Break          : 12789
+ Call           : 3371
+ CallIndirect   : 252
+ Const          : 28786
+ Drop           : 22
+ GlobalGet      : 291
+ GlobalSet      : 565
+ Load           : 10359
+ LocalGet       : 45676
+ LocalSet       : 17823
+ Loop           : 861
+ MemoryCopy     : 108
+ MemoryFill     : 20
+ MemoryGrow     : 1
+ RefFunc        : 351
+ Return         : 742
+ Select         : 1079
+ Store          : 8729
+ Switch         : 366
+ Unary          : 2510
+ Unreachable    : 718
+warning: no output file specified, not emitting output
+
+Exit: 0
+$ go "test" "-overlay=/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.json" "-tags=htmlrewrite_research" "-c" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.test"
+
+Exit: 0
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "-O3" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.wasm"
+
+Exit: 0
+{"variant":"o3","bytes":498624,"sha256":"c66bf1715def479e706a31e8d1f1d1b104eeed2aede186211d8094cbee54f1cc"}
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--metrics"
+Metrics
+total
+ [exports]      : 5
+ [funcs]        : 521
+ [globals]      : 1
+ [imports]      : 1
+ [memories]     : 1
+ [memory-data]  : 155805
+ [table-data]   : 351
+ [tables]       : 1
+ [tags]         : 0
+ [total]        : 157952
+ [vars]         : 2527
+ Binary         : 24708
+ Block          : 8417
+ Break          : 9253
+ Call           : 2639
+ CallIndirect   : 345
+ Const          : 26401
+ Drop           : 266
+ GlobalGet      : 277
+ GlobalSet      : 536
+ If             : 2819
+ Load           : 9967
+ LocalGet       : 42444
+ LocalSet       : 16092
+ Loop           : 851
+ MemoryCopy     : 107
+ MemoryFill     : 20
+ MemoryGrow     : 1
+ RefFunc        : 351
+ Return         : 472
+ Select         : 1000
+ Store          : 8113
+ Switch         : 352
+ Unary          : 1899
+ Unreachable    : 622
+warning: no output file specified, not emitting output
+
+Exit: 0
+$ go "test" "-overlay=/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.json" "-tags=htmlrewrite_research" "-c" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/o3.test"
+
+Exit: 0
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "-Oz" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.wasm"
+
+Exit: 0
+{"variant":"oz","bytes":485011,"sha256":"8e5be0c994b2709d8fb5b39d00d76927435c697f2b2fcf598e44e3794409e680"}
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--metrics"
+Metrics
+total
+ [exports]      : 5
+ [funcs]        : 552
+ [globals]      : 1
+ [imports]      : 1
+ [memories]     : 1
+ [memory-data]  : 155805
+ [table-data]   : 351
+ [tables]       : 1
+ [tags]         : 0
+ [total]        : 152329
+ [vars]         : 2403
+ Binary         : 24157
+ Block          : 7983
+ Break          : 8669
+ Call           : 2643
+ CallIndirect   : 250
+ Const          : 25423
+ Drop           : 272
+ GlobalGet      : 248
+ GlobalSet      : 478
+ If             : 2764
+ Load           : 9432
+ LocalGet       : 41000
+ LocalSet       : 15696
+ Loop           : 817
+ MemoryCopy     : 107
+ MemoryFill     : 20
+ MemoryGrow     : 1
+ RefFunc        : 351
+ Return         : 423
+ Select         : 987
+ Store          : 7648
+ Switch         : 307
+ Unary          : 2032
+ Unreachable    : 621
+warning: no output file specified, not emitting output
+
+Exit: 0
+$ go "test" "-overlay=/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.json" "-tags=htmlrewrite_research" "-c" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz.test"
+
+Exit: 0
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "-Oz" "-Oz" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.wasm"
+
+Exit: 0
+{"variant":"oz-twice","bytes":484633,"sha256":"7bc467d561954ecae506deee46515061bac8c7e91586096a2963e40db84d4066"}
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--metrics"
+Metrics
+total
+ [exports]      : 5
+ [funcs]        : 550
+ [globals]      : 1
+ [imports]      : 1
+ [memories]     : 1
+ [memory-data]  : 155805
+ [table-data]   : 351
+ [tables]       : 1
+ [tags]         : 0
+ [total]        : 152160
+ [vars]         : 2404
+ Binary         : 24152
+ Block          : 7976
+ Break          : 8669
+ Call           : 2637
+ CallIndirect   : 250
+ Const          : 25406
+ Drop           : 272
+ GlobalGet      : 248
+ GlobalSet      : 478
+ If             : 2750
+ Load           : 9432
+ LocalGet       : 40915
+ LocalSet       : 15672
+ Loop           : 817
+ MemoryCopy     : 107
+ MemoryFill     : 20
+ MemoryGrow     : 1
+ RefFunc        : 351
+ Return         : 418
+ Select         : 988
+ Store          : 7642
+ Switch         : 307
+ Unary          : 2031
+ Unreachable    : 621
+warning: no output file specified, not emitting output
+
+Exit: 0
+$ go "test" "-overlay=/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.json" "-tags=htmlrewrite_research" "-c" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/oz-twice.test"
+
+Exit: 0
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--flatten" "--rereloop" "-O3" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.wasm"
+
+Exit: 0
+{"variant":"rereloop-o3","bytes":497765,"sha256":"21ee193873a37684d8727cbb1e0c6fe1b109aa2c4f3153222c8405a14e81e710"}
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--metrics"
+Metrics
+total
+ [exports]      : 5
+ [funcs]        : 519
+ [globals]      : 1
+ [imports]      : 1
+ [memories]     : 1
+ [memory-data]  : 155805
+ [table-data]   : 351
+ [tables]       : 1
+ [tags]         : 0
+ [total]        : 157184
+ [vars]         : 2525
+ Binary         : 24758
+ Block          : 8181
+ Break          : 7534
+ Call           : 2637
+ CallIndirect   : 345
+ Const          : 26419
+ Drop           : 275
+ GlobalGet      : 277
+ GlobalSet      : 536
+ If             : 3882
+ Load           : 9980
+ LocalGet       : 42893
+ LocalSet       : 15981
+ Loop           : 853
+ MemoryCopy     : 106
+ MemoryFill     : 20
+ MemoryGrow     : 1
+ RefFunc        : 351
+ Return         : 393
+ Select         : 1080
+ Store          : 8148
+ Switch         : 352
+ Unary          : 1404
+ Unreachable    : 778
+warning: no output file specified, not emitting output
+
+Exit: 0
+$ go "test" "-overlay=/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.json" "-tags=htmlrewrite_research" "-c" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test"
+
+Exit: 0
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/baseline.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--flatten" "--rereloop" "-Oz" "-Oz" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.wasm"
+
+Exit: 0
+{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/.cache/statute-binaryen.xqHyg6/binaryen-version_133/bin/wasm-opt "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.wasm" "--enable-bulk-memory-opt" "--enable-nontrapping-float-to-int" "--metrics"
+Metrics
+total
+ [exports]      : 5
+ [funcs]        : 548
+ [globals]      : 1
+ [imports]      : 1
+ [memories]     : 1
+ [memory-data]  : 155805
+ [table-data]   : 351
+ [tables]       : 1
+ [tags]         : 0
+ [total]        : 150803
+ [vars]         : 2401
+ Binary         : 24038
+ Block          : 7704
+ Break          : 7041
+ Call           : 2633
+ CallIndirect   : 250
+ Const          : 25380
+ Drop           : 278
+ GlobalGet      : 248
+ GlobalSet      : 478
+ If             : 3773
+ Load           : 9430
+ LocalGet       : 41136
+ LocalSet       : 15543
+ Loop           : 818
+ MemoryCopy     : 106
+ MemoryFill     : 20
+ MemoryGrow     : 1
+ RefFunc        : 351
+ Return         : 339
+ Select         : 1038
+ Store          : 7635
+ Switch         : 306
+ Unary          : 1497
+ Unreachable    : 760
+warning: no output file specified, not emitting output
+
+Exit: 0
+$ go "test" "-overlay=/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.json" "-tags=htmlrewrite_research" "-c" "-o" "/home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test"
+
+Exit: 0

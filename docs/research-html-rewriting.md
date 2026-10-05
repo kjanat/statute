@@ -106,6 +106,10 @@ The [larger-document and HTTP load follow-up](research-html-load.md) adds real
 paced clients, separate-server memory observations, streamed/buffered comparisons
 and explicit candidate operating criteria.
 
+The [Binaryen comparison](research-html-binaryen.md) evaluates six post-link
+optimization sequences against one Rust artifact, including real-parser
+cancellation, compilation/instance cost, throughput and paced HTTP memory.
+
 The production design must address configurable transformations, Go callbacks,
 and response-producing route actions, including handlers and static files. No
 declarative-only or proxy-only initial-release restriction has been adopted.
