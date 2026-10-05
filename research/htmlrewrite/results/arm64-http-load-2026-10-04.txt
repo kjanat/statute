@@ -1,0 +1,218 @@
+Build: CGO_ENABLED=0 go test -c -o artifact/http-load.test
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"plain","output_bytes":1343488,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":2593,"elapsed_ns":5004953668,"first_body_p50_ns":3174637,"first_body_p95_ns":8296001,"first_body_p99_ns":12038194,"output_bytes":3483664384,"requests_per_second":518.0867140846427,"server_after_rss":32161792,"server_before_rss":44351488,"server_process_hwm":55787520,"server_sampled_peak_rss":55787520,"total_p50_ns":6957423,"total_p95_ns":14527977,"total_p99_ns":19728026}
+--- PASS: TestHTTPLoad (5.40s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"stream","output_bytes":2883584,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":32,"elapsed_ns":5239741770,"first_body_p50_ns":7789110,"first_body_p95_ns":19697637,"first_body_p99_ns":22415995,"output_bytes":92274688,"requests_per_second":6.1071711936674316,"server_after_rss":46628864,"server_before_rss":45236224,"server_process_hwm":52396032,"server_sampled_peak_rss":52396032,"total_p50_ns":628519898,"total_p95_ns":757168928,"total_p99_ns":823692374}
+--- PASS: TestHTTPLoad (6.60s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"etag","output_bytes":2883584,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":37,"elapsed_ns":5443391856,"first_body_p50_ns":536121023,"first_body_p95_ns":675949671,"first_body_p99_ns":740939040,"output_bytes":106692608,"requests_per_second":6.79723249378356,"server_after_rss":59015168,"server_before_rss":44957696,"server_process_hwm":81117184,"server_sampled_peak_rss":81117184,"total_p50_ns":539498290,"total_p95_ns":683393984,"total_p99_ns":745758254}
+--- PASS: TestHTTPLoad (6.78s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"plain","output_bytes":1343488,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":16,"elapsed_ns":5261242852,"first_body_p50_ns":2273061,"first_body_p95_ns":5413882,"first_body_p99_ns":5413882,"output_bytes":21495808,"requests_per_second":3.041106531305201,"server_after_rss":46678016,"server_before_rss":44646400,"server_process_hwm":46678016,"server_sampled_peak_rss":46678016,"total_p50_ns":1314713555,"total_p95_ns":1316935559,"total_p99_ns":1316935559}
+--- PASS: TestHTTPLoad (5.62s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"stream","output_bytes":2883584,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":8,"elapsed_ns":5673319630,"first_body_p50_ns":9330503,"first_body_p95_ns":28227156,"first_body_p99_ns":28227156,"output_bytes":23068672,"requests_per_second":1.4101091639005716,"server_after_rss":45826048,"server_before_rss":43581440,"server_process_hwm":50397184,"server_sampled_peak_rss":50069504,"total_p50_ns":2825932921,"total_p95_ns":2845026057,"total_p99_ns":2845026057}
+--- PASS: TestHTTPLoad (7.08s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"mode":"etag","output_bytes":2883584,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":8,"elapsed_ns":6855731551,"first_body_p50_ns":574059626,"first_body_p95_ns":639473866,"first_body_p99_ns":639473866,"output_bytes":23068672,"requests_per_second":1.1669068341558813,"server_after_rss":77234176,"server_before_rss":44744704,"server_process_hwm":83804160,"server_sampled_peak_rss":83804160,"total_p50_ns":3390337839,"total_p95_ns":3456321413,"total_p99_ns":3456321413}
+--- PASS: TestHTTPLoad (8.24s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"plain","output_bytes":1375232,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":2499,"elapsed_ns":5005313289,"first_body_p50_ns":3252100,"first_body_p95_ns":8679260,"first_body_p99_ns":12628232,"output_bytes":3436704768,"requests_per_second":499.2694474273896,"server_after_rss":32079872,"server_before_rss":44302336,"server_process_hwm":46858240,"server_sampled_peak_rss":46858240,"total_p50_ns":7130368,"total_p95_ns":15047571,"total_p99_ns":20629565}
+--- PASS: TestHTTPLoad (5.36s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"stream","output_bytes":1423360,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":95,"elapsed_ns":5153132491,"first_body_p50_ns":4526492,"first_body_p95_ns":20646935,"first_body_p99_ns":30244568,"output_bytes":135219200,"requests_per_second":18.435388604100226,"server_after_rss":42336256,"server_before_rss":44777472,"server_process_hwm":53870592,"server_sampled_peak_rss":53870592,"total_p50_ns":207694894,"total_p95_ns":307218599,"total_p99_ns":352051737}
+--- PASS: TestHTTPLoad (5.82s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"etag","output_bytes":1423360,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":105,"elapsed_ns":5137178825,"first_body_p50_ns":182458188,"first_body_p95_ns":266496100,"first_body_p99_ns":368198773,"output_bytes":149452800,"requests_per_second":20.43923397975152,"server_after_rss":60669952,"server_before_rss":44613632,"server_process_hwm":70483968,"server_sampled_peak_rss":70483968,"total_p50_ns":184764434,"total_p95_ns":270190756,"total_p99_ns":373382377}
+--- PASS: TestHTTPLoad (5.80s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"plain","output_bytes":1375232,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":16,"elapsed_ns":5384081731,"first_body_p50_ns":1412707,"first_body_p95_ns":5866161,"first_body_p99_ns":5866161,"output_bytes":22003712,"requests_per_second":2.9717230902860527,"server_after_rss":46137344,"server_before_rss":44171264,"server_process_hwm":46137344,"server_sampled_peak_rss":46137344,"total_p50_ns":1344658545,"total_p95_ns":1348797073,"total_p99_ns":1348797073}
+--- PASS: TestHTTPLoad (5.73s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"stream","output_bytes":1423360,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":16,"elapsed_ns":5595967410,"first_body_p50_ns":6532144,"first_body_p95_ns":13924680,"first_body_p99_ns":13924680,"output_bytes":22773760,"requests_per_second":2.8592017836644263,"server_after_rss":45596672,"server_before_rss":44449792,"server_process_hwm":47906816,"server_sampled_peak_rss":47906816,"total_p50_ns":1394980399,"total_p95_ns":1404117420,"total_p99_ns":1404117420}
+--- PASS: TestHTTPLoad (6.26s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 32768 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1375232,"mode":"etag","output_bytes":1423360,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":16,"elapsed_ns":6242164919,"first_body_p50_ns":153295808,"first_body_p95_ns":203222142,"first_body_p99_ns":203222142,"output_bytes":22773760,"requests_per_second":2.563213277383772,"server_after_rss":58195968,"server_before_rss":43974656,"server_process_hwm":61571072,"server_sampled_peak_rss":61161472,"total_p50_ns":1543421289,"total_p95_ns":1594278532,"total_p99_ns":1594278532}
+--- PASS: TestHTTPLoad (6.88s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"plain","output_bytes":5373952,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":705,"elapsed_ns":5017985126,"first_body_p50_ns":6527423,"first_body_p95_ns":17758485,"first_body_p99_ns":24361036,"output_bytes":3788636160,"requests_per_second":140.49463724934924,"server_after_rss":32309248,"server_before_rss":44892160,"server_process_hwm":56393728,"server_sampled_peak_rss":56393728,"total_p50_ns":26604930,"total_p95_ns":49203055,"total_p99_ns":56742757}
+--- PASS: TestHTTPLoad (5.40s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":10,"elapsed_ns":7051037384,"first_body_p50_ns":10840302,"first_body_p95_ns":22526125,"first_body_p99_ns":22526125,"output_bytes":115343360,"requests_per_second":1.4182310283436728,"server_after_rss":34783232,"server_before_rss":44040192,"server_process_hwm":50003968,"server_sampled_peak_rss":50003968,"total_p50_ns":2427079702,"total_p95_ns":2628523247,"total_p99_ns":2628523247}
+--- PASS: TestHTTPLoad (11.56s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":0,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":11,"elapsed_ns":6909909989,"first_body_p50_ns":2287445905,"first_body_p95_ns":2616454034,"first_body_p99_ns":2616454034,"output_bytes":126877696,"requests_per_second":1.5919165397973465,"server_after_rss":168624128,"server_before_rss":44204032,"server_process_hwm":204668928,"server_sampled_peak_rss":204668928,"total_p50_ns":2309401436,"total_p95_ns":2647621975,"total_p99_ns":2647621975}
+--- PASS: TestHTTPLoad (11.29s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"plain","output_bytes":5373952,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":4,"elapsed_ns":5261131668,"first_body_p50_ns":7856203,"first_body_p95_ns":12147046,"first_body_p99_ns":12147046,"output_bytes":21495808,"requests_per_second":0.7602926998252802,"server_after_rss":46235648,"server_before_rss":44564480,"server_process_hwm":46235648,"server_sampled_peak_rss":46235648,"total_p50_ns":5256820991,"total_p95_ns":5260950612,"total_p99_ns":5260950612}
+--- PASS: TestHTTPLoad (5.63s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":4,"elapsed_ns":11289442686,"first_body_p50_ns":15832461,"first_body_p95_ns":24401000,"first_body_p99_ns":24401000,"output_bytes":46137344,"requests_per_second":0.3543133271725084,"server_after_rss":45350912,"server_before_rss":45400064,"server_process_hwm":45350912,"server_sampled_peak_rss":45350912,"total_p50_ns":11278940607,"total_p95_ns":11289259186,"total_p99_ns":11289259186}
+--- PASS: TestHTTPLoad (15.80s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":4,"elapsed_ns":13700638527,"first_body_p50_ns":2200925597,"first_body_p95_ns":2435645847,"first_body_p99_ns":2435645847,"output_bytes":46137344,"requests_per_second":0.29195719543415116,"server_after_rss":184205312,"server_before_rss":45056000,"server_process_hwm":184205312,"server_sampled_peak_rss":184205312,"total_p50_ns":13465284072,"total_p95_ns":13700471397,"total_p99_ns":13700471397}
+--- PASS: TestHTTPLoad (18.11s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"plain","output_bytes":5500928,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":661,"elapsed_ns":5046751031,"first_body_p50_ns":6660627,"first_body_p95_ns":17295743,"first_body_p99_ns":22717773,"output_bytes":3636113408,"requests_per_second":130.9753534382346,"server_after_rss":32210944,"server_before_rss":44548096,"server_process_hwm":56475648,"server_sampled_peak_rss":56475648,"total_p50_ns":28951639,"total_p95_ns":47862700,"total_p99_ns":62147158}
+--- PASS: TestHTTPLoad (5.48s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"stream","output_bytes":5693440,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":28,"elapsed_ns":5691391442,"first_body_p50_ns":6068643,"first_body_p95_ns":22701607,"first_body_p99_ns":27847544,"output_bytes":159416320,"requests_per_second":4.9197108097981355,"server_after_rss":47415296,"server_before_rss":44826624,"server_process_hwm":53182464,"server_sampled_peak_rss":53182464,"total_p50_ns":794733193,"total_p95_ns":913554332,"total_p99_ns":914887667}
+--- PASS: TestHTTPLoad (7.33s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 0s
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"etag","output_bytes":5693440,"pace_per_16k_ns":0,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":31,"elapsed_ns":5484110512,"first_body_p50_ns":684201593,"first_body_p95_ns":761903194,"first_body_p99_ns":800403707,"output_bytes":176496640,"requests_per_second":5.652694257741099,"server_after_rss":107986944,"server_before_rss":43827200,"server_process_hwm":137150464,"server_sampled_peak_rss":137150464,"total_p50_ns":690181107,"total_p95_ns":770446213,"total_p99_ns":812062140}
+--- PASS: TestHTTPLoad (7.06s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode plain -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"plain","output_bytes":5500928,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":4,"elapsed_ns":5385522177,"first_body_p50_ns":9204503,"first_body_p95_ns":12807233,"first_body_p99_ns":12807233,"output_bytes":22003712,"requests_per_second":0.7427320635838874,"server_after_rss":45449216,"server_before_rss":44105728,"server_process_hwm":45449216,"server_sampled_peak_rss":45449216,"total_p50_ns":5381596132,"total_p95_ns":5384868640,"total_p99_ns":5384868640}
+--- PASS: TestHTTPLoad (5.76s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode stream -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"stream","output_bytes":5693440,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":4,"elapsed_ns":5583644011,"first_body_p50_ns":13749513,"first_body_p95_ns":22859477,"first_body_p99_ns":22859477,"output_bytes":22773760,"requests_per_second":0.716378048478707,"server_after_rss":46874624,"server_before_rss":44007424,"server_process_hwm":47857664,"server_sampled_peak_rss":47857664,"total_p50_ns":5574126767,"total_p95_ns":5583105157,"total_p99_ns":5583105157}
+--- PASS: TestHTTPLoad (7.22s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-duration 5s -http-load-count 131072 -http-load-shape sparse -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":5000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5500928,"mode":"etag","output_bytes":5693440,"pace_per_16k_ns":16000000,"shape":"sparse","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":4,"elapsed_ns":6276672399,"first_body_p50_ns":645975025,"first_body_p95_ns":715906312,"first_body_p99_ns":715906312,"output_bytes":22773760,"requests_per_second":0.6372803526654156,"server_after_rss":115736576,"server_before_rss":43728896,"server_process_hwm":115736576,"server_sampled_peak_rss":115736576,"total_p50_ns":6206054796,"total_p95_ns":6276568770,"total_p99_ns":6276568770}
+--- PASS: TestHTTPLoad (7.84s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 3m -http-load-duration 60s -http-load-count 131072 -http-load-shape dense -http-load-workers 4 -http-load-mode etag -http-load-pace 16ms
+=== RUN   TestHTTPLoad
+    http_load_linux_test.go:142: http_config {"admission_ns":60000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
+    http_load_linux_test.go:243: http_result {"completed":20,"elapsed_ns":67953090999,"first_body_p50_ns":2247070323,"first_body_p95_ns":2433117467,"first_body_p99_ns":2439259481,"output_bytes":230686720,"requests_per_second":0.29432068072215173,"server_after_rss":180862976,"server_before_rss":44646400,"server_process_hwm":253607936,"server_sampled_peak_rss":253607936,"total_p50_ns":13511590427,"total_p95_ns":13697642643,"total_p99_ns":13703399379}
+--- PASS: TestHTTPLoad (72.33s)
+PASS
+Exit: 0
+
+$ ./artifact/http-load.test -test.run '^TestMemoryLoad$' -test.v -test.timeout 5m -load-duration 60s -load-rounds 3 -load-workers 4 -load-count 32768 -load-shape dense
+=== RUN   TestMemoryLoad
+    memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":60000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"598d6ce8f90bde6b20333f91b827db323ab836345afcd7a5ff755aa0a04e81ef","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
+    memory_linux_test.go:202: before_engine {"heap_alloc":1878504,"heap_inuse":2449408,"heap_released":9060352,"total_alloc":8658272,"num_gc":3,"goroutines":2,"rss":21905408,"process_hwm":22609920}
+    memory_linux_test.go:213: compiled_idle {"heap_alloc":2631416,"heap_inuse":3424256,"heap_released":3006464,"total_alloc":29610392,"num_gc":9,"goroutines":2,"rss":45596672,"process_hwm":45596672}
+    memory_linux_test.go:219: round_1 {"completed":406,"interrupted":4,"elapsed_ns":60003124244,"sampled_peak_heap":25218816,"sampled_peak_rss":55263232,"samples":2366}
+    memory_linux_test.go:222: round_1_post_gc {"heap_alloc":2890744,"heap_inuse":3751936,"heap_released":12001280,"total_alloc":2590296232,"num_gc":274,"goroutines":2,"rss":46006272,"process_hwm":53592064}
+    memory_linux_test.go:219: round_2 {"completed":408,"interrupted":4,"elapsed_ns":60014945335,"sampled_peak_heap":28519872,"sampled_peak_rss":57966592,"samples":2365}
+    memory_linux_test.go:222: round_2_post_gc {"heap_alloc":2892288,"heap_inuse":3817472,"heap_released":10002432,"total_alloc":5163418832,"num_gc":518,"goroutines":2,"rss":51200000,"process_hwm":56492032}
+    memory_linux_test.go:219: round_3 {"completed":415,"interrupted":4,"elapsed_ns":60002594030,"sampled_peak_heap":28584624,"sampled_peak_rss":57556992,"samples":2370}
+    memory_linux_test.go:222: round_3_post_gc {"heap_alloc":2891936,"heap_inuse":3768320,"heap_released":11264000,"total_alloc":7781066224,"num_gc":773,"goroutines":2,"rss":49954816,"process_hwm":56492032}
+    memory_linux_test.go:229: closed_post_gc {"heap_alloc":664888,"heap_inuse":1261568,"heap_released":21291008,"total_alloc":7781078672,"num_gc":774,"goroutines":2,"rss":39174144,"process_hwm":56492032}
+    memory_linux_test.go:231: closed_scavenged {"heap_alloc":664296,"heap_inuse":1261568,"heap_released":32055296,"total_alloc":7781091816,"num_gc":775,"goroutines":2,"rss":28409856,"process_hwm":56492032}
+--- PASS: TestMemoryLoad (180.38s)
+PASS
+Exit: 0

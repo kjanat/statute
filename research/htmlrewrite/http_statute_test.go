@@ -41,6 +41,9 @@ func TestHTTPStatuteProcess(t *testing.T) {
 	defer base.CloseIdleConnections()
 	makeProxy := func(policy failurePolicy) http.Handler {
 		p := testHTTPPolicy(policy)
+		if os.Getenv("STATUTE_HTML_HTTP_LOAD") == "1" {
+			p.inputLimit, p.outputLimit, p.timeout = 8<<20, 32<<20, 30*time.Second
+		}
 		if os.Getenv("STATUTE_HTML_HTTP_SMALL_OUTPUT") == "1" {
 			p.outputLimit = 1024
 		}
@@ -79,6 +82,11 @@ func TestHTTPStatuteProcess(t *testing.T) {
 		},
 		Defaults: statute.Defaults{ReadHeaderTimeout: "2s", WriteTimeout: "5s"},
 		Shutdown: statute.Shutdown{GracePeriod: "2s", DrainListeners: true},
+	}
+	if os.Getenv("STATUTE_HTML_HTTP_LOAD") == "1" {
+		plain := httpTestProxy(t, os.Getenv("STATUTE_HTML_HTTP_ORIGIN"), base)
+		cfg.Routes = append(statute.Routes{statute.Match("/plain").Handle(plain)}, cfg.Routes...)
+		cfg.Defaults.WriteTimeout = "35s"
 	}
 	if name := os.Getenv("STATUTE_HTML_HTTP_CONFLICT"); name != "" {
 		cfg.Routes[0].With(statute.SetResponseHeader(name, "invalid"))
@@ -124,6 +132,11 @@ func startHTTPStatuteWithMetrics(t *testing.T, origin, metricsAddr string) (stri
 
 func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []string) (string, *processOutput) {
 	t.Helper()
+	return startHTTPStatuteBudget(t, origin, metricsAddr, env, 30*time.Second)
+}
+
+func startHTTPStatuteBudget(t *testing.T, origin, metricsAddr string, env []string, budget time.Duration) (string, *processOutput) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +145,7 @@ func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []
 	if err = ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHTTPStatuteProcess$", "-test.v")
 	cmd.Env = append(os.Environ(), "STATUTE_HTML_HTTP_CHILD=1", "STATUTE_HTML_HTTP_ORIGIN="+origin, "STATUTE_HTML_HTTP_ADDR="+addr, "STATUTE_HTML_HTTP_METRICS="+metricsAddr)
 	cmd.Env = append(cmd.Env, env...)
@@ -147,6 +160,7 @@ func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []
 		cancel()
 		t.Fatal(err)
 	}
+	stdout.pid = cmd.Process.Pid
 	ready := make(chan struct{})
 	logs := make(chan string, 1)
 	go func() {
@@ -191,6 +205,7 @@ func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []
 }
 
 type processOutput struct {
+	pid int
 	mu  sync.Mutex
 	buf bytes.Buffer
 }

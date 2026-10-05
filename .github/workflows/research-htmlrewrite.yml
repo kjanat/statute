@@ -62,6 +62,12 @@ jobs:
         run: make bench-smoke
       - name: Memory probe smoke test
         run: make memory LOAD_DURATION=1s LOAD_ROUNDS=2 LOAD_WORKERS=2
+      - name: HTTP load probe smoke tests
+        run: |
+          CGO_ENABLED=0 go test -c -o artifact/http-load.test
+          for mode in plain stream etag; do
+            ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-mode "$mode" -http-load-pace 1ms
+          done
       - name: Artifact identity
         run: sha256sum artifact/rewriter.wasm
       - name: SIMD experiment parity and limits

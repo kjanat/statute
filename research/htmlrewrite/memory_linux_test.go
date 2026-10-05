@@ -23,6 +23,8 @@ var (
 	loadDuration = flag.Duration("load-duration", 100*time.Millisecond, "duration of each memory-load round")
 	loadRounds   = flag.Int("load-rounds", 1, "memory-load rounds per engine")
 	loadWorkers  = flag.Int("load-workers", 2, "concurrent memory-load streams")
+	loadCount    = flag.Int("load-count", 1024, "HTML fixture fragments (1..131072)")
+	loadShape    = flag.String("load-shape", "dense", "dense or sparse selector matches")
 )
 
 type memorySample struct {
@@ -34,6 +36,15 @@ type memorySample struct {
 	Goroutines   int    `json:"goroutines"`
 	RSS          uint64 `json:"rss"`
 	HWM          uint64 `json:"process_hwm"`
+}
+
+func loadBuildSettings(t testing.TB) []debug.BuildSetting {
+	t.Helper()
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		t.Fatal("Go build provenance unavailable")
+	}
+	return info.Settings
 }
 
 func processMemory(data string) (rss, hwm uint64, err error) {
@@ -143,7 +154,7 @@ func memoryLoad(e *engine, input []byte, workers int, duration time.Duration) (l
 }
 
 func loadRewrite(ctx context.Context, e *engine, input []byte) error {
-	s, err := e.newStream(ctx, io.Discard, 8<<20)
+	s, err := e.newStream(ctx, io.Discard, 32<<20)
 	if err != nil {
 		return err
 	}
@@ -159,6 +170,9 @@ func loadRewrite(ctx context.Context, e *engine, input []byte) error {
 func TestMemoryLoad(t *testing.T) {
 	if *loadRounds < 1 || *loadRounds > 100 || *loadWorkers < 1 || *loadWorkers > 64 || *loadDuration <= 0 {
 		t.Fatal("load requires 1..100 rounds, 1..64 workers, and positive duration")
+	}
+	if *loadCount < 1 || *loadCount > 131072 || (*loadShape != "dense" && *loadShape != "sparse") {
+		t.Fatal("load requires 1..131072 fragments and dense or sparse shape")
 	}
 	logJSON := func(name string, value any) {
 		t.Helper()
@@ -176,11 +190,13 @@ func TestMemoryLoad(t *testing.T) {
 		}
 		logJSON(name, m)
 	}
-	input := benchmarkInput("dense", 1024)
+	input := benchmarkInput(*loadShape, *loadCount)
 	logJSON("config", map[string]any{
 		"go": runtime.Version(), "arch": runtime.GOARCH, "gomaxprocs": runtime.GOMAXPROCS(0),
 		"workers": *loadWorkers, "rounds": *loadRounds, "duration_ns": *loadDuration,
 		"input_bytes": len(input), "guest_sha256": fmt.Sprintf("%x", sha256.Sum256(guest)),
+		"shape": *loadShape, "output_limit": 32 << 20,
+		"build_settings": loadBuildSettings(t),
 	})
 	debug.FreeOSMemory()
 	snapshot("before_engine")
