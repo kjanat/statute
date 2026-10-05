@@ -70,7 +70,7 @@ Route:
   Rewrite(program reference, explicit failure policy, positive limits)
 ```
 
-The factory is called once per admitted response, including each Retry attempt.
+The factory is called once per admitted rewrite stage in each Retry attempt.
 A session is used serially and closed exactly once after successful
 creation, including initialization failure afterward. A failed factory owns its
 own partial cleanup. Different responses may invoke the factory concurrently.
@@ -96,6 +96,53 @@ the rewrite. Do not enable LOL HTML's graceful raw-suffix recovery. Text inserti
 escapes text; trusted HTML insertion requires a distinct explicit operation.
 Neither is an XSS-sanitization promise: URL values and inserted HTML still need
 application policy.
+
+### Event identity and completion
+
+The ABI carries a stream ID (unique within the run), rule/handler ID, event kind,
+token ID and monotonically increasing invocation ID. Element-start events also
+allocate an element ID; all handlers observing that same parsed element share
+it. An explicit end-tag event carries that element ID and its own token ID.
+Separate stages and retry attempts use separate stream IDs. A mutation reply
+must match the full active invocation identity; expired or foreign replies fail.
+
+Text and comment events carry the matching selector-scope element IDs and the
+registered handler ID. Nested matches preserve distinct scope IDs; overlapping
+rules remain distinguishable without duplicating a handler invocation beyond
+the pinned engine's dispatch semantics. Obtain scope membership from the pinned
+matcher at dispatch time. Its public text callback alone does not supply this
+correlation: the guest needs a narrow matcher-context hook, shared by the native
+oracle. Stage 1 must prove that hook across implicit closure and malformed input
+before freezing the ABI. Do not infer membership from a stack of observed end
+callbacks or expose an invented DOM ancestry.
+
+Text events carry a text-unit ID, chunk index, text context/type and the engine's
+last-chunk flag. Their copied text retains entity references, which may span
+chunks; script/style text keeps its distinct context. No implicit decoding occurs.
+The final chunk can be empty; it completes that text unit only. Feed boundaries
+do not promise chunk boundaries. Document-end runs once on successful parser EOF;
+it is absent on abort. Session.Close runs after either outcome and owns release
+of all remaining application state, including unmatched element scopes.
+
+The pinned [end-tag contract](https://docs.rs/lol_html/3.0.1/lol_html/html_content/struct.Element.html#method.on_end_tag)
+omits implicitly closed elements and cannot attach end handlers to void elements.
+There is no balanced start/end guarantee and no synthetic end event. Identifiers
+remain valid for correlating retained snapshots but never authorize later mutation.
+
+| Event                 | Allowed mutations                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Element start         | Attribute set/remove; before/after, replace/remove; prepend/append/set inner content when the element can contain content |
+| Text chunk or comment | Before/after, replace/remove the current unit; no ancestor or attribute mutation                                          |
+| Explicit end tag      | Before/after, remove the current end tag; no mutation of an already-emitted start tag                                     |
+| Document end          | Append content                                                                                                            |
+
+Invalid event/operation combinations fail explicitly. Attribute snapshots retain
+the pinned engine's entity-bearing value representation; they are not
+entity-decoded. Attribute writes use its set_attribute semantics (quotes escaped,
+ampersands preserved). Name these values accordingly in the public API. Text
+insertion remains a separate escaped-text operation. Native/Wasm tests include
+entity round trips, void/implicit closures, nested overlapping matches and text
+split across feeds.
 
 ### Host/guest protocol
 
@@ -123,11 +170,11 @@ must observe its context and return; its cleanup must also be bounded. Invoke it
 synchronously with backpressure, never in a detached goroutine to manufacture
 an apparent timeout. Do not release admission while callback work still exists.
 
-Shutdown cancels outstanding sessions and waits within the server grace period.
-If application code ignores cancellation, report unfinished work and retain its
-ownership until it returns; do not claim that returning a shutdown timeout killed
-it. Do not close an in-use engine underneath the callback. This limitation and
-the final-close mechanism need explicit acceptance and adversarial tests.
+Shutdown is drain-first: admitted sessions retain their contexts during grace.
+At grace expiry, cancel remaining sessions and force-close their network streams.
+The run retains unfinished factory, Handle and Close invocations through the
+eventual-close protocol below. Returning a shutdown timeout does not release
+their ownership or destroy their in-use engine.
 
 ## Configuration and build boundary
 
@@ -192,8 +239,69 @@ conditions against the resulting selected representation. HEAD without
 ETag reads no body and admits no instance; outer ETag renders GET internally and
 suppresses the final body. Origin metadata is removed only for transformed
 representations; bypass preserves it and adds no-store. Unsolicited 206/304 after
-request normalization remains an error. Proposed pre-commit rewrite failures use
-502 consistently for every action; post-commit failures abort the stream.
+request normalization remains an error. Rewrite failures use the terminal outcome
+protocol below: an undelivered failed candidate becomes 502; a failure after
+actual client commitment aborts the stream.
+
+## Response execution and terminal outcomes
+
+A route execution scope wraps the complete chain, including hoisted response
+headers and buffering middleware. It stays inside listener observation and works
+for every route action. Transformation remains at its declared position. The
+scope tracks actual downstream commitment and owns identified attempt/stage
+children, output reservations and a monotonic terminal outcome for each candidate.
+Nested Retry introduces child attempts; it cannot clear an ancestor's failure.
+
+| Resource                                  | Acquire / release contract                                                                                                                                                                    |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Concurrent-response slot                  | Acquire once at first rewrite admission per external route execution; all its stages share it. Release after delivery/abort and all unfinished children have settled.                         |
+| Instance reservation and engine-use lease | Acquire before factory/guest work for a stage; release after guest execution and Session.Close finish, even when its successful output remains buffered.                                      |
+| Retained-byte reservation                 | Charge every owned response-buffer allocation before growth; transfer ownership with selected output; release on discard or final delivery. Copies need their own charge while both are live. |
+| Persistent cache allocation               | Transfer/copy under the cache's separate retained-byte budget on successful storage; eviction/expiry owns release. No request or engine lease is held by a stored entry.                      |
+
+Response and instance limits have distinct names and units. Atomically reserve
+the structurally possible simultaneous stage instances for the candidate before
+entering its first factory, with no admission wait while holding partial slots.
+A route needing two stages consumes one response slot and two instance slots.
+Reject configuration whose instance cap cannot accommodate its stage topology;
+temporary contention follows the route's pre-body policy. Count nested stages
+and Retry branches in that topology. Sequential discarded attempts release their
+reservations before replacements acquire them. Buffer budgets remain separate.
+
+Buffers participate explicitly: begin a candidate, run its child scope, then
+either discard or transfer selected output to the enclosing owner. Discard
+cancels and closes that attempt's sessions exactly once, drops its bytes and
+releases reservations. A stuck cleanup remains run-owned and prevents starting
+a replacement that relies on its capacity. Transfer invalidates the old owner's
+release token; panic/cancellation unwinding settles only still-owned tokens.
+Returning from Rewrite alone never releases an outer ETag delivery reservation.
+
+Track three milestones: producer header selection, candidate-buffer header
+selection, and actual final header/body commitment to the client. Buffered 200
+and Flush on responseBuffer do not advance the last milestone. Informational
+responses do not commit the final response. The outer scope observes the actual
+writer; real streaming Flush may commit it.
+
+Rewrite failures set a typed candidate outcome before unwinding producer code.
+The response buffer, Cache, ETag and Retry must consult that outcome before
+hashing, storing, choosing status or replaying. Normal handler return cannot
+clear it. Failed candidates are never stored, hashed as success or replayed.
+Do not append http.Error to a buffer that already selected 200. Before client
+commitment, discard the entire failed candidate and create a fresh empty 502
+response with stale representation metadata removed. After client commitment,
+abort using the existing protocol-specific path; emit no error document or raw
+suffix. Fail-open applies only to the pre-body eligibility/admission decision.
+
+Retry keeps its existing method, request-body and attempt-count restrictions.
+Ordinary upstream status failures retain configured status-based retries.
+Only pre-body transient capacity/initialization failures explicitly classified
+retryable may use the synthesized 502 with an opted-in Retry status. Callback
+errors/panics, invalid commands, malformed protocol, resource-limit exhaustion,
+and all failures after rewriting begins are non-retryable. Cancellation is
+non-retryable. Every retry requires no client commitment and successful disposal
+of the discarded attempt; it creates fresh stage sessions. Nested retry owners
+consume outcomes only from their own candidate. This requires changes to the
+current status-only Retry/responseBuffer protocol in the adapter implementation.
 
 ## Middleware composition and caching
 
@@ -222,6 +330,24 @@ cache must see that policy before its storage decision. Do not erase an origin
 storage prohibition. A future explicit cache-dependency contract can safely
 relax this; it is not implied by adding a Vary field.
 
+The same no-store obligation is enforced at final wire commitment. The outer
+execution scope carries an immutable callback-policy prohibition, plus any
+fail-open bypass prohibition recorded by a child. After hoisted response-header
+operations, the final writer restores no-store if necessary on every selected
+response, including HEAD, errors and conditional responses. This is an explicit
+final enforcement rule: raw Cache-Control operations cannot opt a callback route
+back into caching. Preserve compatible directives and origin storage prohibitions;
+discard conflicting public/max-age/s-maxage directives when enforcing no-store.
+Cache uses the same obligation before lookup/storage in either middleware order.
+Export/lint/docs must expose this precedence. Assembled Docker chains receive the
+same policy marker before publication, with no sibling-router propagation.
+
+Set/Add/Remove combinations are allowed under that final enforcement rule;
+unrelated headers remain untouched. Test case-insensitive/repeated fields and
+operations that erase the intermediate map. A real downstream caching proxy
+must observe no-store and never reuse Alice's callback output for Bob. Internal
+cache non-storage alone does not establish this wire invariant.
+
 Declarative body-only programs can compose with Cache normally. If a later program
 allows request-dependent declarative substitutions, those need the same dependency
 analysis. A program revision must replace its route cache; Docker identity must
@@ -236,9 +362,8 @@ Record acquisition immediately on `startAttempt`; transfer to `serverRun` at
 commit. Rollback closes all acquired state; retry creates a fresh run. Compiled
 handler references must resolve only their current run, never a closed predecessor.
 
-One run can share compiled code, but admission and mutable streams are explicit.
-Each response holds an engine lease through parser finish, output delivery and
-callback cleanup. Generation retirement prevents new selection of old route
+One run can share compiled code; the execution scope separates engine-use leases
+from delivery and cache allocations as specified above. Generation retirement prevents new selection of old route
 policy without cancelling an already admitted response. Docker workload activity
 must last through final downstream delivery, even if parser finish happened
 earlier. Cache hits must not acquire a spurious Docker workload lease.
@@ -248,6 +373,62 @@ streams can use the engine. On grace expiry, cancel sessions and terminate their
 network streams. Close the runtime only after its users exit. Coordinate with
 Docker's quiesce/drain/stop sequence and never wait while holding an engine or
 provider lock needed by callback completion.
+
+The serverRun retains a retiring rewrite-run object with execution/child
+registries, an exactly-once runtime finalizer, accumulated cleanup errors and a
+completion signal. Register each accepted route execution before entering its
+chain, including executions that have not reached a rewrite stage yet. During
+grace those executions may acquire their remaining stage leases. At deadline,
+seal stage admission and cancel; on successful drain, seal after executions exit.
+Finalization requires sealed admission and zero executions and children.
+
+The stage owner registers a child before invoking NewSession and defers its
+cleanup/deregistration through the whole session lifetime. The final exiting
+execution/child invokes the runtime finalizer and signals completion when the
+conditions hold. The retirement path handles an already-empty run. No background
+goroutine is launched merely to abandon a blocked callback.
+
+NewSession returning a session after cancellation still triggers its Close once,
+without starting guest work. A factory error/panic must clean its own unreturned
+application allocations; Statute releases all resources it acquired around it.
+Recover application panics at factory/Handle/Close boundaries, preserve the
+terminal failure, and execute remaining Statute cleanup. A Close error or panic
+is recorded; Close is never retried. A stalled Close retains its child until it
+returns. Guest/module release follows completion of all code using that instance.
+
+Shutdown timeout returns an unfinished-work error while the server continues to
+retain the retiring run. After expiry it admits no new stage or external work.
+Repeated Shutdown observes the
+same retirement and completion signal, can wait within a new caller's grace
+window, and never invokes cancellation, session cleanup or finalization twice.
+Completion exposes final cleanup errors through that observation; bounded
+operational state reports unfinished child count and eventual completion without
+callback data. Listener force-close is independent of callback completion.
+Neither the serverRun mutex nor the rewrite registry lock is held while waiting.
+The last child's deferred cleanup remains responsible even if Shutdown is never
+called again. Process termination is the only hard boundary for Go code that
+never returns. Failed startup has no response callbacks and closes its engine
+synchronously through startAttempt rollback.
+
+### Required ownership and failure regressions
+
+- Hold outer ETag delivery after Rewrite returns: instance leases can be released,
+  but buffer bytes and the response slot remain reserved until delivery settles.
+- Discard a rewritten Retry candidate: close its session and release its bytes
+  before the replacement; test panic and cancellation at each transfer boundary.
+- Run two rewrite stages with one response slot and sufficient instance capacity;
+  reject an impossible instance cap during configuration without self-starvation.
+- Fail callbacks/output before output, after a buffered prefix and after an actual
+  downstream flush, across Cache/ETag/Retry orders and both failure policies.
+  Assert fresh 502 or stream abort, zero failed-cache entries and zero mixed bytes.
+- During shutdown, a cooperative callback completes within grace. In killable
+  subprocesses, independently stall factory, Handle and Close past grace: terminate
+  client connections, retain reservations, then release the stall and observe one
+  finalization and settled unfinished-work reporting, including repeated Shutdown.
+- Exercise nested/overlapping event scopes, omitted closing tags, void elements,
+  text chunk completion and entity-bearing attributes against the native oracle.
+- Exercise both Cache orders and final Cache-Control Set/Add/Remove through a
+  real downstream caching proxy with distinct user responses.
 
 Require positive input/output bytes, parser memory, linear-memory pages,
 program size, event/command bytes and counts, concurrent responses, and deadline
@@ -298,11 +479,13 @@ names and CI evidence with each delivered stage.
    explicit unfinished-shutdown behavior for non-cooperating Go code. Alternative:
    hard isolation requires a different execution boundary.
 2. **Declared position and common response adapter:** preserve meaningful order
-   differences above, with consistent pre-commit 502/stream-abort failure mapping.
-   Do not silently hoist rewriting to force one representation pipeline.
+   differences above, with the execution/attempt ownership and terminal-outcome
+   protocol defining client-precommit 502 versus stream abort. Transformation
+   stays at its declared position; its lifetime can extend beyond that wrapper.
 3. **Callback cache safety:** start with no-store for callback-bearing routes in
-   both cache orders. Relax only with an explicit, tested dependency/identity
-   contract; do not cache personalized callbacks by assuming they are pure.
+   both cache orders, with explicit final wire enforcement after raw header
+   operations. Relax only with an explicit, tested dependency/identity contract;
+   do not cache personalized callbacks by assuming they are pure.
 
 Recommended choices are the three proposals above. Exact exported API spelling
 can follow the private implementation evidence. Supported production platforms,
