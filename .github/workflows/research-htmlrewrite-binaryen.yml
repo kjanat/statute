@@ -1,0 +1,61 @@
+name: HTML rewrite Binaryen comparison
+on:
+  pull_request:
+    paths:
+      - research/htmlrewrite/**
+      - .github/workflows/research-htmlrewrite-binaryen.yml
+  workflow_dispatch:
+permissions: { contents: read }
+concurrency: { group: "htmlrewrite-binaryen-${{ github.ref }}", cancel-in-progress: true }
+jobs:
+  compare:
+    name: Binaryen (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: research/htmlrewrite
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: research/htmlrewrite/go.mod
+          cache-dependency-path: research/htmlrewrite/go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: "26" }
+      - name: Install checksum-pinned Binaryen 133
+        run: |
+          case "$(uname -m)" in
+            x86_64) arch=x86_64; digest=2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489 ;;
+            aarch64) arch=aarch64; digest=89c07ea56faf38d0fbecf36ca8ec0721756716185f265b568e133d427f299bf8 ;;
+            *) exit 1 ;;
+          esac
+          archive="binaryen-version_133-${arch}-linux.tar.gz"
+          curl --fail --location --retry 3 "https://github.com/WebAssembly/binaryen/releases/download/version_133/${archive}" -o "$RUNNER_TEMP/$archive"
+          printf '%s  %s\n' "$digest" "$RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "WASM_OPT=$RUNNER_TEMP/binaryen-version_133/bin/wasm-opt" >> "$GITHUB_ENV"
+      - name: Build six variants from one Rust artifact
+        run: |
+          node --test binaryen.test.mjs
+          node binaryen.mjs build
+      - name: Parity, limits, isolation, cancellation and HTTP composition
+        run: node binaryen.mjs test
+      - name: Rotated benchmark comparisons
+        run: node binaryen.mjs bench
+      - name: Paced HTTP and retention comparisons
+        run: node binaryen.mjs load
+      - name: Preserve commands, provenance and results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binaryen-${{ runner.arch }}
+          path: |
+            research/htmlrewrite/artifact/binaryen/*.txt
+            research/htmlrewrite/artifact/binaryen/manifest.json
+          if-no-files-found: error

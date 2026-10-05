@@ -371,8 +371,8 @@ From `research/htmlrewrite`:
 
 ```sh
 make test
-CGO_ENABLED=0 go test -run '^TestHTTP' -count=5 -timeout=90s .
-CGO_ENABLED=0 go test -tags htmlrewrite_research -run '^TestHTTPDocker' -count=5 .
+CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^TestHTTP' -count=5 -timeout=90s .
+CGO_ENABLED=0 go test -tags statute_htmlrewrite,htmlrewrite_research -run '^TestHTTPDocker' -count=5 .
 ```
 
 The research module uses a local replacement of the root Statute module for

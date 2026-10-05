@@ -4,6 +4,11 @@ Status: **engine feasibility demonstrated; no production API proposed yet**. Thi
 
 ## What works
 
+The research engine requires the `statute_htmlrewrite` Go build tag. Its
+disabled implementation returns a clear construction error and links neither
+wazero nor the Wasm artifact. The [harness build instructions](../research/htmlrewrite/README.md)
+cover enabled/disabled builds and the independent private Docker test tag.
+
 The [HTTP experiment](research-html-http.md) now exercises consumer-selected failure policy, streaming, and existing Statute middleware. The measurements and coverage below describe the earlier engine-only phase.
 
 [The runnable harness](../research/htmlrewrite/README.md) compiles LOL HTML 3.0.1 to `wasm32-unknown-unknown` and executes it with wazero 1.12.0 from cgo-free Go. There is no WASI, JavaScript glue, or subprocess on the rewrite path. The native Rust executable is an output oracle used by tests only.
@@ -22,7 +27,7 @@ rewrite route option or production Wasm dependency in the main Go module.
 Measured on a Raspberry Pi 5, Linux arm64, Go 1.27.1, Rust 1.97.1. One short local run used:
 
 ```sh
-CGO_ENABLED=0 go test -run '^$' -bench . -benchtime=200ms -count=1 ./...
+CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$' -bench . -benchtime=200ms -count=1 ./...
 ```
 
 | Operation                                         |    Input |  Time/op | Go bytes allocated/op | Go allocations/op |
@@ -68,8 +73,8 @@ Reproduce the runs from `research/htmlrewrite`:
 
 ```sh
 make bench-native NATIVE_BENCH_ITERATIONS=1000
-CGO_ENABLED=0 go test -run '^$' -bench 'Benchmark(Matrix|Instance|Parallel|FirstOutput)$' -benchtime=500ms -count=3
-CGO_ENABLED=0 go test -run '^$' -bench 'BenchmarkRewrite/bytes=41984$' -benchtime=2s -cpuprofile artifact/rewrite.cpu -memprofile artifact/rewrite.mem -o artifact/rewrite.test
+CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$' -bench 'Benchmark(Matrix|Instance|Parallel|FirstOutput)$' -benchtime=500ms -count=3
+CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$' -bench 'BenchmarkRewrite/bytes=41984$' -benchtime=2s -cpuprofile artifact/rewrite.cpu -memprofile artifact/rewrite.mem -o artifact/rewrite.test
 go tool pprof -top artifact/rewrite.test artifact/rewrite.cpu
 go tool pprof -top -alloc_space artifact/rewrite.test artifact/rewrite.mem
 ```
@@ -105,6 +110,10 @@ original toolchain and fixture scope; they are not benchmarks of the latest buil
 The [larger-document and HTTP load follow-up](research-html-load.md) adds real
 paced clients, separate-server memory observations, streamed/buffered comparisons
 and explicit candidate operating criteria.
+
+The [Binaryen comparison](research-html-binaryen.md) evaluates six post-link
+optimization sequences against one Rust artifact, including real-parser
+cancellation, compilation/instance cost, throughput and paced HTTP memory.
 
 The production design must address configurable transformations, Go callbacks,
 and response-producing route actions, including handlers and static files. No

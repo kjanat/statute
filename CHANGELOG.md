@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Make the research HTML-rewriting engine opt-in with the `statute_htmlrewrite` build tag; verify that disabled binaries exclude wazero and the embedded Wasm, and reject engine construction with a rebuild instruction.
+
+- Add a six-variant Binaryen research comparison with artifact verification, real-parser cancellation timings, rotated benchmarks, and paced HTTP/memory measurements on amd64 and arm64.
+
 - Add a research HTTP load probe comparing passthrough, streamed HTML rewriting, and buffered ETags with native-verified bodies, paced clients, latency percentiles, and separate-server RSS measurements. Extend the engine memory probe to larger dense/sparse documents.
 
 - Add local RFC Editor HTML references with explicit refresh tooling, source/checksum provenance, and offline verification for HTTP protocol work.

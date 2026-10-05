@@ -1,4 +1,5 @@
-// Package htmlrewrite contains an isolated HTML-rewriting feasibility experiment.
+//go:build statute_htmlrewrite
+
 package htmlrewrite
 
 import (

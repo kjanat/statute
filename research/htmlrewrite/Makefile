@@ -12,7 +12,7 @@ HTTP_LOAD_WORKERS ?= 4
 HTTP_LOAD_MODE ?= stream
 HTTP_LOAD_PACE ?= 0s
 
-.PHONY: build test fuzz bench bench-native bench-smoke memory http-load
+.PHONY: build test-disabled test fuzz bench bench-native bench-smoke memory http-load
 
 build:
 	rustup show active-toolchain
@@ -20,36 +20,41 @@ build:
 	cargo build --manifest-path guest/Cargo.toml --locked --release --bin statute-htmlrewrite-spike -j 1
 	install -Dm644 guest/target/wasm32-unknown-unknown/release/statute_htmlrewrite_spike.wasm artifact/rewriter.wasm
 
-test: build
-	CGO_ENABLED=0 go test ./...
-	CGO_ENABLED=0 go vet ./...
-	CGO_ENABLED=0 go test -tags htmlrewrite_research -run '^TestHTTPDocker' .
-	CGO_ENABLED=0 go -C ../.. test -tags htmlrewrite_research ./internal/researchroute
-	CGO_ENABLED=0 go -C ../.. test -tags htmlrewrite_research -run '^TestResearchRoute' .
-	CGO_ENABLED=0 go vet -tags htmlrewrite_research ./...
+test-disabled:
+	CGO_ENABLED=0 go test -tags '' .
+	CGO_ENABLED=0 go test -tags htmlrewrite_research .
+
+test: test-disabled build
+	node --test feature.test.mjs
+	CGO_ENABLED=0 go test -tags statute_htmlrewrite ./...
+	CGO_ENABLED=0 go vet -tags statute_htmlrewrite ./...
+	CGO_ENABLED=0 go test -tags statute_htmlrewrite,htmlrewrite_research -run '^TestHTTPDocker' .
+	CGO_ENABLED=0 go -C ../.. test -tags statute_htmlrewrite,htmlrewrite_research ./internal/researchroute
+	CGO_ENABLED=0 go -C ../.. test -tags statute_htmlrewrite,htmlrewrite_research -run '^TestResearchRoute' .
+	CGO_ENABLED=0 go vet -tags statute_htmlrewrite,htmlrewrite_research ./...
 	cargo fmt --manifest-path guest/Cargo.toml --check
 	cargo clippy --manifest-path guest/Cargo.toml --locked --all-targets -- -D warnings
 
 fuzz: build
-	CGO_ENABLED=0 go test -run '^$$' -fuzz '^FuzzChunkBoundaries$$' -fuzztime=10s -parallel=1 .
+	CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$$' -fuzz '^FuzzChunkBoundaries$$' -fuzztime=10s -parallel=1 .
 
 bench: build
-	CGO_ENABLED=0 go test -run '^$$' -bench . -benchmem ./...
+	CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$$' -bench . -benchmem ./...
 
 bench-native: build
 	cargo run --manifest-path guest/Cargo.toml --locked --release --bin native-bench -- $(NATIVE_BENCH_ITERATIONS)
 
 bench-smoke: build
-	CGO_ENABLED=0 go test -run '^$$' -bench . -benchtime=1x ./...
+	CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$$' -bench . -benchtime=1x ./...
 	$(MAKE) bench-native NATIVE_BENCH_ITERATIONS=1
 
 # Run as one fresh process: compilation and other tests stay outside RSS data.
 memory: build
-	CGO_ENABLED=0 go test -c -o artifact/memory.test
+	CGO_ENABLED=0 go test -tags statute_htmlrewrite -c -o artifact/memory.test
 	./artifact/memory.test -test.run '^TestMemoryLoad$$' -test.v -test.timeout 10m -load-duration $(LOAD_DURATION) -load-rounds $(LOAD_ROUNDS) -load-workers $(LOAD_WORKERS) -load-count $(LOAD_COUNT) -load-shape $(LOAD_SHAPE)
 
 # Linux server-only RSS/HWM; the origin, native oracle and clients stay in the parent.
 http-load: build
 	@test "$$(uname -s)" = Linux || { echo "http-load requires Linux /proc memory observations" >&2; exit 1; }
-	CGO_ENABLED=0 go test -c -o artifact/http-load.test
+	CGO_ENABLED=0 go test -tags statute_htmlrewrite -c -o artifact/http-load.test
 	./artifact/http-load.test -test.run '^TestHTTPLoad$$' -test.v -test.timeout 7m -http-load-duration $(HTTP_LOAD_DURATION) -http-load-count $(HTTP_LOAD_COUNT) -http-load-shape $(HTTP_LOAD_SHAPE) -http-load-workers $(HTTP_LOAD_WORKERS) -http-load-mode $(HTTP_LOAD_MODE) -http-load-pace $(HTTP_LOAD_PACE)
