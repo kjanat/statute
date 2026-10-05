@@ -21,6 +21,9 @@ This gates the existing research engine. Production rewriting and its public
 configuration API remain tracked in #114; normal Statute builds already exclude
 this separate research module.
 
+The [production design proposal](../../docs/html-rewriting-design.md) defines
+the next implementation sequence and the decisions needed before public integration.
+
 The [Binaryen comparison](../../docs/research-html-binaryen.md) runs six optimizer
 variants through correctness, real-parser cancellation, rotated benchmarks and
 paced HTTP/memory measurements. `binaryen.mjs` preserves commands and artifact

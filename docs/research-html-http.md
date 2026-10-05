@@ -5,6 +5,10 @@ LOL HTML policy to HTTP responses. It adds no production middleware, public
 builder, Docker labels, or resolved-model fields. This is the HTTP experiment
 for [#114](https://github.com/kjanat/statute/issues/114).
 
+The [production design proposal](html-rewriting-design.md) describes the next
+implementation stages, including Go callbacks and a common adapter for proxy,
+handler and static-file responses. The evidence below remains prototype evidence.
+
 ## Consumer-selected failure policy
 
 Each route adapter must explicitly choose `failClosed` or `failOpen`. Zero and
