@@ -1,6 +1,6 @@
 # HTML rewriting: first Wasm experiment
 
-Status: **engine feasibility demonstrated; no production API proposed yet**. This report records the first bounded experiment for [#114](https://github.com/kjanat/statute/issues/114). The issue remains open. A [subsequent execution and memory investigation](research-html-execution-memory.md) measures cancellation overhead, build variants, and sustained fresh-instance load.
+Status: **engine feasibility demonstrated; production implementation pending**. This report records the first bounded experiment for [#114](https://github.com/kjanat/statute/issues/114). The issue remains open. The [production design proposal](html-rewriting-design.md) connects the evidence to configurable programs, Go callbacks, route integration and delivery gates. A [subsequent execution and memory investigation](research-html-execution-memory.md) measures cancellation overhead, build variants, and sustained fresh-instance load.
 
 ## What works
 
