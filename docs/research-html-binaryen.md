@@ -17,14 +17,14 @@ All optimized variants receive `--enable-bulk-memory-opt` and
 these instructions, and Binaryen rejects it without these compatibility flags.
 The optimization sequences are:
 
-| Variant     | Passes                         |
-| ----------- | ------------------------------ |
-| baseline    | Unmodified Rust output         |
-| o3          | `-O3`                          |
-| oz          | `-Oz`                          |
-| oz-twice    | `-Oz -Oz`                      |
-| rereloop-o3 | `--flatten --rereloop -O3`     |
-| shuck       | `--flatten --rereloop -Oz -Oz` |
+| Variant           | Passes                         |
+| ----------------- | ------------------------------ |
+| baseline          | Unmodified Rust output         |
+| o3                | `-O3`                          |
+| oz                | `-Oz`                          |
+| oz-twice          | `-Oz -Oz`                      |
+| rereloop-o3       | `--flatten --rereloop -O3`     |
+| rereloop-oz-twice | `--flatten --rereloop -Oz -Oz` |
 
 The runner preserves repeated optimization passes and tests their ordering.
 Go build overlays embed each artifact in a separate test executable; the ordinary
@@ -93,14 +93,14 @@ Dense/sparse columns are the approximately 1.3-MiB inputs; first-output uses the
 41-KiB dense fixture. Cold allocation is cumulative Go allocation per engine
 creation/closure. Retained memory and peak RSS are measured separately below.
 
-| Variant     | Wasm bytes | Cold engine | Cold allocation MiB | Instance | First output | Dense rewrite | Sparse rewrite |
-| ----------- | ---------: | ----------: | ------------------: | -------: | -----------: | ------------: | -------------: |
-| baseline    |     574007 |      331.12 |               19.96 |    1.434 |        2.693 |        460.31 |         128.24 |
-| o3          |     498624 |      404.50 |               40.69 |    1.292 |        2.668 |        446.77 |         125.41 |
-| oz          |     485011 |      387.42 |               39.91 |    1.471 |        2.661 |        446.54 |         119.02 |
-| oz-twice    |     484633 |      390.03 |               39.89 |    1.370 |        2.745 |        450.67 |         117.57 |
-| rereloop-o3 |     497765 |      430.74 |               40.01 |    1.399 |        2.716 |        449.42 |         124.38 |
-| shuck       |     482719 |      385.43 |               39.38 |    1.507 |        2.648 |        444.51 |         120.31 |
+| Variant           | Wasm bytes | Cold engine | Cold allocation MiB | Instance | First output | Dense rewrite | Sparse rewrite |
+| ----------------- | ---------: | ----------: | ------------------: | -------: | -----------: | ------------: | -------------: |
+| baseline          |     574007 |      331.12 |               19.96 |    1.434 |        2.693 |        460.31 |         128.24 |
+| o3                |     498624 |      404.50 |               40.69 |    1.292 |        2.668 |        446.77 |         125.41 |
+| oz                |     485011 |      387.42 |               39.91 |    1.471 |        2.661 |        446.54 |         119.02 |
+| oz-twice          |     484633 |      390.03 |               39.89 |    1.370 |        2.745 |        450.67 |         117.57 |
+| rereloop-o3       |     497765 |      430.74 |               40.01 |    1.399 |        2.716 |        449.42 |         124.38 |
+| rereloop-oz-twice |     482719 |      385.43 |               39.38 |    1.507 |        2.648 |        444.51 |         120.31 |
 
 All six passed the complete research suite, including private Docker tests and
 240 real-parser interruption samples. Single-thread median cancellation-trigger
@@ -110,8 +110,8 @@ the largest observed request-to-join delay across these samples was 0.272 ms.
 The optimization did not remove the single-thread scheduling delay.
 
 Binaryen's static loop counts are 861 (baseline), 851 (`-O3`), 817 (`-Oz`
-and twice-`-Oz`), 853 (rereloop/`-O3`) and 818 (shuck). Static instruction counts
-alone cannot explain the runtime cost of cancellation checkpoints; dynamic
+and twice-`-Oz`), 853 (rereloop/`-O3`) and 818 (`rereloop-oz-twice`). Static
+instruction counts alone cannot explain the runtime cost of cancellation checkpoints; dynamic
 execution frequencies and individual checkpoint costs were not instrumented.
 
 The size benefit is clear: 13.1 to 15.9% smaller artifacts. The second `-Oz` saves
@@ -130,14 +130,14 @@ the largest observed duration (also p95 with four samples). RSS high-water marks
 cover the server process lifetime, including compilation, warm-up and the
 admission window. Memory columns use MiB; completion uses seconds.
 
-| Variant     | Stream completion | ETag completion | Stream RSS HWM | ETag RSS HWM | Engine heap after round 3 | Heap after close |
-| ----------- | ----------------: | --------------: | -------------: | -----------: | ------------------------: | ---------------: |
-| baseline    |            11.284 |          13.774 |          50.48 |       184.80 |                     2.745 |            0.621 |
-| o3          |            11.280 |          13.596 |          60.30 |       180.55 |                     2.629 |            0.621 |
-| oz          |            11.289 |          13.506 |          67.30 |       188.84 |                     2.614 |            0.619 |
-| oz-twice    |            11.282 |          13.600 |          76.97 |       194.72 |                     2.620 |            0.624 |
-| rereloop-o3 |            11.295 |          13.590 |          60.36 |       185.45 |                     2.626 |            0.619 |
-| shuck       |            11.293 |          13.554 |          67.97 |       191.02 |                     2.607 |            0.614 |
+| Variant           | Stream completion | ETag completion | Stream RSS HWM | ETag RSS HWM | Engine heap after round 3 | Heap after close |
+| ----------------- | ----------------: | --------------: | -------------: | -----------: | ------------------------: | ---------------: |
+| baseline          |            11.284 |          13.774 |          50.48 |       184.80 |                     2.745 |            0.621 |
+| o3                |            11.280 |          13.596 |          60.30 |       180.55 |                     2.629 |            0.621 |
+| oz                |            11.289 |          13.506 |          67.30 |       188.84 |                     2.614 |            0.619 |
+| oz-twice          |            11.282 |          13.600 |          76.97 |       194.72 |                     2.620 |            0.624 |
+| rereloop-o3       |            11.295 |          13.590 |          60.36 |       185.45 |                     2.626 |            0.619 |
+| rereloop-oz-twice |            11.293 |          13.554 |          67.97 |       191.02 |                     2.607 |            0.614 |
 
 Client pacing dominates streamed completion. Optimization does not remove the
 ETag buffering cost: those processes peak around 181 to 195 MiB versus 50 to 77 MiB
@@ -146,16 +146,16 @@ returned to two goroutines after every round and after engine closure.
 
 ### Decision
 
-Do not adopt the shuck recipe as a default on these results. It makes the smallest
-artifact, but saves only 2,292 bytes beyond plain `-Oz`, does not resolve the
+Do not adopt the `--flatten --rereloop -Oz -Oz` sequence as a default on these
+results. It makes the smallest artifact, but saves only 2,292 bytes beyond plain
+`-Oz`, does not resolve the
 single-thread cancellation scheduling delay, and incurs the same cold-compile
 trade-off. Plain `-Oz` is the simpler size-oriented candidate; retaining the Rust
 output is reasonable when cold initialization matters more. No production or
 research default is changed by this comparison.
 
-These measurements apply to LOL HTML/wazero. A network-fetched
-dprint plugin has a different cost model and needs its own artifact and engine
-measurements. The hosted amd64/arm64 comparison retains the same six cases so
+These measurements apply to Statute's embedded LOL HTML/wazero engine.
+The hosted amd64/arm64 comparison retains the same six cases so
 the Pi's runtime trade-offs can be checked on both architectures.
 
 Raw local evidence: [build and static metrics](../research/htmlrewrite/results/binaryen-arm64-build.txt),

@@ -1,3 +1,4 @@
+# Variant labels and artifact basenames normalized; measurements, hashes, and flags unchanged.
 # Raspberry Pi 5 arm64, 2026-10-05; phase: bench
 # Raw runner output. See docs/research-html-binaryen.md for environment and method.
 
@@ -86,8 +87,8 @@ BenchmarkColdEngine-4                 	       2	 445217368 ns/op	41957508 B/op	 
 PASS
 
 Exit: 0
-{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
-$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+{"variant":"rereloop-oz-twice","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-oz-twice.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
 goos: linux
 goarch: arm64
 pkg: statute.kjanat.dev/research/htmlrewrite
@@ -154,8 +155,8 @@ BenchmarkColdEngine-4                 	       2	 430738302 ns/op	41957648 B/op	 
 PASS
 
 Exit: 0
-{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
-$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+{"variant":"rereloop-oz-twice","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-oz-twice.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
 goos: linux
 goarch: arm64
 pkg: statute.kjanat.dev/research/htmlrewrite
@@ -222,8 +223,8 @@ BenchmarkColdEngine-4                 	       2	 409330472 ns/op	41957640 B/op	 
 PASS
 
 Exit: 0
-{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
-$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
+{"variant":"rereloop-oz-twice","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-oz-twice.test "-test.run=^$" "-test.bench=^(BenchmarkOptimizer|BenchmarkInstance|BenchmarkColdEngine|BenchmarkFirstOutput)$" "-test.benchmem" "-test.benchtime=500ms" "-test.timeout=5m"
 goos: linux
 goarch: arm64
 pkg: statute.kjanat.dev/research/htmlrewrite

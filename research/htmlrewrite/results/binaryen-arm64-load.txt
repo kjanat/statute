@@ -1,3 +1,4 @@
+# Variant labels and artifact basenames normalized; measurements, hashes, and flags unchanged.
 # Raspberry Pi 5 arm64, 2026-10-05; phase: load
 # Raw runner output. See docs/research-html-binaryen.md for environment and method.
 
@@ -171,8 +172,8 @@ $ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "
 PASS
 
 Exit: 0
-{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
-$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
+{"variant":"rereloop-oz-twice","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-oz-twice.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=stream" "-http-load-pace=16ms"
 === RUN   TestHTTPLoad
     http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd","input_bytes":5373952,"mode":"stream","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
     http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":11293608047,"first_body_p50_ns":20156778,"first_body_p95_ns":28321757,"first_body_p99_ns":28321757,"output_bytes":46137344,"requests_per_second":0.3541826476847271,"server_after_rss":46350336,"server_before_rss":51101696,"server_process_hwm":71270400,"server_recovery_rss":35667968,"server_sampled_peak_rss":51101696,"total_p50_ns":11280997524,"total_p95_ns":11293433270,"total_p99_ns":11293433270}
@@ -180,7 +181,7 @@ $ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.
 PASS
 
 Exit: 0
-$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-oz-twice.test "-test.run=^TestHTTPLoad$" "-test.v" "-test.timeout=2m" "-http-load-duration=3s" "-http-load-count=131072" "-http-load-workers=4" "-http-load-mode=etag" "-http-load-pace=16ms"
 === RUN   TestHTTPLoad
     http_load_linux_test.go:150: http_config {"admission_ns":3000000000,"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd","input_bytes":5373952,"mode":"etag","output_bytes":11534336,"pace_per_16k_ns":16000000,"shape":"dense","workers":4}
     http_load_linux_test.go:258: http_result {"completed":4,"elapsed_ns":13554769754,"first_body_p50_ns":2276510625,"first_body_p95_ns":2289857519,"first_body_p99_ns":2289857519,"output_bytes":46137344,"requests_per_second":0.29509907380164857,"server_after_rss":200294400,"server_before_rss":73875456,"server_process_hwm":200294400,"server_recovery_rss":200294400,"server_sampled_peak_rss":200294400,"total_p50_ns":13540838913,"total_p95_ns":13554145437,"total_p99_ns":13554145437}
@@ -188,7 +189,7 @@ $ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.
 PASS
 
 Exit: 0
-$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-oz-twice.test "-test.run=^TestMemoryLoad$" "-test.v" "-test.timeout=2m" "-load-duration=3s" "-load-rounds=3" "-load-workers=4" "-load-count=32768"
 === RUN   TestMemoryLoad
     memory_linux_test.go:194: config {"arch":"arm64","build_settings":[{"Key":"-buildmode","Value":"exe"},{"Key":"-compiler","Value":"gc"},{"Key":"-tags","Value":"htmlrewrite_research"},{"Key":"CGO_ENABLED","Value":"0"},{"Key":"GOARCH","Value":"arm64"},{"Key":"GOOS","Value":"linux"},{"Key":"GOARM64","Value":"v8.0"}],"duration_ns":3000000000,"go":"go1.27.1","gomaxprocs":4,"guest_sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd","input_bytes":1343488,"output_limit":33554432,"rounds":3,"shape":"dense","workers":4}
     memory_linux_test.go:202: before_engine {"heap_alloc":1881376,"heap_inuse":2449408,"heap_released":5431296,"total_alloc":8663288,"num_gc":3,"goroutines":2,"rss":21659648,"process_hwm":22904832}

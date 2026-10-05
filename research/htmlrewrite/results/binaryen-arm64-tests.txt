@@ -1,3 +1,4 @@
+# Variant labels and artifact basenames normalized; measurements, hashes, and flags unchanged.
 # Raspberry Pi 5 arm64, 2026-10-05
 # Selected test output: commands, artifact identities, top-level pass results and cancellation measurements.
 # Full verbose output remains in artifact/binaryen/test.txt and hosted workflow artifacts.
@@ -387,8 +388,8 @@ $ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-o3.test "
 --- PASS: FuzzChunkBoundaries (0.41s)
 PASS
 Exit: 0
-{"variant":"shuck","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
-$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/shuck.test "-test.v" "-test.timeout=5m"
+{"variant":"rereloop-oz-twice","bytes":482719,"sha256":"0a10080fb4c7c02700ffcecb734946c17915debec1ef53347eab14d11d0cdbcd"}
+$ /home/kjanat/statute/research/htmlrewrite/artifact/binaryen/rereloop-oz-twice.test "-test.v" "-test.timeout=5m"
 --- PASS: TestOutputBatchBoundaries (0.39s)
 --- PASS: TestFinishFlushesPendingOutput (0.39s)
 --- PASS: TestExpandedBatchOutput (0.42s)

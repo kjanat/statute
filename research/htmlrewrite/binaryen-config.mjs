@@ -4,7 +4,7 @@ export const variants = [
 	['oz', ['-Oz']],
 	['oz-twice', ['-Oz', '-Oz']],
 	['rereloop-o3', ['--flatten', '--rereloop', '-O3']],
-	['shuck', ['--enable-bulk-memory-opt', '--flatten', '--rereloop', '-Oz', '-Oz']],
+	['rereloop-oz-twice', ['--enable-bulk-memory-opt', '--flatten', '--rereloop', '-Oz', '-Oz']],
 ];
 
 export function optimizerFlags(name, passes) {
