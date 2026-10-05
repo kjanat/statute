@@ -99,6 +99,24 @@ application policy.
 
 ### Event identity and completion
 
+**Implementation gate:** a native characterization of pinned LOL HTML 3.0.1
+found that `<div><span>text</div>` invokes the span end handler with `</div>`,
+then the div end handler with the same token. Removing the end tag from the span
+handler removes the ancestor's closing tag. EOF without either closing tag emits
+neither callback. The tests in
+[`guest/tests/event_contract.rs`](../research/htmlrewrite/guest/tests/event_contract.rs)
+cover these cases, explicit/void/same-name nesting and stray ends at three feed
+sizes. Run `cargo test --manifest-path guest/Cargo.toml --locked --test event_contract`
+from `research/htmlrewrite`.
+
+This contradicts the missing-end guarantee quoted below. The accepted Statute
+contract remains the target; the source behavior cannot be exposed unchanged
+while claiming that contract. Before ABI implementation, choose whether the
+matcher hook suppresses callbacks for implicitly closed elements or the public
+contract exposes separate matched-element and actual closing-token identities.
+The characterization tests record dependency behavior only. They do not validate
+a configurable guest or a Go callback implementation.
+
 The ABI carries a stream ID (unique within the run), rule/handler ID, event kind,
 token ID and monotonically increasing invocation ID. Element-start events also
 allocate an element ID; all handlers observing that same parsed element share
