@@ -1,4 +1,4 @@
-//go:build !htmlrewrite_research
+//go:build statute_htmlrewrite && !htmlrewrite_research
 
 package htmlrewrite
 

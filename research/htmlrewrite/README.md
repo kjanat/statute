@@ -2,6 +2,25 @@
 
 This is the first engine experiment for [issue #114](https://github.com/kjanat/statute/issues/114). It adds no Statute middleware or public API. See the [research report](../../docs/research-html-rewriting.md) for results and remaining work.
 
+The engine is opt-in with `-tags statute_htmlrewrite`. Without that tag, the
+package builds without the generated Wasm file, excludes wazero from its compiled
+dependencies and linked binary, and rejects engine construction with an error
+that names the required build tag. The Makefile's engine tests and benchmarks
+set the tag explicitly. `make test-disabled` needs neither Rust nor the artifact.
+
+The private `htmlrewrite_research` tag only enables the Docker integration seam;
+it does not enable the engine. Docker/rewrite tests use both tags. The independent
+`cancelprobe` test package continues to exercise wazero directly.
+
+`make test` checks all four feature/hook combinations. Its binary checks verify
+that disabled executables contain neither wazero symbols nor the guest bytes,
+and that enabled executables contain both. Disabled builds also run with an
+overlay removing the guest artifact. An enabled build with that overlay must fail.
+
+This gates the existing research engine. Production rewriting and its public
+configuration API remain tracked in #114; normal Statute builds already exclude
+this separate research module.
+
 The [Binaryen comparison](../../docs/research-html-binaryen.md) runs six optimizer
 variants through correctness, real-parser cancellation, rotated benchmarks and
 paced HTTP/memory measurements. `binaryen.mjs` preserves commands and artifact
@@ -50,9 +69,9 @@ Compare build settings with the same tests and benchmarks:
 
 ```sh
 make test WASM_RUSTFLAGS='-Ctarget-feature=+simd128'
-CGO_ENABLED=0 go test -run '^$' -bench '^Benchmark(Phases|Rewrite|Instance)$' -benchtime=1s -count=3
+CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$' -bench '^Benchmark(Phases|Rewrite|Instance)$' -benchtime=1s -count=3
 make test WASM_RUSTFLAGS='-Clink-arg=--initial-memory=2097152'
-CGO_ENABLED=0 go test -run '^$' -bench '^Benchmark(Phases|Rewrite|Instance)$' -benchtime=1s -count=3
+CGO_ENABLED=0 go test -tags statute_htmlrewrite -run '^$' -bench '^Benchmark(Phases|Rewrite|Instance)$' -benchtime=1s -count=3
 make build WASM_RUSTFLAGS=
 ```
 

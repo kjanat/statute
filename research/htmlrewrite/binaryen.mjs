@@ -60,7 +60,14 @@ if (phase === 'build') {
 		run(tool, [wasm, ...optimizerFlags('metrics', []), '--metrics']);
 		const overlay = resolve(root, `${name}.json`);
 		writeFileSync(overlay, JSON.stringify({ Replace: { [resolve('artifact/rewriter.wasm')]: wasm } }));
-		run('go', ['test', `-overlay=${overlay}`, '-tags=htmlrewrite_research', '-c', '-o', resolve(root, `${name}.test`)]);
+		run('go', [
+			'test',
+			`-overlay=${overlay}`,
+			'-tags=statute_htmlrewrite,htmlrewrite_research',
+			'-c',
+			'-o',
+			resolve(root, `${name}.test`),
+		]);
 	}
 	writeFileSync(resolve(root, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 } else if (phase === 'test') {

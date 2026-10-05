@@ -45,6 +45,10 @@ jobs:
         run: |
           CGO_ENABLED=0 go test -v -timeout=2m ./cancelprobe
           CGO_ENABLED=0 go test -run '^$' -bench . -benchtime=500ms -count=3 ./cancelprobe
+      - name: Disabled feature without generated Wasm
+        run: make test-disabled
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: "26" }
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - name: Build and test cgo-free host and native oracle
@@ -52,10 +56,10 @@ jobs:
       - name: Race detector
         if: runner.arch == 'X64'
         run: |
-          go test -race ./...
-          go test -race -tags htmlrewrite_research -run '^TestHTTPDocker' .
-          go -C ../.. test -race -tags htmlrewrite_research ./internal/researchroute
-          go -C ../.. test -race -tags htmlrewrite_research -run '^TestResearchRoute' .
+          go test -race -tags statute_htmlrewrite ./...
+          go test -race -tags statute_htmlrewrite,htmlrewrite_research -run '^TestHTTPDocker' .
+          go -C ../.. test -race -tags statute_htmlrewrite,htmlrewrite_research ./internal/researchroute
+          go -C ../.. test -race -tags statute_htmlrewrite,htmlrewrite_research -run '^TestResearchRoute' .
       - name: Fuzz chunk boundaries
         run: make fuzz
       - name: Benchmark smoke tests
@@ -64,7 +68,7 @@ jobs:
         run: make memory LOAD_DURATION=1s LOAD_ROUNDS=2 LOAD_WORKERS=2
       - name: HTTP load probe smoke tests
         run: |
-          CGO_ENABLED=0 go test -c -o artifact/http-load.test
+          CGO_ENABLED=0 go test -tags statute_htmlrewrite -c -o artifact/http-load.test
           for mode in plain stream etag; do
             ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-mode "$mode" -http-load-pace 1ms
           done
