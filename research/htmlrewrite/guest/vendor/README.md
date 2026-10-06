@@ -55,6 +55,11 @@ and resolves both pins and the lockfile in scratch space before replacing the
 checkout's files. It also updates the version/checksum above. Node, Git, tar and
 the pinned Rust toolchain are required; consumer builds never run this command.
 
+Run `make -C research/htmlrewrite test-update-lol-html` to test the refresh tool
+alone. This first fetches the complete locked dependency graph, including
+target-specific packages that normal builds may not download. The fixtures then
+run Cargo offline. The full `test` target includes this preparation and test.
+
 A patch conflict stops the refresh without changing the checkout. Port the patch
 against the new release in a separate scratch directory, save that patch, then
 rerun the command. Review the source diff and parser-semantic changes even when
