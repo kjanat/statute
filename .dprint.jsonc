@@ -1,5 +1,5 @@
 {
-  "excludes": ["docs/rfc/**"],
+  "excludes": ["docs/rfc/**", "research/htmlrewrite/guest/vendor/lol_html/**"],
   "markup": { "associations": ["!**/*.svg"] },
   "yaml": { "printWidth": 160 },
   "svg": { "associations": ["**/*.svg"] },

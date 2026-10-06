@@ -33,7 +33,7 @@ test: test-disabled build
 	CGO_ENABLED=0 go -C ../.. test -tags statute_htmlrewrite,htmlrewrite_research -run '^TestResearchRoute' .
 	CGO_ENABLED=0 go vet -tags statute_htmlrewrite,htmlrewrite_research ./...
 	cargo fmt --manifest-path guest/Cargo.toml --check
-	cargo test --manifest-path guest/Cargo.toml --locked --test event_contract
+	cargo test --manifest-path guest/Cargo.toml --locked --tests
 	cargo clippy --manifest-path guest/Cargo.toml --locked --all-targets -- -D warnings
 
 fuzz: build

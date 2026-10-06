@@ -143,6 +143,23 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 [[package]]
 name = "lol_html"
 version = "3.0.1"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cssparser",
+ "encoding_rs",
+ "foldhash",
+ "hashbrown",
+ "memchr",
+ "mime",
+ "precomputed-hash",
+ "selectors",
+ "thiserror",
+]
+
+[[package]]
+name = "lol_html"
+version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5adbb62638edf7e6bc88835cd3ea388bdd53382af42045da0e414ea78aa0c91a"
 dependencies = [
@@ -378,7 +395,8 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "statute-htmlrewrite-spike"
 version = "0.0.0"
 dependencies = [
- "lol_html",
+ "lol_html 3.0.1",
+ "lol_html 3.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

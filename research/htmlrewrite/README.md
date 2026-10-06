@@ -112,12 +112,12 @@ Context cancellation is enabled for guest execution. Tests cover cancellation be
 
 ## Dependencies and artifact provenance
 
-| Component | Pin                                                                     | License                                                       |
-| --------- | ----------------------------------------------------------------------- | ------------------------------------------------------------- |
-| LOL HTML  | crates.io `lol_html = "=3.0.1"`; archive checksum in `guest/Cargo.lock` | BSD-3-Clause                                                  |
-| Rust      | `nightly-2026-10-03`, `wasm32-unknown-unknown`, release/LTO/panic-abort | MIT OR Apache-2.0; bundled components have additional notices |
-| wazero    | `github.com/tetratelabs/wazero v1.12.0`; `go.sum`                       | Apache-2.0                                                    |
-| Harness   | this repository revision                                                | MIT                                                           |
+| Component | Pin                                                                                                                       | License                                                       |
+| --------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| LOL HTML  | `3.0.1` with the [local matcher ownership patch](guest/vendor/README.md); upstream archive checksum in `guest/Cargo.lock` | BSD-3-Clause                                                  |
+| Rust      | `nightly-2026-10-03`, `wasm32-unknown-unknown`, release/LTO/panic-abort                                                   | MIT OR Apache-2.0; bundled components have additional notices |
+| wazero    | `github.com/tetratelabs/wazero v1.12.0`; `go.sum`                                                                         | Apache-2.0                                                    |
+| Harness   | this repository revision                                                                                                  | MIT                                                           |
 
 Source references: [LOL HTML 3.0.1](https://docs.rs/crate/lol_html/3.0.1/source/), [wazero v1.12.0](https://github.com/wazero/wazero/tree/v1.12.0), [Rust licenses](https://github.com/rust-lang/rust/blob/0abfedbc7cd4e725f126913880c95800394f7c37/COPYRIGHT).
 

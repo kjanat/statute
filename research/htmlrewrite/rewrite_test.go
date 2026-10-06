@@ -120,6 +120,40 @@ func TestNativeParityAndChunkBoundaries(t *testing.T) {
 	}
 }
 
+// Check expected bytes as well as native/Wasm agreement: both builds use the
+// patched matcher and could otherwise agree on the same ownership mistake.
+func TestImplicitEndMutationOwnership(t *testing.T) {
+	e := testEngine(t)
+	cases := []struct{ input, want string }{
+		{`<div><span class="remove">hidden</div><p>after</p>`, `<div></div><p>after</p>`},
+		{`<div><span class="remove"><b class="remove">hidden</div><p>after</p>`, `<div></div><p>after</p>`},
+		{`<div><a class="rewrite">text</div>`, `<div><a class="rewrite" href="https://example.invalid/rewritten">text</div>`},
+		{`<div><div class="remove">hidden</div>outer</div>`, `<div>outer</div>`},
+		{`<div><span class="remove">hidden`, `<div>`},
+		{`<div class="remove"><span>hidden</div><p>after</p>`, `<p>after</p>`},
+	}
+	for i, tc := range cases {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			for _, chunk := range []int{1, 4, 4096} {
+				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+				command := exec.CommandContext(ctx, "./guest/target/release/statute-htmlrewrite-spike", fmt.Sprint(chunk))
+				command.Stdin = strings.NewReader(tc.input)
+				got, err := command.Output()
+				cancel()
+				if err != nil || string(got) != tc.want {
+					t.Fatalf("native chunk %d: got %q, error %v; want %q", chunk, got, err, tc.want)
+				}
+				for _, buffered := range []bool{false, true} {
+					got, _, err := rewriteMode(e, []byte(tc.input), chunk, buffered)
+					if err != nil || string(got) != tc.want {
+						t.Fatalf("Wasm chunk %d buffered %v: got %q, error %v; want %q", chunk, buffered, got, err, tc.want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestParserMemoryLimit(t *testing.T) {
 	e := testEngine(t)
 	s, err := e.newStream(context.Background(), io.Discard, 8<<20)

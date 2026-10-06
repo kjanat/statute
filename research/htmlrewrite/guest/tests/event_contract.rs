@@ -1,6 +1,6 @@
-use lol_html::{HtmlRewriter, Settings, element, end_tag};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use upstream_lol_html::{HtmlRewriter, Settings, element, end_tag};
 
 fn end_events(input: &[u8], chunk: usize) -> Vec<(usize, String, String)> {
     let events = Rc::new(RefCell::new(Vec::new()));

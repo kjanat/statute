@@ -4,7 +4,8 @@ This is the proposed implementation contract for
 [#114](https://github.com/kjanat/statute/issues/114), following merged research
 through [#147](https://github.com/kjanat/statute/pull/147). It is not an available
 public API or a production-readiness claim. Names below are illustrative.
-The decisions at the end require agreement before production code changes.
+The decisions at the end are accepted for implementation; production availability
+still depends on the delivery gates below.
 
 ## Outcome and evidence
 
@@ -99,7 +100,7 @@ application policy.
 
 ### Event identity and completion
 
-**Implementation gate:** a native characterization of pinned LOL HTML 3.0.1
+**End-token ownership decision:** a native characterization of pinned LOL HTML 3.0.1
 found that `<div><span>text</div>` invokes the span end handler with `</div>`,
 then the div end handler with the same token. Removing the end tag from the span
 handler removes the ancestor's closing tag. EOF without either closing tag emits
@@ -109,13 +110,19 @@ cover these cases, explicit/void/same-name nesting and stray ends at three feed
 sizes. Run `cargo test --manifest-path guest/Cargo.toml --locked --test event_contract`
 from `research/htmlrewrite`.
 
-This contradicts the missing-end guarantee quoted below. The accepted Statute
-contract remains the target; the source behavior cannot be exposed unchanged
-while claiming that contract. Before ABI implementation, choose whether the
-matcher hook suppresses callbacks for implicitly closed elements or the public
-contract exposes separate matched-element and actual closing-token identities.
-The characterization tests record dependency behavior only. They do not validate
-a configurable guest or a Go callback implementation.
+Statute preserves the accepted missing-end contract. Its pinned local matcher
+patch identifies the stack entry actually closed by the token, invokes only that
+entry's end handler, and immediately drops implicitly retired descendants'
+handlers. Their text/comment scopes and removal counters still retire normally.
+Neither user callbacks nor automatic end-tag mutations for an implicit child may
+alter its ancestor's token. Source stack identity remains stable across output
+tag renaming.
+
+The [source and local-delta notes](../research/htmlrewrite/guest/vendor/README.md)
+apply equally to native and Wasm builds. Upstream characterization stays separate
+from the patched ownership tests and native/Wasm expected-output regression.
+This resolves the end-token decision; configurable programs, selector-scope event
+identity and the bounded Go callback ABI remain stage 1 implementation work.
 
 The ABI carries a stream ID (unique within the run), rule/handler ID, event kind,
 token ID and monotonically increasing invocation ID. Element-start events also
@@ -142,8 +149,9 @@ do not promise chunk boundaries. Document-end runs once on successful parser EOF
 it is absent on abort. Session.Close runs after either outcome and owns release
 of all remaining application state, including unmatched element scopes.
 
-The pinned [end-tag contract](https://docs.rs/lol_html/3.0.1/lol_html/html_content/struct.Element.html#method.on_end_tag)
-omits implicitly closed elements and cannot attach end handlers to void elements.
+Statute enforces the documented [end-tag contract](https://docs.rs/lol_html/3.0.1/lol_html/html_content/struct.Element.html#method.on_end_tag)
+with the matcher patch above: it omits implicitly closed elements and cannot
+attach end handlers to void elements.
 There is no balanced start/end guarantee and no synthetic end event. Identifiers
 remain valid for correlating retained snapshots but never authorize later mutation.
 
@@ -491,7 +499,7 @@ lifecycle lint/audit, affected research/native parity suites and build-tag tests
 Run `make test-e2e-regression` for process/container changes. Keep actual test
 names and CI evidence with each delivered stage.
 
-## Decisions to accept before implementation
+## Accepted implementation decisions
 
 1. **Trusted synchronous callbacks:** accept cooperative cancellation and the
    explicit unfinished-shutdown behavior for non-cooperating Go code. Alternative:

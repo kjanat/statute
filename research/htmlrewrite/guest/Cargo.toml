@@ -9,7 +9,10 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-lol_html = "=3.0.1"
+lol_html = { path = "vendor/lol_html", version = "=3.0.1" }
+
+[dev-dependencies]
+upstream_lol_html = { package = "lol_html", version = "=3.0.1" }
 
 [profile.release]
 opt-level = 3
