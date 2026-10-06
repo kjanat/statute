@@ -121,6 +121,9 @@ tag renaming.
 The [source and local-delta notes](../research/htmlrewrite/guest/vendor/README.md)
 apply equally to native and Wasm builds. Upstream characterization stays separate
 from the patched ownership tests and native/Wasm expected-output regression.
+Renovate flags releases for maintainer approval; the documented `update-lol-html`
+command reapplies the patch and refreshes the copied source, pins and lockfile. Existing
+research tests validate each update. Consumers acquire no additional build step.
 This resolves the end-token decision; configurable programs, selector-scope event
 identity and the bounded Go callback ABI remain stage 1 implementation work.
 

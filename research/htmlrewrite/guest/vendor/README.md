@@ -38,7 +38,30 @@ synthetic closing tags or add browser DOM repair semantics.
 The Go regression exercises malformed input through both native and Wasm builds,
 with explicit expected bytes rather than parity alone.
 
-For upgrades, compare these four files against the pinned archive, port the
-ownership change, rerun both contracts and the complete research suite, and
-review parser-semantic differences before changing this pin. Remove the local
-delta only when upstream satisfies the same regression tests.
+## Updating
+
+Renovate lists new LOL HTML releases in the Dependency Dashboard for approval.
+It ignores the copied source's manifests. With clean pins, copied source and
+provenance notes:
+
+```sh
+make -C research/htmlrewrite update-lol-html VERSION=3.0.1
+make -C research/htmlrewrite test
+```
+
+Replace the example version with the desired release. The refresh command checks
+the crates.io archive checksum, extracts the source, reapplies `end-token.patch`,
+and resolves both pins and the lockfile in scratch space before replacing the
+checkout's files. It also updates the version/checksum above. Node, Git, tar and
+the pinned Rust toolchain are required; consumer builds never run this command.
+
+A patch conflict stops the refresh without changing the checkout. Port the patch
+against the new release in a separate scratch directory, save that patch, then
+rerun the command. Review the source diff and parser-semantic changes even when
+the patch applies cleanly. Upstream characterization may need updating if the
+release fixes the original bug; retain Statute's ownership regressions. Remove
+the local delta only when upstream satisfies those same regressions.
+
+The reproduction and patch have been [submitted to upstream's existing issue](https://github.com/cloudflare/lol-html/issues/110#issuecomment-6027575856).
+Scope/context hooks needed by the future callback ABI are a separate upstream API
+discussion.
