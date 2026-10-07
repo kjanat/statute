@@ -108,6 +108,13 @@ RequestID also precedes every enabled Cache: identity/header mapping and request
 publication run before lookup on every request. RateLimit retains declaration-order
 semantics: outside Cache it counts requests, inside Cache it counts misses.
 
+Each assembled route permits at most one RequestID middleware, regardless of
+its configured input or output header. Resolve rejects duplicates in static and
+fallback routes and individual Docker chains. Docker checks the combined default,
+named, and label-derived chain again before publication; conflicting routers use
+the existing refusal envelope without invalidating sibling routes or shared pools.
+Retry outside RequestID may still invoke that single middleware per attempt.
+
 Request-header operations and path rewrites are special. They are hoisted to the
 route edge and applied once so downstream re-entry, especially `Retry`, cannot
 repeat them per attempt. Consequences that changes must preserve:

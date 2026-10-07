@@ -93,6 +93,13 @@ requests cannot consume or replace a warm anonymous entry. Responses containing
 `Set-Cookie` or `Cache-Control: private` are never stored. Qualified `private`
 directives also prohibit the entire entry; Cache does not strip named fields to
 make a private response shareable.
+Configure at most one `RequestID()` per route, even when different output headers
+are used. Static and fallback duplicates are configuration errors. For Docker,
+the limit includes defaults and every referenced named chain: a duplicate in the
+assembled chain refuses that router while valid siblings remain available.
+Choose either the shared default or the router-specific declaration. Placing
+Retry outside the single RequestID still allows a new ID per attempt.
+
 Routes using `RequestID().Header("Authorization")` or `.Header("Cookie")`
 bypass Cache entirely, regardless of declaration order. Those credential writers
 can run inside request clones that an outer Cache cannot inspect. This policy

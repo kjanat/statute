@@ -26,6 +26,8 @@ func (*requestIDMW) statuteMiddleware() {}
 //
 // When the access log is configured, the request ID surfaces as a
 // "request_id" field on log lines.
+// A route may contain only one RequestID middleware, including middleware
+// combined from Docker defaults and named chains.
 func RequestID() *requestIDMW {
 	return &requestIDMW{header: defaultRequestIDHeader}
 }
