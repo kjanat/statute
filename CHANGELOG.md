@@ -60,6 +60,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Prevent cross-client response-cache disclosure: bypass shared cache lookup and storage for Authorization/Cookie requests and routes whose RequestID writes those headers. Never store private or Set-Cookie responses, including hoisted header projections. Preserve anonymous public caching without sharing authenticated responses or session cookies.
 
+- Reject enabled Cache before AllowIPs or DenyIPs, closing the warm-cache client-IP policy bypass. Preserve declared order and refuse only affected Docker routers when separately registered chains form an unsafe combination.
+
 ## [0.7.2] - 2026-09-29
 
 ### Changed

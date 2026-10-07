@@ -1052,6 +1052,9 @@ func (p *dockerProvider) routeMiddleware(svc *docker.Service, m docker.Matcher, 
 	if err := validateMiddlewareRepresentation(out); err != nil {
 		return nil, fmt.Sprintf("service %q: %v, dropping route %s%s", svc.Name, err, m.Host, m.Path)
 	}
+	if err := validateCachePolicyOrder(out); err != nil {
+		return nil, fmt.Sprintf("service %q: %v, dropping route %s%s", svc.Name, err, m.Host, m.Path)
+	}
 	return out, ""
 }
 

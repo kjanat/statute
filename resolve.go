@@ -1325,6 +1325,9 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 	if err := validateMiddlewareRepresentation(out); err != nil {
 		return nil, err
 	}
+	if err := validateCachePolicyOrder(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
