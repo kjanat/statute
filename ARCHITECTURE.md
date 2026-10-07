@@ -108,6 +108,13 @@ RequestID also precedes every enabled Cache: identity/header mapping and request
 publication run before lookup on every request. RateLimit retains declaration-order
 semantics: outside Cache it counts requests, inside Cache it counts misses.
 
+Each assembled route permits at most one RequestID middleware, regardless of
+its configured input or output header. Resolve rejects duplicates in static and
+fallback routes and individual Docker chains. Docker checks the combined default,
+named, and label-derived chain again before publication; conflicting routers use
+the existing refusal envelope without invalidating sibling routes or shared pools.
+Retry outside RequestID may still invoke that single middleware per attempt.
+
 Request-header operations and path rewrites are special. They are hoisted to the
 route edge and applied once so downstream re-entry, especially `Retry`, cannot
 repeat them per attempt. Consequences that changes must preserve:
@@ -140,6 +147,9 @@ Requests carrying TLS peer certificates or verified client chains also bypass
 lookup and storage: certificate identity is not part of the shared key. This
 includes optional and application-verified client certificates. Ordinary HTTPS
 requests without client certificates remain eligible.
+Origin or projected response no-cache also prohibits storage, including qualified
+forms. Cache has no revalidation path; delivery remains unchanged and a later
+response without that restriction can populate the route's cache.
 If RequestID is configured to write Authorization or Cookie, assembly bypasses
 every Cache in that route regardless of order: inner request clones cannot hide
 credential creation from an outer cache. Other middleware retain their order.
@@ -152,6 +162,12 @@ cannot be stored. An entry owns its copied request-key values and expiry; changi
 the Vary schema replaces incompatible variants. Compression adds Accept-Encoding
 variance at commitment even when it negotiates identity, so an outer cache sees
 the same selection dimensions for every encoding.
+
+CORS contributes mandatory Origin variance to its route's response-header
+projection and final commitment, after raw header operations. Every Cache on that
+route sees the same selection dimension regardless of CORS placement or intervening
+Retry/ETag buffers. Repeated producer Vary fields remain intact. Normal empty
+responses apply final header operations when the handler returns.
 
 Compression negotiates against the actual response. It preserves acceptable
 origin coding stacks without decoding, and only generates an allowed gzip or

@@ -2,10 +2,11 @@
 ---
 name: wiki
 on:
-  push: { branches: [master], paths: ["docs/**", "scripts/wiki-sync.mjs", "mise.toml", ".github/workflows/wiki.yml"] }
+  push: { branches: [master], paths: ["docs/**", "scripts/wiki-sync.mjs", ".mise.toml", ".github/workflows/wiki.yml"] }
   workflow_dispatch: null
 permissions: { contents: write }
 concurrency: { group: wiki, cancel-in-progress: false }
+defaults: { run: { shell: "bash -euo pipefail {0}" } }
 jobs:
   sync:
     name: sync docs to wiki
@@ -18,21 +19,15 @@ jobs:
             id: wiki
             with: { repository: "${{ github.repository }}.wiki", path: wiki, fetch-depth: 0 }
           - name: configure git
-            run: |
-              git config --global user.name 'github-actions[bot]'
+            run: git config --global user.name 'github-actions[bot]';
               git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
           - uses: kjanat/runner@6d49c54ed32e1114daf5c2874322eac02a2a1448 # master
-          - uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+          - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
             with: { bootstrap: true, bootstrap_args: --yes, bootstrap_skip: repos }
+
       - name: start a generation branch
         working-directory: wiki
-        run: |
-          set -euo pipefail
-          if git rev-parse --verify --quiet origin/docs-sync > /dev/null; then
-            git switch -C docs-sync origin/docs-sync
-          else
-            git switch -C docs-sync
-          fi
+        run: if git rev-parse --verify --quiet origin/docs-sync > /dev/null; then git switch -C docs-sync origin/docs-sync; else git switch -C docs-sync; fi
 
       - name: generate the docs
         run: run docs:generate
@@ -40,7 +35,6 @@ jobs:
       - name: commit the generated docs
         working-directory: wiki
         run: |
-          set -euo pipefail
           git add -A Docs
           if git diff --cached --quiet; then
             echo 'the wiki already carries this generation'
@@ -53,13 +47,14 @@ jobs:
         working-directory: wiki
         env: { LIVE: "${{ steps.wiki.outputs.ref }}" }
         run: |
-          set -euo pipefail
           git switch "${LIVE#refs/heads/}"
           if ! git merge --no-edit docs-sync; then
             echo '::error::a hand edit collides with a generated page; resolve the files below in the wiki, then re-run'
             git diff --name-only --diff-filter=U
             exit 1
           fi
+
       - name: push the wiki
         env: { LIVE: "${{ steps.wiki.outputs.ref }}" }
-        run: git -C wiki push origin "${LIVE#refs/heads/}" docs-sync
+        working-directory: wiki
+        run: git push origin "${LIVE#refs/heads/}" docs-sync

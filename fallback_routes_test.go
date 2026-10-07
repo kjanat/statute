@@ -318,7 +318,7 @@ func TestFallbackRoutesListenerPolicyAndObservability(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusForbidden)
 		})).With(ReplacePath("/rewritten"))},
-		Observability: Observability{AccessLog: JSONLog(LogWriter{w: &mu_writer{Mutex: &mu, w: &logs}, name: "test"})},
+		Observability: Observability{AccessLog: JSONLog(LogWriter{w: &muWriter{Mutex: &mu, w: &logs}, name: "test"})},
 	})
 	srv, err := newServer(r)
 	if err != nil {

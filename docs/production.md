@@ -80,6 +80,12 @@ TTL controls expiry. Each stored variant records a copy of its selecting request
 header values, distinguishing absent from empty fields. Comparison is exact;
 equivalent but differently spelled field values can cause an extra miss.
 
+Routes using CORS always retain `Vary: Origin` in cache selection and final
+response headers. This holds in both CORS/Cache orders and through Retry/ETag;
+raw Vary replacement or removal cannot remove this CORS-owned dimension. Other
+producer variance still participates in cache selection. Routes without CORS
+retain their own independent variance policy.
+
 Requests carrying `Authorization` or `Cookie` bypass both lookup and storage,
 even with `public` or `s-maxage` response directives. This includes empty fields
 and uses the effective request after route request-header operations. These
@@ -92,6 +98,17 @@ bypass lookup and storage, including optional or application-verified certificat
 An application's certificate-specific response cannot populate or consume an
 anonymous entry. HTTPS requests without client certificates remain cacheable.
 This does not change listener-owned TLS authentication or create per-user caches.
+Response `no-cache`, including qualified forms such as `no-cache="X-Secret"`,
+also prevents storage. Responses are delivered unchanged; Cache does not perform
+the validation required for subsequent reuse. The rule applies to both origin
+and projected response headers, and removing origin no-cache cannot allow storage.
+Configure at most one `RequestID()` per route, even when different output headers
+are used. Static and fallback duplicates are configuration errors. For Docker,
+the limit includes defaults and every referenced named chain: a duplicate in the
+assembled chain refuses that router while valid siblings remain available.
+Choose either the shared default or the router-specific declaration. Placing
+Retry outside the single RequestID still allows a new ID per attempt.
+
 Routes using `RequestID().Header("Authorization")` or `.Header("Cookie")`
 bypass Cache entirely, regardless of declaration order. Those credential writers
 can run inside request clones that an outer Cache cannot inspect. This policy
@@ -131,8 +148,8 @@ again; a supported, successfully rewritten response can then be cached normally.
 
 This remains a small TTL cache: entries are unbounded, responses are buffered,
 and it does not implement per-user caches, conditional revalidation of stored
-entries, or origin freshness calculations. Response no-cache handling
-is not implemented; use it only for responses safe to share for the configured
+entries, or origin freshness calculations. Origin max-age/s-maxage, Date/Age,
+Expires, and stale-response revalidation are not implemented; use it only for responses safe to share for the configured
 TTL under their selected Vary keys. Avoid it for personalized or streaming
 routes. Applications using custom identity headers or request-context identity
 must mark personalized responses private/no-store or omit Cache; arbitrary

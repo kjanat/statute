@@ -30,7 +30,7 @@ func cacheRequestEligible(r *http.Request) bool {
 // issuance is never shared, even when the response otherwise permits caching.
 func cacheResponseAllowsStorage(h http.Header) bool {
 	_, setsCookie := cacheHeaderValues(h, "Set-Cookie")
-	return !setsCookie && cacheControlAllows(h, "no-store", "private")
+	return !setsCookie && cacheControlAllows(h, "no-store", "private", "no-cache")
 }
 
 func cacheResponseEligible(buf *responseBuffer) bool {

@@ -94,6 +94,7 @@ func (*cacheMW) statuteMiddleware() {}
 // Routes whose RequestID writes Authorization or Cookie bypass Cache entirely.
 // TLS client certificates also bypass lookup and storage, including unverified
 // presented certificates. HTTPS without client certificates remains cacheable.
+// Response no-cache also prevents storage; Cache does not revalidate entries.
 // AllowIPs and DenyIPs must precede every enabled Cache; unsafe ordering fails
 // configuration validation, including assembled Docker middleware chains.
 // RequestID must also precede enabled caches. RateLimit outside Cache counts

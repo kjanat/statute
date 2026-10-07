@@ -1328,6 +1328,9 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 	if err := validateCachePolicyOrder(out); err != nil {
 		return nil, err
 	}
+	if err := validateRequestIDOwnership(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -1375,7 +1378,7 @@ func resolveMiddleware(mw Middleware) (resolved.Middleware, error) {
 }
 
 func (m *timeoutMW) resolve() (resolved.Middleware, error)   { return resolveTimeoutMW(m) }
-func (m *rateLimitMW) resolve() (resolved.Middleware, error) { return resolveRateLimitMW(m) }
+func (r *rateLimitMW) resolve() (resolved.Middleware, error) { return resolveRateLimitMW(r) }
 func (m *retryMW) resolve() (resolved.Middleware, error)     { return resolveRetryMW(m) }
 func (m *cacheMW) resolve() (resolved.Middleware, error)     { return resolveCacheMW(m) }
 
@@ -1386,21 +1389,21 @@ func (*etagMW) resolve() resolved.Middleware {
 }
 func (m *bodyLimitMW) resolve() (resolved.Middleware, error) { return resolveBodyLimitMW(m) }
 
-func (m *requestIDMW) resolve() resolved.Middleware {
+func (r *requestIDMW) resolve() resolved.Middleware {
 	return resolved.Middleware{
 		Type:                resolved.MWRequestID,
-		RequestIDHeader:     m.header,
-		RequestIDFromHeader: m.fromHeader,
+		RequestIDHeader:     r.header,
+		RequestIDFromHeader: r.fromHeader,
 	}
 }
 
-func (m *securityHeadersMW) resolve() (resolved.Middleware, error) {
-	return resolveSecurityHeadersMW(m)
+func (s *securityHeadersMW) resolve() (resolved.Middleware, error) {
+	return resolveSecurityHeadersMW(s)
 }
 func (m *allowIPsMW) resolve() (resolved.Middleware, error)  { return resolveAllowIPsMW(m) }
 func (m *denyIPsMW) resolve() (resolved.Middleware, error)   { return resolveDenyIPsMW(m) }
 func (m *basicAuthMW) resolve() (resolved.Middleware, error) { return resolveBasicAuthMW(m) }
-func (m *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(m) }
+func (c *corsMW) resolve() (resolved.Middleware, error)      { return resolveCORSMW(c) }
 func (m *headerMW) resolve() (resolved.Middleware, error)    { return resolveHeaderMW(m) }
 
 func (m *stripPrefixMW) resolve() (resolved.Middleware, error) { return resolveStripPrefixMW(m) }
