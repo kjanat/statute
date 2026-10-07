@@ -99,6 +99,12 @@ binary/three-way model from a stale plan.
 Middleware declaration order is semantic: the first declared middleware is the
 outermost ordinary wrapper.
 
+AllowIPs and DenyIPs must precede every enabled Cache in their route. Resolution
+rejects the opposite order because a cache hit would bypass the IP policy; no
+wrapper is silently moved. Validation also runs on the final assembled Docker
+chain, where a conflict refuses only that router through the existing tombstone
+path. A nonpositive cache TTL disables the cache and creates no ordering conflict.
+
 Request-header operations and path rewrites are special. They are hoisted to the
 route edge and applied once so downstream re-entry, especially `Retry`, cannot
 repeat them per attempt. Consequences that changes must preserve:

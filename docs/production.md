@@ -55,6 +55,15 @@ proxies supplied through `Handle` routes.
 
 ## Response cache
 
+Put `AllowIPs(...)` and `DenyIPs(...)` **before** every enabled `Cache(...)` in
+the route's `With(...)` list. Cache hits skip inner handlers, so the opposite
+order is a configuration error. IP checks run on cache hits and misses.
+For example, use `.With(AllowIPs("192.0.2.0/24"), Cache("1m"))`.
+This also applies to fallback routes and assembled Docker middleware: defaults
+come before named chains in label order. An unsafe Docker combination refuses
+that router without affecting siblings. Disabled caches (`Cache("0s")`) do not
+impose this restriction. Middleware declaration order otherwise stays unchanged.
+
 `Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,
 keyed by method, host, request URI, and response `Vary` selection. The configured
 TTL controls expiry. Each stored variant records a copy of its selecting request
