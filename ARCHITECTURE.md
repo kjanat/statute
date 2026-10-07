@@ -104,6 +104,9 @@ rejects the opposite order because a cache hit would bypass the IP policy; no
 wrapper is silently moved. Validation also runs on the final assembled Docker
 chain, where a conflict refuses only that router through the existing tombstone
 path. A nonpositive cache TTL disables the cache and creates no ordering conflict.
+RequestID also precedes every enabled Cache: identity/header mapping and request-ID
+publication run before lookup on every request. RateLimit retains declaration-order
+semantics: outside Cache it counts requests, inside Cache it counts misses.
 
 Request-header operations and path rewrites are special. They are hoisted to the
 route edge and applied once so downstream re-entry, especially `Retry`, cannot

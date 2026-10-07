@@ -63,6 +63,16 @@ This also applies to fallback routes and assembled Docker middleware: defaults
 come before named chains in label order. An unsafe Docker combination refuses
 that router without affecting siblings. Disabled caches (`Cache("0s")`) do not
 impose this restriction. Middleware declaration order otherwise stays unchanged.
+`RequestID()` must likewise precede every enabled Cache. It runs on each request
+and Cache selects variants using already-mapped headers. Origin response headers
+can still overwrite its response ID, including during cache replay; response-ID
+ownership is tracked separately in [#152](https://github.com/kjanat/statute/issues/152).
+Place RateLimit
+before Cache to limit every request, or after Cache to limit only misses; both
+orders are supported. Routes that require custom authorization inside `Handle`
+on every request must omit Cache or move that check outside the cached handler.
+Response private/no-store controls storage; it does not run skipped handlers on
+a cache hit.
 
 `Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,
 keyed by method, host, request URI, and response `Vary` selection. The configured
