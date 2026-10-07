@@ -32,6 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Reject multiple RequestID middleware in one route, including fallback routes and assembled Docker default/named chains. Refuse conflicting Docker routers without dropping healthy siblings.
+
 - Apply route response-header operations to normal empty responses; preserve hijacked connection ownership after upgrades.
 
 - Reject response `Content-Encoding` Set/Add/Remove operations and RequestID output on routes using compression, including fallback routes and assembled Docker middleware chains. Prevent compressed bytes from being sent with missing or false coding metadata; refuse invalid Docker routes while preserving valid siblings.
