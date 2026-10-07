@@ -13,12 +13,20 @@ HTTP_LOAD_MODE ?= stream
 HTTP_LOAD_PACE ?= 0s
 
 .PHONY: build test-disabled test fuzz bench bench-native bench-smoke memory http-load
+.PHONY: update-lol-html test-update-lol-html
 
 build:
 	rustup show active-toolchain
 	CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='$(WASM_RUSTFLAGS)' cargo build --manifest-path guest/Cargo.toml --locked --release --lib --target wasm32-unknown-unknown -j 1
 	cargo build --manifest-path guest/Cargo.toml --locked --release --bin statute-htmlrewrite-spike -j 1
 	install -Dm644 guest/target/wasm32-unknown-unknown/release/statute_htmlrewrite_spike.wasm artifact/rewriter.wasm
+
+update-lol-html:
+	node update-lol-html.mjs '$(VERSION)'
+
+test-update-lol-html:
+	cargo fetch --manifest-path guest/Cargo.toml --locked
+	node --test update-lol-html.test.mjs
 
 test-disabled:
 	CGO_ENABLED=0 go test -tags '' .
@@ -33,6 +41,8 @@ test: test-disabled build
 	CGO_ENABLED=0 go -C ../.. test -tags statute_htmlrewrite,htmlrewrite_research -run '^TestResearchRoute' .
 	CGO_ENABLED=0 go vet -tags statute_htmlrewrite,htmlrewrite_research ./...
 	cargo fmt --manifest-path guest/Cargo.toml --check
+	cargo test --manifest-path guest/Cargo.toml --locked --tests
+	$(MAKE) test-update-lol-html
 	cargo clippy --manifest-path guest/Cargo.toml --locked --all-targets -- -D warnings
 
 fuzz: build

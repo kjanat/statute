@@ -1,0 +1,132 @@
+diff --git a/src/rewriter/handlers_dispatcher.rs b/src/rewriter/handlers_dispatcher.rs
+index d0aa5a0..6dcf444 100644
+--- a/src/rewriter/handlers_dispatcher.rs
++++ b/src/rewriter/handlers_dispatcher.rs
+@@ -128,6 +128,17 @@ impl<H> HandlerVec<H> {
+         debug_assert_eq!(self.user_count, 0);
+         Ok(())
+     }
++
++    pub fn discard_inactive_tail(&mut self, idx: Locator) {
++        let index = locator_to_idx(idx);
++        // Stack retirement visits the explicit ancestor before its descendants.
++        // The first implicit handler discards itself and all deeper handlers;
++        // subsequent locators in that discarded tail need no further cleanup.
++        if index < self.items.len() {
++            debug_assert!(self.items[index..].iter().all(|item| item.user_count == 0));
++            self.items.truncate(index);
++        }
++    }
+ }
+
+ pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
+@@ -229,7 +240,7 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+     }
+
+     #[inline]
+-    pub fn stop_matching(&mut self, elem_desc: ElementDescriptor) {
++    pub fn stop_matching(&mut self, elem_desc: ElementDescriptor, owns_end_tag: bool) {
+         for match_id in elem_desc.matched_content_handlers.iter() {
+             let Some(locator) = self.locators.get(match_id as usize) else {
+                 debug_assert!(false);
+@@ -246,7 +257,11 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+         }
+
+         if let Some(idx) = elem_desc.end_tag_handler_idx {
+-            self.end_tag_handlers.inc_user_count(idx);
++            if owns_end_tag {
++                self.end_tag_handlers.inc_user_count(idx);
++            } else {
++                self.end_tag_handlers.discard_inactive_tail(idx);
++            }
+         }
+
+         if elem_desc.remove_content {
+diff --git a/src/rewriter/rewrite_controller.rs b/src/rewriter/rewrite_controller.rs
+index 00095e0..967320b 100644
+--- a/src/rewriter/rewrite_controller.rs
++++ b/src/rewriter/rewrite_controller.rs
+@@ -159,8 +159,8 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
+
+     fn handle_end_tag(&mut self, local_name: LocalName<'_>) -> TokenCaptureFlags {
+         if let Some(ref mut vm) = self.selector_matching_vm {
+-            vm.exec_for_end_tag(local_name, |elem_desc| {
+-                self.handlers_dispatcher.stop_matching(elem_desc);
++            vm.exec_for_end_tag_with_identity(local_name, |elem_desc, owns_end_tag| {
++                self.handlers_dispatcher.stop_matching(elem_desc, owns_end_tag);
+             });
+         }
+
+diff --git a/src/selectors_vm/mod.rs b/src/selectors_vm/mod.rs
+index 64c8ff4..9e467ae 100644
+--- a/src/selectors_vm/mod.rs
++++ b/src/selectors_vm/mod.rs
+@@ -185,6 +185,7 @@ where
+     }
+
+     #[inline]
++    #[cfg(test)]
+     pub fn exec_for_end_tag(
+         &mut self,
+         local_name: LocalName<'_>,
+@@ -194,6 +195,16 @@ where
+             .pop_up_to(local_name, unmatched_element_data_handler);
+     }
+
++    #[inline]
++    pub fn exec_for_end_tag_with_identity(
++        &mut self,
++        local_name: LocalName<'_>,
++        unmatched_element_data_handler: impl FnMut(E, bool),
++    ) {
++        self.stack
++            .pop_up_to_with_end_tag(local_name, unmatched_element_data_handler);
++    }
++
+     #[inline]
+     pub fn current_element_data_mut(&mut self) -> Option<&mut E> {
+         self.stack.current_element_data_mut()
+diff --git a/src/selectors_vm/stack.rs b/src/selectors_vm/stack.rs
+index 82219e5..8d40751 100644
+--- a/src/selectors_vm/stack.rs
++++ b/src/selectors_vm/stack.rs
+@@ -281,10 +281,19 @@ impl<E: ElementData> Stack<E> {
+         }
+     }
+
++    #[cfg(test)]
+     pub fn pop_up_to(
+         &mut self,
+         local_name: LocalName<'_>,
+         mut popped_element_data_handler: impl FnMut(E),
++    ) {
++        self.pop_up_to_with_end_tag(local_name, |data, _| popped_element_data_handler(data));
++    }
++
++    pub fn pop_up_to_with_end_tag(
++        &mut self,
++        local_name: LocalName<'_>,
++        mut popped_element_data_handler: impl FnMut(E, bool),
+     ) {
+         if !self.open_name_counts.contains_key(&local_name) {
+             return;
+@@ -298,7 +307,7 @@ impl<E: ElementData> Stack<E> {
+                 c.pop_to(index);
+             }
+             self.active_hereditary_jumps.retain(|(_, d)| *d < index);
+-            for item in self.items.drain(index..) {
++            for (offset, item) in self.items.drain(index..).enumerate() {
+                 if let RawEntryMut::Occupied(mut e) = self
+                     .open_name_counts
+                     .raw_entry_mut()
+@@ -309,7 +318,9 @@ impl<E: ElementData> Stack<E> {
+                         e.remove();
+                     }
+                 }
+-                popped_element_data_handler(item.element_data);
++                // Only the stack entry selected by the closing token owns it.
++                // Descendants are retired without an end token of their own.
++                popped_element_data_handler(item.element_data, offset == 0);
+             }
+         }
+     }

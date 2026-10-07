@@ -21,6 +21,7 @@
     "**/node_modules/**",
     "dist/**",
     ".worktrees/**",
+    "research/htmlrewrite/guest/vendor/**",
     "e2e/compose.yml"
   ],
   "osvVulnerabilityAlerts": true,
@@ -59,6 +60,17 @@
     }
   ],
   "packageRules": [
+    {
+      "description": "LOL HTML updates need the source refresh command to preserve our matcher patch",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["lol_html"],
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "groupName": "LOL HTML source refresh",
+      "prBodyNotes": [
+        "Refresh the vendored source and both pins with `make -C research/htmlrewrite update-lol-html VERSION=<release>`, then run the research suite. See research/htmlrewrite/guest/vendor/README.md."
+      ]
+    },
     {
       "description": "The oracle tests the local checkout through replace, not a published Statute release",
       "matchManagers": ["gomod"],
