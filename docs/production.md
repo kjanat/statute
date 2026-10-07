@@ -80,6 +80,12 @@ TTL controls expiry. Each stored variant records a copy of its selecting request
 header values, distinguishing absent from empty fields. Comparison is exact;
 equivalent but differently spelled field values can cause an extra miss.
 
+Routes using CORS always retain `Vary: Origin` in cache selection and final
+response headers. This holds in both CORS/Cache orders and through Retry/ETag;
+raw Vary replacement or removal cannot remove this CORS-owned dimension. Other
+producer variance still participates in cache selection. Routes without CORS
+retain their own independent variance policy.
+
 Requests carrying `Authorization` or `Cookie` bypass both lookup and storage,
 even with `public` or `s-maxage` response directives. This includes empty fields
 and uses the effective request after route request-header operations. These

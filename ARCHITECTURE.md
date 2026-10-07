@@ -149,6 +149,12 @@ the Vary schema replaces incompatible variants. Compression adds Accept-Encoding
 variance at commitment even when it negotiates identity, so an outer cache sees
 the same selection dimensions for every encoding.
 
+CORS contributes mandatory Origin variance to its route's response-header
+projection and final commitment, after raw header operations. Every Cache on that
+route sees the same selection dimension regardless of CORS placement or intervening
+Retry/ETag buffers. Repeated producer Vary fields remain intact. Normal empty
+responses apply final header operations when the handler returns.
+
 Compression negotiates against the actual response. It preserves acceptable
 origin coding stacks without decoding, and only generates an allowed gzip or
 Brotli representation when transformation is permitted. Explicit encoding

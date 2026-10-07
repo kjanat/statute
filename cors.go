@@ -28,6 +28,8 @@ func (*corsMW) statuteMiddleware() {}
 // and responds 204 with the configured headers. Non-preflight requests are
 // passed through after Access-Control-Allow-* headers are set; the
 // upstream handler still sees the request.
+// On assembled routes, Origin variance is preserved through response buffering
+// and raw Vary edits, including cache selection and final response headers.
 //
 // A wildcard origin ("*") combined with Credentials() is rejected at resolve
 // time — the CORS spec forbids credentialed wildcards.
@@ -161,15 +163,17 @@ func setCORSPreflightHeaders(w http.ResponseWriter, r *http.Request, methodsHead
 
 // appendVary appends a value to an existing Vary header, deduplicating.
 func appendVary(h http.Header, value string) {
-	current := h.Get("Vary")
-	if current == "" {
-		h.Set("Vary", value)
-		return
-	}
-	for part := range strings.SplitSeq(current, ",") {
-		if strings.EqualFold(strings.TrimSpace(part), value) {
-			return
+	for name, values := range h {
+		if !strings.EqualFold(name, "Vary") {
+			continue
+		}
+		for _, current := range values {
+			for part := range strings.SplitSeq(current, ",") {
+				if strings.EqualFold(strings.TrimSpace(part), value) {
+					return
+				}
+			}
 		}
 	}
-	h.Set("Vary", current+", "+value)
+	h.Add("Vary", value)
 }
