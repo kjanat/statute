@@ -115,6 +115,22 @@ named, and label-derived chain again before publication; conflicting routers use
 the existing refusal envelope without invalidating sibling routes or shared pools.
 Retry outside RequestID may still invoke that single middleware per attempt.
 
+RequestID writes its selected value to both request and response. The named
+`requestIDForbiddenOutputHeaders` set unconditionally reserves HTTP framing,
+representation, validators, caching, and state/security controls; Resolve
+normalizes and validates field names, and Docker rechecks output policy at final
+assembly. Authorization and Cookie remain explicit credential-writer exceptions
+with route-wide cache bypass. The complete set is in
+[`docs/request-id.md`](docs/request-id.md).
+
+RequestID owns its ordinary response field at commitment, removing case aliases
+from producer or cached headers. The outer route response-header operations keep
+their explicit precedence. Normal empty returns apply ownership; panic and
+successful hijacking do not run post-return mutations. Listener ID publication
+and Retry invocation scope remain unchanged. The owned field is excluded from
+trailers, and normal return restores the effective committed ID across late
+producer writes to mutable buffered headers.
+
 Request-header operations and path rewrites are special. They are hoisted to the
 route edge and applied once so downstream re-entry, especially `Retry`, cannot
 repeat them per attempt. Consequences that changes must preserve:

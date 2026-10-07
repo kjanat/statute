@@ -1,9 +1,15 @@
 package statute
 
-// Protocol and scheme identifier constants. Centralised because they appear
+// Header, protocol, and scheme identifier constants. Centralised because they appear
 // in many places (listener scheme switching, ALPN advertisement, request
 // matching) and a typo in a string literal would silently mis-route.
 const (
+	headerContentLength   = "Content-Length"
+	headerContentEncoding = "Content-Encoding"
+	headerContentRange    = "Content-Range"
+	headerAcceptRanges    = "Accept-Ranges"
+	headerXForwardedFor   = "X-Forwarded-For"
+
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
 

@@ -129,9 +129,16 @@ type headerOp struct {
 	name       string
 	value      string
 	ensureVary bool
+	identity   bool
 }
 
 func (op headerOp) apply(h http.Header) {
+	if op.identity {
+		stripRequestIDTrailers(h, op.name)
+		deleteHeaderFold(h, op.name)
+		h.Set(op.name, op.value)
+		return
+	}
 	if op.ensureVary {
 		appendVary(h, op.value)
 		return

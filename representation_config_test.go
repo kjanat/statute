@@ -14,12 +14,13 @@ func TestResolveCompressionHeaderConflict(t *testing.T) {
 	for _, op := range []struct {
 		name string
 		mw   Middleware
+		want string
 	}{
-		{"remove", RemoveResponseHeader("cOnTeNt-EnCoDiNg")},
-		{"set", SetResponseHeader("Content-Encoding", "identity")},
-		{"add", AddResponseHeader("Content-Encoding", "gzip")},
-		{"request ID", RequestID().Header("cOnTeNt-EnCoDiNg")},
-		{"forwarded request ID", RequestID().Header("Content-Encoding").From("X-Request-Id")},
+		{"remove", RemoveResponseHeader("cOnTeNt-EnCoDiNg"), "cannot modify Content-Encoding with Compress"},
+		{"set", SetResponseHeader("Content-Encoding", "identity"), "cannot modify Content-Encoding with Compress"},
+		{"add", AddResponseHeader("Content-Encoding", "gzip"), "cannot modify Content-Encoding with Compress"},
+		{"request ID", RequestID().Header("cOnTeNt-EnCoDiNg"), "reserved"},
+		{"forwarded request ID", RequestID().Header("Content-Encoding").From("X-Request-Id"), "reserved"},
 	} {
 		t.Run(op.name, func(t *testing.T) {
 			for _, codec := range []CompressAlgo{Gzip, Brotli} {
@@ -36,7 +37,7 @@ func TestResolveCompressionHeaderConflict(t *testing.T) {
 							path = "fallback_routes[0]"
 						}
 						_, err := Resolve(cfg)
-						if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "cannot modify Content-Encoding with Compress") {
+						if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), op.want) {
 							t.Fatalf("codec=%v reverse=%t fallback=%t: %v", codec, reverse, fallback, err)
 						}
 					}
