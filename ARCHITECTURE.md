@@ -127,6 +127,10 @@ presence in the effective request bypasses both lookup and storage. Origin or
 projected response private directives (including qualified forms) and Set-Cookie
 fields prohibit storage; raw response-header operations cannot erase an origin
 privacy restriction. Public anonymous entries remain independently reusable.
+Requests carrying TLS peer certificates or verified client chains also bypass
+lookup and storage: certificate identity is not part of the shared key. This
+includes optional and application-verified client certificates. Ordinary HTTPS
+requests without client certificates remain eligible.
 If RequestID is configured to write Authorization or Cookie, assembly bypasses
 every Cache in that route regardless of order: inner request clones cannot hide
 credential creation from an outer cache. Other middleware retain their order.

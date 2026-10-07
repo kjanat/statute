@@ -92,6 +92,8 @@ func (*cacheMW) statuteMiddleware() {}
 // Requests carrying Authorization or Cookie bypass lookup and storage. Private
 // or Set-Cookie responses are not stored, including projected response headers.
 // Routes whose RequestID writes Authorization or Cookie bypass Cache entirely.
+// TLS client certificates also bypass lookup and storage, including unverified
+// presented certificates. HTTPS without client certificates remains cacheable.
 // Request or response Cache-Control: no-store prevents storage. Response-header
 // operations can additionally prohibit storage, but cannot erase an upstream
 // no-store prohibition. Request no-store does not invalidate existing entries.

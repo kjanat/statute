@@ -58,6 +58,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Isolate certificate-bearing requests from shared response-cache entries, including optional and application-verified TLS client certificates. Preserve anonymous HTTPS caching and listener authentication policy.
+
 - Prevent cross-client response-cache disclosure: bypass shared cache lookup and storage for Authorization/Cookie requests and routes whose RequestID writes those headers. Never store private or Set-Cookie responses, including hoisted header projections. Preserve anonymous public caching without sharing authenticated responses or session cookies.
 
 ## [0.7.2] - 2026-09-29

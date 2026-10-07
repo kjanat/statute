@@ -11,6 +11,9 @@ import (
 // This TTL cache delegates preconditions, ranges, and request-specific policy
 // to the downstream producer. Such requests neither use nor replace entries.
 func cacheRequestEligible(r *http.Request) bool {
+	if r.TLS != nil && (len(r.TLS.PeerCertificates) != 0 || len(r.TLS.VerifiedChains) != 0) {
+		return false
+	}
 	if (r.Method != http.MethodGet && r.Method != http.MethodHead) || r.Header.Get("Upgrade") != "" {
 		return false
 	}

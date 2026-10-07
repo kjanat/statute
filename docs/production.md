@@ -68,6 +68,11 @@ requests cannot consume or replace a warm anonymous entry. Responses containing
 `Set-Cookie` or `Cache-Control: private` are never stored. Qualified `private`
 directives also prohibit the entire entry; Cache does not strip named fields to
 make a private response shareable.
+Requests with a presented TLS client certificate or verified client chain also
+bypass lookup and storage, including optional or application-verified certificates.
+An application's certificate-specific response cannot populate or consume an
+anonymous entry. HTTPS requests without client certificates remain cacheable.
+This does not change listener-owned TLS authentication or create per-user caches.
 Routes using `RequestID().Header("Authorization")` or `.Header("Cookie")`
 bypass Cache entirely, regardless of declaration order. Those credential writers
 can run inside request clones that an outer Cache cannot inspect. This policy
