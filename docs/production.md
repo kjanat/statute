@@ -61,6 +61,18 @@ TTL controls expiry. Each stored variant records a copy of its selecting request
 header values, distinguishing absent from empty fields. Comparison is exact;
 equivalent but differently spelled field values can cause an extra miss.
 
+Requests carrying `Authorization` or `Cookie` bypass both lookup and storage,
+even with `public` or `s-maxage` response directives. This includes empty fields
+and uses the effective request after route request-header operations. These
+requests cannot consume or replace a warm anonymous entry. Responses containing
+`Set-Cookie` or `Cache-Control: private` are never stored. Qualified `private`
+directives also prohibit the entire entry; Cache does not strip named fields to
+make a private response shareable.
+Routes using `RequestID().Header("Authorization")` or `.Header("Cookie")`
+bypass Cache entirely, regardless of declaration order. Those credential writers
+can run inside request clones that an outer Cache cannot inspect. This policy
+also applies to Docker-assembled chains without affecting sibling routes.
+
 Request or response `Cache-Control: no-store` prevents storing a new entry.
 Every field value is checked, with case-insensitive directive names and quoted
 extension arguments handled correctly. Malformed directives also skip storage;
@@ -71,7 +83,8 @@ entry; it does not purge that entry or force origin revalidation, as specified b
 Route response-header operations are hoisted outside Cache and Retry. Cache
 checks both the downstream response and a copy with those ordered operations
 applied. A route-added no-store therefore prevents storage. Removing or replacing
-an origin no-store header cannot authorize storing that response. Actual response
+an origin no-store, private, or Set-Cookie header cannot authorize storing that
+response. Projected private or Set-Cookie also prohibits storage. Actual response
 headers are still applied once when the final response is committed.
 
 Conditional headers (`If-Match`, `If-None-Match`, `If-Modified-Since`,
@@ -93,11 +106,14 @@ with no-store and discarded after delivery. The next request reaches the origin
 again; a supported, successfully rewritten response can then be cached normally.
 
 This remains a small TTL cache: entries are unbounded, responses are buffered,
-and it does not implement private-response isolation, conditional revalidation
-of stored entries, or origin freshness calculations. Response no-cache handling
+and it does not implement per-user caches, conditional revalidation of stored
+entries, or origin freshness calculations. Response no-cache handling
 is not implemented; use it only for responses safe to share for the configured
 TTL under their selected Vary keys. Avoid it for personalized or streaming
-routes; use a suitable cache implementation for broader HTTP caching needs.
+routes. Applications using custom identity headers or request-context identity
+must mark personalized responses private/no-store or omit Cache; arbitrary
+application identity cannot be inferred. Use a suitable cache implementation for
+broader HTTP caching needs.
 
 ## Body-derived ETags
 

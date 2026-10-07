@@ -34,8 +34,8 @@ func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		projected := responseHeadersForCache(r.Context(), buf.Header())
 		vary, reusable := cacheVary(buf.Header(), projected)
 		if cacheResponseEligible(buf) && reusable &&
-			requestAllowsStorage && cacheControlAllowsStorage(buf.Header()) &&
-			cacheControlAllowsStorage(projected) {
+			requestAllowsStorage && cacheResponseAllowsStorage(buf.Header()) &&
+			cacheResponseAllowsStorage(projected) {
 			c.put(key, requestHeaders, vary, buf)
 		}
 		buf.replay(w)

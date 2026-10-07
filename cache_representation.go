@@ -16,11 +16,18 @@ func cacheRequestEligible(r *http.Request) bool {
 	}
 	for name := range r.Header {
 		switch strings.ToLower(name) {
-		case "if-match", "if-none-match", "if-modified-since", "if-unmodified-since", "range", "if-range":
+		case "authorization", "cookie", "if-match", "if-none-match", "if-modified-since", "if-unmodified-since", "range", "if-range":
 			return false
 		}
 	}
 	return cacheControlAllows(r.Header, "no-transform", "no-cache")
+}
+
+// Origin privacy restrictions survive hoisted response-header removal. Cookie
+// issuance is never shared, even when the response otherwise permits caching.
+func cacheResponseAllowsStorage(h http.Header) bool {
+	_, setsCookie := cacheHeaderValues(h, "Set-Cookie")
+	return !setsCookie && cacheControlAllows(h, "no-store", "private")
 }
 
 func cacheResponseEligible(buf *responseBuffer) bool {

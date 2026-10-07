@@ -1316,8 +1316,17 @@ func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
 			http.Error(w, "no handler configured for route", http.StatusInternalServerError)
 		})
 	}
+	// RequestID can introduce credentials inside a buffered/cloned request,
+	// beyond an outer Cache's view. Such a route cannot use shared entries.
+	credentialWriter := slices.ContainsFunc(mws, func(m resolved.Middleware) bool {
+		return m.Type == resolved.MWRequestID &&
+			(strings.EqualFold(m.RequestIDHeader, "Authorization") || strings.EqualFold(m.RequestIDHeader, "Cookie"))
+	})
 	h := base
 	for _, mw := range slices.Backward(mws) {
+		if credentialWriter && mw.Type == resolved.MWCache {
+			continue
+		}
 		h = applyMiddleware(mw, h)
 	}
 	return withHeaderMiddleware(mws, withPathRewrite(mws, h))
