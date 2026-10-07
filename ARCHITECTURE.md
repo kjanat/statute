@@ -122,6 +122,15 @@ storage prohibition. Retry re-entry shares the immutable route operations;
 neither projection nor cache hits apply them to the actual response early.
 No-store skips storage while preserving delivery and the route's failure policy.
 
+Cache is shared between clients of its route. Authorization or Cookie field
+presence in the effective request bypasses both lookup and storage. Origin or
+projected response private directives (including qualified forms) and Set-Cookie
+fields prohibit storage; raw response-header operations cannot erase an origin
+privacy restriction. Public anonymous entries remain independently reusable.
+If RequestID is configured to write Authorization or Cookie, assembly bypasses
+every Cache in that route regardless of order: inner request clones cannot hide
+credential creation from an outer cache. Other middleware retain their order.
+
 Cache delegates conditional, range, request no-cache/no-transform, and malformed
 cache-policy requests to the downstream producer without looking up or replacing
 entries. Stored variants match the request values selected by the union of origin

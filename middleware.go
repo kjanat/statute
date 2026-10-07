@@ -89,6 +89,9 @@ type cacheMW struct{ ttl string }
 func (*cacheMW) statuteMiddleware() {}
 
 // Cache returns a response-cache middleware with the given TTL.
+// Requests carrying Authorization or Cookie bypass lookup and storage. Private
+// or Set-Cookie responses are not stored, including projected response headers.
+// Routes whose RequestID writes Authorization or Cookie bypass Cache entirely.
 // Request or response Cache-Control: no-store prevents storage. Response-header
 // operations can additionally prohibit storage, but cannot erase an upstream
 // no-store prohibition. Request no-store does not invalidate existing entries.
