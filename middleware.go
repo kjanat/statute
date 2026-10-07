@@ -92,6 +92,7 @@ func (*cacheMW) statuteMiddleware() {}
 // Requests carrying Authorization or Cookie bypass lookup and storage. Private
 // or Set-Cookie responses are not stored, including projected response headers.
 // Routes whose RequestID writes Authorization or Cookie bypass Cache entirely.
+// Response no-cache also prevents storage; Cache does not revalidate entries.
 // AllowIPs and DenyIPs must precede every enabled Cache; unsafe ordering fails
 // configuration validation, including assembled Docker middleware chains.
 // RequestID must also precede enabled caches. RateLimit outside Cache counts
