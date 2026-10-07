@@ -18,7 +18,7 @@ jobs:
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with: { token: "${{ secrets.CODECOV_TOKEN }}", slug: kjanat/statute, files: ./cover.out, fail_ci_if_error: false }
       - name: upload coverage artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: cover.out, path: cover.out, if-no-files-found: error, retention-days: 14 }
   lint:
     name: lint
@@ -28,11 +28,9 @@ jobs:
       # not leave a usable token in .git/config for them to reach.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache: true }
-      - uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3.0.15
-        with: { install-only: true }
       # golangci-lint-action runs `run`, which never applies the configured
       # formatters. `make fmt-check` and dprint use the same pinned goimports
       # tool, while this explicit step also checks every tracked Go file.
@@ -146,7 +144,7 @@ jobs:
       # on that would mask the real failure.
       - name: upload failure artifacts
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: e2e-artifacts, path: e2e/artifacts/**, if-no-files-found: warn, retention-days: 14 }
       # The lane's own teardown must leave nothing behind; a sweep that
       # finds anything is a failed invariant, not housekeeping.

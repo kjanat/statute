@@ -18,9 +18,7 @@ name: Comment Cop
 # never fetched and never runs. Credentials are not persisted into the
 # checkout, and no build, install, or Go toolchain step touches the tree.
 
-on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+on: { pull_request_target: { types: [opened, synchronize, reopened, ready_for_review] } }
 
 # contents: write looks excessive but is required: the GraphQL
 # resolveReviewThread mutation maps to the contents permission for

@@ -406,7 +406,7 @@ func TestFallbackObservedByListenerObservability(t *testing.T) {
 	cfg := Config{
 		Listeners:     Listeners{HTTP(":80")},
 		Fallback:      countingFallback(&calls),
-		Observability: Observability{AccessLog: JSONLog(LogWriter{w: &mu_writer{Mutex: &mu, w: &buf}, name: "test"})},
+		Observability: Observability{AccessLog: JSONLog(LogWriter{w: &muWriter{Mutex: &mu, w: &buf}, name: "test"})},
 	}
 	r := mustResolve(t, cfg)
 	srv, err := newServer(r)

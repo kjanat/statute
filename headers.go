@@ -1,8 +1,10 @@
 package statute
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -123,9 +125,18 @@ func applyHeaderOp(h http.Header, op resolved.MiddlewareType, name, value string
 // headerOp is one resolved mutation, compiled out of the middleware list when
 // the route is built.
 type headerOp struct {
-	op    resolved.MiddlewareType
-	name  string
-	value string
+	op         resolved.MiddlewareType
+	name       string
+	value      string
+	ensureVary bool
+}
+
+func (op headerOp) apply(h http.Header) {
+	if op.ensureVary {
+		appendVary(h, op.value)
+		return
+	}
+	applyHeaderOp(h, op.op, op.name, op.value)
 }
 
 // proxyForwardedHeaders are the fields httputil.ProxyRequest.SetXForwarded
@@ -152,7 +163,32 @@ var proxyForwardedHeaders = map[string]bool{
 // Ordering among the operations themselves is the declared one; they do not
 // interleave with the other middleware on the route.
 func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Handler {
-	var requestOps, responseOps, forwardedOps []headerOp
+	requestOps, responseOps, forwardedOps := compileHeaderOps(mws)
+	if len(requestOps) == 0 && len(responseOps) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var responseWriter *headerResponseWriter
+		for _, op := range requestOps {
+			applyHeaderOp(r.Header, op.op, op.name, op.value)
+		}
+		if len(forwardedOps) > 0 {
+			r = r.WithContext(context.WithValue(r.Context(), forwardedOpsKey{}, forwardedOps))
+		}
+		if len(responseOps) > 0 {
+			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, responseOps))
+			responseWriter = &headerResponseWriter{ResponseWriter: w, ops: responseOps}
+			w = responseWriter
+		}
+		next.ServeHTTP(w, r)
+		if responseWriter != nil {
+			responseWriter.applyOps()
+		}
+	})
+}
+
+func compileHeaderOps(mws []resolved.Middleware) (requestOps, responseOps, forwardedOps []headerOp) {
+	cors := false
 	for _, m := range mws {
 		op := headerOp{op: m.Type, name: m.HeaderName, value: m.HeaderValue}
 		switch {
@@ -163,24 +199,16 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 			}
 		case isResponseHeaderOp(m.Type):
 			responseOps = append(responseOps, op)
+		case m.Type == resolved.MWCORS:
+			cors = true
 		}
 	}
-	if len(requestOps) == 0 && len(responseOps) == 0 {
-		return next
+	// CORS variance belongs to the route, outside buffered wrappers and raw
+	// header edits. Cache projection and final commitment use the same operation.
+	if cors {
+		responseOps = append(responseOps, headerOp{value: "Origin", ensureVary: true})
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for _, op := range requestOps {
-			applyHeaderOp(r.Header, op.op, op.name, op.value)
-		}
-		if len(forwardedOps) > 0 {
-			r = r.WithContext(context.WithValue(r.Context(), forwardedOpsKey{}, forwardedOps))
-		}
-		if len(responseOps) > 0 {
-			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, responseOps))
-			w = &headerResponseWriter{ResponseWriter: w, ops: responseOps}
-		}
-		next.ServeHTTP(w, r)
-	})
+	return requestOps, responseOps, forwardedOps
 }
 
 type forwardedOpsKey struct{}
@@ -196,7 +224,7 @@ func responseHeadersForCache(ctx context.Context, h http.Header) http.Header {
 	}
 	projected := h.Clone()
 	for _, op := range ops {
-		applyHeaderOp(projected, op.op, op.name, op.value)
+		op.apply(projected)
 	}
 	return projected
 }
@@ -263,6 +291,16 @@ func (w *headerResponseWriter) Flush() {
 	}
 }
 
+// Hijack transfers response ownership to the connection. A normal handler
+// return after successful hijacking must leave handshake headers untouched.
+func (w *headerResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		w.applied = true
+	}
+	return conn, rw, err
+}
+
 // Unwrap exposes the underlying writer to http.ResponseController, so flushing
 // and connection hijacking (WebSocket and other protocol upgrades) keep
 // working through this wrapper.
@@ -276,7 +314,7 @@ func (w *headerResponseWriter) applyOps() {
 	w.applied = true
 	h := w.Header()
 	for _, op := range w.ops {
-		applyHeaderOp(h, op.op, op.name, op.value)
+		op.apply(h)
 	}
 }
 

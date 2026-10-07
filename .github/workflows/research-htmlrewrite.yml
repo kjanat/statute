@@ -1,7 +1,7 @@
 name: HTML rewrite research
 on:
   pull_request:
-    paths:
+    paths: &Paths
       - "*.go"
       - go.mod
       - go.sum
@@ -9,42 +9,26 @@ on:
       - resolved/**
       - research/htmlrewrite/**
       - .github/workflows/research-htmlrewrite.yml
-  push:
-    branches: [master]
-    paths:
-      - "*.go"
-      - go.mod
-      - go.sum
-      - internal/**
-      - resolved/**
-      - research/htmlrewrite/**
-      - .github/workflows/research-htmlrewrite.yml
+  push: { branches: [master], paths: *Paths }
   workflow_dispatch:
 permissions: { contents: read }
 concurrency: { group: "htmlrewrite-${{ github.ref }}", cancel-in-progress: true }
 jobs:
   experiment:
     name: HTML rewrite (${{ matrix.runner }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    strategy: { fail-fast: false, matrix: { runner: [ubuntu-26.04, ubuntu-26.04-arm] } }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: research/htmlrewrite
+    defaults: { run: { working-directory: research/htmlrewrite } }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: research/htmlrewrite/go.mod
-          cache-dependency-path: research/htmlrewrite/go.sum
+        with: { go-version-file: research/htmlrewrite/go.mod, cache-dependency-path: research/htmlrewrite/go.sum }
       - name: Parser-independent cancellation reproducer
-        run: |
-          CGO_ENABLED=0 go test -v -timeout=2m ./cancelprobe
-          CGO_ENABLED=0 go test -run '^$' -bench . -benchtime=500ms -count=3 ./cancelprobe
+        env: { CGO_ENABLED: 0 }
+        run: go test -v -timeout=2m ./cancelprobe;
+          go test -run '^$' -bench . -benchtime=500ms -count=3 ./cancelprobe
       - name: Disabled feature without generated Wasm
         run: make test-disabled
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -55,11 +39,10 @@ jobs:
         run: make test
       - name: Race detector
         if: runner.arch == 'X64'
-        run: |
-          go test -race -tags statute_htmlrewrite ./...
-          go test -race -tags statute_htmlrewrite,htmlrewrite_research -run '^TestHTTPDocker' .
-          go -C ../.. test -race -tags statute_htmlrewrite,htmlrewrite_research ./internal/researchroute
-          go -C ../.. test -race -tags statute_htmlrewrite,htmlrewrite_research -run '^TestResearchRoute' .
+        run: go test -race -tags statute_htmlrewrite ./...;
+          go test -race -tags statute_htmlrewrite,htmlrewrite_research -run '^TestHTTPDocker' .;
+          go -C "${GITHUB_WORKSPACE}" test -race -tags statute_htmlrewrite,htmlrewrite_research ./internal/researchroute;
+          go -C "${GITHUB_WORKSPACE}" test -race -tags statute_htmlrewrite,htmlrewrite_research -run '^TestResearchRoute' .
       - name: Fuzz chunk boundaries
         run: make fuzz
       - name: Benchmark smoke tests
@@ -67,18 +50,16 @@ jobs:
       - name: Memory probe smoke test
         run: make memory LOAD_DURATION=1s LOAD_ROUNDS=2 LOAD_WORKERS=2
       - name: HTTP load probe smoke tests
-        run: |
-          CGO_ENABLED=0 go test -tags statute_htmlrewrite -c -o artifact/http-load.test
+        env: { CGO_ENABLED: 0 }
+        run: go test -tags statute_htmlrewrite -c -o artifact/http-load.test;
           for mode in plain stream etag; do
-            ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-mode "$mode" -http-load-pace 1ms
+          ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-mode "$mode" -http-load-pace 1ms;
           done
       - name: Artifact identity
         run: sha256sum artifact/rewriter.wasm
       - name: SIMD experiment parity and limits
-        run: |
-          make test WASM_RUSTFLAGS='-Ctarget-feature=+simd128'
+        run: make test WASM_RUSTFLAGS='-Ctarget-feature=+simd128';
           sha256sum artifact/rewriter.wasm
       - name: Initial-memory experiment parity and limits
-        run: |
-          make test WASM_RUSTFLAGS='-Clink-arg=--initial-memory=2097152'
+        run: make test WASM_RUSTFLAGS='-Clink-arg=--initial-memory=2097152';
           sha256sum artifact/rewriter.wasm

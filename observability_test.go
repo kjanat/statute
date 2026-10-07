@@ -111,7 +111,7 @@ func TestAccessLog_ErrorsAlwaysLogged(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	var mu sync.Mutex
-	writer := &mu_writer{Mutex: &mu, w: &buf}
+	writer := &muWriter{Mutex: &mu, w: &buf}
 
 	cfg := resolved.AccessLog{
 		Enabled:    true,
@@ -156,7 +156,7 @@ func TestAccessLog_StatusFilterSuppressesErrors(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	var mu sync.Mutex
-	writer := &mu_writer{Mutex: &mu, w: &buf}
+	writer := &muWriter{Mutex: &mu, w: &buf}
 
 	cfg := resolved.AccessLog{
 		Enabled:    true,
@@ -206,7 +206,7 @@ func TestAccessLog_StatusFilterFinalStatus(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	var mu sync.Mutex
-	writer := &mu_writer{Mutex: &mu, w: &buf}
+	writer := &muWriter{Mutex: &mu, w: &buf}
 
 	cfg := resolved.AccessLog{
 		Enabled:    true,
@@ -250,7 +250,7 @@ func TestAccessLog_StatusFilterFlushCommits(t *testing.T) {
 		var mu sync.Mutex
 		cfg := resolved.AccessLog{
 			Enabled:    true,
-			Writer:     &mu_writer{Mutex: &mu, w: &buf},
+			Writer:     &muWriter{Mutex: &mu, w: &buf},
 			Format:     "json",
 			SampleRate: 1,
 			Statuses:   statuses,
@@ -283,7 +283,7 @@ func TestAccessLog_StatusFilter101(t *testing.T) {
 	var mu sync.Mutex
 	cfg := resolved.AccessLog{
 		Enabled:    true,
-		Writer:     &mu_writer{Mutex: &mu, w: &buf},
+		Writer:     &muWriter{Mutex: &mu, w: &buf},
 		Format:     "json",
 		SampleRate: 1,
 		Statuses:   []resolved.StatusRange{{From: 101, To: 101}},
@@ -321,7 +321,7 @@ func TestStatusRecorderHijack(t *testing.T) {
 	})
 	var buf bytes.Buffer
 	var mu sync.Mutex
-	cfg := resolved.AccessLog{Enabled: true, Writer: &mu_writer{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
+	cfg := resolved.AccessLog{Enabled: true, Writer: &muWriter{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
 	// Stack both recorders the way server.go does: access log inside, metrics outside.
 	h := metricsMiddleware(&stats{}, accessLogMiddleware(cfg, inner))
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
@@ -346,7 +346,7 @@ func TestStatusRecorderHijackRecords101(t *testing.T) {
 	})
 	var buf bytes.Buffer
 	var mu sync.Mutex
-	cfg := resolved.AccessLog{Enabled: true, Writer: &mu_writer{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
+	cfg := resolved.AccessLog{Enabled: true, Writer: &muWriter{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
 	st := newStats()
 	h := metricsMiddleware(st, accessLogMiddleware(cfg, inner))
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
@@ -422,7 +422,7 @@ func TestAccessLog_StatusFilter101MatchesHijack(t *testing.T) {
 	var mu sync.Mutex
 	cfg := resolved.AccessLog{
 		Enabled:    true,
-		Writer:     &mu_writer{Mutex: &mu, w: &buf},
+		Writer:     &muWriter{Mutex: &mu, w: &buf},
 		Format:     "json",
 		SampleRate: 1,
 		Statuses:   []resolved.StatusRange{{From: 101, To: 101}},
@@ -460,7 +460,7 @@ func TestReverseProxyUpgradeRecords101(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	var mu sync.Mutex
-	cfg := resolved.AccessLog{Enabled: true, Writer: &mu_writer{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
+	cfg := resolved.AccessLog{Enabled: true, Writer: &muWriter{Mutex: &mu, w: &buf}, Format: "json", SampleRate: 1}
 	st := newStats()
 	front := httptest.NewServer(metricsMiddleware(st, accessLogMiddleware(cfg, httputil.NewSingleHostReverseProxy(backendURL))))
 	defer front.Close()
@@ -654,13 +654,13 @@ func TestStats_PrometheusFormat(t *testing.T) {
 	}
 }
 
-// mu_writer is a tiny synchronized writer used in concurrent encoder tests.
-type mu_writer struct {
+// muWriter is a tiny synchronized writer used in concurrent encoder tests.
+type muWriter struct {
 	*sync.Mutex
 	w *bytes.Buffer
 }
 
-func (m *mu_writer) Write(p []byte) (int, error) {
+func (m *muWriter) Write(p []byte) (int, error) {
 	m.Lock()
 	defer m.Unlock()
 	return m.w.Write(p)

@@ -47,7 +47,7 @@ jobs:
       - name: warm proxy.golang.org
         run: |
           for _ in 1 2 3 4 5; do
-            if curl --fail --silent --show-error --location --max-time 30 --retry 2 --retry-delay 3 --retry-connrefused "https://proxy.golang.org/${CNAME}/@v/${TAG}.info" > /dev/null; then
+            if curl -fsSL --max-time 30 --retry 2 --retry-delay 3 --retry-connrefused "https://proxy.golang.org/${CNAME}/@v/${TAG}.info" >/dev/null; then
               echo "proxy indexed ${TAG}"
               exit 0
             fi
@@ -67,9 +67,8 @@ jobs:
         run: |
           # Same endpoint as pkg.go.dev's Request button. A proxy cache hit
           # alone does not directly enqueue work on pkg.go.dev.
-          if curl --fail --silent --show-error --max-time 45 \
-            --retry 2 --retry-delay 5 --retry-max-time 150 --retry-connrefused \
-            --request POST "https://pkg.go.dev/fetch/${CNAME}@${TAG}" > /dev/null; then
+          if curl -fsSL --max-time 45 --retry 2 --retry-delay 5 --retry-max-time 150 --retry-connrefused \
+            --request POST "https://pkg.go.dev/fetch/${CNAME}@${TAG}" >/dev/null; then
             echo "pkg.go.dev fetch completed for ${CNAME}@${TAG}; verifying metadata next"
           else
             # A timeout may leave the fetch queued; verification still decides success.
@@ -86,8 +85,7 @@ jobs:
             # The API advertises an hour-long cache lifetime. Each poll must
             # check fresh metadata rather than reuse a pre-indexing response.
             poll_url="${api}?poll=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
-            if curl --fail --silent --show-error --location --max-time 30 \
-              --retry 3 --retry-delay 5 --retry-connrefused \
+            if curl -fsSL --max-time 30 --retry 3 --retry-delay 5 --retry-connrefused \
               --header 'Cache-Control: no-cache' "${poll_url}" -o "${versions}"; then
               if jq -e --arg tag "${TAG}" 'any(.items[]?; .version == $tag)' "${versions}" > /dev/null; then
                 echo "pkg.go.dev indexed ${TAG} after ${SECONDS}s in ${attempt} attempt(s)"

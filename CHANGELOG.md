@@ -32,6 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Apply route response-header operations to normal empty responses; preserve hijacked connection ownership after upgrades.
+
 - Reject response `Content-Encoding` Set/Add/Remove operations and RequestID output on routes using compression, including fallback routes and assembled Docker middleware chains. Prevent compressed bytes from being sent with missing or false coding metadata; refuse invalid Docker routes while preserving valid siblings.
 
 - Respect Accept-Encoding qualities, wildcards, and explicit exclusions against the actual response. Preserve acceptable origin codings, reject unavailable successful representations with an empty 406, reject malformed preferences with 400, and keep encoding-aware Cache/ETag behavior independent of middleware order.
@@ -59,6 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Security
 
 - Require RequestID before enabled Cache, running identity mapping on every request before cache selection. Keep RateLimit ordering explicit: before Cache counts all requests, after Cache counts misses.
+
+- Preserve CORS Origin variance through cache selection, Retry/ETag buffering, and raw response-header edits. Keep origin-specific representations separate and retain repeated producer Vary fields.
 
 - Prevent cross-client response-cache disclosure: bypass shared cache lookup and storage for Authorization/Cookie requests and routes whose RequestID writes those headers. Never store private or Set-Cookie responses, including hoisted header projections. Preserve anonymous public caching without sharing authenticated responses or session cookies.
 
