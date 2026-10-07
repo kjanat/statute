@@ -66,6 +66,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Preserve CORS Origin variance through cache selection, Retry/ETag buffering, and raw response-header edits. Keep origin-specific representations separate and retain repeated producer Vary fields.
 
+- Prevent reuse of response no-cache without validation by declining storage, including qualified directives and route-added policy. Preserve origin restrictions through response-header removal or replacement.
+
 - Prevent cross-client response-cache disclosure: bypass shared cache lookup and storage for Authorization/Cookie requests and routes whose RequestID writes those headers. Never store private or Set-Cookie responses, including hoisted header projections. Preserve anonymous public caching without sharing authenticated responses or session cookies.
 
 - Reject enabled Cache before AllowIPs or DenyIPs, closing the warm-cache client-IP policy bypass. Preserve declared order and refuse only affected Docker routers when separately registered chains form an unsafe combination.

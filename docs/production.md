@@ -93,6 +93,10 @@ requests cannot consume or replace a warm anonymous entry. Responses containing
 `Set-Cookie` or `Cache-Control: private` are never stored. Qualified `private`
 directives also prohibit the entire entry; Cache does not strip named fields to
 make a private response shareable.
+Response `no-cache`, including qualified forms such as `no-cache="X-Secret"`,
+also prevents storage. Responses are delivered unchanged; Cache does not perform
+the validation required for subsequent reuse. The rule applies to both origin
+and projected response headers, and removing origin no-cache cannot allow storage.
 Configure at most one `RequestID()` per route, even when different output headers
 are used. Static and fallback duplicates are configuration errors. For Docker,
 the limit includes defaults and every referenced named chain: a duplicate in the
@@ -139,8 +143,8 @@ again; a supported, successfully rewritten response can then be cached normally.
 
 This remains a small TTL cache: entries are unbounded, responses are buffered,
 and it does not implement per-user caches, conditional revalidation of stored
-entries, or origin freshness calculations. Response no-cache handling
-is not implemented; use it only for responses safe to share for the configured
+entries, or origin freshness calculations. Origin max-age/s-maxage, Date/Age,
+Expires, and stale-response revalidation are not implemented; use it only for responses safe to share for the configured
 TTL under their selected Vary keys. Avoid it for personalized or streaming
 routes. Applications using custom identity headers or request-context identity
 must mark personalized responses private/no-store or omit Cache; arbitrary
