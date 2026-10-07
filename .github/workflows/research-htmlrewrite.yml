@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with: { node-version: "26" }
       - name: Install pinned Rust toolchain
-        run: rustup show active-toolchain
+        run: rustup toolchain install --no-self-update
       - name: Build and test cgo-free host and native oracle
         run: make test
       - name: Race detector
@@ -53,7 +53,7 @@ jobs:
         env: { CGO_ENABLED: 0 }
         run: go test -tags statute_htmlrewrite -c -o artifact/http-load.test;
           for mode in plain stream etag; do
-          ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-mode "$mode" -http-load-pace 1ms;
+          ./artifact/http-load.test -test.run '^TestHTTPLoad$' -test.v -test.timeout 2m -http-load-mode "${mode}" -http-load-pace 1ms;
           done
       - name: Artifact identity
         run: sha256sum artifact/rewriter.wasm

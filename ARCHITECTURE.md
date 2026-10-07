@@ -143,6 +143,10 @@ presence in the effective request bypasses both lookup and storage. Origin or
 projected response private directives (including qualified forms) and Set-Cookie
 fields prohibit storage; raw response-header operations cannot erase an origin
 privacy restriction. Public anonymous entries remain independently reusable.
+Requests carrying TLS peer certificates or verified client chains also bypass
+lookup and storage: certificate identity is not part of the shared key. This
+includes optional and application-verified client certificates. Ordinary HTTPS
+requests without client certificates remain eligible.
 Origin or projected response no-cache also prohibits storage, including qualified
 forms. Cache has no revalidation path; delivery remains unchanged and a later
 response without that restriction can populate the route's cache.

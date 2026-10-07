@@ -113,6 +113,8 @@ linters:
       disable: [fieldalignment, shadow]
     revive:
       rules: [name: var-naming, name: package-comments, { name: exported, severity: warning }]
+    staticcheck:
+      checks: [all, "-ST1000", "-ST1003", "-ST1020", "-ST1021", "-ST1022"]
     gocritic: { disabled-checks: [ifElseChain] }
     gocyclo: { min-complexity: 10 }
     custom:
