@@ -45,4 +45,5 @@ jobs:
           scan-limit: ${{ inputs.scan_limit }}
 
       - name: push signed commits
-        run: git push origin HEAD:${{ github.ref_name }} --force-with-lease
+        env: { target: "HEAD:${{ github.ref_name }}" }
+        run: git push origin "${target}" --force-with-lease
