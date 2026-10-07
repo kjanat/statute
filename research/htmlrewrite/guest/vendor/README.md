@@ -13,10 +13,10 @@ this directory is excluded from the repository-wide formatter.
 
 ## Local delta
 
-Four source files differ from the archive:
+Six source files differ from the archive:
 
 The complete reviewable delta is [end-token.patch](end-token.patch). Applying it
-to the extracted archive reproduces those four files; the other imported files
+to the extracted archive reproduces those six files; the other imported files
 are byte-for-byte upstream. Keep this patch synchronized when changing the fork.
 
 - `src/selectors_vm/stack.rs`: report which popped entry actually owns the
@@ -25,7 +25,18 @@ are byte-for-byte upstream. Keep this patch synchronized when changing the fork.
 - `src/rewriter/rewrite_controller.rs`: pass ownership to handler retirement.
 - `src/rewriter/handlers_dispatcher.rs`: activate only the explicit owner's
   end handler; discard implicit descendants' handlers immediately. All matched
-  content scopes and removal counters are still retired.
+  content scopes and removal counters are still retired. Report selector matches
+  and retirements to an optional parser-owned observer.
+- `src/rewriter/settings.rs` and `src/lib.rs`: expose that private matcher
+  observer. It reports element identity, registration index and content-scope
+  eligibility; retirement reports explicit versus implicit closure.
+
+The controller assigns identities before selector matching and stores matched
+scope identities in the memory-accounted selector stack, including deferred
+attribute matching. Void and foreign self-closing matches never replace their
+parent's identity. The observer adds no second stack and no synthetic EOF events.
+It runs before content callbacks and must not re-enter the same parser. IDs are
+local to one parser; the future host ABI must add stream/invocation identities.
 
 Original stack/VM entry points remain test-only wrappers for upstream unit tests.
 There is no name comparison against mutated tags and no second HTML stack.
@@ -35,6 +46,10 @@ synthetic closing tags or add browser DOM repair semantics.
 
 `../tests/event_contract.rs` preserves the upstream reproduction.
 `../tests/owned_end_contract.rs` tests the patched ownership and cleanup contract.
+`../tests/matcher_context.rs` proves actual scope membership, including text-only
+rules, overlap, implicit retirement, interleaved parsers and observer cleanup.
+`TestMatcherContextNativeWasm` compares native and Wasm matcher/content traces
+at different feed sizes and both output modes, with explicit retirement results.
 The Go regression exercises malformed input through both native and Wasm builds,
 with explicit expected bytes rather than parity alone.
 
@@ -68,5 +83,6 @@ release fixes the original bug; retain Statute's ownership regressions. Remove
 the local delta only when upstream satisfies those same regressions.
 
 The reproduction and patch have been [submitted to upstream's existing issue](https://github.com/cloudflare/lol-html/issues/110#issuecomment-6027575856).
-Scope/context hooks needed by the future callback ABI are a separate upstream API
-discussion.
+The matcher-context hook is an additional downstream extension; the linked
+upstream comment proposes only the end-token ownership fix. No upstream
+acceptance of either change is implied.

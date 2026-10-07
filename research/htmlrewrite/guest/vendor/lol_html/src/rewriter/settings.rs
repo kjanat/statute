@@ -5,6 +5,27 @@ use super::{AsciiCompatibleEncoding, RewritingError};
 use std::borrow::Cow;
 use std::error::Error;
 
+/// Matcher bookkeeping for Statute's private callback adapter, not DOM events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatcherEvent {
+    /// A registered selector matched an input element, before its handlers run.
+    Match {
+        /// Parser-local, nonzero identity shared by overlapping selectors.
+        element: u64,
+        /// Zero-based registration index, excluding internal charset handling.
+        rule: u32,
+        /// Whether this match establishes a content scope.
+        content: bool,
+    },
+    /// A matched content scope left the actual selector stack.
+    Retire {
+        /// Identity previously reported by `Match`.
+        element: u64,
+        /// Whether this element owns the closing token.
+        explicit: bool,
+    },
+}
+
 /// Trait used to parameterize the type of handlers used in the rewriter.
 ///
 /// This trait is meant to be an implementation detail for the [`Send`-compatible type aliases](crate::send).
@@ -968,6 +989,7 @@ impl MemorySettings {
 /// [`append_element_content_handler()`]: #method.append_element_content_handler
 /// [`append_document_content_handler()`]: #method.append_document_content_handler
 pub struct Settings<'handlers, 'selectors, H: HandlerTypes = LocalHandlerTypes> {
+    pub(crate) matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'handlers>>,
     pub(crate) element_content_handlers: Vec<(
         Cow<'selectors, Selector>,
         ElementContentHandlers<'handlers, H>,
@@ -1013,6 +1035,7 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H> 
     #[must_use]
     pub fn new_for_handler_types() -> Self {
         Settings {
+            matcher_observer: None,
             element_content_handlers: vec![],
             document_content_handlers: vec![],
             bail_out_handlers: vec![],
@@ -1023,6 +1046,21 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H> 
             adjust_charset_on_meta_tag: false,
             graceful_bail_out_on_content_handler_error: false,
         }
+    }
+
+    /// Observes selector scope changes without manufacturing balanced end events.
+    ///
+    /// Retirement may visit an ancestor before its descendants. Remove identities,
+    /// rather than popping an application stack. EOF/abort simply destroy remaining
+    /// scopes; neither generates retirement callbacks. Void matches have no scope.
+    /// The observer runs synchronously and must not re-enter the active parser.
+    #[must_use]
+    pub fn with_matcher_observer(
+        mut self,
+        observer: impl FnMut(MatcherEvent) + Send + 'handlers,
+    ) -> Self {
+        self.matcher_observer = Some(Box::new(observer));
+        self
     }
 
     /// Appends a `(selector, handlers)` tuple to the list of element content handlers.

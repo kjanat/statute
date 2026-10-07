@@ -43,7 +43,7 @@ use cfg_if::cfg_if;
 pub use self::rewriter::{
     AsciiCompatibleEncoding, BailOutHandler, CommentHandler, DoctypeHandler,
     DocumentContentHandlers, ElementContentHandlers, ElementHandler, EndHandler, EndTagHandler,
-    HandlerResult, HandlerTypes, HtmlRewriter, LocalHandlerTypes, MemorySettings,
+    HandlerResult, HandlerTypes, HtmlRewriter, LocalHandlerTypes, MatcherEvent, MemorySettings,
     RewriteStrSettings, Settings, TextHandler, rewrite_str,
 };
 pub use self::selectors_vm::Selector;
