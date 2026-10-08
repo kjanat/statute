@@ -40,7 +40,11 @@ memory probe records Go allocation/heap metrics and post-GC retained memory acro
 rounds. It uses a discard sink, so its memory is not an ETag/cache budget.
 
 The HTTP fixture uses four admission slots, an 8-MiB input ceiling, 32-MiB output
-ceiling, 30-second rewrite deadline and 35-second server write deadline. These
+ceiling, 30-second rewrite deadline and 35-second server write deadline. Its
+ETag route explicitly allows a 32-MiB response and a 256-MiB allocation budget:
+four maximum-size buffers plus overlapping growth fit within that budget.
+The largest dense fixture rewrites to 11 MiB, exceeding the ordinary 8-MiB
+ETag default. The measured process-HWM acceptance threshold stays unchanged. These
 apply only to the research load mode; ordinary correctness fixtures retain their
 existing limits. Admission rejection remains an error in the
 capacity run. Saturation failure semantics have separate correctness tests.
