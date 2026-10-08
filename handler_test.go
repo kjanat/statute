@@ -154,8 +154,6 @@ func TestHandlerRouteServes(t *testing.T) {
 		Defaults: Defaults{ReadHeaderTimeout: "1s"},
 		Shutdown: Shutdown{GracePeriod: "2s"},
 	})
-	addr := reserveAddr(t)
-	r.Listeners[0].Addr = addr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -168,6 +166,7 @@ func TestHandlerRouteServes(t *testing.T) {
 			t.Errorf("Shutdown: %v", err)
 		}
 	}()
+	addr := srv.run.listeners.http[0].listener.Addr().String()
 	waitForListen(t, addr)
 
 	req, err := http.NewRequest("GET", "http://"+addr+"/healthz", nil)
@@ -391,8 +390,6 @@ func TestHandlerRouteDrainsThroughShutdown(t *testing.T) {
 		Defaults: Defaults{ReadHeaderTimeout: "1s"},
 		Shutdown: Shutdown{GracePeriod: "5s"},
 	})
-	addr := reserveAddr(t)
-	r.Listeners[0].Addr = addr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -400,6 +397,7 @@ func TestHandlerRouteDrainsThroughShutdown(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	addr := srv.run.listeners.http[0].listener.Addr().String()
 	waitForListen(t, addr)
 
 	type result struct {

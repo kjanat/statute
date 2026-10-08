@@ -117,11 +117,10 @@ func TestWorkloadDiagnosticsPrometheusProjection(t *testing.T) {
 
 func TestWorkloadDiagnosticsListenerIsolation(t *testing.T) {
 	t.Parallel()
-	content, metrics, health := reserveAddr(t), reserveAddr(t), reserveAddr(t)
 	cfg := Config{
-		Listeners:     Listeners{HTTP(content)},
+		Listeners:     Listeners{HTTP("127.0.0.1:0")},
 		Routes:        Routes{Match("/*").Handle(http.NotFoundHandler())},
-		Observability: Observability{Metrics: Prometheus(metrics, "/metrics"), Health: Health(health, "/healthz")},
+		Observability: Observability{Metrics: Prometheus("127.0.0.1:0", "/metrics"), Health: Health("127.0.0.1:0", "/healthz")},
 	}
 	srv, err := newServer(mustResolve(t, cfg))
 	if err != nil {
@@ -130,6 +129,9 @@ func TestWorkloadDiagnosticsListenerIsolation(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
+	content := srv.run.listeners.http[0].listener.Addr().String()
+	metrics := srv.run.listeners.metrics.listener.Addr().String()
+	health := srv.run.listeners.health.listener.Addr().String()
 	t.Cleanup(func() {
 		if err := srv.Shutdown(); err != nil {
 			t.Error(err)

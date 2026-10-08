@@ -566,8 +566,6 @@ func TestFallbackDrainsThroughShutdown(t *testing.T) {
 		Defaults: Defaults{ReadHeaderTimeout: "1s"},
 		Shutdown: Shutdown{GracePeriod: "5s"},
 	})
-	addr := reserveAddr(t)
-	r.Listeners[0].Addr = addr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -575,6 +573,7 @@ func TestFallbackDrainsThroughShutdown(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	addr := srv.run.listeners.http[0].listener.Addr().String()
 	waitForListen(t, addr)
 
 	type result struct {
