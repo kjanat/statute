@@ -8,9 +8,23 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
+func cacheRequestHasUnkeyedBody(r *http.Request) bool {
+	// HTTP/3 can disclose unannounced trailers only during Body.Read, even
+	// with an explicit zero length. No public API proves their absence here.
+	if r.ProtoMajor >= 3 || r.ContentLength != 0 || len(r.TransferEncoding) != 0 || len(r.Trailer) != 0 {
+		return true
+	}
+	// HTTP/1 servers use NoBody for an empty request. A custom body with zero
+	// length is unknown; HTTP/2 instead exposes a framed empty reader.
+	return r.ProtoMajor <= 1 && r.Body != nil && r.Body != http.NoBody
+}
+
 // This TTL cache delegates preconditions, ranges, and request-specific policy
 // to the downstream producer. Such requests neither use nor replace entries.
 func cacheRequestEligible(r *http.Request) bool {
+	if cacheRequestHasUnkeyedBody(r) {
+		return false
+	}
 	if r.TLS != nil && (len(r.TLS.PeerCertificates) != 0 || len(r.TLS.VerifiedChains) != 0) {
 		return false
 	}

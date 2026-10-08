@@ -163,6 +163,12 @@ Requests carrying TLS peer certificates or verified client chains also bypass
 lookup and storage: certificate identity is not part of the shared key. This
 includes optional and application-verified client certificates. Ordinary HTTPS
 requests without client certificates remain eligible.
+Cache also bypasses positive or unknown request-body lengths, transfer encodings,
+and request trailers. It never reads, closes, or replaces a body to establish
+eligibility. Empty HTTP/1 and HTTP/2 requests remain eligible. All HTTP/3
+requests bypass Cache: even explicit zero-length requests can reveal unannounced
+trailers only during body reads, after a cache lookup would already occur. These rules
+apply before lookup and storage and survive ETag/Retry request cloning.
 Origin or projected response no-cache also prohibits storage, including qualified
 forms. Cache has no revalidation path; delivery remains unchanged and a later
 response without that restriction can populate the route's cache.

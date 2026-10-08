@@ -32,6 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Bypass response caching for GET/HEAD bodies, unknown body lengths, transfer encodings, and request trailers without consuming the request body. Preserve empty HTTP/1 and HTTP/2 caching; bypass all HTTP/3 requests because late unannounced trailers cannot be excluded before lookup.
+
 - Preserve unrelated trailers on buffered ETag responses over HTTP/1.1, including Cache, Retry, compression, and RequestID compositions. Omit synthetic-render trailers on HEAD and conditional bodyless responses.
 
 - Reject multiple RequestID middleware in one route, including fallback routes and assembled Docker default/named chains. Refuse conflicting Docker routers without dropping healthy siblings.
