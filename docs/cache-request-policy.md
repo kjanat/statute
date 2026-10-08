@@ -54,9 +54,63 @@ Its successful cached response after revocation documents the unsupported
 configuration; it is not evidence that arbitrary application authorization is
 safe to cache.
 
+## Representation identity and native proxies
+
+Cache keys include the method, request Host, effective URL target (path and query),
+original `RequestURI`, URL scheme, and presence of downstream TLS. Hoisted path
+rewrites preserve the original target as a separate key dimension. Two requests
+rewritten to the same URL therefore remain distinct when a `Handle` inspects
+their original targets.
+
+Native `ProxyTo` and Docker routes also account for request-header changes made
+after Cache. Their rules apply to static routes, fallback routes, and each Docker
+router independently; sharing a backend pool does not share route cache policy.
+
+- Any `Connection` field bypasses native lookup and storage, including an empty
+  field or `keep-alive`. The proxy can remove headers nominated by that field.
+- Responses varying on `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, or
+  `X-Forwarded-Proto` are not stored. Native proxying derives these values after
+  cache selection; explicit route Set/Add/Remove operations retain their normal
+  effect. Both origin Vary and projected response-header Vary participate.
+- The route captures the selected OpenTelemetry propagator and its declared
+  output fields once per external request. Responses varying on those fields
+  are not stored. A propagator declaring credentials, cache controls,
+  conditions/ranges, connection controls, or body/framing fields bypasses caching
+  entirely, even without Vary. Invalid declared field names also bypass caching.
+- Different propagation field sets have separate cache namespaces. If the
+  captured object's declared fields change during a request, a shared request
+  marker disables subsequent lookups and storage, including Retry re-entry and
+  nested caches. This includes OpenTelemetry's first-registration delegation.
+- Injection still happens only at the actual proxy attempt. A cache hit does not
+  perform a synthetic injection; retries inject once per real attempt. Routes
+  without an enabled Cache keep ordinary propagation behavior.
+
+These restrictions preserve response delivery: uncertainty makes a request
+uncached, without producing a new HTTP error. Ordinary anonymous native responses
+and application-header Vary variants remain cacheable. Custom `Handle` routes
+can also cache Vary on forwarded headers because Statute does not apply the
+native proxy's late header transformations to them.
+
+Custom propagators must accurately implement `Fields()` and keep their declared
+output set stable during an injection. Undeclared outputs and changes that
+disappear before either observation are outside that interface contract.
+Likewise, Cache cannot infer custom personalization based on arbitrary context
+values, peer IP, or application state. Omit Cache for such responses or mark
+them private/no-store from the first delivery. Vary can describe request-header
+selection; it cannot describe arbitrary context state or recheck authorization.
+
+Regression evidence: `cache_native_identity_test.go`,
+`cache_native_propagation_test.go`, and `cache_native_boundary_test.go` cover
+forwarded identity, Connection nomination, path/scheme/TLS separation, initial
+delegation, concurrent propagation replacement, Retry/ETag, shared pools, and
+Docker generation replacement. `TestCacheCustomContextIdentity` and
+`TestCacheCustomAuthorizationRevocation` document the application-owned
+personalization and authorization boundaries.
+
 ## Audit scope
 
-This is the C03 request-policy outcome in [audit #152](https://github.com/kjanat/statute/issues/152).
-It does not settle custom representation identity (C04), resource bounds (C06),
-origin freshness (C09), or GET/HEAD request-body selection (C10). See
+This documents C03 request policy and C04 representation identity in
+[audit #152](https://github.com/kjanat/statute/issues/152). C10 body/trailer
+selection is covered by the conservative protocol-specific bypass policy.
+Resource bounds (C06) and origin freshness (C09) remain separate work. See
 [production cache guidance](production.md) for storage and representation rules.

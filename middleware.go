@@ -124,6 +124,11 @@ func (*cacheMW) statuteMiddleware() {}
 // TLS client certificates also bypass lookup and storage, including unverified
 // presented certificates. HTTPS without client certificates remains cacheable.
 // Response no-cache also prevents storage; Cache does not revalidate entries.
+// Keys distinguish original/rewritten targets, URL scheme, and TLS presence.
+// Native proxies bypass Connection-bearing requests and responses varying on
+// late-bound forwarded or tracing fields. Propagators declaring credentials or
+// other request controls also bypass caching. Custom context/IP personalization
+// must be private/no-store from its first response, or use an uncached route.
 // AllowIPs and DenyIPs must precede every enabled Cache; unsafe ordering fails
 // configuration validation, including assembled Docker middleware chains.
 // RequestID must also precede enabled caches. RateLimit outside Cache counts
