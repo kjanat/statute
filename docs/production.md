@@ -353,7 +353,8 @@ status code or retry; response-budget 502/503 failures remain separate. A reques
 body read error still returns 400. Non-idempotent and streaming/upgrade exclusions
 continue to bypass request buffering.
 Streaming fallback keeps its EOF trailer values attached to the body through
-BodyLimit and native proxy/rewrite clones; upstream framing rules are unchanged.
+BodyLimit and native proxy/rewrite clones. Native forwarding selects streaming
+framing when the body can carry trailers, as described below.
 
 The allocation stays charged through all attempts and final response delivery.
 If an inner Timeout returns before its producer stops, that producer retains a
@@ -371,6 +372,32 @@ Static, fallback and Docker middleware use the same normalized
 have independent budgets, including routes sharing one backend pool. These limits
 cover Retry-owned body allocations; incoming transport buffers and arbitrary
 custom-handler allocations remain separate.
+
+## Live request trailers
+
+Statute preserves transport-exposed request trailers through listener context
+wrappers, path rewriting, Timeout, ETag, BodyLimit and Retry. Read the body to
+successful EOF before consulting `Request.Trailer`. Partial reads, read errors
+and closing an unread body do not publish final values. Statute does not consume
+input early to discover trailer names or values.
+
+Native `ProxyTo` routes, including Docker routes and the private rewrite
+experiment, preserve those trailers on their outgoing request. That private
+request uses streaming framing for trailer-capable bodies: chunked HTTP/1 or
+HTTP/2 trailing HEADERS, including empty HTTP/3 input with Content-Length: 0.
+Incoming ContentLength and transfer encoding stay unchanged for handlers and
+cache admission. HTTP/3 continues to bypass Cache as tracked in #165.
+
+Unannounced fields are forwarded on the wire, but the receiving application may
+not expose them: Go's HTTP/2 server makes only announced trailer names available
+to handlers. Declare trailer names when the receiving application requires it.
+Likewise, Statute cannot recover fields its ingress transport never exposes.
+
+Trailer ownership follows the body. A custom handler replacing the body must
+provide the replacement's own trailer/framing semantics. A custom proxy supplied
+through `Handle` owns its request cloning and transport; unlike native `ProxyTo`,
+it must itself preserve live trailers when deep-cloning a request with a shared
+body. Do not copy trailer fields into ordinary headers to work around this.
 
 ## Body-derived ETags
 

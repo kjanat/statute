@@ -42,6 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Preserve transport-exposed request trailers through listener and middleware clones, native proxying and research rewriting. Publish final values only after successful body EOF; retain streaming trailer framing on private upstream requests, including empty HTTP/3 bodies and Retry replay.
+
 - Honor origin cache freshness with `s-maxage`/`max-age`/`Expires` precedence, corrected `Age`, and the configured TTL as a residence ceiling. Count buffering and delivery time, prevent route header operations from extending origin freshness, and delegate request freshness constraints without reusing or replacing entries.
 
 - Isolate cached original/rewritten targets, URL schemes, and downstream TLS. Prevent native proxy cache reuse across Connection-driven header stripping, forwarded-header variants, and late tracing or credential injection; preserve route-local policy across shared pools, retries, and Docker generations.

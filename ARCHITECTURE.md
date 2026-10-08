@@ -382,6 +382,38 @@ Push, metadata, compositions, normalized export and Docker-generation isolation.
 Producer header maps, other middleware allocations and process RSS are outside
 the Timeout body budget.
 
+### Live request-trailer ownership
+
+The listener adapts transport-owned request trailers before any framework
+request clone. The original transport request remains private to its body
+reader; downstream requests share a separate stable trailer map. Only a
+successful consumer EOF publishes final values, once. Partial reads, read
+errors and Close do not publish trailers. Close delegates without waiting for
+a blocked Read. No body is consumed early and incoming framing stays unchanged.
+
+Trailer provenance belongs to the body. BodyLimit, Retry
+replay and streaming fallback preserve it; replacing a body does not inherit
+the previous body's trailers. ETag's representation clone shares the live map.
+Immutable declaration snapshots remain safe for late Timeout producers.
+
+Native proxy construction owns private outgoing framing: managed bodies that
+can carry trailers use streaming framing, including empty HTTP/2 and HTTP/3 bodies.
+This avoids proxy body elision and transport lookahead before headers. The
+native transport restores the body-associated live map after deep request
+clones, independently of Retry leases. HTTP/1 uses chunked framing; HTTP/2
+emits final trailer fields after EOF. Trailers never become ordinary headers.
+An upstream application can still discard unannounced fields: Go's HTTP/2
+server exposes only declared request trailers to handlers. Wire-level tests
+prove forwarding independently of that receiver API limitation. Ingress can
+preserve only trailer fields exposed by its HTTP transport.
+Incoming ContentLength and cache eligibility are unaffected; HTTP/3 still
+bypasses Cache pending #165. No worker, pool state or shutdown resource is added.
+
+Acceptance covers actual HTTP/3 ingress and HTTP/1 and HTTP/2 upstreams, announced and
+unannounced trailers, empty and nonempty bodies, framework clones, Retry replay
+and fallback, BodyLimit, cancellation and body replacement. Existing transport
+errors remain authoritative; failed reads never publish partial trailer data.
+
 ### Retry request-buffer ownership
 
 Each compiled Retry instance owns an independent request-body allocation budget,
@@ -408,8 +440,7 @@ zero-byte non-EOF reads leave that map unchanged. Nested Retry and Timeout
 context clones share the stable map; the caller's Body remains unchanged.
 The fallback body carries a private association with that map, preserved by
 BodyLimit. The native transport restores it on its private request after proxy
-or research clones, preserving streaming fallback's declared trailers under the
-existing upstream framing rules.
+or research clones, preserving trailers with private outgoing streaming framing.
 Replacing a body does not inherit the association from request context.
 The first Timeout snapshots announced trailer names before asynchronous work;
 nested Timeout and Retry reuse even an empty snapshot. A producer starting after

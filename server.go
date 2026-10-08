@@ -271,7 +271,7 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	} else if len(l.TrustedProxies) > 0 {
 		handler = trustedProxyMiddleware(l, handler)
 	}
-	return handler
+	return preserveRequestTrailers(handler)
 }
 
 // warmACMEManagers eagerly issues missing certificates for one warm-up
@@ -1229,6 +1229,7 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 	return &httputil.ReverseProxy{
 		FlushInterval: p.Transport.FlushInterval,
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			forwardRequestTrailers(pr)
 			pr.SetURL(target)
 			// SetURL blanked Out.Host, which makes the transport derive the
 			// Host header from the target URL — exactly the HostTarget
