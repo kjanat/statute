@@ -19,8 +19,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/crypto/acme/autocert"
 
 	"statute.kjanat.dev/internal/docker"
@@ -1007,7 +1005,7 @@ func (s *server) compileRoutes(routes []*resolved.Route) []compiledRoute {
 		case r.Handler != nil:
 			base = r.Handler
 		}
-		h := wrapMiddleware(r.Middleware, base)
+		h := wrapRouteMiddleware(r.Middleware, base, r.Upstream != nil)
 		compiled = append(compiled, compiledRoute{
 			route:          r,
 			handler:        h,
@@ -1255,7 +1253,7 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 			// tracestate headers and joins the same trace. Safe to call
 			// regardless of whether tracing is configured: when no provider
 			// is registered, the propagator is a no-op.
-			otel.GetTextMapPropagator().Inject(pr.Out.Context(), propagation.HeaderCarrier(pr.Out.Header))
+			injectProxyPropagation(pr.Out)
 		},
 		Transport: researchProxyTransport(transport),
 		ModifyResponse: func(resp *http.Response) error {
@@ -1329,6 +1327,12 @@ func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // and path rewrites are hoisted to the outside of the whole chain — see
 // withHeaderMiddleware and withPathRewrite.
 func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
+	return wrapRouteMiddleware(mws, base, false)
+}
+
+// Route compilation supplies native identity policy even when wrappers hide
+// the proxy handler or multiple routes share its backend pool.
+func wrapRouteMiddleware(mws []resolved.Middleware, base http.Handler, nativeProxy bool) http.Handler {
 	if base == nil {
 		base = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no handler configured for route", http.StatusInternalServerError)
@@ -1336,18 +1340,30 @@ func wrapMiddleware(mws []resolved.Middleware, base http.Handler) http.Handler {
 	}
 	// RequestID can introduce credentials inside a buffered/cloned request,
 	// beyond an outer Cache's view. Such a route cannot use shared entries.
-	credentialWriter := slices.ContainsFunc(mws, func(m resolved.Middleware) bool {
-		return m.Type == resolved.MWRequestID &&
-			(strings.EqualFold(m.RequestIDHeader, "Authorization") || strings.EqualFold(m.RequestIDHeader, "Cookie"))
-	})
+	credentialWriter := routeWritesCacheCredentials(mws)
 	h := base
+	cacheEnabled := false
 	for _, mw := range slices.Backward(mws) {
 		if credentialWriter && mw.Type == resolved.MWCache {
 			continue
 		}
+		if mw.Type == resolved.MWCache && mw.CacheTTL > 0 {
+			cacheEnabled = true
+		}
 		h = applyMiddleware(mw, h)
 	}
-	return withHeaderMiddleware(mws, withPathRewrite(mws, h))
+	h = withHeaderMiddleware(mws, withPathRewrite(mws, h))
+	if nativeProxy && cacheEnabled {
+		h = withCacheProxyPolicy(h)
+	}
+	return h
+}
+
+func routeWritesCacheCredentials(mws []resolved.Middleware) bool {
+	return slices.ContainsFunc(mws, func(m resolved.Middleware) bool {
+		return m.Type == resolved.MWRequestID &&
+			(strings.EqualFold(m.RequestIDHeader, "Authorization") || strings.EqualFold(m.RequestIDHeader, "Cookie"))
+	})
 }
 
 // middlewareBuilders maps each resolved middleware type to the constructor

@@ -806,7 +806,7 @@ func compileQuarantineRoutes(claims []docker.RouteClaim) []compiledRoute {
 
 func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, next *dynamicTable) {
 	for _, rc := range chains {
-		handler := wrapMiddleware(rc.mws, researchDockerRoute(name, rc.m.Host, rc.m.Path, base))
+		handler := wrapRouteMiddleware(rc.mws, researchDockerRoute(name, rc.m.Host, rc.m.Path, base), true)
 		if gated != nil {
 			handler = &workloadRevisionGate{
 				p: p, service: name, binding: binding, revision: revision, next: handler,

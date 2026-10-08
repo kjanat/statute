@@ -79,7 +79,8 @@ See [Cache and per-request policy](cache-request-policy.md) for the complete
 middleware/observation matrix and custom-authorization revocation examples.
 
 `Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,
-keyed by method, host, request URI, and response `Vary` selection. The configured
+keyed by method, host, original and rewritten request targets, URL scheme,
+downstream TLS presence, and response `Vary` selection. The configured
 TTL controls expiry. Each stored variant records a copy of its selecting request
 header values, distinguishing absent from empty fields. Comparison is exact;
 equivalent but differently spelled field values can cause an extra miss.
@@ -153,6 +154,14 @@ Repeated/case-insensitive field names are normalized. `Vary: *`, invalid Vary,
 storage. A changed Vary field set replaces incompatible variants for that key.
 Compression declares `Vary: Accept-Encoding` even for identity responses; both
 Cache/Compress orders preserve encoded versus identity selection.
+
+Native proxy routes additionally bypass Connection-bearing requests and decline
+storage when Vary selects forwarded or OpenTelemetry-injected fields. A captured
+propagator that can inject credentials or other request controls also bypasses
+caching. Propagator field-set changes partition entries; drift during an attempt
+disables further reuse and storage for that request. Ordinary application-header
+Vary variants still work. See [representation identity](cache-request-policy.md#representation-identity-and-native-proxies)
+for the full contract and custom-handler limitations.
 
 For a temporary fail-open HTML-rewrite bypass, the original response is delivered
 with no-store and discarded after delivery. The next request reaches the origin

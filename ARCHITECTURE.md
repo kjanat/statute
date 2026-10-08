@@ -200,6 +200,38 @@ the Vary schema replaces incompatible variants. Compression adds Accept-Encoding
 variance at commitment even when it negotiates identity, so an outer cache sees
 the same selection dimensions for every encoding.
 
+Cache keys distinguish the effective URL target, original RequestURI, request
+Host, method, URL scheme, and TLS presence. Custom handlers inspecting the original
+target therefore remain isolated after a route path rewrite. Application context
+and arbitrary connection identity are not inferred: personalized handlers must
+omit Cache, prevent storage from their first response, or expose a stable request
+header before Cache and declare the corresponding Vary dimension.
+
+Native proxy routes select additional cache policy at route assembly, including
+fallback and Docker routes; shared pools do not own it. Any incoming Connection
+field bypasses lookup and storage. Native responses varying on Forwarded,
+X-Forwarded-For/Host/Proto, or injected propagation fields are not reusable because
+proxy rewriting changes those fields after the incoming header snapshot. Ordinary
+Handle routes retain their actual incoming-header Vary semantics.
+
+For a cached native route, propagation selection occurs once at route entry. The
+request owns the selected propagator and a copied, normalized field-set signature;
+that signature partitions cache keys. Declared credential, conditional, framing,
+or cache-policy injections bypass Cache entirely. The actual proxy attempt invokes
+the selected propagator at its existing injection point. Field-set drift before
+or after injection permanently marks this request unsafe for lookup and storage,
+including Retry re-entry and cloned requests. This covers OpenTelemetry's initial
+delegating propagator changing after selection without storing its new output
+under the old key. Custom propagators must accurately declare their output fields
+and keep those declarations stable; arbitrary application mutation is outside
+this interface contract.
+
+Unprovable selection takes the uncached producer path, with no new HTTP failure.
+State remains request- or Cache-instance-owned; no timer, worker, shared-pool field,
+or shutdown resource is added. Regression coverage spans forwarded operations,
+Connection stripping, propagation replacement, path/identity variants, ordinary
+cache-hit controls, Cache/Retry/ETag order, and static/fallback/Docker assembly.
+
 CORS contributes mandatory Origin variance to its route's response-header
 projection and final commitment, after raw header operations. Every Cache on that
 route sees the same selection dimension regardless of CORS placement or intervening
