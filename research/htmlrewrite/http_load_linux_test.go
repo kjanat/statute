@@ -111,6 +111,33 @@ func verifiedHTTPMemory(verify func() error, memory func() (uint64, uint64, erro
 	return memory()
 }
 
+func TestHTTPLoadETagEnvelope(t *testing.T) {
+	input := benchmarkInput("dense", 131072)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	oracle := exec.CommandContext(ctx, "./guest/target/release/statute-htmlrewrite-spike", "4096")
+	oracle.Stdin = bytes.NewReader(input)
+	expected, err := oracle.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expected) <= 8<<20 || len(expected) > httpLoadETagBodyBytes {
+		t.Fatalf("fixture output %d must exceed the default and fit the load envelope", len(expected))
+	}
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(input)
+	}))
+	defer origin.Close()
+	endpoint, _ := startHTTPStatuteConfigured(t, origin.URL, "", []string{"STATUTE_HTML_HTTP_LOAD=1"})
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}, Timeout: 30 * time.Second}
+	defer client.CloseIdleConnections()
+	got, err := observeHTTP(ctx, client, endpoint+"/etag", sha256.Sum256(expected), 0)
+	if err != nil || got.Bytes != int64(len(expected)) {
+		t.Fatalf("load ETag bytes=%d want=%d error=%v", got.Bytes, len(expected), err)
+	}
+}
+
 func TestHTTPLoad(t *testing.T) {
 	if *httpLoadDuration <= 0 || *httpLoadDuration > 5*time.Minute || *httpLoadCount < 1 || *httpLoadCount > 131072 ||
 		*httpLoadWorkers < 1 || *httpLoadWorkers > 4 || *httpLoadPace < 0 || *httpLoadPace > 32*time.Millisecond ||
@@ -154,7 +181,8 @@ func TestHTTPLoad(t *testing.T) {
 		"guest_sha256": fmt.Sprintf("%x", sha256.Sum256(guest)), "input_bytes": len(input), "output_bytes": len(expected),
 		"shape": *httpLoadShape, "mode": *httpLoadMode, "workers": *httpLoadWorkers,
 		"admission_ns": *httpLoadDuration, "pace_per_16k_ns": *httpLoadPace,
-		"build_settings": loadBuildSettings(t),
+		"build_settings":           loadBuildSettings(t),
+		"load_etag_max_body_bytes": httpLoadETagBodyBytes, "load_etag_buffer_budget_bytes": httpLoadETagBudgetBytes,
 	})
 	serverMemory := func() (uint64, uint64, error) {
 		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", output.pid))

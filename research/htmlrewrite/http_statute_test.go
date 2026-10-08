@@ -25,6 +25,11 @@ import (
 	"statute.kjanat.dev"
 )
 
+const (
+	httpLoadETagBodyBytes   = 32 << 20
+	httpLoadETagBudgetBytes = 256 << 20
+)
+
 // The parent observes a separate Statute process only through HTTP and logs.
 func TestHTTPStatuteProcess(t *testing.T) {
 	if os.Getenv("STATUTE_HTML_HTTP_CHILD") != "1" {
@@ -53,6 +58,11 @@ func TestHTTPStatuteProcess(t *testing.T) {
 		return httpTestProxy(t, os.Getenv("STATUTE_HTML_HTTP_ORIGIN"), rt)
 	}
 	strict, open := makeProxy(failClosed), makeProxy(failOpen)
+	etag := statute.ETag()
+	if os.Getenv("STATUTE_HTML_HTTP_LOAD") == "1" {
+		etag = etag.MaxResponseBody(fmt.Sprintf("%dB", httpLoadETagBodyBytes)).
+			BufferBudget(fmt.Sprintf("%dB", httpLoadETagBudgetBytes))
+	}
 	var observability statute.Observability
 	if addr := os.Getenv("STATUTE_HTML_HTTP_METRICS"); addr != "" {
 		observability = statute.Observability{AccessLog: statute.JSONLog(statute.Stdout), Metrics: statute.Prometheus(addr, "/metrics")}
@@ -61,7 +71,7 @@ func TestHTTPStatuteProcess(t *testing.T) {
 		Observability: observability,
 		Listeners:     statute.Listeners{statute.HTTP(os.Getenv("STATUTE_HTML_HTTP_ADDR"))},
 		Routes: statute.Routes{
-			statute.Match("/etag").Handle(strict).With(statute.ETag()),
+			statute.Match("/etag").Handle(strict).With(etag),
 			statute.Match("/etag-cache").Handle(strict).With(statute.ETag(), statute.Cache("1m")),
 			statute.Match("/cache-etag").Handle(strict).With(statute.Cache("1m"), statute.ETag()),
 			statute.Match("/etag-compress").Handle(strict).With(statute.ETag(), statute.Compress(statute.Gzip)),
