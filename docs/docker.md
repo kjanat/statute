@@ -325,6 +325,14 @@ a pool named after the compose service. The full schema:
 | `statute.ratelimit`                                   | Per-route rate limit, e.g. `100/min`.                                                                                                                                                                                                                 |
 | `statute.compress`                                    | `gzip`, `br`, a comma list, or `true` for both.                                                                                                                                                                                                       |
 
+Label-derived rate limits use the default cap of 65,536 keys per compiled route.
+To choose a different cap, register a code-owned middleware such as
+`Docker().Middleware("limited", RateLimit("100/min").MaxBuckets(8192))` and select
+it from a router, or put the limiter in `DefaultMiddleware`. These instances have
+independent capacity even when routes share one service. See
+[production guidance](production.md#capacity-planning) for
+capacity denial and refill behavior.
+
 A container these labels select but statute cannot route (no exposed port,
 an unsupported scheme, no reachable address, an `enable` value that is
 neither true nor false) leaves a **tombstone**

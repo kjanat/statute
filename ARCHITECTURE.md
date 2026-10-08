@@ -108,6 +108,21 @@ RequestID also precedes every enabled Cache: identity/header mapping and request
 publication run before lookup on every request. RateLimit retains declaration-order
 semantics: outside Cache it counts requests, inside Cache it counts misses.
 
+RateLimit owns a bounded bucket store per compiled middleware instance, including
+static, fallback, and Docker routes sharing a pool. Resolve normalizes MaxBuckets
+to 65,536 unless explicitly positive; negative values fail resolution. Each store
+retains only fixed-size hashes of the existing effective client-IP or exact Host
+key, with one indexed refill-deadline entry per bucket. One mutex owns admission,
+refill, and retirement; it is released before response writing or downstream work.
+Only fully replenished buckets may retire; outstanding token debt retains its slot.
+Existing keys retain their token policy at capacity (including 429 and Retry-After);
+new keys with no reclaimable slot fail closed with 503 and Cache-Control: no-store.
+No timer, worker, or shutdown owner is added. Handler retirement releases the store.
+Retry placement retains per-invocation accounting and its configured status policy.
+Boundary tests cover exact capacity under concurrent churn, refill arithmetic,
+Cache/Retry placement, effective client identity, normalized export and Docker
+chains, and isolation between routes and dynamic generations.
+
 Each assembled route permits at most one RequestID middleware, regardless of
 its configured input or output header. Resolve rejects duplicates in static and
 fallback routes and individual Docker chains. Docker checks the combined default,

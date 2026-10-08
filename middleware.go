@@ -29,14 +29,16 @@ func (k RateLimitKey) String() string {
 }
 
 type rateLimitMW struct {
-	rate string
-	key  RateLimitKey
+	rate       string
+	key        RateLimitKey
+	maxBuckets int
 }
 
 func (*rateLimitMW) statuteMiddleware() {}
 
 // RateLimit returns a rate-limit middleware. The rate string is of the form
 // "N/unit" where unit is one of s, min, h. For example "100/min".
+// Each compiled instance retains at most 65,536 client buckets by default.
 func RateLimit(rate string) *rateLimitMW {
 	return &rateLimitMW{rate: rate, key: ClientIP}
 }
@@ -44,6 +46,15 @@ func RateLimit(rate string) *rateLimitMW {
 // Per sets the key the limiter buckets on. Defaults to ClientIP.
 func (r *rateLimitMW) Per(k RateLimitKey) *rateLimitMW {
 	r.key = k
+	return r
+}
+
+// MaxBuckets limits the number of retained keys per compiled middleware instance.
+// Zero selects the default of 65,536; negative values fail resolution. Only fully
+// replenished buckets can retire. At capacity, an unknown key receives 503 with
+// Cache-Control: no-store; existing keys retain their normal token policy.
+func (r *rateLimitMW) MaxBuckets(n int) *rateLimitMW {
+	r.maxBuckets = n
 	return r
 }
 

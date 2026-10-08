@@ -1442,14 +1442,22 @@ func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 // resolveRateLimitMW parses the rate string into requests/second and
 // carries the rate-limit key.
 func resolveRateLimitMW(m *rateLimitMW) (resolved.Middleware, error) {
+	if m.maxBuckets < 0 {
+		return resolved.Middleware{}, errors.New("rate_limit: max buckets must be >= 0")
+	}
+	maxBuckets := m.maxBuckets
+	if maxBuckets == 0 {
+		maxBuckets = defaultRateLimitMaxBuckets
+	}
 	rate, err := parse.Rate(m.rate)
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("rate_limit: %w", err)
 	}
 	return resolved.Middleware{
-		Type:               resolved.MWRateLimit,
-		RateLimitPerSecond: rate,
-		RateLimitKey:       resolved.RateLimitKey(m.key),
+		Type:                resolved.MWRateLimit,
+		RateLimitPerSecond:  rate,
+		RateLimitKey:        resolved.RateLimitKey(m.key),
+		RateLimitMaxBuckets: maxBuckets,
 	}, nil
 }
 

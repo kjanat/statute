@@ -437,8 +437,9 @@ type Middleware struct {
 	Timeout time.Duration
 
 	// RateLimit
-	RateLimitPerSecond float64
-	RateLimitKey       RateLimitKey
+	RateLimitPerSecond  float64
+	RateLimitKey        RateLimitKey
+	RateLimitMaxBuckets int
 
 	// Retry
 	RetryMax        int

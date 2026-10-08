@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // BenchmarkMatchPattern measures the cost of a single matchPattern call
@@ -73,12 +74,12 @@ func BenchmarkGzipCompression(b *testing.B) {
 // BenchmarkBucketAllowContended measures the rate limiter under contention
 // to validate the token-bucket implementation scales to multi-core access.
 func BenchmarkBucketAllowContended(b *testing.B) {
-	bucket := newBucket(1000, 1000)
+	buckets := newBucketStore(1000, defaultRateLimitMaxBuckets)
 	var dropped int64
 	var mu sync.Mutex
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if !bucket.allow() {
+			if buckets.allow("client", time.Now()) != 0 {
 				mu.Lock()
 				dropped++
 				mu.Unlock()
