@@ -444,6 +444,8 @@ type Middleware struct {
 	// Retry
 	RetryMax        int
 	RetryOnStatuses []int
+	// RequestBufferBudgetBytes is Retry's separate request-body allocation budget.
+	RequestBufferBudgetBytes int64
 
 	// ETag, Retry and Cache: finite body bytes retained per render/attempt.
 	// Cache's aggregate budget also includes accounted metadata and scratch.

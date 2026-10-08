@@ -1475,12 +1475,17 @@ func resolveRetryMW(m *retryMW) (resolved.Middleware, error) {
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("retry: %w", err)
 	}
+	requestBudget, err := resolveBufferSize(m.requestBudget, defaultResponseBufferBudgetBytes)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("retry request buffer budget: %w", err)
+	}
 	return resolved.Middleware{
 		Type:                      resolved.MWRetry,
 		RetryMax:                  m.max,
 		RetryOnStatuses:           append([]int(nil), m.onStatuses...),
 		MaxResponseBodyBytes:      limit,
 		ResponseBufferBudgetBytes: budget,
+		RequestBufferBudgetBytes:  requestBudget,
 	}, nil
 }
 

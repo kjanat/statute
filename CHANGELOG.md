@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Bound Retry request-body allocations with a separate, configurable `RequestBufferBudget` (64 MiB default). Preserve single-attempt passthrough on exhausted capacity or oversize; account for growth, concurrent reads and buffers retained by timed-out handlers or asynchronous upstream transports without changing response-budget failures.
+
 - Bound each Cache instance to 1,024 entries, 8 MiB per response and a 64 MiB allocation budget, configurable with `MaxEntries`, `MaxResponseBody` and `BufferBudget`. Account for concurrent misses, metadata, variants, growth and slow readers; retire expired entries across keys. Stream oversized or capacity-constrained responses without storing them, preserving status and trailers.
 
 - Bound RateLimit to 65,536 retained keys per compiled middleware instance, configurable with `MaxBuckets`. Preserve existing token debt under key churn and return a non-cacheable 503 when a new key cannot obtain capacity; retain normal 429 behavior for existing clients.

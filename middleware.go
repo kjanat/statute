@@ -63,6 +63,7 @@ type retryMW struct {
 	onStatuses      []int
 	maxResponseBody string
 	bufferBudget    string
+	requestBudget   string
 }
 
 func (*retryMW) statuteMiddleware() {}
@@ -101,6 +102,16 @@ func (m *retryMW) MaxResponseBody(size string) *retryMW {
 // The default is 64 MiB. Unavailable capacity produces an empty 503 response.
 func (m *retryMW) BufferBudget(size string) *retryMW {
 	m.bufferBudget = size
+	return m
+}
+
+// RequestBufferBudget bounds request-body allocations shared by this Retry
+// instance. The default is 64 MiB, independently of the response BufferBudget.
+// Unavailable capacity forwards the complete request once without retrying.
+// Timed-out inner handlers retain their charge until they actually return.
+// Native transports retain theirs through body Close and in-progress reads.
+func (m *retryMW) RequestBufferBudget(size string) *retryMW {
+	m.requestBudget = size
 	return m
 }
 

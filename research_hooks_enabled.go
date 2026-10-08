@@ -13,7 +13,7 @@ func researchDockerRoute(service, host, path string, next http.Handler) http.Han
 	return researchroute.Handler(researchroute.Route{Service: service, Host: host, Path: path}, next)
 }
 
-func researchProxyTransport(base *http.Transport) http.RoundTripper {
+func researchProxyTransport(base http.RoundTripper) http.RoundTripper {
 	return researchroute.Transport(base)
 }
 

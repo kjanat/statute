@@ -1255,7 +1255,7 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 			// is registered, the propagator is a no-op.
 			injectProxyPropagation(pr.Out)
 		},
-		Transport: researchProxyTransport(transport),
+		Transport: researchProxyTransport(retryRequestLeaseTransport(transport)),
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode >= http.StatusInternalServerError {
 				recordFailure(resp.Request)
@@ -1392,7 +1392,20 @@ var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, h
 
 // buildTimeout adapts http.TimeoutHandler to the middlewareBuilders signature.
 func buildTimeout(m resolved.Middleware, next http.Handler) http.Handler {
-	return http.TimeoutHandler(next, m.Timeout, "request timed out")
+	producer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer retryRequestBuffers(r.Context()).release()
+		next.ServeHTTP(w, r)
+	})
+	timed := http.TimeoutHandler(producer, m.Timeout, "request timed out")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leases := retryRequestBuffers(r.Context())
+		// A late producer must not enumerate trailers while server Close drains.
+		r = r.WithContext(retryTrailerContext(r.Context(), r.Trailer))
+		// TimeoutHandler launches its producer even for cancelled contexts;
+		// acquire its lease before an immediate timeout can return.
+		leases.retain()
+		timed.ServeHTTP(w, r)
+	})
 }
 
 // buildCompress adapts compressHandler to the middlewareBuilders signature.
