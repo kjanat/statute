@@ -394,7 +394,7 @@ func TestDockerTombstoneRefusesBeforeFallback(t *testing.T) {
 	}
 }
 
-// A rejected router's envelope is consulted after the generation's real routes.
+// An unparseable router's envelope is consulted after the generation's real routes.
 func TestDockerTombstoneKeepsSiblingsServing(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("served"))

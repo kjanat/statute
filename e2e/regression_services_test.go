@@ -104,19 +104,34 @@ func assertDockerTerminalRefusal(ctx context.Context, t *testing.T, r *harness.R
 		Name: r.Compose.Project + "-refused", Image: image, Network: network,
 		Entrypoint: []string{"/origin"}, Env: []string{"ORIGIN_ADDR=:7000"},
 		Labels: map[string]string{
-			"statute.enable": "true", "statute.host": host, "statute.path": "/*",
+			"statute.enable": "true", "statute.host": host, "statute.path": "/echo",
 			"statute.port": "invalid", "statute.network": network,
 		},
 	}, true)
 	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
 		report.WaitSpec{Status: http.StatusNotFound})
+	// A broader public registration must not turn the rejected route into
+	// backend access. Observe publication through its healthy sibling first.
+	public := mustCreateContainer(ctx, r, harness.ContainerSpec{
+		Name: r.Compose.Project + "-public", Image: image, Network: network,
+		Entrypoint: []string{"/origin"}, Env: []string{"ORIGIN_ADDR=:7000", "ORIGIN_ID=public"},
+		Labels: map[string]string{
+			"statute.enable": "true", "statute.host": host, "statute.path": "/*",
+			"statute.port": "7000", "statute.network": network,
+		},
+	}, true)
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/public", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"origin":"public"`}})
 	r.ExecutePlan(ctx, harness.Client1, &report.Plan{Name: "terminal-refusal", Steps: []report.Step{{
-		Name: "Docker refusal precedes terminal route", URL: fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP),
+		Name: "Docker refusal precedes public and terminal routes", URL: fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP),
 		TargetServer: harness.Server1, Proto: "h1", Count: 1,
 		Expect: report.Expect{Status: http.StatusNotFound},
 	}}})
 	assertStatic()
 	requireEngine(t, r.Engine.Remove(ctx, refused))
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"origin":"public"`}})
+	requireEngine(t, r.Engine.Remove(ctx, public))
 	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
 		report.WaitSpec{Contains: []string{`"origin":"origin-1"`, `"request_id":"terminal-route"`}})
 }

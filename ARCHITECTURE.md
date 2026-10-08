@@ -241,7 +241,20 @@ no discovered service produces a deduplicated provider warning. Policy never
 crosses service identities or becomes router
 middleware.
 
-A discarded registration leaves a **tombstone**: a matcher carrying no upstream,
+A rejected Docker route whose matcher was successfully parsed participates in
+dynamic-route precedence as a generation-owned rejected claim. It defeats broader
+or equally specific serving routes; rejection wins ties regardless of service.
+A more-specific valid route retains precedence. Preserve these claims before
+refusal-envelope widening or absorption, which must not erase a narrow rejection.
+Static routes retain their existing priority, and workload-mutation quarantine
+arbitration and its terminal `503` responses remain unchanged.
+
+Unparseable or unsupported rules leave only fallback-tier refusal envelopes.
+These may be shadowed by valid Docker routes. This explicit compatibility
+trade-off preserves healthy deployments under widened or global refusals;
+it cannot guarantee fail-closed behavior for every overlapping route.
+
+A discarded registration also leaves a **tombstone**: a matcher carrying no upstream,
 no middleware, and one fixed 404 refusal. Dispatch is static routes, then existing
 Docker dispatch with its container-mutation quarantines and tombstones, then
 `Config.FallbackRoutes`, and finally `Config.Fallback`.

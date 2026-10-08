@@ -881,12 +881,30 @@ func routeMatchesRequest(c compiledRoute, host, path string) bool {
 }
 
 func findDynamicHandler(table *dynamicTable, host string, req *http.Request) http.Handler {
-	route := findCompiledRoute(table.routes, host, req)
+	route, quarantined := findDynamicCandidate(table, host, req)
 	if route == nil {
-		if quarantine := findCompiledRoute(table.quarantines, host, req); quarantine != nil {
-			return quarantine.handler
+		if rejected := findCompiledRoute(table.rejections, host, req); rejected != nil {
+			return rejected.handler
 		}
 		return findHandler(table.tombstones, host, req)
+	}
+	// Mutation quarantine is terminal; ordinary configuration rejection cannot
+	// replace its lifecycle outcome or authorize serving through it.
+	if quarantined {
+		return route.handler
+	}
+	if rejected := findCompiledRoute(table.rejections, host, req); rejected != nil &&
+		compareDynamicSpecificity(rejected.matcher, route.matcher) >= 0 {
+		return rejected.handler
+	}
+	return route.handler
+}
+
+func findDynamicCandidate(table *dynamicTable, host string, req *http.Request) (*compiledRoute, bool) {
+	route := findCompiledRoute(table.routes, host, req)
+	if route == nil {
+		quarantine := findCompiledRoute(table.quarantines, host, req)
+		return quarantine, quarantine != nil
 	}
 	for i := range table.quarantines {
 		quarantine := &table.quarantines[i]
@@ -896,17 +914,17 @@ func findDynamicHandler(table *dynamicTable, host string, req *http.Request) htt
 		if sameDynamicTraffic(route.matcher, quarantine.matcher) {
 			sameService := findSameServiceDynamicRoute(table.routes, host, req, quarantine)
 			if sameService == nil {
-				return quarantine.handler
+				return quarantine, true
 			}
 			route = sameService
 			continue
 		}
 		if dynamicRoutePrecedes(*quarantine, *route) {
-			return quarantine.handler
+			return quarantine, true
 		}
 		break
 	}
-	return route.handler
+	return route, false
 }
 
 func findSameServiceDynamicRoute(routes []compiledRoute, host string, req *http.Request, quarantine *compiledRoute) *compiledRoute {

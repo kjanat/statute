@@ -1653,8 +1653,10 @@ func TestWorkloadUnextractableCandidatePreventsLifecycleAuthority(t *testing.T) 
 	if w := p.workloadFor("wl"); w != nil {
 		t.Fatal("unextractable second candidate collapsed into one-to-one lifecycle authority")
 	}
-	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusOK {
-		t.Fatalf("valid contributor route = %d, want 200", rec.Code)
+	// Its parsed rejection wins an identical serving predicate, including a
+	// contributor to the same service. No mutation quarantine is involved.
+	if rec := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://wl.example.com/", nil)); rec.Code != http.StatusNotFound {
+		t.Fatalf("rejected contributor tie = %d, want 404", rec.Code)
 	}
 	if got := daemon.startCount("wl-1") + daemon.startCount("wl-2") + daemon.stopCount("wl-1") + daemon.stopCount("wl-2"); got != 0 {
 		t.Fatalf("provider issued %d lifecycle calls for ambiguous candidate topology", got)
