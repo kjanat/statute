@@ -112,5 +112,8 @@ personalization and authorization boundaries.
 This documents C03 request policy and C04 representation identity in
 [audit #152](https://github.com/kjanat/statute/issues/152). C10 body/trailer
 selection is covered by the conservative protocol-specific bypass policy.
-Resource bounds (C06) and origin freshness (C09) remain separate work. See
+Cache's entry, body and allocation bounds are described under
+[Cache capacity](production.md#cache-capacity); oversized responses stream without
+storage. Origin freshness (C09), Timeout buffering (C19), and Retry request-body
+aggregate retention (C22) remain separate work. See
 [production cache guidance](production.md) for storage and representation rules.

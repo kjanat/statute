@@ -445,12 +445,14 @@ type Middleware struct {
 	RetryMax        int
 	RetryOnStatuses []int
 
-	// ETag and Retry: finite body bytes retained per render/attempt.
+	// ETag, Retry and Cache: finite body bytes retained per render/attempt.
+	// Cache's aggregate budget also includes accounted metadata and scratch.
 	MaxResponseBodyBytes      int64
 	ResponseBufferBudgetBytes int64
 
 	// Cache
-	CacheTTL time.Duration
+	CacheTTL        time.Duration
+	CacheMaxEntries int
 
 	// Compress
 	CompressAlgos []CompressAlgo

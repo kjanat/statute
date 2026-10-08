@@ -3,47 +3,58 @@ package statute
 import (
 	"context"
 	"net/http"
-	"slices"
-	"sync"
-	"time"
 
 	"statute.kjanat.dev/resolved"
 )
 
-// cacheHandler stores permitted full GET/HEAD responses by request identity and
-// Vary. Entries expire by TTL; their count and body sizes are unbounded.
+// cacheHandler owns finite storage and allocation budgets. Failure to admit a
+// request or response bypasses storage without changing producer delivery.
 func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	ttl := m.CacheTTL
 	if ttl <= 0 {
 		return next
 	}
-	c := newTTLCache(ttl)
+	c := newBoundedTTLCache(ttl, m.CacheMaxEntries, m.MaxResponseBodyBytes, m.ResponseBufferBudgetBytes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !c.begin() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		defer c.end()
 		policy := cacheProxyPolicyFromContext(r.Context())
-		if !cacheRequestEligible(r) || !policy.requestEligible(r) {
+		if !cacheRequestPreflight(r, policy) || !cacheRequestEligible(r) || !cacheNativeRequestEligible(r, policy) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		key := cacheKeyForRequest(r, policy)
-		if entry := c.get(key, r.Header, policy); entry != nil && policy.usable() {
-			entry.replay(w)
+		if entry := c.get(key, r.Header, policy); entry != nil {
+			defer c.release(entry)
+			if cachePolicyUsable(policy) {
+				_ = cacheReplay(w, entry.buf)
+				return
+			}
+		}
+		candidate := c.candidate()
+		if candidate == nil {
+			next.ServeHTTP(w, r)
 			return
 		}
-		requestHeaders := r.Header.Clone()
+		defer c.release(candidate)
+		requestHeaders := cacheCloneHeader(r.Header)
 		requestAllowsStorage := cacheControlAllowsStorage(requestHeaders)
-		buf := newResponseBuffer()
-		next.ServeHTTP(buf, r)
-		if vary, allowed := cacheStorageVary(r.Context(), buf, requestAllowsStorage, policy); allowed {
-			c.put(key, requestHeaders, vary, buf, policy)
-		}
-		buf.replay(w)
+		writer := newCacheWriter(w, c, candidate)
+		next.ServeHTTP(writer, r)
+		writer.finish(r.Context(), key, requestHeaders, requestAllowsStorage, policy)
 	})
 }
 
 func cacheStorageVary(ctx context.Context, buf *responseBuffer, requestAllowsStorage bool, policy *cacheProxyPolicy) ([]string, bool) {
+	if !cacheProjectionPreflight(ctx, buf.Header()) {
+		return nil, false
+	}
 	projected := responseHeadersForCache(ctx, buf.Header())
 	vary, reusable := cacheVary(buf.Header(), projected)
-	return vary, cacheResponseEligible(buf) && reusable && policy.usable() &&
+	return vary, cacheResponseEligible(buf) && reusable && cachePolicyUsable(policy) &&
 		requestAllowsStorage && cacheResponseAllowsStorage(buf.Header()) &&
 		cacheResponseAllowsStorage(projected)
 }
@@ -64,59 +75,4 @@ func cacheKeyForRequest(r *http.Request, policy *cacheProxyPolicy) cacheKey {
 		key.propagationFields = policy.signature
 	}
 	return key
-}
-
-type ttlCache struct {
-	ttl     time.Duration
-	mu      sync.Mutex
-	entries map[cacheKey][]cacheEntry
-}
-
-type cacheEntry struct {
-	buf     *responseBuffer
-	expires time.Time
-	vary    []cacheVaryField
-}
-
-func newTTLCache(ttl time.Duration) *ttlCache {
-	return &ttlCache{ttl: ttl, entries: make(map[cacheKey][]cacheEntry)}
-}
-
-func (c *ttlCache) get(key cacheKey, headers http.Header, policy *cacheProxyPolicy) *responseBuffer {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if policy != nil && policy.unsafe.Load() {
-		return nil
-	}
-	now := time.Now()
-	entries := slices.DeleteFunc(c.entries[key], func(e cacheEntry) bool { return !now.Before(e.expires) })
-	if len(entries) == 0 {
-		delete(c.entries, key)
-	} else {
-		c.entries[key] = entries
-	}
-	for _, e := range entries {
-		if e.allowedBy(policy) && e.matches(headers) {
-			return e.buf
-		}
-	}
-	return nil
-}
-
-func (c *ttlCache) put(key cacheKey, headers http.Header, names []string, buf *responseBuffer, policy *cacheProxyPolicy) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !policy.allowsVary(names) {
-		return
-	}
-	now := time.Now()
-	entry := cacheEntry{buf: buf, expires: now.Add(c.ttl)}
-	for _, name := range names {
-		values, present := cacheHeaderValues(headers, name)
-		entry.vary = append(entry.vary, cacheVaryField{name: name, values: values, present: present})
-	}
-	entries := slices.DeleteFunc(c.entries[key], func(e cacheEntry) bool {
-		return !now.Before(e.expires) || !e.sameVary(entry) || e.matches(headers)
-	})
-	c.entries[key] = append(entries, entry)
 }

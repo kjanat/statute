@@ -232,6 +232,43 @@ or shutdown resource is added. Regression coverage spans forwarded operations,
 Connection stripping, propagation replacement, path/identity variants, ordinary
 cache-hit controls, Cache/Retry/ETag order, and static/fallback/Docker assembly.
 
+Each Cache instance has finite storage: 1,024 entries (each Vary variant counts),
+8 MiB per buffered response and a 64 MiB allocation budget by default. Resolve
+normalizes configurable MaxEntries, MaxResponseBody and BufferBudget values.
+The budget covers Cache-owned body capacity, retained metadata, and bounded
+per-request scratch reservations. It includes overlapping body-growth allocations
+and allocations retained by a reader after lookup ownership has been removed.
+Producer-controlled Header maps, other middleware buffers, propagator internals,
+allocator overhead, and garbage awaiting collection are outside this accounting.
+
+Admission preflights request identity before constructing a URL key or cloning
+headers. Fixed ceilings bound key inputs to 16 KiB, header accounting to 64 KiB,
+header names to 256, values to 1,024, and combined Vary tokens to 256. Projection inputs
+are checked before copying or applying route header operations. A nonzero scratch
+reservation precedes cache helpers and copying, bounding concurrent empty misses
+and hit-replay copies as well as response bodies. Stored key/header strings are
+owned copies; short substrings cannot retain arbitrarily large backing strings.
+
+Unavailable admission capacity or oversized request metadata bypasses the cache.
+An oversized response, unavailable growth capacity or oversized response metadata
+permanently switches that invocation to streaming: deliver the buffered
+prefix once and forward subsequent writes. Preserve producer status, errors,
+trailers, route header precedence and RequestID ownership. Cache adds no failure
+status, cancellation or retry. ReaderFrom uses the same bounded Write path.
+Flush remains a no-op while buffering, preserving finite unknown-length proxy
+and rewritten-response caching. After overflow it forwards to the downstream
+writer. ReverseProxy serializes its timer flushes with writes and joins its
+flush owner before returning; Cache introduces no concurrent flush worker.
+
+Stored entries are immutable and readers hold leases. Expiry, replacement,
+schema changes and eviction retire lookup ownership immediately; charges remain
+until the last reader releases its lease. Cache operations sweep expired entries
+across all keys, without a timer or worker. No response I/O or producer call holds
+the store mutex. Handler/generation retirement releases its store naturally.
+Boundary tests cover concurrent misses and variants, growth, slow replay during
+retirement, streaming/trailers, privacy and identity policy, middleware order,
+shared pools, Docker replacement and normalized configuration/export.
+
 CORS contributes mandatory Origin variance to its route's response-header
 projection and final commitment, after raw header operations. Every Cache on that
 route sees the same selection dimension regardless of CORS placement or intervening
