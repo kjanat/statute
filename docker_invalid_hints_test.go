@@ -109,7 +109,9 @@ func TestDockerInvalidHintsRepairRestoresRateLimit(t *testing.T) {
 func TestDockerRouteChainsRejectInvalidHints(t *testing.T) {
 	p := &dockerProvider{cfg: &resolved.Docker{}, warned: map[string]bool{}}
 	table := &dynamicTable{}
-	svc := &docker.Service{Name: "broken", Timeout: "invalid", RateLimit: "1/s", Routes: []docker.Matcher{docker.CompileNative("app.example.com", "/admin/*")}}
+	m := docker.CompileNative("app.example.com", "/admin/*")
+	m.Hints = docker.MiddlewareHints{Timeout: "invalid", RateLimit: "1/s"}
+	svc := &docker.Service{Name: "broken", Routes: []docker.Matcher{m}}
 	chains, tombs := p.routeChains(svc, table)
 	if len(chains) != 0 || len(tombs) != 1 || len(table.rejections) != 1 {
 		t.Fatalf("chains=%d tombs=%d rejected=%d", len(chains), len(tombs), len(table.rejections))

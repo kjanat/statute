@@ -142,6 +142,7 @@ func normalizeEnvelope(ms []Matcher) []Matcher {
 			m.PathKind = PathAny
 		}
 		m.Middlewares = nil
+		m.Hints = MiddlewareHints{}
 		out = append(out, m)
 	}
 	return out

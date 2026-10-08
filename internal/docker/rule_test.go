@@ -200,6 +200,7 @@ func TestMatcherEqual(t *testing.T) {
 		{"different path", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/*", PathKind: PathAny, Middlewares: []string{"auth", "strip"}}, false},
 		{"different host semantics", Matcher{Host: "a.example.com", HostKind: HostTraefik, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth", "strip"}}, false},
 		{"different middlewares", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth"}}, false},
+		{"different native hints", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"auth", "strip"}, Hints: MiddlewareHints{RateLimit: "1/s"}}, false},
 		// Middleware order is semantic: order-only differences are
 		// different routes, never silently collapsed.
 		{"reordered middlewares", Matcher{Host: "a.example.com", HostKind: HostExact, Path: "/api/*", PathKind: PathSegment, Middlewares: []string{"strip", "auth"}}, false},

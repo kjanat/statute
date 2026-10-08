@@ -557,7 +557,7 @@ func validateContributionHints(contributions []dockerContribution) []dockerContr
 		contribution := &contributions[i]
 		var kept []docker.Service
 		for _, svc := range contribution.services {
-			if _, err := serviceHints(&svc); err != nil {
+			if err := validateServiceHints(&svc); err != nil {
 				contribution.rejections = append(contribution.rejections, svc.Routes...)
 				env := docker.EnvelopeOf(svc.Routes)
 				contribution.tombstones = append(contribution.tombstones, env...)
@@ -864,7 +864,10 @@ func fingerprintWorkloadRoutes(chains []routeChain) workloadRoutingRevision {
 	}
 	view := make([]semantics, len(chains))
 	for i := range chains {
-		view[i] = semantics{Matcher: chains[i].m, Middleware: chains[i].mws}
+		m := chains[i].m
+		m.Middlewares = nil
+		m.Hints = docker.MiddlewareHints{}
+		view[i] = semantics{Matcher: m, Middleware: canonicalDockerMiddleware(chains[i].mws)}
 	}
 	b, err := json.Marshal(view)
 	if err != nil {
@@ -877,15 +880,10 @@ func fingerprintWorkloadRoutes(chains []routeChain) workloadRoutingRevision {
 // chain. A route referencing an unregistered middleware fails closed per
 // matcher: it joins the refusal envelope while its siblings keep routing.
 func (p *dockerProvider) routeChains(svc *docker.Service, next *dynamicTable) ([]routeChain, []docker.Matcher) {
-	hints, err := serviceHints(svc)
-	if err != nil {
-		p.warn([]string{err.Error()})
-		return nil, p.refuse(next, svc.Name, svc.Routes)
-	}
 	var kept []routeChain
 	var tombs []docker.Matcher
 	for _, m := range svc.Routes {
-		mws, warn := p.routeMiddleware(svc, m, hints)
+		mws, warn := p.resolveRouteMiddleware(svc, m)
 		if warn != "" {
 			p.warn([]string{warn})
 			tombs = append(tombs, p.refuse(next, svc.Name, []docker.Matcher{m})...)
@@ -893,7 +891,8 @@ func (p *dockerProvider) routeChains(svc *docker.Service, next *dynamicTable) ([
 		}
 		kept = append(kept, routeChain{m: m, mws: mws})
 	}
-	return kept, tombs
+	accepted, conflicts := p.coalesceRouteChains(svc.Name, kept, next)
+	return accepted, append(tombs, conflicts...)
 }
 
 // preparePoolPolicy removes discovered values for fields that code owns before
@@ -943,6 +942,7 @@ func compileRefusals(matchers []docker.Matcher) []compiledRoute {
 	out := make([]compiledRoute, 0, len(matchers))
 	for _, m := range matchers {
 		m.Middlewares = nil
+		m.Hints = docker.MiddlewareHints{}
 		out = append(out, compiledRoute{
 			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
 			handler: tombstoneHandler,
@@ -1043,18 +1043,18 @@ func parseStrategy(service, s string) (Strategy, string) {
 	return RoundRobin, fmt.Sprintf("service %q: unknown strategy %q, using %s", service, s, RoundRobin)
 }
 
-// serviceHints resolves the complete label bundle atomically. Any invalid
+// routeHints resolves the complete label bundle atomically. Any invalid
 // hint rejects the registration's entire middleware chain.
-func serviceHints(svc *docker.Service) ([]resolved.Middleware, error) {
+func routeHints(service string, hints docker.MiddlewareHints) ([]resolved.Middleware, error) {
 	var mws []Middleware
-	if svc.Timeout != "" {
-		mws = append(mws, Timeout(svc.Timeout))
+	if hints.Timeout != "" {
+		mws = append(mws, Timeout(hints.Timeout))
 	}
-	if svc.RateLimit != "" {
-		mws = append(mws, RateLimit(svc.RateLimit))
+	if hints.RateLimit != "" {
+		mws = append(mws, RateLimit(hints.RateLimit))
 	}
-	if svc.Compress != "" {
-		algos, warn := parseCompressAlgos(svc.Name, svc.Compress)
+	if hints.Compress != "" {
+		algos, warn := parseCompressAlgos(service, hints.Compress)
 		if warn != "" {
 			return nil, errors.New(warn)
 		}
@@ -1064,14 +1064,14 @@ func serviceHints(svc *docker.Service) ([]resolved.Middleware, error) {
 	}
 	out, err := resolveMiddlewares(mws)
 	if err != nil {
-		return nil, fmt.Errorf("service %q: invalid label middleware: %w", svc.Name, err)
+		return nil, fmt.Errorf("service %q: invalid label middleware: %w", service, err)
 	}
 	return out, nil
 }
 
 // routeMiddleware assembles one route's chain: provider-wide defaults
 // outermost, then the chains this route's router referenced by name in
-// label order, then the service-level label hints. A reference to an
+// label order, then the route's native label hints. A reference to an
 // unregistered name fails closed — the returned warning tells the caller
 // to omit the route, because serving it without the middleware it asked
 // for (an auth policy, say) is the one unacceptable failure mode.

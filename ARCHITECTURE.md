@@ -423,6 +423,24 @@ ride the matcher/routes derived from that router, preserve label order, and are
 part of route identity. Routers sharing one service still keep distinct policy
 while sharing the service's pool.
 
+Native timeout, rate-limit and compression hints also belong to each originating
+route, never to the merged service. Defaults, named chains and native hints are
+resolved in that order. Within one service, identical host/path predicates with
+equivalent resolved chains coalesce into one route and one middleware instance.
+Conflicting chains reject that entire predicate group through parsed rejection
+precedence; unrelated predicates and shared backend pools remain independent.
+Compression algorithms compare as a set; middleware order and multiplicity stay
+significant. Unknown references and invalid chains still fail closed before
+coalescing. Workload routing revisions cover accepted predicates and effective
+chains, excluding raw hint spelling and registry aliases. Quarantine exclusion
+still precedes serving merges, and static routes retain their priority.
+
+Boundary tests must exercise contribution order, independent routes sharing a
+pool, equivalent and conflicting chains, refusal precedence and repair, plus
+workload revision stability and quarantine isolation. Route generations own this
+immutable configuration; compiled routes own middleware state, with no new
+resource or shutdown owner.
+
 A referenced code-owned middleware name that is unavailable fails closed for the
 affected router's routes. Sibling routers/services continue. Do not degrade a
 requested auth/security policy into an unprotected route.

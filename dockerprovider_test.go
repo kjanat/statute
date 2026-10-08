@@ -1192,10 +1192,8 @@ func TestDockerCrossContainerRouteDedup(t *testing.T) {
 	}
 }
 
-func TestDockerCrossContainerDistinctRoutesKept(t *testing.T) {
-	// Containers whose routers share a rule but differ in middleware
-	// references keep separate routes over the shared pool — references
-	// are router-scoped, never collapsed across containers.
+func TestDockerCrossContainerConflictingRoutesRefused(t *testing.T) {
+	// Identical predicates requesting different effective policies are refused.
 	cfg, err := resolveDocker(Docker().TraefikLabels().
 		Middleware("auth@file", RateLimit("10/s")))
 	if err != nil {
@@ -1222,11 +1220,8 @@ func TestDockerCrossContainerDistinctRoutesKept(t *testing.T) {
 	})
 	mustSync(t, p)
 	tab := srv.dynamic.Load()
-	if len(tab.routes) != 2 || len(tab.pools) != 1 {
+	if len(tab.routes) != 0 || len(tab.pools) != 0 || len(tab.rejections) != 1 {
 		t.Fatalf("routes/pools = %+v / %+v", tab.routes, tab.pools)
-	}
-	if len(tab.routes[0].route.Upstream.Backends) != 2 {
-		t.Fatalf("containers did not pool: %+v", tab.routes[0].route.Upstream.Backends)
 	}
 }
 
