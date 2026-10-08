@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Bound RateLimit to 65,536 retained keys per compiled middleware instance, configurable with `MaxBuckets`. Preserve existing token debt under key churn and return a non-cacheable 503 when a new key cannot obtain capacity; retain normal 429 behavior for existing clients.
+
 - Bound ETag and Retry response bodies to 8 MiB by default, with a 64 MiB body-allocation budget per middleware instance. Add configurable `MaxResponseBody` and `BufferBudget` builders; return 502 for oversize and 503 for exhausted capacity without delivering partial producer responses. These limits do not yet bound Cache or other middleware-owned allocations.
 
 - Reuse a native Docker Engine client for e2e container operations and batch repeated network observations inside the client actor. Keep Compose topology declarations, preserve observation-only workload checks, and fail explicitly on unsupported daemon selection or cleanup errors.

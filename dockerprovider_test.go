@@ -1062,6 +1062,9 @@ func TestDockerLabelMiddleware(t *testing.T) {
 	if mws[0].Type != resolved.MWTimeout || mws[1].Type != resolved.MWRateLimit || mws[2].Type != resolved.MWCompress {
 		t.Errorf("middleware order/types = %+v", mws)
 	}
+	if mws[1].RateLimitMaxBuckets != defaultRateLimitMaxBuckets {
+		t.Errorf("label rate limit cap=%d", mws[1].RateLimitMaxBuckets)
+	}
 }
 
 func TestDockerMiddlewareRegistry(t *testing.T) {
