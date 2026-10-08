@@ -403,9 +403,8 @@ func TestFallbackRoutesStreamDrainsThroughShutdown(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 	t.Cleanup(releaseOnce)
-	addr := reserveAddr(t)
 	srv, err := newServer(mustResolve(t, Config{
-		Listeners:      Listeners{HTTP(addr)},
+		Listeners:      Listeners{HTTP("127.0.0.1:0")},
 		Upstreams:      Upstreams{"stream": Pool{Backends: []Backend{{Address: backend.URL}}, Transport: Transport{FlushInterval: "1ms"}}},
 		FallbackRoutes: Routes{Match("/*").ProxyTo("stream").With(SetResponseHeader("X-Terminal", "yes"))},
 		Observability:  Observability{AccessLog: JSONLog(LogWriter{w: io.Discard, name: "discard"})},
@@ -417,6 +416,7 @@ func TestFallbackRoutesStreamDrainsThroughShutdown(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
+	addr := srv.run.listeners.http[0].listener.Addr().String()
 	t.Cleanup(func() { releaseOnce(); _ = srv.Shutdown() })
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)

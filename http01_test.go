@@ -573,10 +573,10 @@ func newHTTP01LifecycleServer(t *testing.T, httpAddr string) (*resolved.AutoTLS,
 	return nil, nil
 }
 
-// reserveAddr binds an ephemeral port, closes it, and returns the address
-// so a listener started later can claim it. The race between close and
-// re-bind is fine for a hermetic test, and it is the only way to tell the
-// fake CA where to fetch the token before the server exists.
+// reserveAddr returns an unreserved address: another socket may claim it
+// after Close. Tests needing an address only after Start should configure
+// port zero and inspect their live bound listener. Pre-start protocols need
+// explicit socket ownership to eliminate the close/rebind window.
 func reserveAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

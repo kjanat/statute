@@ -337,10 +337,7 @@ func TestServerStartShutdown(t *testing.T) {
 		},
 		Shutdown: Shutdown{GracePeriod: "2s"},
 	}
-	// Patch the resolved Addr before newServer so every derived copy agrees.
 	r := mustResolve(t, cfg)
-	addr := reserveAddr(t)
-	r.Listeners[0].Addr = addr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -355,7 +352,8 @@ func TestServerStartShutdown(t *testing.T) {
 		}
 	}()
 
-	// Wait briefly for goroutines to bind before issuing a request.
+	addr := srv.run.listeners.http[0].listener.Addr().String()
+	// Wait briefly for serving goroutines before issuing a request.
 	waitForListen(t, addr)
 
 	resp, err := http.Get("http://" + addr + "/test")
@@ -409,8 +407,6 @@ func TestFlushIntervalStreamsThroughWrapperChain(t *testing.T) {
 		Shutdown: Shutdown{GracePeriod: "2s"},
 	}
 	r := mustResolve(t, cfg)
-	addr := reserveAddr(t)
-	r.Listeners[0].Addr = addr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -425,6 +421,7 @@ func TestFlushIntervalStreamsThroughWrapperChain(t *testing.T) {
 	}()
 	// Runs before the Shutdown defer (LIFO) so the drain never waits on release.
 	defer releaseOnce()
+	addr := srv.run.listeners.http[0].listener.Addr().String()
 	waitForListen(t, addr)
 
 	// A broken flush path stalls before headers; fail fast, not by panic.
@@ -1184,10 +1181,6 @@ func TestShutdownErrorChannelHoldsAllProducers(t *testing.T) {
 		Shutdown: Shutdown{GracePeriod: "100ms"},
 	}
 	r := mustResolve(t, cfg)
-	contentAddr := reserveAddr(t)
-	metricsAddr := reserveAddr(t)
-	r.Listeners[0].Addr = contentAddr
-	r.Observability.Metrics.Addr = metricsAddr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -1197,6 +1190,8 @@ func TestShutdownErrorChannelHoldsAllProducers(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	contentAddr := srv.run.listeners.http[0].listener.Addr().String()
+	metricsAddr := srv.run.listeners.metrics.listener.Addr().String()
 	waitForListen(t, contentAddr)
 	waitForListen(t, metricsAddr)
 	// Park one half-written request on each server so its drain runs out
@@ -1230,7 +1225,6 @@ func TestShutdownErrorChannelHoldsAllProducers(t *testing.T) {
 // TestShutdownRetriesListenerDrainAfterDeadline proves that a fresh Shutdown
 // can finish draining after an earlier call timed out.
 func TestShutdownRetriesListenerDrainAfterDeadline(t *testing.T) {
-	addr := reserveAddr(t)
 	r := mustResolve(t, Config{
 		Listeners: Listeners{HTTP("127.0.0.1:0")},
 		Routes: Routes{
@@ -1238,7 +1232,6 @@ func TestShutdownRetriesListenerDrainAfterDeadline(t *testing.T) {
 		},
 		Shutdown: Shutdown{GracePeriod: "50ms"},
 	})
-	r.Listeners[0].Addr = addr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -1260,6 +1253,7 @@ func TestShutdownRetriesListenerDrainAfterDeadline(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	addr := srv.run.listeners.http[0].listener.Addr().String()
 
 	type requestResult struct {
 		resp *http.Response
@@ -1816,9 +1810,7 @@ func TestNewServerWithoutHealthConfig(t *testing.T) {
 // TestHealthServesLiveAndReadyAfterStart — a started server answers 200 on
 // both the liveness and readiness paths over a real socket.
 func TestHealthServesLiveAndReadyAfterStart(t *testing.T) {
-	healthAddr := reserveAddr(t)
-	r := mustResolve(t, redirectHealthConfig(healthAddr))
-	r.Listeners[0].Addr = reserveAddr(t)
+	r := mustResolve(t, redirectHealthConfig("127.0.0.1:0"))
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -1831,7 +1823,7 @@ func TestHealthServesLiveAndReadyAfterStart(t *testing.T) {
 			t.Errorf("Shutdown: %v", err)
 		}
 	}()
-	mustServeHealth(t, healthAddr)
+	mustServeHealth(t, srv.run.listeners.health.listener.Addr().String())
 }
 
 // TestStartHealthBindFailureReleasesListeners — a busy health address
@@ -1997,18 +1989,15 @@ func TestShutdownFlipsReadyBeforeDrain(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	healthAddr := reserveAddr(t)
-	contentAddr := reserveAddr(t)
 	r := mustResolve(t, Config{
 		Listeners: Listeners{HTTP("127.0.0.1:0")},
 		Upstreams: Upstreams{
 			"api": Pool{Backends: []Backend{{Address: strings.TrimPrefix(backend.URL, "http://")}}},
 		},
 		Routes:        Routes{Match("/*").ProxyTo("api")},
-		Observability: Observability{Health: Health(healthAddr, "/healthz")},
+		Observability: Observability{Health: Health("127.0.0.1:0", "/healthz")},
 		Shutdown:      Shutdown{GracePeriod: "5s"},
 	})
-	r.Listeners[0].Addr = contentAddr
 	srv, err := newServer(r)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
@@ -2016,6 +2005,8 @@ func TestShutdownFlipsReadyBeforeDrain(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	healthAddr := srv.run.listeners.health.listener.Addr().String()
+	contentAddr := srv.run.listeners.http[0].listener.Addr().String()
 	mustServeHealth(t, healthAddr)
 
 	contentDone := make(chan error, 1)
