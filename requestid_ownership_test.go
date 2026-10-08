@@ -285,8 +285,9 @@ func checkRequestIDTrailerBoundary(t *testing.T, h2, latePrefix bool, outer []Mi
 	if _, found := cacheHeaderValues(resp.Trailer, defaultRequestIDHeader); found {
 		t.Fatalf("identity trailer escaped: %v", resp.Trailer)
 	}
-	// ETag's existing Content-Length replay loses HTTP/1 trailers (#152 C16).
-	// Compare unrelated metadata with the no-RequestID control chain.
+	if resp.Trailer.Get("X-Finished") != "done" || resp.Header.Get("X-Finished") != "" {
+		t.Fatalf("unrelated trailer lost or promoted: headers=%v trailers=%v", resp.Header, resp.Trailer)
+	}
 	if !slices.Equal(resp.Trailer.Values("X-Finished"), baseline.Trailer.Values("X-Finished")) ||
 		!slices.Equal(resp.Header.Values("X-Finished"), baseline.Header.Values("X-Finished")) {
 		t.Fatalf("unrelated metadata changed: got headers=%v trailers=%v; control headers=%v trailers=%v",
