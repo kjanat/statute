@@ -2,6 +2,7 @@ package statute
 
 import (
 	"bytes"
+	"context"
 	"maps"
 	"net/http"
 	"strings"
@@ -11,10 +12,15 @@ import (
 // the response before committing it to the wire. It implements http.Flusher
 // as a no-op. All body bytes are buffered until replay.
 type responseBuffer struct {
-	header      http.Header
-	status      int
-	body        bytes.Buffer
-	wroteHeader bool
+	header        http.Header
+	status        int
+	body          bytes.Buffer
+	wroteHeader   bool
+	maxBodyBytes  int64
+	overLimit     bool
+	failureStatus int
+	budget        *responseBufferBudget
+	cancel        context.CancelFunc
 }
 
 func newResponseBuffer() *responseBuffer {
@@ -38,6 +44,9 @@ func (b *responseBuffer) WriteHeader(code int) {
 
 // Write appends to the buffered body, defaulting the status to 200.
 func (b *responseBuffer) Write(p []byte) (int, error) {
+	if b.maxBodyBytes > 0 && !b.prepareBodyWrite(len(p)) {
+		return 0, errResponseBufferLimit
+	}
 	if !b.wroteHeader {
 		b.wroteHeader = true
 	}

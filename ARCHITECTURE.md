@@ -214,6 +214,24 @@ streaming flushes. Buffered middleware discards informational 1xx
 statuses while retaining the final response, and upgrade requests bypass Cache,
 ETag, and compression.
 
+ETag and Retry each own a finite response-body buffer limit and an aggregate
+body-allocation budget per compiled middleware instance. Resolve supplies the
+defaults (8 MiB per render/attempt, 64 MiB per instance) and validates explicit
+positive overrides. The budget includes retained capacity and both allocations
+during growth, and remains charged through downstream replay. A Retry releases
+one attempt's allocation before beginning the next. There is no shared pool
+budget, background worker, or generation-retirement callback.
+
+An oversized body yields 502; unavailable allocation capacity yields 503.
+Neither failure commits partial producer bytes, headers, trailers, or a generated
+validator. The render's child context is cancelled and subsequent writes fail.
+ReverseProxy's copy-error abort is converted only after a write was refused by
+that buffer; other aborts and application panics propagate. The owning Retry
+ends its loop, while an outer Retry retains its configured status policy.
+Accounting covers ETag/Retry-owned response-body allocations. Cache, Timeout's
+internal buffering, headers, request copies, codecs, and process RSS remain
+outside this budget.
+
 ## Docker discovery
 
 Docker labels are external input. Statute keeps the trust boundary in code:

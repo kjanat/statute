@@ -18,6 +18,11 @@ type bufferedETagRenderKey struct{}
 // same path internally and omits delivery. Original preconditions are evaluated
 // against the generated validator after rendering; buffering is explicit.
 func etagHandler(next http.Handler) http.Handler {
+	return etagHandlerWithLimit(next, defaultMaxResponseBodyBytes, defaultResponseBufferBudgetBytes)
+}
+
+func etagHandlerWithLimit(next http.Handler, limit, budgetBytes int64) http.Handler {
+	budget := newResponseBufferBudget(budgetBytes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if (r.Method != http.MethodGet && r.Method != http.MethodHead) || r.Header.Get("Upgrade") != "" {
 			next.ServeHTTP(w, r)
@@ -26,8 +31,13 @@ func etagHandler(next http.Handler) http.Handler {
 		render := r.Clone(context.WithValue(r.Context(), bufferedETagRenderKey{}, true))
 		render.Method = http.MethodGet
 		httpprecondition.Clear(render.Header)
-		buf := newResponseBuffer()
-		next.ServeHTTP(buf, render)
+		buf := newLimitedResponseBuffer(limit)
+		buf.budget = budget
+		defer buf.release()
+		if !buf.render(next, render) {
+			writeResponseLimitFailure(w, buf.failureStatus)
+			return
+		}
 		completeETagContentType(buf)
 		coding, acceptable := selectETagEncoding(r, buf)
 		if !acceptable {
@@ -42,22 +52,30 @@ func etagHandler(next http.Handler) http.Handler {
 				etag = "W/" + etag
 			}
 			setETagMetadata(buf, etag)
-			if status := httpprecondition.Status(r.Header, buf.header); status != 0 {
-				maps.Copy(w.Header(), buf.header)
-				stripResponseTrailers(w.Header())
-				deleteHeaderFold(w.Header(), "Content-Length")
-				for _, name := range []string{"Content-Range", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, headerTransferEncoding, headerTrailer} {
-					deleteHeaderFold(w.Header(), name)
-				}
-				if status != http.StatusNotModified {
-					deleteHeaderFold(w.Header(), "Content-Encoding")
-				}
-				w.WriteHeader(status)
+			if writeETagPrecondition(w, r, buf) {
 				return
 			}
 		}
 		replayETagResponse(w, r, buf)
 	})
+}
+
+func writeETagPrecondition(w http.ResponseWriter, r *http.Request, buf *responseBuffer) bool {
+	status := httpprecondition.Status(r.Header, buf.header)
+	if status == 0 {
+		return false
+	}
+	maps.Copy(w.Header(), buf.header)
+	stripResponseTrailers(w.Header())
+	deleteHeaderFold(w.Header(), "Content-Length")
+	for _, name := range []string{"Content-Range", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, headerTransferEncoding, headerTrailer} {
+		deleteHeaderFold(w.Header(), name)
+	}
+	if status != http.StatusNotModified {
+		deleteHeaderFold(w.Header(), "Content-Encoding")
+	}
+	w.WriteHeader(status)
+	return true
 }
 
 func setETagMetadata(buf *responseBuffer, etag string) {

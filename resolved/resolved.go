@@ -444,6 +444,10 @@ type Middleware struct {
 	RetryMax        int
 	RetryOnStatuses []int
 
+	// ETag and Retry: finite body bytes retained per render/attempt.
+	MaxResponseBodyBytes      int64
+	ResponseBufferBudgetBytes int64
+
 	// Cache
 	CacheTTL time.Duration
 

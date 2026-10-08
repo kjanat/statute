@@ -39,10 +39,10 @@ const maxRetryBufferBytes = 1 << 20 // 1 MiB
 // the attempt budget is exhausted, then committed to the wire.
 func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	maxAttempts := m.RetryMax
-	statuses := m.RetryOnStatuses
 	if maxAttempts < 1 {
 		return next
 	}
+	budget := newResponseBufferBudget(m.ResponseBufferBudgetBytes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isRetryable(r) {
 			next.ServeHTTP(w, r)
@@ -58,14 +58,26 @@ func retryHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			if bodyBytes != nil {
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
-			buf := newResponseBuffer()
-			next.ServeHTTP(buf, r)
-			if attempt == maxAttempts || !statusMatches(buf.status, statuses) {
-				buf.replay(w)
+			if !serveRetryAttempt(w, r, next, m, budget, attempt == maxAttempts) {
 				return
 			}
 		}
 	})
+}
+
+func serveRetryAttempt(w http.ResponseWriter, r *http.Request, next http.Handler, m resolved.Middleware, budget *responseBufferBudget, last bool) bool {
+	buf := newLimitedResponseBuffer(m.MaxResponseBodyBytes)
+	buf.budget = budget
+	defer buf.release()
+	if !buf.render(next, r) {
+		writeResponseLimitFailure(w, buf.failureStatus)
+		return false
+	}
+	if last || !statusMatches(buf.status, m.RetryOnStatuses) {
+		buf.replay(w)
+		return false
+	}
+	return true
 }
 
 // bufferRetryBody reads and buffers the request body so it can be replayed

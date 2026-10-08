@@ -160,12 +160,52 @@ must mark personalized responses private/no-store or omit Cache; arbitrary
 application identity cannot be inferred. Use a suitable cache implementation for
 broader HTTP caching needs.
 
+## Buffered response limits
+
+ETag and Retry default to **8 MiB per rendered response body** and a **64 MiB
+response-body allocation budget per compiled middleware instance**. Configure
+them independently:
+
+```go
+ETag().MaxResponseBody("16MiB").BufferBudget("128MiB")
+Retry(3, OnStatus(503)).MaxResponseBody("4MiB").BufferBudget("32MiB")
+```
+
+Sizes must be positive; the budget must be at least the body limit. There is no
+unlimited setting. The limits apply to static, fallback, and code-owned Docker
+middleware. Export includes both normalized byte counts. Separate routes and
+repeated middleware declarations own independent budgets.
+
+Oversize returns 502; insufficient budget returns 503. No partial producer body,
+headers, trailers, or generated ETag are delivered. The failure carries no-store
+and an empty body at this middleware's output; an outer compressor can add codec
+framing. HEAD performs the same bounded ETag render. An incomplete representation
+cannot satisfy a conditional request. The owning Retry stops its attempt loop;
+an outer Retry may retry the failure if its configured status policy selects it.
+
+Budget accounting includes allocated body capacity, concurrent renders, slow
+downstream replay, and old plus new allocations during buffer growth. Growth can
+therefore require more budget than the final body size. Retry releases each
+attempt before starting another. Allocation exhaustion fails immediately; there
+is no queue or temporary disk spool. Overflow cancels the render's child context
+and fails further writes; custom handlers must respect write errors/cancellation.
+
+Each limit measures bytes at that stage: ETag outside compression buffers encoded
+bytes, while ETag inside compression buffers identity bytes. Nested middleware
+charge their own copies. These are **not whole-process memory limits**: headers,
+request copies (including Retry's separately capped request body), codec memory,
+allocator overhead and garbage awaiting collection are excluded. Inner Cache or
+Timeout can buffer before the bounded writer sees any bytes. Cache's entry,
+metadata, concurrent-miss, and expiry bounds remain separate C06 work in issue
+[#152](https://github.com/kjanat/statute/issues/152).
+
 ## Body-derived ETags
 
 `ETag()` buffers the inner GET response and hashes successful status-200 bytes.
 For HEAD it clones the request, renders that same inner GET, computes the same
-validator, and sends headers only. This can do the full work of a GET; buffering
-is unbounded. It remains one external HEAD in access logs and request metrics.
+validator, and sends headers only. This can do the full work of a GET; its body
+buffer is bounded as described above. It remains one external HEAD in access logs
+and request metrics.
 Request authentication, negotiation, context, and route selection are retained.
 The render clone removes read preconditions and ranges; the original request is
 evaluated against the completed representation afterward. Matching If-None-Match
