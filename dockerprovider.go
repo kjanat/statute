@@ -3,6 +3,7 @@ package statute
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -422,6 +423,7 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 		if !current {
 			continue
 		}
+		contributions = validateContributionHints(contributions)
 		p.publishContributionWarnings(contributions, quarantine)
 		services, tombstones, rejected := mergeContributions(contributions, quarantine.matches)
 		quarantine.routes = p.quarantineRouteClaims(containers, quarantine)
@@ -545,6 +547,29 @@ func (p *dockerProvider) deriveContributions(containers []docker.Container) []do
 		out = append(out, dockerContribution{container: c, services: svcs, tombstones: envelopes, rejections: rejected, warnings: warns})
 	}
 	return out
+}
+
+// validateContributionHints applies only to the serving view, after workload
+// observations have consumed the full contributor set. Invalid middleware does
+// not change lifecycle authority or immutable quarantine membership.
+func validateContributionHints(contributions []dockerContribution) []dockerContribution {
+	for i := range contributions {
+		contribution := &contributions[i]
+		var kept []docker.Service
+		for _, svc := range contribution.services {
+			if _, err := serviceHints(&svc); err != nil {
+				contribution.rejections = append(contribution.rejections, svc.Routes...)
+				env := docker.EnvelopeOf(svc.Routes)
+				contribution.tombstones = append(contribution.tombstones, env...)
+				contribution.warnings = append(contribution.warnings, err.Error(),
+					docker.RefusalWarning(fmt.Sprintf("service %q", svc.Name), env))
+				continue
+			}
+			kept = append(kept, svc)
+		}
+		contribution.services = kept
+	}
+	return contributions
 }
 
 func (p *dockerProvider) publishContributionWarnings(contributions []dockerContribution, quarantine retiredMutationQuarantine) {
@@ -852,8 +877,11 @@ func fingerprintWorkloadRoutes(chains []routeChain) workloadRoutingRevision {
 // chain. A route referencing an unregistered middleware fails closed per
 // matcher: it joins the refusal envelope while its siblings keep routing.
 func (p *dockerProvider) routeChains(svc *docker.Service, next *dynamicTable) ([]routeChain, []docker.Matcher) {
-	hints, warns := serviceHints(svc)
-	p.warn(warns)
+	hints, err := serviceHints(svc)
+	if err != nil {
+		p.warn([]string{err.Error()})
+		return nil, p.refuse(next, svc.Name, svc.Routes)
+	}
 	var kept []routeChain
 	var tombs []docker.Matcher
 	for _, m := range svc.Routes {
@@ -1015,12 +1043,10 @@ func parseStrategy(service, s string) (Strategy, string) {
 	return RoundRobin, fmt.Sprintf("service %q: unknown strategy %q, using %s", service, s, RoundRobin)
 }
 
-// serviceHints resolves the service-level middleware hints
-// (statute.timeout / statute.ratelimit / statute.compress), dropping
-// invalid values with a warning.
-func serviceHints(svc *docker.Service) ([]resolved.Middleware, []string) {
+// serviceHints resolves the complete label bundle atomically. Any invalid
+// hint rejects the registration's entire middleware chain.
+func serviceHints(svc *docker.Service) ([]resolved.Middleware, error) {
 	var mws []Middleware
-	var warns []string
 	if svc.Timeout != "" {
 		mws = append(mws, Timeout(svc.Timeout))
 	}
@@ -1030,7 +1056,7 @@ func serviceHints(svc *docker.Service) ([]resolved.Middleware, []string) {
 	if svc.Compress != "" {
 		algos, warn := parseCompressAlgos(svc.Name, svc.Compress)
 		if warn != "" {
-			warns = append(warns, warn)
+			return nil, errors.New(warn)
 		}
 		if len(algos) > 0 {
 			mws = append(mws, Compress(algos...))
@@ -1038,9 +1064,9 @@ func serviceHints(svc *docker.Service) ([]resolved.Middleware, []string) {
 	}
 	out, err := resolveMiddlewares(mws)
 	if err != nil {
-		return nil, append(warns, fmt.Sprintf("service %q: %v, dropping label middleware", svc.Name, err))
+		return nil, fmt.Errorf("service %q: invalid label middleware: %w", svc.Name, err)
 	}
-	return out, warns
+	return out, nil
 }
 
 // routeMiddleware assembles one route's chain: provider-wide defaults
@@ -1085,7 +1111,7 @@ func parseCompressAlgos(service, s string) ([]CompressAlgo, string) {
 		case "", labelValueTrue:
 			algos = append(algos, Gzip, Brotli)
 		default:
-			return nil, fmt.Sprintf("service %q: unknown compress algorithm %q, dropping compression", service, a)
+			return nil, fmt.Sprintf("service %q: unknown compress algorithm %q", service, a)
 		}
 	}
 	return algos, ""

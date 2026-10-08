@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -93,6 +94,10 @@ func TestParseRate(t *testing.T) {
 		{"Inf/s", 0, true},
 		{"+Inf/min", 0, true},
 		{"-Inf/s", 0, true},
+		{"5e-324/min", 0, true},
+		{"5e-324/h", 0, true},
+		{"5e-324/s", math.SmallestNonzeroFloat64, false},
+		{"1.7976931348623157e308/s", math.MaxFloat64, false},
 	}
 	for _, c := range cases {
 		got, err := Rate(c.in)
@@ -106,7 +111,7 @@ func TestParseRate(t *testing.T) {
 			t.Errorf("Rate(%q) error: %v", c.in, err)
 			continue
 		}
-		if got < c.want-1e-9 || got > c.want+1e-9 {
+		if got <= 0 || got < c.want-1e-9 || got > c.want+1e-9 {
 			t.Errorf("Rate(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}

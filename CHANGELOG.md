@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Refuse Docker registrations with invalid timeout, rate-limit or compression hints. Validate each contribution before serving-service merging while preserving healthy siblings and workload ownership. Reject rates that underflow to zero requests per second.
+
 - Bypass response caching for GET/HEAD bodies, unknown body lengths, transfer encodings, and request trailers without consuming the request body. Preserve empty HTTP/1 and HTTP/2 caching; bypass all HTTP/3 requests because late unannounced trailers cannot be excluded before lookup.
 
 - Preserve unrelated trailers on buffered ETag responses over HTTP/1.1, including Cache, Retry, compression, and RequestID compositions. Omit synthetic-render trailers on HEAD and conditional bodyless responses.

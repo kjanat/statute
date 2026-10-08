@@ -1313,12 +1313,11 @@ func TestDockerInvalidLabelSkipsServiceNotGeneration(t *testing.T) {
 	})
 	mustSync(t, p)
 	tab := srv.dynamic.Load()
-	// The broken container still routes — only its middleware is dropped.
-	if len(tab.pools) != 2 {
+	if len(tab.pools) != 1 || tab.pools["fine"] == nil || len(tab.routes) != 1 {
 		t.Fatalf("pools = %+v", tab.pools)
 	}
-	if len(tab.routes[0].route.Middleware)+len(tab.routes[1].route.Middleware) != 0 {
-		t.Errorf("invalid middleware survived")
+	if len(tab.rejections) == 0 || len(tab.tombstones) == 0 {
+		t.Fatal("invalid registration did not leave a refusal")
 	}
 }
 
