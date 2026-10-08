@@ -6,7 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-08
+
+This release adds native fallback routes and closes the cache, middleware, and Docker policy gaps tracked in [#152](https://github.com/kjanat/statute/issues/152). It introduces finite resource defaults and stricter configuration validation. Review the [upgrade guide](https://github.com/kjanat/statute/blob/v0.8.0/docs/upgrading-to-v0.8.md) before upgrading from v0.7.x.
+
+HTML rewriting remains a separate, opt-in research module. This release does not provide a public HTML-rewriting API; production integration continues in [#114](https://github.com/kjanat/statute/issues/114).
+
 ### Added
+
+- Add `Config.FallbackRoutes` for native terminal routing after ordinary routes and Docker discovery, including its refusals. Reuse existing matchers, actions, middleware, and shared upstream pools without intercepting matched error responses; retain `Fallback` as the final application handler. Export, graph, and lint expose the separate terminal table.
 
 - Make the research HTML-rewriting engine opt-in with the `statute_htmlrewrite` build tag; verify that disabled binaries exclude wazero and the embedded Wasm, and reject engine construction with a rebuild instruction.
 
@@ -16,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Add local RFC Editor HTML references with explicit refresh tooling, source/checksum provenance, and offline verification for HTTP protocol work.
 
-- Add a private HTTP HTML-rewriting experiment with explicit per-route fail-open/fail-closed policy, bounded fresh instances, and streaming/disconnect/shutdown tests. Exercise real Statute cache, retry, and compression in a separate process, and record the fail-open/no-store cache integration limitation.
+- Add a private HTTP HTML-rewriting experiment with explicit per-route fail-open/fail-closed policy, bounded fresh instances, and streaming/disconnect/shutdown tests. Exercise real Statute cache, retry, and compression in a separate process; verify that fail-open bypasses are not cached and subsequent requests can recover to rewritten cache entries.
 
 - Add a parser-independent Wasm cancellation reproducer with equivalent loop-shape benchmarks and active-call interruption/isolation tests. Record checkpoint-density costs separately from cancellation-trigger scheduling delay without weakening HTML engine safety settings.
 
@@ -24,11 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Add an isolated LOL HTML/Wasm research harness with streaming, native-parity, resource-limit, and instance-isolation checks. Profile and reduce callback overhead with typed host calls, bounded output batching, and stream-owned function handles. Record native/Wasm benchmark samples and the remaining work before any HTML-rewriting API can ship.
 
-- Add `Config.FallbackRoutes` for native terminal routing after ordinary routes and Docker discovery, including its refusals. Reuse existing matchers, actions, middleware, and shared upstream pools without intercepting matched error responses; retain `Fallback` as the final application handler. Export, graph, and lint expose the separate terminal table.
+- Add parser-private matcher scope identity and retirement hooks to the research engine, with native/Wasm trace parity. Preserve end-token ownership for implicitly closed descendants through a pinned, vendored LOL HTML patch and explicit upstream-refresh tooling. Configurable programs and Go callbacks remain unimplemented.
 
 ### Changed
 
-- Bound each Timeout instance to an 8 MiB response body, 64 MiB body-allocation budget and 128 active producers by default, configurable with MaxResponseBody, BufferBudget and MaxInFlight. Retain capacity through late producers and slow replay; return 502 for oversize and 503 for capacity exhaustion. Preserve deadline/cancellation behavior and successful trailers, discard informational statuses, and make HTTP/2 Push explicitly unsupported inside Timeout.
+- Set the preferred Go toolchain to `go1.27.1` across modules while retaining the Go 1.27 language requirement.
+
+- Bound each Timeout instance to an 8 MiB response body, 64 MiB body-allocation budget and 128 active producers by default, configurable with `MaxResponseBody`, `BufferBudget` and `MaxInFlight`. Retain capacity through late producers and slow replay; return 502 for oversize and 503 for capacity exhaustion. Preserve deadline/cancellation behavior and successful trailers, discard informational statuses, and make HTTP/2 Push explicitly unsupported inside Timeout.
 
 - Bound Retry request-body allocations with a separate, configurable `RequestBufferBudget` (64 MiB default). Preserve single-attempt passthrough on exhausted capacity or oversize; account for growth, concurrent reads and buffers retained by timed-out handlers or asynchronous upstream transports without changing response-budget failures.
 
@@ -39,6 +49,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Bound ETag and Retry response bodies to 8 MiB by default, with a 64 MiB body-allocation budget per middleware instance. Add configurable `MaxResponseBody` and `BufferBudget` builders; return 502 for oversize and 503 for exhausted capacity without delivering partial producer responses. Cache has separate storage and buffering limits; other middleware-owned allocations remain outside these response budgets.
 
 - Reuse a native Docker Engine client for e2e container operations and batch repeated network observations inside the client actor. Keep Compose topology declarations, preserve observation-only workload checks, and fail explicitly on unsupported daemon selection or cleanup errors.
+
+- Require complete selected CI and CodeQL matrices before PR auto-merge, including conditional research jobs and dynamically discovered fuzz targets. Validate documentation links before wiki publication and group automated comment findings into one review.
 
 ### Fixed
 
@@ -365,7 +377,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/kjanat/statute/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/kjanat/statute/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/kjanat/statute/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kjanat/statute/compare/v0.6.0...v0.7.0
