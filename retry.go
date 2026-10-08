@@ -77,6 +77,9 @@ func serveRetryAttempts(w http.ResponseWriter, r *http.Request, next http.Handle
 		if body != nil {
 			attemptRequest = r.WithContext(r.Context())
 			attemptRequest.Body = io.NopCloser(bytes.NewReader(body))
+			if len(r.Trailer) != 0 {
+				attemptRequest.Body = &retryTrailerReadCloser{ReadCloser: attemptRequest.Body, trailers: r.Trailer}
+			}
 		}
 		if !serveRetryAttempt(w, attemptRequest, next, m, budget, attempt == m.RetryMax) {
 			return

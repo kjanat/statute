@@ -13,6 +13,10 @@ func retryRequestLeaseTransport(base http.RoundTripper) http.RoundTripper {
 type retryRequestTransport struct{ base http.RoundTripper }
 
 func (t *retryRequestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if source, ok := r.Body.(retryTrailerBody); ok {
+		r = r.WithContext(r.Context())
+		r.Trailer = source.liveRetryTrailers()
+	}
 	chain := retryRequestBuffers(r.Context())
 	if chain == nil || r.Body == nil || r.Body == http.NoBody {
 		return t.base.RoundTrip(r)
@@ -29,9 +33,6 @@ func (t *retryRequestTransport) RoundTrip(r *http.Request) (*http.Response, erro
 		}
 	}()
 	forwarded := r.WithContext(r.Context())
-	if source, ok := r.Body.(retryTrailerBody); ok {
-		forwarded.Trailer = source.liveRetryTrailers()
-	}
 	forwarded.Body = owner.wrap(r.Body)
 	if getBody := r.GetBody; getBody != nil {
 		forwarded.GetBody = func() (io.ReadCloser, error) {
