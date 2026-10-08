@@ -291,9 +291,44 @@ charge their own copies. These are **not whole-process memory limits**: headers,
 request copies (including Retry's separately capped request body), codec memory,
 allocator overhead and garbage awaiting collection are excluded. Inner Cache or
 Timeout can buffer before the bounded writer sees any bytes. Cache has its own
-independent limits described above. Timeout's internal buffering remains outside
-this body budget. Retry request-body retention has its own budget below. Timeout
-limits remain tracked in [#152](https://github.com/kjanat/statute/issues/152).
+independent limits described above. Timeout owns the separate bounds below.
+Retry request-body retention also has its own budget.
+
+## Timeout bounds
+
+Timeout defaults to **8 MiB per response**, a **64 MiB body-allocation budget**
+and **128 in-flight producers per compiled instance**:
+
+```go
+Timeout("30s").MaxResponseBody("4MiB").BufferBudget("32MiB").MaxInFlight(64)
+```
+
+Body sizes must be positive and the budget must cover the body limit.
+MaxInFlight accepts positive values; zero selects 128 and negative values fail
+resolution. Static, fallback and Docker routes have independent instances.
+Native `statute.timeout` labels use defaults; named code-owned Docker middleware
+can select explicit limits. Export carries all normalized values.
+
+Oversize returns empty 502. Exhausted body budget or producer capacity returns
+empty 503 without queueing. Resource failures carry `Cache-Control: no-store`
+and discard producer headers, body and trailers. An outer Retry retains its
+configured failure policy. Ordinary deadline expiry remains 503 with
+`request timed out`; parent cancellation returns empty 503.
+
+A timed-out handler that ignores cancellation keeps its producer slot and body
+charge until it actually exits. Successful buffers remain charged throughout
+downstream replay, and growth charges old and replacement allocations together.
+Late deadline writes return `http.ErrHandlerTimeout`; cancelled writes return
+the context error. Inner Retry request-body leases survive the same late-producer
+lifetime. Producer header maps, other buffers, codecs and process RSS are outside
+these body limits. Cancellation cannot forcibly terminate application code.
+
+Timeout does not stream, flush or hijack. HTTP/2 `Push` returns
+`http.ErrNotSupported` immediately, including when the downstream writer supports
+push: forwarding it could block deadline return or use a writer after its request
+has finished. Successful responses preserve trailers; informational statuses are
+discarded until the final status. Empty completion remains 200. Application panics
+and unrelated proxy aborts propagate while Timeout is waiting for the producer.
 
 ## Retry request-buffer limits
 

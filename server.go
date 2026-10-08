@@ -1397,22 +1397,9 @@ var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, h
 	// applyMiddleware as pass-throughs.
 }
 
-// buildTimeout adapts http.TimeoutHandler to the middlewareBuilders signature.
+// buildTimeout creates route-owned producer and response-buffer bounds.
 func buildTimeout(m resolved.Middleware, next http.Handler) http.Handler {
-	producer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer retryRequestBuffers(r.Context()).release()
-		observeCacheCommit(next, w, r, true)
-	})
-	timed := http.TimeoutHandler(producer, m.Timeout, "request timed out")
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		leases := retryRequestBuffers(r.Context())
-		// A late producer must not enumerate trailers while server Close drains.
-		r = r.WithContext(retryTrailerContext(r.Context(), r.Trailer))
-		// TimeoutHandler launches its producer even for cancelled contexts;
-		// acquire its lease before an immediate timeout can return.
-		leases.retain()
-		timed.ServeHTTP(w, r)
-	})
+	return newTimeoutHandler(m, next)
 }
 
 // buildCompress adapts compressHandler to the middlewareBuilders signature.
