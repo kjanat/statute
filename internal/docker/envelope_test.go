@@ -337,6 +337,7 @@ func TestEnvelopeOfNormalizesLiterals(t *testing.T) {
 		{"absorption", []Matcher{m("a.example.com", "/x/*"), m("", "/x/*")}, []Matcher{m("", "/x/*")}},
 		{"global absorbs", []Matcher{m("a.example.com", "/x"), m("", "/*")}, global()},
 		{"middleware stripped", []Matcher{{Host: "a", HostKind: HostExact, Path: "/*", PathKind: PathAny, Middlewares: []string{"auth"}}}, []Matcher{native("a", "/*")}},
+		{"native hints stripped", []Matcher{{Host: "a", HostKind: HostExact, Path: "/*", PathKind: PathAny, Hints: MiddlewareHints{RateLimit: "1/s"}}}, []Matcher{native("a", "/*")}},
 		{"native host spelling preserved", []Matcher{native("a.example.com.", "/*")}, []Matcher{native("a.example.com.", "/*")}},
 	}
 	for _, tc := range cases {

@@ -3235,12 +3235,17 @@ func TestWorkloadMutationQuarantineDoesNotCrossContributors(t *testing.T) {
 			"traefik.enable":                                        "true",
 			"traefik.http.routers.shared.rule":                      "Host(`shared.example.com`)",
 			"traefik.http.routers.shared.service":                   "shared",
+			"traefik.http.routers.shared.middlewares":               "policy-" + port,
 			"traefik.http.services.shared.loadbalancer.server.port": port,
 		}
 	}
 	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
 		TraefikLabels: true,
 		Workloads:     map[string]resolved.Workload{"shared@traefik": testWorkloadPolicy()},
+		Middleware: map[string][]resolved.Middleware{
+			"policy-" + portCStr: {mustResolveMW(t, Timeout("1m"))},
+			"policy-" + portDStr: {mustResolveMW(t, Timeout("2m"))},
+		},
 	}, []fakeDaemonContainer{{name: "container-c", ip: hostC, port: portC, labels: labels(portCStr)}})
 	daemon.stopStarted = make(chan struct{})
 	daemon.stopRelease = make(chan struct{})

@@ -20,12 +20,21 @@ type Matcher struct {
 	// native-schema routes. Resolution against the registry happens in
 	// the provider.
 	Middlewares []string
+	// Hints are native middleware labels from this route's container.
+	Hints MiddlewareHints
+}
+
+// MiddlewareHints is the native route policy awaiting provider resolution.
+type MiddlewareHints struct {
+	Timeout   string
+	RateLimit string
+	Compress  string
 }
 
 // Equal reports whether two matchers match the same traffic and carry the
-// same middleware references.
+// same middleware references and native hints.
 func (m Matcher) Equal(o Matcher) bool {
-	return m.Host == o.Host && m.HostKind == o.HostKind && m.Path == o.Path && m.PathKind == o.PathKind && slices.Equal(m.Middlewares, o.Middlewares)
+	return m.Host == o.Host && m.HostKind == o.HostKind && m.Path == o.Path && m.PathKind == o.PathKind && slices.Equal(m.Middlewares, o.Middlewares) && m.Hints == o.Hints
 }
 
 // maxRuleMatchers caps the disjunctive expansion of a single rule so a

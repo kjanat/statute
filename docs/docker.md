@@ -356,6 +356,22 @@ their complete middleware chain on the next reconciliation. Empty hints remain
 omitted. Positive rates too small to represent in requests per second are errors.
 This serving refusal does not retire workload grants or shorten mutation quarantine.
 
+Containers sharing a service share its backend pool. Each route retains the
+originating container's native timeout, rate limit and
+compression settings. Provider defaults run first, named middleware next, and
+native hints last. Identical host/path predicates within one service coalesce
+only when their complete resolved middleware chains are equivalent. Different
+duration/rate spellings and compression algorithm ordering or duplicates do not
+create conflicts; middleware ordering and repeated middleware do matter.
+
+If identical predicates request different policies, Statute refuses that
+predicate. Healthy unrelated routes
+continue sharing the pool. The normal parsed-rejection precedence described
+above still applies, including priority over broader public routes. Align the
+conflicting policies or use distinct matchers to restore serving on the next
+reconciliation. Equivalent policy spellings do not invalidate queued workload
+requests; changed effective policy does.
+
 The health-check labels stop at path/interval/timeout — deliberately. The
 probe `Host` override (`HealthCheck.Host`), accepted probe statuses
 (`HealthCheck.Statuses`), passive health (`PassiveHealthCheck`), transport

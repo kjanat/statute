@@ -48,11 +48,6 @@ type Service struct {
 	HealthCheckPath     string
 	HealthCheckInterval string
 	HealthCheckTimeout  string
-
-	// Route-level middleware hints (statute labels only).
-	Timeout   string
-	RateLimit string
-	Compress  string
 }
 
 // Backend is one container's contribution to a service pool.
@@ -433,6 +428,11 @@ func extractNative(c Container, opts ExtractOptions, rejected *[]Matcher) ([]Ser
 
 	routes, rw := nativeRoutes(c, labels)
 	warns = append(warns, rw...)
+	for i := range routes {
+		routes[i].Hints = MiddlewareHints{
+			Timeout: labels["statute.timeout"], RateLimit: labels["statute.ratelimit"], Compress: labels["statute.compress"],
+		}
+	}
 
 	svc := Service{
 		Name:                defaultServiceName(c),
@@ -446,9 +446,6 @@ func extractNative(c Container, opts ExtractOptions, rejected *[]Matcher) ([]Ser
 		HealthCheckPath:     labels["statute.healthcheck.path"],
 		HealthCheckInterval: labels["statute.healthcheck.interval"],
 		HealthCheckTimeout:  labels["statute.healthcheck.timeout"],
-		Timeout:             labels["statute.timeout"],
-		RateLimit:           labels["statute.ratelimit"],
-		Compress:            labels["statute.compress"],
 	}
 	if s := labels["statute.service"]; s != "" {
 		svc.Name = s

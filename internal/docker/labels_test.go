@@ -95,10 +95,10 @@ func TestExtractNativeFull(t *testing.T) {
 		Strategy:            "least_connections",
 		HealthCheckPath:     "/healthz",
 		HealthCheckInterval: "5s",
-		Timeout:             "30s",
-		RateLimit:           "100/min",
-		Compress:            "gzip,br",
 	}}
+	for i := range want[0].Routes {
+		want[0].Routes[i].Hints = MiddlewareHints{Timeout: "30s", RateLimit: "100/min", Compress: "gzip,br"}
+	}
 	if !reflect.DeepEqual(svcs, want) {
 		t.Errorf("Extract = %+v, want %+v", svcs, want)
 	}
