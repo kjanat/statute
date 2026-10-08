@@ -17,6 +17,15 @@ on:
   schedule: [cron: "40 10 * * 1"]
 
 jobs:
+  gate:
+    name: CodeQL gate
+    if: always()
+    needs: [analyze]
+    runs-on: ubuntu-slim
+    permissions: { contents: read }
+    steps:
+      - run: test "${RESULT}" = success
+        env: { RESULT: "${{ needs.analyze.result }}" }
   analyze:
     name: Analyze (${{ matrix.language }})
     # Runner size impacts CodeQL analysis time. To learn more, please see:

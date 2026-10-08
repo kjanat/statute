@@ -3,6 +3,54 @@ on: { push: { branches: [master] }, pull_request: null }
 permissions: { contents: read }
 concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
 jobs:
+  select_checks:
+    name: select conditional checks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      rewrite: ${{ steps.select.outputs.rewrite }}
+      binaryen: ${{ steps.select.outputs.binaryen }}
+      labels: ${{ steps.select.outputs.labels }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: "26" }
+      - id: select
+        run: node scripts/ci-gate.mjs select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  rewrite:
+    needs: select_checks
+    if: needs.select_checks.outputs.rewrite == 'true'
+    uses: ./.github/workflows/research-htmlrewrite.yml
+  binaryen:
+    needs: select_checks
+    if: needs.select_checks.outputs.binaryen == 'true'
+    uses: ./.github/workflows/research-htmlrewrite-binaryen.yml
+  labels:
+    needs: select_checks
+    if: needs.select_checks.outputs.labels == 'true'
+    runs-on: ubuntu-slim
+    permissions: { contents: read, issues: read }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { sparse-checkout: .github, persist-credentials: false }
+      - uses: kjanat/github-labelmanager@e968d59fb16afae3a977f7620089e14ac3bd8872 # v1
+        with: { dry-run: "true" }
+  gate:
+    name: ci gate
+    if: always() && github.event_name == 'pull_request'
+    needs: [test, lint, lifecycle_lint, discover_fuzz, fuzz, examples, apidiff, actionlint, typecheck, e2e, select_checks, rewrite, binaryen, labels]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: "26" }
+      - run: node scripts/ci-gate.mjs validate
+        env: { NEEDS_JSON: "${{ toJSON(needs) }}" }
   test:
     name: test
     runs-on: ubuntu-latest
@@ -121,6 +169,7 @@ jobs:
       # comment-cop.yml runs only base-branch tooling, so a PR cannot
       # live-test its own copy; this is the enforceable check on it.
       - { name: typecheck, run: make typecheck }
+      - { name: CI gate tests, run: node --test scripts/ci-gate.test.mjs }
       - { name: documentation links, run: 'node scripts/wiki-sync.mjs docs "$(mktemp -d)"' }
       - { name: Comment Cop tests, run: make test-comment-cop }
       - { name: RFC snapshot tooling, run: make test-rfcs check-rfcs }

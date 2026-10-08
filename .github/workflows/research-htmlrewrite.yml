@@ -1,7 +1,9 @@
 name: HTML rewrite research
 on:
-  pull_request:
-    paths: &Paths
+  workflow_call:
+  push:
+    branches: [master]
+    paths:
       - "*.go"
       - go.mod
       - go.sum
@@ -9,7 +11,6 @@ on:
       - resolved/**
       - research/htmlrewrite/**
       - .github/workflows/research-htmlrewrite.yml
-  push: { branches: [master], paths: *Paths }
   workflow_dispatch:
 permissions: { contents: read }
 concurrency: { group: "htmlrewrite-${{ github.ref }}", cancel-in-progress: true }

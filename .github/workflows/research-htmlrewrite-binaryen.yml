@@ -1,9 +1,6 @@
 name: HTML rewrite Binaryen comparison
 on:
-  pull_request:
-    paths:
-      - research/htmlrewrite/**
-      - .github/workflows/research-htmlrewrite-binaryen.yml
+  workflow_call:
   workflow_dispatch:
 permissions: { contents: read }
 concurrency: { group: "htmlrewrite-binaryen-${{ github.ref }}", cancel-in-progress: true }
