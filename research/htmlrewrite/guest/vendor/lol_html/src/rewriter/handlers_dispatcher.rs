@@ -142,6 +142,10 @@ impl<H> HandlerVec<H> {
 }
 
 pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
+    matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'h>>,
+    matcher_rule_offset: u32,
+    matcher_identity: u64,
+    matched_content_scope: bool,
     doctype_handlers: HandlerVec<H::DoctypeHandler<'h>>,
     comment_handlers: HandlerVec<H::CommentHandler<'h>>,
     text_handlers: HandlerVec<H::TextHandler<'h>>,
@@ -157,6 +161,10 @@ pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
 impl<H: HandlerTypes> Default for ContentHandlersDispatcher<'_, H> {
     fn default() -> Self {
         ContentHandlersDispatcher {
+            matcher_observer: None,
+            matcher_rule_offset: 0,
+            matcher_identity: 0,
+            matched_content_scope: false,
             doctype_handlers: Default::default(),
             comment_handlers: Default::default(),
             text_handlers: Default::default(),
@@ -171,6 +179,34 @@ impl<H: HandlerTypes> Default for ContentHandlersDispatcher<'_, H> {
 }
 
 impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+    pub fn set_matcher_observer(
+        &mut self,
+        observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'h>>,
+        rule_offset: u32,
+    ) {
+        self.matcher_observer = observer;
+        self.matcher_rule_offset = rule_offset;
+    }
+
+    pub fn begin_element(&mut self) -> HandlerResult {
+        self.matched_content_scope = false;
+        if self.matcher_observer.is_some() {
+            self.matcher_identity = self
+                .matcher_identity
+                .checked_add(1)
+                .ok_or("matcher identity exhausted")?;
+        }
+        Ok(())
+    }
+
+    pub fn assign_matcher_identity(&self, descriptor: Option<&mut ElementDescriptor>) {
+        if self.matched_content_scope {
+            if let Some(descriptor) = descriptor {
+                descriptor.matcher_identity = self.matcher_identity;
+            }
+        }
+    }
+
     #[inline]
     pub fn add_document_content_handlers(&mut self, handlers: DocumentContentHandlers<'h, H>) {
         if let Some(handler) = handlers.doctype {
@@ -217,6 +253,16 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
 
     #[inline]
     pub fn start_matching(&mut self, match_info: &MatchInfo) {
+        if let Some(observer) = &mut self.matcher_observer {
+            if let Some(rule) = match_info.match_id.checked_sub(self.matcher_rule_offset) {
+                self.matched_content_scope |= match_info.with_content;
+                observer(MatcherEvent::Match {
+                    element: self.matcher_identity,
+                    rule,
+                    content: match_info.with_content,
+                });
+            }
+        }
         let Some(locator) = self.locators.get(match_info.match_id as usize) else {
             debug_assert!(false);
             return;
@@ -241,6 +287,14 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
 
     #[inline]
     pub fn stop_matching(&mut self, elem_desc: ElementDescriptor, owns_end_tag: bool) {
+        if elem_desc.matcher_identity != 0 {
+            if let Some(observer) = &mut self.matcher_observer {
+                observer(MatcherEvent::Retire {
+                    element: elem_desc.matcher_identity,
+                    explicit: owns_end_tag,
+                });
+            }
+        }
         for match_id in elem_desc.matched_content_handlers.iter() {
             let Some(locator) = self.locators.get(match_id as usize) else {
                 debug_assert!(false);

@@ -2,6 +2,9 @@ use lol_html::html_content::ContentType;
 use lol_html::{HtmlRewriter, MemorySettings, Settings, element};
 use std::cell::RefCell;
 
+mod matcher_probe;
+pub use matcher_probe::native_matcher_probe;
+
 const INPUT_SIZE: usize = 65536;
 #[cfg(target_arch = "wasm32")]
 const OUTPUT_SIZE: usize = 16384;
@@ -89,6 +92,16 @@ fn settings() -> Settings<'static, 'static> {
 // error; it never pools a partially consumed or poisoned parser.
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 pub extern "C" fn create(buffered: u32) -> u32 {
+    create_with(buffered, settings(), output as fn(&[u8]))
+}
+
+// Private parity probe; it emits matcher/content events instead of HTML.
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
+pub extern "C" fn create_matcher_probe(buffered: u32) -> u32 {
+    create_with(buffered, matcher_probe::settings(), |_| {})
+}
+
+fn create_with(buffered: u32, settings: Settings<'static, 'static>, sink: fn(&[u8])) -> u32 {
     if buffered > 1 {
         return 5;
     }
@@ -101,7 +114,7 @@ pub extern "C" fn create(buffered: u32) -> u32 {
             batch.enabled = buffered == 1;
             batch.length = 0;
         });
-        *slot = Some(HtmlRewriter::new(settings(), output as fn(&[u8])));
+        *slot = Some(HtmlRewriter::new(settings, sink));
         0
     })
 }

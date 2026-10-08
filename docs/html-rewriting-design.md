@@ -124,8 +124,13 @@ from the patched ownership tests and native/Wasm expected-output regression.
 Renovate flags releases for maintainer approval; the documented `update-lol-html`
 command reapplies the patch and refreshes the copied source, pins and lockfile. Existing
 research tests validate each update. Consumers acquire no additional build step.
-This resolves the end-token decision; configurable programs, selector-scope event
-identity and the bounded Go callback ABI remain stage 1 implementation work.
+This resolves the end-token decision. The private matcher now has an optional
+observer for matched element IDs and actual stack retirement, including implicit
+closure. `matcher_context.rs` and `TestMatcherContextNativeWasm` exercise that
+hook without inferring a stack from end callbacks. It preserves one invocation
+per registered content handler even when several matching scopes are active.
+Configurable programs, copied event snapshots, invocation identities and the
+bounded Go callback ABI remain stage 1 implementation work.
 
 The ABI carries a stream ID (unique within the run), rule/handler ID, event kind,
 token ID and monotonically increasing invocation ID. Element-start events also

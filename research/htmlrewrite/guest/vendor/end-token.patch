@@ -1,8 +1,21 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index f719076..0cb41cf 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -43,7 +43,7 @@ use cfg_if::cfg_if;
+ pub use self::rewriter::{
+     AsciiCompatibleEncoding, BailOutHandler, CommentHandler, DoctypeHandler,
+     DocumentContentHandlers, ElementContentHandlers, ElementHandler, EndHandler, EndTagHandler,
+-    HandlerResult, HandlerTypes, HtmlRewriter, LocalHandlerTypes, MemorySettings,
++    HandlerResult, HandlerTypes, HtmlRewriter, LocalHandlerTypes, MatcherEvent, MemorySettings,
+     RewriteStrSettings, Settings, TextHandler, rewrite_str,
+ };
+ pub use self::selectors_vm::Selector;
 diff --git a/src/rewriter/handlers_dispatcher.rs b/src/rewriter/handlers_dispatcher.rs
-index d0aa5a0..6dcf444 100644
+index d0aa5a0..559155e 100644
 --- a/src/rewriter/handlers_dispatcher.rs
 +++ b/src/rewriter/handlers_dispatcher.rs
-@@ -128,6 +128,17 @@ impl<H> HandlerVec<H> {
+@@ -128,9 +128,24 @@ impl<H> HandlerVec<H> {
          debug_assert_eq!(self.user_count, 0);
          Ok(())
      }
@@ -20,16 +33,94 @@ index d0aa5a0..6dcf444 100644
  }
 
  pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
-@@ -229,7 +240,7 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
++    matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'h>>,
++    matcher_rule_offset: u32,
++    matcher_identity: u64,
++    matched_content_scope: bool,
+     doctype_handlers: HandlerVec<H::DoctypeHandler<'h>>,
+     comment_handlers: HandlerVec<H::CommentHandler<'h>>,
+     text_handlers: HandlerVec<H::TextHandler<'h>>,
+@@ -146,6 +161,10 @@ pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
+ impl<H: HandlerTypes> Default for ContentHandlersDispatcher<'_, H> {
+     fn default() -> Self {
+         ContentHandlersDispatcher {
++            matcher_observer: None,
++            matcher_rule_offset: 0,
++            matcher_identity: 0,
++            matched_content_scope: false,
+             doctype_handlers: Default::default(),
+             comment_handlers: Default::default(),
+             text_handlers: Default::default(),
+@@ -160,6 +179,34 @@ impl<H: HandlerTypes> Default for ContentHandlersDispatcher<'_, H> {
+ }
+
+ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
++    pub fn set_matcher_observer(
++        &mut self,
++        observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'h>>,
++        rule_offset: u32,
++    ) {
++        self.matcher_observer = observer;
++        self.matcher_rule_offset = rule_offset;
++    }
++
++    pub fn begin_element(&mut self) -> HandlerResult {
++        self.matched_content_scope = false;
++        if self.matcher_observer.is_some() {
++            self.matcher_identity = self
++                .matcher_identity
++                .checked_add(1)
++                .ok_or("matcher identity exhausted")?;
++        }
++        Ok(())
++    }
++
++    pub fn assign_matcher_identity(&self, descriptor: Option<&mut ElementDescriptor>) {
++        if self.matched_content_scope {
++            if let Some(descriptor) = descriptor {
++                descriptor.matcher_identity = self.matcher_identity;
++            }
++        }
++    }
++
+     #[inline]
+     pub fn add_document_content_handlers(&mut self, handlers: DocumentContentHandlers<'h, H>) {
+         if let Some(handler) = handlers.doctype {
+@@ -206,6 +253,16 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+
+     #[inline]
+     pub fn start_matching(&mut self, match_info: &MatchInfo) {
++        if let Some(observer) = &mut self.matcher_observer {
++            if let Some(rule) = match_info.match_id.checked_sub(self.matcher_rule_offset) {
++                self.matched_content_scope |= match_info.with_content;
++                observer(MatcherEvent::Match {
++                    element: self.matcher_identity,
++                    rule,
++                    content: match_info.with_content,
++                });
++            }
++        }
+         let Some(locator) = self.locators.get(match_info.match_id as usize) else {
+             debug_assert!(false);
+             return;
+@@ -229,7 +286,15 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
      }
 
      #[inline]
 -    pub fn stop_matching(&mut self, elem_desc: ElementDescriptor) {
 +    pub fn stop_matching(&mut self, elem_desc: ElementDescriptor, owns_end_tag: bool) {
++        if elem_desc.matcher_identity != 0 {
++            if let Some(observer) = &mut self.matcher_observer {
++                observer(MatcherEvent::Retire {
++                    element: elem_desc.matcher_identity,
++                    explicit: owns_end_tag,
++                });
++            }
++        }
          for match_id in elem_desc.matched_content_handlers.iter() {
              let Some(locator) = self.locators.get(match_id as usize) else {
                  debug_assert!(false);
-@@ -246,7 +257,11 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+@@ -246,7 +311,11 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
          }
 
          if let Some(idx) = elem_desc.end_tag_handler_idx {
@@ -43,20 +134,148 @@ index d0aa5a0..6dcf444 100644
 
          if elem_desc.remove_content {
 diff --git a/src/rewriter/rewrite_controller.rs b/src/rewriter/rewrite_controller.rs
-index 00095e0..967320b 100644
+index 00095e0..3f36eb5 100644
 --- a/src/rewriter/rewrite_controller.rs
 +++ b/src/rewriter/rewrite_controller.rs
-@@ -159,8 +159,8 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
+@@ -11,6 +11,7 @@ use crate::selectors_vm::{
+ use crate::transform_stream::{DispatcherError, StartTagHandlingResult, TransformController};
+
+ pub(crate) struct ElementDescriptor {
++    pub matcher_identity: u64,
+     pub matched_content_handlers: DenseHashSet,
+     pub end_tag_handler_idx: Option<Locator>,
+     pub remove_content: bool,
+@@ -25,6 +26,7 @@ impl ElementData for ElementDescriptor {
+     #[inline]
+     fn new() -> Self {
+         Self {
++            matcher_identity: 0,
+             matched_content_handlers: DenseHashSet::new(),
+             end_tag_handler_idx: None,
+             remove_content: false,
+@@ -49,6 +51,10 @@ impl<'h, H: HandlerTypes> HtmlRewriteController<'h, H> {
+     ) -> Self {
+         let mut selectors_ast = Ast::default();
+         let mut dispatcher = ContentHandlersDispatcher::<H>::default();
++        dispatcher.set_matcher_observer(
++            settings.matcher_observer,
++            u32::from(settings.adjust_charset_on_meta_tag),
++        );
+         let has_selectors =
+             !settings.element_content_handlers.is_empty() || settings.adjust_charset_on_meta_tag;
+
+@@ -116,6 +122,8 @@ impl<H: HandlerTypes> HtmlRewriteController<'_, H> {
+
+                 aux_info_req(vm, aux_info, &mut match_handler)
+                     .map_err(RewritingError::MemoryLimitExceeded)?;
++                this.handlers_dispatcher
++                    .assign_matcher_identity(vm.current_element_data_mut());
+
+                 Ok(this.get_capture_flags())
+             },
+@@ -139,12 +147,19 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
+         local_name: LocalName<'_>,
+         ns: Namespace,
+     ) -> StartTagHandlingResult<Self> {
++        self.handlers_dispatcher.begin_element().map_err(|err| {
++            DispatcherError::RewritingError(RewritingError::ContentHandlerError(err))
++        })?;
+         match self.selector_matching_vm {
+             Some(ref mut vm) => {
+                 let mut match_handler = |m| self.handlers_dispatcher.start_matching(&m);
+
+                 match vm.exec_for_start_tag(local_name, ns, &mut match_handler) {
+-                    Ok(()) => Ok(self.get_capture_flags()),
++                    Ok(()) => {
++                        self.handlers_dispatcher
++                            .assign_matcher_identity(vm.current_element_data_mut());
++                        Ok(self.get_capture_flags())
++                    }
+                     Err(VmError::InfoRequest(req)) => Self::respond_to_aux_info_request(req),
+                     Err(VmError::MemoryLimitExceeded(e)) => Err(DispatcherError::RewritingError(
+                         RewritingError::MemoryLimitExceeded(e),
+@@ -159,8 +174,9 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
 
      fn handle_end_tag(&mut self, local_name: LocalName<'_>) -> TokenCaptureFlags {
          if let Some(ref mut vm) = self.selector_matching_vm {
 -            vm.exec_for_end_tag(local_name, |elem_desc| {
 -                self.handlers_dispatcher.stop_matching(elem_desc);
 +            vm.exec_for_end_tag_with_identity(local_name, |elem_desc, owns_end_tag| {
-+                self.handlers_dispatcher.stop_matching(elem_desc, owns_end_tag);
++                self.handlers_dispatcher
++                    .stop_matching(elem_desc, owns_end_tag);
              });
          }
 
+diff --git a/src/rewriter/settings.rs b/src/rewriter/settings.rs
+index 63ff8d9..1980a85 100644
+--- a/src/rewriter/settings.rs
++++ b/src/rewriter/settings.rs
+@@ -5,6 +5,27 @@ use super::{AsciiCompatibleEncoding, RewritingError};
+ use std::borrow::Cow;
+ use std::error::Error;
+
++/// Matcher bookkeeping for Statute's private callback adapter, not DOM events.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum MatcherEvent {
++    /// A registered selector matched an input element, before its handlers run.
++    Match {
++        /// Parser-local, nonzero identity shared by overlapping selectors.
++        element: u64,
++        /// Zero-based registration index, excluding internal charset handling.
++        rule: u32,
++        /// Whether this match establishes a content scope.
++        content: bool,
++    },
++    /// A matched content scope left the actual selector stack.
++    Retire {
++        /// Identity previously reported by `Match`.
++        element: u64,
++        /// Whether this element owns the closing token.
++        explicit: bool,
++    },
++}
++
+ /// Trait used to parameterize the type of handlers used in the rewriter.
+ ///
+ /// This trait is meant to be an implementation detail for the [`Send`-compatible type aliases](crate::send).
+@@ -968,6 +989,7 @@ impl MemorySettings {
+ /// [`append_element_content_handler()`]: #method.append_element_content_handler
+ /// [`append_document_content_handler()`]: #method.append_document_content_handler
+ pub struct Settings<'handlers, 'selectors, H: HandlerTypes = LocalHandlerTypes> {
++    pub(crate) matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'handlers>>,
+     pub(crate) element_content_handlers: Vec<(
+         Cow<'selectors, Selector>,
+         ElementContentHandlers<'handlers, H>,
+@@ -1013,6 +1035,7 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H>
+     #[must_use]
+     pub fn new_for_handler_types() -> Self {
+         Settings {
++            matcher_observer: None,
+             element_content_handlers: vec![],
+             document_content_handlers: vec![],
+             bail_out_handlers: vec![],
+@@ -1025,6 +1048,21 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H>
+         }
+     }
+
++    /// Observes selector scope changes without manufacturing balanced end events.
++    ///
++    /// Retirement may visit an ancestor before its descendants. Remove identities,
++    /// rather than popping an application stack. EOF/abort simply destroy remaining
++    /// scopes; neither generates retirement callbacks. Void matches have no scope.
++    /// The observer runs synchronously and must not re-enter the active parser.
++    #[must_use]
++    pub fn with_matcher_observer(
++        mut self,
++        observer: impl FnMut(MatcherEvent) + Send + 'handlers,
++    ) -> Self {
++        self.matcher_observer = Some(Box::new(observer));
++        self
++    }
++
+     /// Appends a `(selector, handlers)` tuple to the list of element content handlers.
+     ///
+     /// The handlers specify CSS selectors and rewriting handlers for elements and their inner
 diff --git a/src/selectors_vm/mod.rs b/src/selectors_vm/mod.rs
 index 64c8ff4..9e467ae 100644
 --- a/src/selectors_vm/mod.rs

@@ -10,7 +10,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if chunk == 0 {
         return Err("chunk must be positive".into());
     }
-    let output = statute_htmlrewrite_spike::native(&input, chunk)?;
+    let output = match std::env::args().nth(2).as_deref() {
+        None => statute_htmlrewrite_spike::native(&input, chunk)?,
+        Some("--matcher-probe") => statute_htmlrewrite_spike::native_matcher_probe(&input, chunk)?,
+        Some(_) => return Err("unknown probe".into()),
+    };
     std::io::stdout().write_all(&output)?;
     Ok(())
 }

@@ -11,6 +11,7 @@ use crate::selectors_vm::{
 use crate::transform_stream::{DispatcherError, StartTagHandlingResult, TransformController};
 
 pub(crate) struct ElementDescriptor {
+    pub matcher_identity: u64,
     pub matched_content_handlers: DenseHashSet,
     pub end_tag_handler_idx: Option<Locator>,
     pub remove_content: bool,
@@ -25,6 +26,7 @@ impl ElementData for ElementDescriptor {
     #[inline]
     fn new() -> Self {
         Self {
+            matcher_identity: 0,
             matched_content_handlers: DenseHashSet::new(),
             end_tag_handler_idx: None,
             remove_content: false,
@@ -49,6 +51,10 @@ impl<'h, H: HandlerTypes> HtmlRewriteController<'h, H> {
     ) -> Self {
         let mut selectors_ast = Ast::default();
         let mut dispatcher = ContentHandlersDispatcher::<H>::default();
+        dispatcher.set_matcher_observer(
+            settings.matcher_observer,
+            u32::from(settings.adjust_charset_on_meta_tag),
+        );
         let has_selectors =
             !settings.element_content_handlers.is_empty() || settings.adjust_charset_on_meta_tag;
 
@@ -116,6 +122,8 @@ impl<H: HandlerTypes> HtmlRewriteController<'_, H> {
 
                 aux_info_req(vm, aux_info, &mut match_handler)
                     .map_err(RewritingError::MemoryLimitExceeded)?;
+                this.handlers_dispatcher
+                    .assign_matcher_identity(vm.current_element_data_mut());
 
                 Ok(this.get_capture_flags())
             },
@@ -139,12 +147,19 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
         local_name: LocalName<'_>,
         ns: Namespace,
     ) -> StartTagHandlingResult<Self> {
+        self.handlers_dispatcher.begin_element().map_err(|err| {
+            DispatcherError::RewritingError(RewritingError::ContentHandlerError(err))
+        })?;
         match self.selector_matching_vm {
             Some(ref mut vm) => {
                 let mut match_handler = |m| self.handlers_dispatcher.start_matching(&m);
 
                 match vm.exec_for_start_tag(local_name, ns, &mut match_handler) {
-                    Ok(()) => Ok(self.get_capture_flags()),
+                    Ok(()) => {
+                        self.handlers_dispatcher
+                            .assign_matcher_identity(vm.current_element_data_mut());
+                        Ok(self.get_capture_flags())
+                    }
                     Err(VmError::InfoRequest(req)) => Self::respond_to_aux_info_request(req),
                     Err(VmError::MemoryLimitExceeded(e)) => Err(DispatcherError::RewritingError(
                         RewritingError::MemoryLimitExceeded(e),
@@ -160,7 +175,8 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
     fn handle_end_tag(&mut self, local_name: LocalName<'_>) -> TokenCaptureFlags {
         if let Some(ref mut vm) = self.selector_matching_vm {
             vm.exec_for_end_tag_with_identity(local_name, |elem_desc, owns_end_tag| {
-                self.handlers_dispatcher.stop_matching(elem_desc, owns_end_tag);
+                self.handlers_dispatcher
+                    .stop_matching(elem_desc, owns_end_tag);
             });
         }
 
