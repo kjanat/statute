@@ -1384,8 +1384,16 @@ func (m *cacheMW) resolve() (resolved.Middleware, error)     { return resolveCac
 
 func (m *compressMW) resolve() resolved.Middleware { return resolveCompressMW(m) }
 
-func (*etagMW) resolve() resolved.Middleware {
-	return resolved.Middleware{Type: resolved.MWETag}
+func (m *etagMW) resolve() (resolved.Middleware, error) {
+	limit, err := resolveResponseBodyLimit(m.maxResponseBody)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("etag: %w", err)
+	}
+	budget, err := resolveResponseBufferBudget(m.bufferBudget, limit)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("etag: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWETag, MaxResponseBodyBytes: limit, ResponseBufferBudgetBytes: budget}, nil
 }
 func (m *bodyLimitMW) resolve() (resolved.Middleware, error) { return resolveBodyLimitMW(m) }
 
@@ -1451,10 +1459,20 @@ func resolveRetryMW(m *retryMW) (resolved.Middleware, error) {
 	if m.max < 1 {
 		return resolved.Middleware{}, errors.New("retry: max must be >= 1")
 	}
+	limit, err := resolveResponseBodyLimit(m.maxResponseBody)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("retry: %w", err)
+	}
+	budget, err := resolveResponseBufferBudget(m.bufferBudget, limit)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("retry: %w", err)
+	}
 	return resolved.Middleware{
-		Type:            resolved.MWRetry,
-		RetryMax:        m.max,
-		RetryOnStatuses: append([]int(nil), m.onStatuses...),
+		Type:                      resolved.MWRetry,
+		RetryMax:                  m.max,
+		RetryOnStatuses:           append([]int(nil), m.onStatuses...),
+		MaxResponseBodyBytes:      limit,
+		ResponseBufferBudgetBytes: budget,
 	}, nil
 }
 

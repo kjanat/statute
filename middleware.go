@@ -48,8 +48,10 @@ func (r *rateLimitMW) Per(k RateLimitKey) *rateLimitMW {
 }
 
 type retryMW struct {
-	max        int
-	onStatuses []int
+	max             int
+	onStatuses      []int
+	maxResponseBody string
+	bufferBudget    string
 }
 
 func (*retryMW) statuteMiddleware() {}
@@ -75,6 +77,20 @@ func Retry(maxAttempts int, opts ...RetryOption) *retryMW {
 		o.applyRetry(r)
 	}
 	return r
+}
+
+// MaxResponseBody sets the maximum body retained per retry attempt. The default
+// is 8 MiB. Overflow ends this Retry's attempt loop with an empty 502 response.
+func (m *retryMW) MaxResponseBody(size string) *retryMW {
+	m.maxResponseBody = size
+	return m
+}
+
+// BufferBudget bounds response-body allocations shared by this Retry instance.
+// The default is 64 MiB. Unavailable capacity produces an empty 503 response.
+func (m *retryMW) BufferBudget(size string) *retryMW {
+	m.bufferBudget = size
+	return m
 }
 
 type timeoutMW struct{ dur string }
@@ -137,7 +153,7 @@ func Compress(algos ...CompressAlgo) *compressMW {
 	return &compressMW{algos: append([]CompressAlgo(nil), algos...)}
 }
 
-type etagMW struct{}
+type etagMW struct{ maxResponseBody, bufferBudget string }
 
 func (*etagMW) statuteMiddleware() {}
 
@@ -145,3 +161,17 @@ func (*etagMW) statuteMiddleware() {}
 // to compute the same validator, then omits its body. Preconditions use that
 // representation; middleware order determines whether hashing sees encoding.
 func ETag() *etagMW { return &etagMW{} }
+
+// MaxResponseBody sets the maximum body retained by the ETag render, including
+// an internal GET for HEAD. The default is 8 MiB; overflow returns an empty 502.
+func (m *etagMW) MaxResponseBody(size string) *etagMW {
+	m.maxResponseBody = size
+	return m
+}
+
+// BufferBudget bounds response-body allocations shared by this ETag instance.
+// The default is 64 MiB. Unavailable capacity produces an empty 503 response.
+func (m *etagMW) BufferBudget(size string) *etagMW {
+	m.bufferBudget = size
+	return m
+}

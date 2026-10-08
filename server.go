@@ -1385,8 +1385,8 @@ func buildCompress(m resolved.Middleware, next http.Handler) http.Handler {
 }
 
 // buildETag adapts etagHandler to the middlewareBuilders signature.
-func buildETag(_ resolved.Middleware, next http.Handler) http.Handler {
-	return etagHandler(next)
+func buildETag(m resolved.Middleware, next http.Handler) http.Handler {
+	return etagHandlerWithLimit(next, m.MaxResponseBodyBytes, m.ResponseBufferBudgetBytes)
 }
 
 func applyMiddleware(m resolved.Middleware, next http.Handler) http.Handler {
