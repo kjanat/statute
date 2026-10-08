@@ -41,12 +41,10 @@ func etagHandler(next http.Handler) http.Handler {
 			if coding != "" {
 				etag = "W/" + etag
 			}
-			deleteHeaderFold(buf.header, "ETag")
-			deleteHeaderFold(buf.header, "Content-Length")
-			buf.header.Set("ETag", etag)
-			buf.header.Set("Content-Length", strconv.Itoa(buf.body.Len()))
+			setETagMetadata(buf, etag)
 			if status := httpprecondition.Status(r.Header, buf.header); status != 0 {
 				maps.Copy(w.Header(), buf.header)
+				stripResponseTrailers(w.Header())
 				deleteHeaderFold(w.Header(), "Content-Length")
 				for _, name := range []string{"Content-Range", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, headerTransferEncoding, headerTrailer} {
 					deleteHeaderFold(w.Header(), name)
@@ -60,6 +58,17 @@ func etagHandler(next http.Handler) http.Handler {
 		}
 		replayETagResponse(w, r, buf)
 	})
+}
+
+func setETagMetadata(buf *responseBuffer, etag string) {
+	deleteHeaderFold(buf.header, "ETag")
+	deleteHeaderFold(buf.header, "Content-Length")
+	stripResponseTrailer(buf.header, "ETag")
+	stripResponseTrailer(buf.header, "Content-Length")
+	buf.header.Set("ETag", etag)
+	if len(responseTrailerNames(buf.header)) == 0 {
+		buf.header.Set("Content-Length", strconv.Itoa(buf.body.Len()))
+	}
 }
 
 // An outer compressor must select the representation before read conditions
@@ -86,6 +95,7 @@ func replayETagResponse(w http.ResponseWriter, r *http.Request, buf *responseBuf
 		return
 	}
 	maps.Copy(w.Header(), buf.header)
+	stripResponseTrailers(w.Header())
 	if buf.status >= 200 && buf.status != http.StatusNoContent && buf.status != http.StatusNotModified {
 		deleteHeaderFold(w.Header(), "Content-Length")
 		w.Header().Set("Content-Length", strconv.Itoa(buf.body.Len()))

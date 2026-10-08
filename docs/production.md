@@ -170,6 +170,12 @@ evaluated against the completed representation afterward. Matching If-None-Match
 412. Invalid entity-tag syntax yields 400. Date conditions obey precedence and
 are ignored when the selected response has no valid Last-Modified value.
 
+Body-bearing ETag responses retain unrelated declared and late trailers. When
+trailers are present, ETag omits Content-Length so HTTP/1.1 can use chunked
+delivery. Generated ETag and length metadata cannot be replaced by origin
+trailers. HEAD and conditional bodyless responses omit the synthetic render's
+trailers entirely, including their values.
+
 The first declared middleware is outermost. `With(ETag(), Compress(Gzip))`
 hashes encoded bytes and supplies a strong tag for that encoding.
 Inside that buffered render, compression defers intermediate flushes until

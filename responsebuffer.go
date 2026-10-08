@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"maps"
 	"net/http"
+	"strings"
 )
 
 // responseBuffer captures status, headers, and body so middleware can inspect
@@ -50,6 +51,23 @@ func (b *responseBuffer) Flush() {}
 // replay copies the buffered response into the real ResponseWriter.
 func (b *responseBuffer) replay(w http.ResponseWriter) {
 	maps.Copy(w.Header(), b.header.Clone())
+	trailers := make(http.Header)
+	for _, name := range responseTrailerNames(b.header) {
+		for key, values := range w.Header() {
+			if strings.EqualFold(key, name) {
+				trailers[key] = values
+				delete(w.Header(), key)
+			}
+		}
+	}
+	// Late trailers must be announced before commit so HTTP/1.1 chooses
+	// chunked framing even for small bodies.
+	for name := range trailers {
+		if strings.HasPrefix(name, http.TrailerPrefix) {
+			w.Header()[name] = nil
+		}
+	}
 	w.WriteHeader(b.status)
 	_, _ = w.Write(b.body.Bytes())
+	maps.Copy(w.Header(), trailers)
 }

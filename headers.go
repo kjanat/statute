@@ -134,7 +134,7 @@ type headerOp struct {
 
 func (op headerOp) apply(h http.Header) {
 	if op.identity {
-		stripRequestIDTrailers(h, op.name)
+		stripResponseTrailer(h, op.name)
 		deleteHeaderFold(h, op.name)
 		h.Set(op.name, op.value)
 		return

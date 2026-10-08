@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"strings"
 )
 
 // Request identity retains the effective committed value across late producer
@@ -71,30 +70,9 @@ func (w *requestIDResponseWriter) finish() {
 	w.applyOps()
 	w.capture()
 	h := w.Header()
-	stripRequestIDTrailers(h, w.name)
+	stripResponseTrailer(h, w.name)
 	deleteHeaderFold(h, w.name)
 	if w.values != nil {
 		h[w.name] = slices.Clone(w.values)
-	}
-}
-
-func stripRequestIDTrailers(h http.Header, name string) {
-	deleteHeaderFold(h, http.TrailerPrefix+name)
-	for key, values := range h {
-		if !strings.EqualFold(key, "Trailer") {
-			continue
-		}
-		var retained []string
-		for _, value := range values {
-			for token := range strings.SplitSeq(value, ",") {
-				if token = strings.TrimSpace(token); token != "" && !strings.EqualFold(token, name) {
-					retained = append(retained, token)
-				}
-			}
-		}
-		delete(h, key)
-		if len(retained) > 0 {
-			h[key] = retained
-		}
 	}
 }
