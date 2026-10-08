@@ -322,6 +322,63 @@ Accounting covers ETag/Retry-owned response-body allocations. Cache, Timeout's
 internal buffering, headers, request copies, codecs, and process RSS remain
 outside this budget.
 
+### Retry request-buffer ownership
+
+Each compiled Retry instance owns an independent request-body allocation budget,
+defaulting to 64 MiB and configured through RequestBufferBudget. Resolve accepts
+positive, int-representable sizes and exports RequestBufferBudgetBytes. Existing
+BufferBudget remains response-only, with its established 502/503 failure policy.
+Static, fallback and Docker routes preserve these normalized limits; shared pools
+never share Retry budgets and generation identity includes the configuration.
+
+The existing 1 MiB replay ceiling and idempotency/protocol exclusions remain.
+Reserve nonzero initial capacity before reading, including blocked or empty
+readers. Growth reserves the complete replacement while the previous allocation
+is live, up to the 1 MiB plus one-byte oversize sentinel. Admission failure before
+reading passes the original body through once. Growth failure or oversize passes
+the buffered prefix followed by the unread original body through once. These
+fallbacks preserve producer responses, forward original Close ownership, and add
+no status, cancellation or retry. Read errors retain the existing 400 behavior;
+a fully consumed body closes its original reader. Retry snapshots announced
+trailer names before consuming the body and reads through the original request.
+Full buffering captures the original request's final trailers after EOF.
+Streaming fallback owns a stable trailer map and publishes final values only
+after EOF, when the request trailer contract permits reading them. Partial and
+zero-byte non-EOF reads leave that map unchanged. Nested Retry and Timeout
+context clones share the stable map; the caller's Body remains unchanged.
+The first Timeout snapshots announced trailer names before asynchronous work;
+nested Timeout and Retry reuse even an empty snapshot. A producer starting after
+timeout must never enumerate a map concurrently populated by server Close.
+Successful EOF refreshes the snapshot for subsequent nested middleware.
+ETag's representation clone shares the live trailer map with its shared Body,
+while keeping its independent Header and URL copies for conditional rendering.
+
+A request-buffer lease covers every attempt and final response replay. Timeout
+retains inherited leases before entering its asynchronous handler, and releases
+them only when its actual producer returns or panics. Nested Retry and Timeout
+retain all ancestor leases. Cancellation or an outer handler returning cannot
+release an allocation still owned by a timed-out producer.
+
+The native upstream transport also retains inherited leases through asynchronous
+request-body ownership. Its private request copy has a Close-owned body wrapper;
+the reverse proxy closing its own body cannot retire the transport's lease.
+Retirement requires both completed Close and completion of admitted Reads, with
+no lock held across body I/O. Closed wrappers reject new Reads and discard their
+reader reference before releasing the allocation. Existing GetBody factories
+create independently leased readers; RoundTrip holds an enclosing lease across
+replacement. Panic cleanup follows the same retirement path. Research response
+transforms remain outside this native transport adapter. No pool-owned budget,
+worker, queue, disk spool, or new Timeout deadline/Push policy is introduced.
+Arbitrary custom retention beyond handler lifetime remains the custom handler's
+responsibility.
+
+Acceptance tests cover exact/oversize/unknown-length bodies, empty blocked reads,
+read errors and Close, initial/growth fallback, concurrent admission and growth,
+slow replay, panic cleanup, nested middleware, late Timeout producers and native
+transports that return before closing request bodies. Close/Read overlap,
+GetBody replacement and duplicate Close prove final-owner retirement. Export,
+fallback and Docker generation tests prove route scope and configuration parity.
+
 ## Docker discovery
 
 Docker labels are external input. Statute keeps the trust boundary in code:

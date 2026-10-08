@@ -27,7 +27,7 @@ func resolveBufferSize(size string, fallback int64) (int64, error) {
 		return 0, err
 	}
 	if n <= 0 || uint64(n) > uint64(^uint(0)>>1) {
-		return 0, fmt.Errorf("response body limit must be positive and fit in an int")
+		return 0, fmt.Errorf("buffer size must be positive and fit in an int")
 	}
 	return n, nil
 }

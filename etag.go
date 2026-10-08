@@ -29,6 +29,8 @@ func etagHandlerWithLimit(next http.Handler, limit, budgetBytes int64) http.Hand
 			return
 		}
 		render := r.Clone(context.WithValue(r.Context(), bufferedETagRenderKey{}, true))
+		// Clone shares Body; its live trailers follow reads of that same body.
+		render.Trailer = r.Trailer
 		render.Method = http.MethodGet
 		httpprecondition.Clear(render.Header)
 		buf := newLimitedResponseBuffer(limit)

@@ -257,8 +257,48 @@ request copies (including Retry's separately capped request body), codec memory,
 allocator overhead and garbage awaiting collection are excluded. Inner Cache or
 Timeout can buffer before the bounded writer sees any bytes. Cache has its own
 independent limits described above. Timeout's internal buffering remains outside
-this body budget. Retry request-body aggregate retention and Timeout limits are
-tracked separately in [#152](https://github.com/kjanat/statute/issues/152).
+this body budget. Retry request-body retention has its own budget below. Timeout
+limits remain tracked in [#152](https://github.com/kjanat/statute/issues/152).
+
+## Retry request-buffer limits
+
+Retry has a separate **64 MiB request-body allocation budget per compiled
+instance**. Configure it independently of its response limit and response budget:
+
+```go
+Retry(3, OnStatus(503)).RequestBufferBudget("16MiB").BufferBudget("32MiB")
+```
+
+The existing **1 MiB replay ceiling** remains. Sizes must be positive and fit in
+an int; small budgets are allowed. An allocation is reserved before the first
+body read, including readers that block without returning bytes. Growth accounts
+for both the old and replacement buffers. A budget must cover that temporary
+overlap to keep buffering, even if the final body alone would fit.
+
+When initial capacity is unavailable, Retry forwards the untouched body once.
+When growth cannot be admitted or the body exceeds the replay ceiling, it forwards
+the buffered prefix followed by the unread original stream once. Those paths keep
+the producer's response and original body-close ownership. They introduce no
+status code or retry; response-budget 502/503 failures remain separate. A request
+body read error still returns 400. Non-idempotent and streaming/upgrade exclusions
+continue to bypass request buffering.
+
+The allocation stays charged through all attempts and final response delivery.
+If an inner Timeout returns before its producer stops, that producer retains a
+lease on every inherited Retry request buffer. Native upstream transports also
+retain their leases until they have closed the request body and finished any
+in-progress reads, even when an early upstream response has already completed.
+Transport replay bodies each retain their own lease. The charge is released
+after the last actual owner finishes, including nested Retry/Timeout and panic
+cleanup. Cancellation alone cannot reclaim a still-used buffer. Custom handlers
+retaining bodies beyond their handler lifetime must manage that retention
+themselves.
+
+Static, fallback and Docker middleware use the same normalized
+`RequestBufferBudgetBytes` field. Separate routes and repeated Retry instances
+have independent budgets, including routes sharing one backend pool. These limits
+cover Retry-owned body allocations; incoming transport buffers and arbitrary
+custom-handler allocations remain separate.
 
 ## Body-derived ETags
 
