@@ -47,7 +47,7 @@ func TestCacheNoStoreRequest(t *testing.T) {
 	for i, noStore := range []bool{true, true, false, true, false} {
 		req := httptest.NewRequest("GET", "/", nil)
 		if noStore {
-			req.Header.Add("Cache-Control", "max-age=60")
+			req.Header.Add("Cache-Control", "extension=60")
 			req.Header.Add("Cache-Control", "No-Store")
 		}
 		rec := runRequest(t, h, req)

@@ -22,16 +22,18 @@ func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		}
 		defer c.end()
 		policy := cacheProxyPolicyFromContext(r.Context())
-		if !cacheRequestPreflight(r, policy) || !cacheRequestEligible(r) || !cacheNativeRequestEligible(r, policy) {
+		observation := cacheObservationFrom(r.Context())
+		if !cacheLookupEligible(r, policy, observation) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		key := cacheKeyForRequest(r, policy)
 		if entry := c.get(key, r.Header, policy); entry != nil {
 			defer c.release(entry)
-			if cachePolicyUsable(policy) {
-				_ = cacheReplay(w, entry.buf)
-				return
+			if cachePolicyUsable(policy) && observation.usable() {
+				if cacheReplayFresh(w, entry) {
+					return
+				}
 			}
 		}
 		candidate := c.candidate()
@@ -42,10 +44,20 @@ func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		defer c.release(candidate)
 		requestHeaders := cacheCloneHeader(r.Header)
 		requestAllowsStorage := cacheControlAllowsStorage(requestHeaders)
+		if observation == nil {
+			observation = &cacheObservation{}
+			r = r.WithContext(context.WithValue(r.Context(), cacheObservationKey{}, observation))
+		}
 		writer := newCacheWriter(w, c, candidate)
+		writer.ctx = r.Context()
 		next.ServeHTTP(writer, r)
 		writer.finish(r.Context(), key, requestHeaders, requestAllowsStorage, policy)
 	})
+}
+
+func cacheLookupEligible(r *http.Request, policy *cacheProxyPolicy, observation *cacheObservation) bool {
+	return cacheRequestPreflight(r, policy) && cacheRequestEligible(r) &&
+		cacheNativeRequestEligible(r, policy) && observation.usable()
 }
 
 func cacheStorageVary(ctx context.Context, buf *responseBuffer, requestAllowsStorage bool, policy *cacheProxyPolicy) ([]string, bool) {

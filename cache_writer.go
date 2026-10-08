@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // cacheWriter never exposes an escape hatch around the budget. Once streaming,
@@ -20,13 +21,18 @@ type cacheWriter struct {
 	flushed   bool
 	noStore   bool
 	err       error
+	ctx       context.Context
+	requested time.Time
+	received  time.Time
+	freshness cacheFreshness
+	snapshot  cacheFreshness
 }
 
 func newCacheWriter(w http.ResponseWriter, c *ttlCache, e *cacheEntry) *cacheWriter {
 	b := newLimitedResponseBuffer(c.maxBody)
 	b.budget = c.budget
 	c.attach(e, b)
-	return &cacheWriter{outer: w, cache: c, entry: e, buf: b}
+	return &cacheWriter{outer: w, cache: c, entry: e, buf: b, ctx: context.Background(), requested: time.Now()}
 }
 
 func (w *cacheWriter) Header() http.Header { return w.buf.header }
@@ -35,6 +41,7 @@ func (w *cacheWriter) WriteHeader(code int) {
 	if w.streaming || (code < 200 && code != http.StatusSwitchingProtocols) {
 		return
 	}
+	w.captureFreshness()
 	w.buf.WriteHeader(code)
 	if _, ok := cacheHeaderCost(w.buf.header); !ok {
 		_ = w.startStreaming()
@@ -46,6 +53,7 @@ func (w *cacheWriter) Write(p []byte) (int, error) {
 		return 0, w.err
 	}
 	if !w.streaming {
+		w.captureFreshness()
 		if _, ok := cacheHeaderCost(w.buf.header); ok {
 			if n, err := w.buf.Write(p); err == nil {
 				return n, nil
@@ -69,6 +77,7 @@ func (w *cacheWriter) startStreaming() error {
 	if w.streaming {
 		return w.err
 	}
+	w.checkObservedPolicy()
 	w.streaming = true
 	cacheCommitHeaders(w.outer, w.buf.header, w.buf.status)
 	if w.buf.body.Len() != 0 {
@@ -118,6 +127,8 @@ func (w *cacheWriter) ReadFrom(r io.Reader) (int64, error) {
 }
 
 func (w *cacheWriter) finish(ctx context.Context, key cacheKey, request http.Header, requestAllowsStorage bool, policy *cacheProxyPolicy) {
+	w.captureFreshness()
+	w.checkObservedPolicy()
 	if w.streaming {
 		cacheFinishTrailers(w.outer, w.buf.header)
 		return
@@ -128,11 +139,69 @@ func (w *cacheWriter) finish(ctx context.Context, key cacheKey, request http.Hea
 		return
 	}
 	names, storable := cacheStorageVary(ctx, w.buf, requestAllowsStorage, policy)
+	w.freshness = w.freshness.constrain(w.currentFreshness())
+	w.entry.freshness = w.freshness
+	buf := *w.buf
+	if w.freshness.valid {
+		buf.header = w.buf.header.Clone()
+		w.freshness.apply(buf.header, time.Now())
+	}
 	// Keep the body charged through delivery, and publish only after successful
 	// writes. A failed downstream delivery must not introduce a new entry.
-	if err := cacheReplay(w.outer, w.buf); err == nil && storable && !w.noStore && cachePolicyUsable(policy) {
-		w.cache.publish(w.entry, key, request, names, w.buf, policy)
+	if err := cacheReplay(w.outer, &buf); err == nil && storable && !w.noStore && cachePolicyUsable(policy) && cacheObservationFrom(ctx).usable() {
+		w.cache.publish(w.entry, key, request, names, &buf, policy)
 	}
+}
+
+func (w *cacheWriter) checkObservedPolicy() {
+	if w.snapshot != cacheObservedPolicy(w.buf.header, w.received) {
+		if observation := cacheObservationFrom(w.ctx); observation != nil {
+			observation.unsafe.Store(true)
+		}
+	}
+}
+
+func (w *cacheWriter) captureFreshness() {
+	if !w.received.IsZero() {
+		return
+	}
+	w.received = cacheObservationFrom(w.ctx).receipt(time.Now())
+	if observation := cacheObservationFrom(w.ctx); observation != nil {
+		observation.record(w.received)
+	}
+	w.snapshot = cacheObservedPolicy(w.buf.header, w.received)
+	if !w.snapshot.valid {
+		if observation := cacheObservationFrom(w.ctx); observation != nil {
+			observation.unsafe.Store(true)
+		}
+	}
+	w.freshness = w.currentFreshness()
+}
+
+func (w *cacheWriter) currentFreshness() cacheFreshness {
+	if !cacheObservationFrom(w.ctx).usable() || !cacheProjectionPreflight(w.ctx, w.buf.header) || !cacheResponseAllowsStorage(w.buf.header) {
+		return cacheFreshness{}
+	}
+	projected := responseHeadersForCache(w.ctx, w.buf.header)
+	if !cacheResponseAllowsStorage(projected) {
+		return cacheFreshness{}
+	}
+	raw := cacheResponseFreshness(w.buf.header, w.requested, w.received, w.cache.ttl)
+	return raw.constrain(cacheResponseFreshness(projected, w.requested, w.received, w.cache.ttl))
+}
+
+// A lease keeps bytes alive; freshness is checked again at replay commitment.
+func cacheReplayFresh(w http.ResponseWriter, e *cacheEntry) bool {
+	h := e.buf.header.Clone()
+	now := time.Now()
+	if !now.Before(e.expires) {
+		return false
+	}
+	e.freshness.apply(h, now)
+	cacheCommitHeaders(w, h, e.buf.status)
+	_, _ = cacheWrite(w, e.buf.body.Bytes())
+	cacheFinishTrailers(w, h)
+	return true
 }
 
 func cacheWrite(w http.ResponseWriter, p []byte) (int, error) {

@@ -160,6 +160,34 @@ repeat them per attempt. Consequences that changes must preserve:
 Do not move a transform into the ordinary wrapper chain without re-evaluating every
 re-entry path.
 
+Response-cache freshness belongs to each route's Cache instance. Origin and
+projected policies independently select `s-maxage`, then `max-age`, then
+`Expires - Date`; the earliest deadline wins. Configured TTL caps residence
+from the first final header commitment. Without explicit freshness, that TTL
+remains the lifetime. Corrected age includes incoming Age, apparent Date age,
+request/response delay and residence; buffering and slow delivery never restart
+freshness. Entry timing is immutable, and hits emit current Age on a private
+header copy. Missing Date uses receipt time. Malformed or ambiguous effective
+freshness, or freshness fields declared as trailers, prevents storage.
+
+Header-time and final producer policies both constrain admission. Hoisted
+response operations may shorten origin freshness but never erase or extend it;
+explicit Age/Date operations bypass every Cache in the route. Request max-age,
+min-fresh and max-stale delegate to the producer without lookup or storage.
+Cache performs no revalidation or stale serving. Failure affects only cache
+admission, leaving producer delivery intact. Timing adds no workers or shared
+pool state and retains existing bounded scratch and entry lease ownership.
+Acceptance covers exact expiry, delayed production/delivery, policy projection,
+immutable Age replay, malformed fields, middleware orders and Docker isolation.
+
+Framework buffers report their first commitment through a standalone request
+observer and compare typed freshness before returning the producer response.
+Changed or unrepresentable committed policy disables admission monotonically,
+including discarded Retry attempts. The observer carries only an earliest
+timestamp and an unsafe flag, synchronized for late Timeout producers; it owns
+no cache entries, header maps or allocation leases. Hidden ETag/Retry/Timeout
+buffering consumes the same header-time TTL, and missing Date uses that receipt.
+
 Response-cache admission belongs to each route's Cache instance. Request or
 downstream response `Cache-Control: no-store` prohibits new storage. Cache also
 projects the route's hoisted response-header operations onto a copy before

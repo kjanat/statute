@@ -40,6 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Honor origin cache freshness with `s-maxage`/`max-age`/`Expires` precedence, corrected `Age`, and the configured TTL as a residence ceiling. Count buffering and delivery time, prevent route header operations from extending origin freshness, and delegate request freshness constraints without reusing or replacing entries.
+
 - Isolate cached original/rewritten targets, URL schemes, and downstream TLS. Prevent native proxy cache reuse across Connection-driven header stripping, forwarded-header variants, and late tracing or credential injection; preserve route-local policy across shared pools, retries, and Docker generations.
 
 - Refuse Docker registrations with invalid timeout, rate-limit or compression hints. Validate each contribution before serving-service merging while preserving healthy siblings and workload ownership. Reject rates that underflow to zero requests per second.

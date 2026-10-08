@@ -114,6 +114,7 @@ This documents C03 request policy and C04 representation identity in
 selection is covered by the conservative protocol-specific bypass policy.
 Cache's entry, body and allocation bounds are described under
 [Cache capacity](production.md#cache-capacity); oversized responses stream without
-storage. Origin freshness (C09), Timeout buffering (C19), and Retry request-body
-aggregate retention (C22) remain separate work. See
+storage. [Origin freshness](production.md#cache-freshness) (C09) uses corrected Age
+and a TTL ceiling. Retry request-body retention (C22) has a separate allocation
+budget; Timeout buffering (C19) remains separate work. See
 [production cache guidance](production.md) for storage and representation rules.
