@@ -75,6 +75,9 @@ on every request must omit Cache or move that check outside the cached handler.
 Response private/no-store controls storage; it does not run skipped handlers on
 a cache hit.
 
+See [Cache and per-request policy](cache-request-policy.md) for the complete
+middleware/observation matrix and custom-authorization revocation examples.
+
 `Cache(ttl)` is an opt-in, route-local response cache for 2xx GET/HEAD responses,
 keyed by method, host, request URI, and response `Vary` selection. The configured
 TTL controls expiry. Each stored variant records a copy of its selecting request
