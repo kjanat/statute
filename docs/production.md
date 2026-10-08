@@ -168,14 +168,49 @@ with no-store and discarded after delivery. The next request reaches the origin
 again; a supported, successfully rewritten response can then be cached normally.
 
 Cache has finite per-instance entry, body and allocation limits. It does not
-implement per-user caches, conditional revalidation of stored
-entries, or origin freshness calculations. Origin max-age/s-maxage, Date/Age,
-Expires, and stale-response revalidation are not implemented; use it only for responses safe to share for the configured
-TTL under their selected Vary keys. Avoid it for personalized or streaming
+implement per-user caches, conditional revalidation of stored entries or stale
+serving. Use it only for responses safe to share under their selected Vary keys.
+Avoid it for personalized or streaming
 routes. Applications using custom identity headers or request-context identity
 must mark personalized responses private/no-store or omit Cache; arbitrary
 application identity cannot be inferred. Use a suitable cache implementation for
 broader HTTP caching needs.
+
+### Cache freshness
+
+Origin freshness selects the first applicable value: `s-maxage`, `max-age`, then
+`Expires - Date`. The configured TTL is an additional upper bound on local
+residence, starting at the first final response headers. Without explicit origin
+freshness, the configured TTL remains the lifetime. `must-revalidate` does not
+disable fresh hits, but an expired response is never reused, even with
+`stale-while-revalidate` or `stale-if-error`.
+
+Corrected age is the greater of apparent age (`receipt - Date`, at least zero)
+and incoming `Age` plus request/response delay. Buffering, cache residence and
+slow delivery continue consuming freshness; publication does not restart the
+clock. For example, `max-age=60` with `Age: 50` has at most ten seconds left,
+even with `Cache("1h")`. Hits emit the current `Age`; missing `Date` is supplied
+from receipt time. These calculations follow [RFC 9111 section 4.2](rfc/rfc9111.html#section-4.2).
+
+Malformed or duplicate effective freshness values, ambiguous `Date`/`Age`, and
+freshness fields declared as trailers prevent storage without rejecting the
+producer's response. A valid `s-maxage` overrides lower-priority `max-age` and
+`Expires`; invalid selected values do not fall through to a weaker policy.
+
+ETag, Retry and Timeout buffering preserve the producer's original commitment
+time. Changes to committed freshness policy disable storage for the enclosing
+cache request, including discarded Retry attempts; response delivery is unchanged.
+
+Origin and projected route policy both constrain expiry. Setting a longer
+`max-age` or removing origin policy cannot extend its freshness. Setting a shorter
+lifetime can shorten it. Explicit response `Age` or `Date` Set/Add/Remove
+operations bypass every Cache on that route, including fallback and Docker
+routes, to preserve the configured header ownership.
+
+Requests carrying `max-age`, `min-fresh` or `max-stale` bypass lookup and storage;
+the producer handles them. Existing conditional/range/no-cache/no-transform
+bypasses remain unchanged. Request `no-store` prevents new storage but does not
+invalidate an otherwise eligible existing hit.
 
 ### Cache capacity
 

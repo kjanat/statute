@@ -28,6 +28,8 @@ func publishCacheTestEntry(t *testing.T, c *ttlCache, key cacheKey, h http.Heade
 		t.Fatal(err)
 	}
 	buf.header.Set("X-Original", "owned")
+	now := time.Now()
+	e.freshness = cacheResponseFreshness(buf.header, now, now, c.ttl)
 	if !c.publish(e, key, h, vary, buf, nil) {
 		t.Fatal("entry publication failed")
 	}

@@ -22,6 +22,7 @@ type cacheEntry struct {
 	buf        *responseBuffer
 	key        cacheKey
 	expires    time.Time
+	freshness  cacheFreshness
 	vary       []cacheVaryField
 	prev, next *cacheEntry
 	refs       int
@@ -122,6 +123,9 @@ func (c *ttlCache) publish(e *cacheEntry, key cacheKey, headers http.Header, nam
 	defer c.mu.Unlock()
 	c.sweepLocked(time.Now())
 	e.buf = buf
+	if !e.freshness.valid || !time.Now().Before(e.freshness.expires) {
+		return false
+	}
 	charge, ok := cacheMetadataCost(key, headers, names, buf.header)
 	if !ok || !policy.allowsVary(names) || !c.reserveLocked(charge) {
 		return false
@@ -132,14 +136,8 @@ func (c *ttlCache) publish(e *cacheEntry, key cacheKey, headers http.Header, nam
 	owned := *buf
 	owned.header = cacheCloneHeader(buf.header)
 	e.buf = &owned
-	for old := c.head; old != nil; {
-		next := old.next
-		if old.key == key && (!old.sameVary(*e) || old.matches(headers)) {
-			c.retireLocked(old)
-		}
-		old = next
-	}
-	e.expires = time.Now().Add(c.ttl)
+	c.replaceVariantsLocked(e, key, headers)
+	e.expires = e.freshness.expires
 	e.retained = true
 	e.refs++
 	e.prev = c.tail
@@ -150,6 +148,16 @@ func (c *ttlCache) publish(e *cacheEntry, key cacheKey, headers http.Header, nam
 	}
 	c.tail = e
 	return true
+}
+
+func (c *ttlCache) replaceVariantsLocked(e *cacheEntry, key cacheKey, headers http.Header) {
+	for old := c.head; old != nil; {
+		next := old.next
+		if old.key == key && (!old.sameVary(*e) || old.matches(headers)) {
+			c.retireLocked(old)
+		}
+		old = next
+	}
 }
 
 func cacheSnapshotVary(headers http.Header, names []string) []cacheVaryField {

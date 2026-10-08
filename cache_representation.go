@@ -37,7 +37,7 @@ func cacheRequestEligible(r *http.Request) bool {
 			return false
 		}
 	}
-	return cacheControlAllows(r.Header, "no-transform", "no-cache")
+	return cacheControlAllows(r.Header, "no-transform", "no-cache", "max-age", "min-fresh", "max-stale")
 }
 
 // Origin privacy restrictions survive hoisted response-header removal. Cookie

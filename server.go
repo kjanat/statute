@@ -1340,11 +1340,11 @@ func wrapRouteMiddleware(mws []resolved.Middleware, base http.Handler, nativePro
 	}
 	// RequestID can introduce credentials inside a buffered/cloned request,
 	// beyond an outer Cache's view. Such a route cannot use shared entries.
-	credentialWriter := routeWritesCacheCredentials(mws)
+	cacheBypass := routeWritesCacheCredentials(mws) || routeWritesCacheAge(mws)
 	h := base
 	cacheEnabled := false
 	for _, mw := range slices.Backward(mws) {
-		if credentialWriter && mw.Type == resolved.MWCache {
+		if cacheBypass && mw.Type == resolved.MWCache {
 			continue
 		}
 		if mw.Type == resolved.MWCache && mw.CacheTTL > 0 {
@@ -1363,6 +1363,13 @@ func routeWritesCacheCredentials(mws []resolved.Middleware) bool {
 	return slices.ContainsFunc(mws, func(m resolved.Middleware) bool {
 		return m.Type == resolved.MWRequestID &&
 			(strings.EqualFold(m.RequestIDHeader, "Authorization") || strings.EqualFold(m.RequestIDHeader, "Cookie"))
+	})
+}
+
+func routeWritesCacheAge(mws []resolved.Middleware) bool {
+	return slices.ContainsFunc(mws, func(m resolved.Middleware) bool {
+		return isResponseHeaderOp(m.Type) &&
+			(strings.EqualFold(m.HeaderName, "Age") || strings.EqualFold(m.HeaderName, "Date"))
 	})
 }
 
@@ -1394,7 +1401,7 @@ var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, h
 func buildTimeout(m resolved.Middleware, next http.Handler) http.Handler {
 	producer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer retryRequestBuffers(r.Context()).release()
-		next.ServeHTTP(w, r)
+		observeCacheCommit(next, w, r, true)
 	})
 	timed := http.TimeoutHandler(producer, m.Timeout, "request timed out")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

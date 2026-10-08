@@ -138,6 +138,9 @@ func (*cacheMW) statuteMiddleware() {}
 // TLS client certificates also bypass lookup and storage, including unverified
 // presented certificates. HTTPS without client certificates remains cacheable.
 // Response no-cache also prevents storage; Cache does not revalidate entries.
+// Origin s-maxage, max-age or Expires limits freshness with corrected Age.
+// TTL caps residence from response headers; buffering consumes that lifetime.
+// Age/Date response operations bypass Cache, as do request freshness directives.
 // Keys distinguish original/rewritten targets, URL scheme, and TLS presence.
 // Native proxies bypass Connection-bearing requests and responses varying on
 // late-bound forwarded or tracing fields. Propagators declaring credentials or

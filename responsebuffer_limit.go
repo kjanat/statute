@@ -102,7 +102,7 @@ func (b *responseBuffer) render(next http.Handler, r *http.Request) (complete bo
 			}
 		}
 	}()
-	next.ServeHTTP(b, r.WithContext(ctx))
+	observeCacheCommit(next, b, r.WithContext(ctx), false)
 	return !b.overLimit
 }
 
