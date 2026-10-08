@@ -105,6 +105,8 @@ type cacheMW struct{ ttl string }
 func (*cacheMW) statuteMiddleware() {}
 
 // Cache returns a response-cache middleware with the given TTL.
+// Requests with bodies or trailers bypass caching. HTTP/3 bypasses caching
+// because late unannounced trailers cannot be excluded before lookup.
 // Requests carrying Authorization or Cookie bypass lookup and storage. Private
 // or Set-Cookie responses are not stored, including projected response headers.
 // Routes whose RequestID writes Authorization or Cookie bypass Cache entirely.

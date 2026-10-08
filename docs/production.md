@@ -138,6 +138,14 @@ malformed request Cache-Control bypass both lookup and storage. Downstream
 middleware or the origin must evaluate them; a warm entry cannot bypass that
 policy. These requests do not purge an existing unconditional entry.
 
+GET/HEAD requests with a positive or unknown body length, transfer encoding, or
+request trailers also bypass lookup and storage. Cache does not read, replace,
+or close the request body. Empty HTTP/1 and HTTP/2 requests remain cacheable.
+All HTTP/3 requests currently bypass Cache, including `Content-Length: 0`:
+quic-go exposes unannounced trailers during body reads, after cache lookup.
+Future non-consuming HTTP/3 body-and-trailer detection is tracked in
+[#165](https://github.com/kjanat/statute/issues/165).
+
 Vary selection uses the union of origin and projected route response-header
 operations, including any origin fields removed by route configuration.
 Repeated/case-insensitive field names are normalized. `Vary: *`, invalid Vary,
