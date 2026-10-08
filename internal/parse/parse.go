@@ -160,14 +160,17 @@ func Rate(s string) (float64, error) {
 	}
 	switch strings.ToLower(strings.TrimSpace(parts[1])) {
 	case "s", "sec", "second", "seconds":
-		return n, nil
 	case "m", "min", "minute", "minutes":
-		return n / 60, nil
+		n /= 60
 	case "h", "hr", "hour", "hours":
-		return n / 3600, nil
+		n /= 3600
 	default:
 		return 0, fmt.Errorf("rate %q: unknown unit %q", s, parts[1])
 	}
+	if n <= 0 {
+		return 0, fmt.Errorf("rate %q: requests per second underflow to zero", s)
+	}
+	return n, nil
 }
 
 // StatusRange parses an HTTP status range of the form "400-499" or a single

@@ -253,6 +253,22 @@ A referenced code-owned middleware name that is unavailable fails closed for the
 affected router's routes. Sibling routers/services continue. Do not degrade a
 requested auth/security policy into an unprotected route.
 
+Invalid native timeout, rate-limit, or compression hints reject that registration's
+routes as a unit. Validation runs per container contribution before serving-service
+merging; another container's hints cannot hide an invalid declaration. Exact parsed
+claims and their fallback envelopes use the existing rejection precedence, while
+healthy registrations (including Traefik siblings on the same container) survive.
+Repair removes the rejection in the next published generation.
+
+This validation affects serving configuration only. Workload observations and
+candidate topology retain every extracted contribution, including invalid hints;
+middleware validity cannot retire a grant or resolve an ambiguous mutation owner.
+Quarantine continues to exclude contributions by immutable container identity.
+No new worker, resource owner, or lifecycle transition is introduced. Boundary
+tests cover overlap, sibling isolation, same-service contribution order, repair,
+and retained workload ownership. Rate normalization requires a representable
+positive requests-per-second value; underflow is a configuration error.
+
 `Docker().PoolPolicy(name, ...)` is the pool-scoped counterpart. Its exact key is
 the resolved discovered-service identity (`foo` for native labels,
 `foo@traefik` for a Traefik service). Docker owns the changing backends, strategy,

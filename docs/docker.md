@@ -337,6 +337,17 @@ container `ExposedByDefault()` registered that carries no `statute.*` label
 at all: its catch-all is statute's own inference, and dropping it leaves
 the fallback alone.
 
+An invalid `statute.timeout`, `statute.ratelimit`, or `statute.compress` rejects
+the entire native registration's routes. Its middleware chain is validated as
+one unit. Validation happens before
+containers sharing a service are merged; healthy registrations and Traefik
+siblings remain available. Parsed rejected routes defeat broader or equally
+specific dynamic routes, while more-specific healthy routes and ordinary static
+routes retain their priority. Correcting the labels restores the routes and
+their complete middleware chain on the next reconciliation. Empty hints remain
+omitted. Positive rates too small to represent in requests per second are errors.
+This serving refusal does not retire workload grants or shorten mutation quarantine.
+
 The health-check labels stop at path/interval/timeout — deliberately. The
 probe `Host` override (`HealthCheck.Host`), accepted probe statuses
 (`HealthCheck.Statuses`), passive health (`PassiveHealthCheck`), transport

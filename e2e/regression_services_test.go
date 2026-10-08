@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -91,6 +92,51 @@ func TestRegression_DockerDiscovery(t *testing.T) {
 	assertStatic()
 	assertTerminal()
 	assertDockerTerminalRefusal(ctx, t, r, assertStatic)
+	assertDockerInvalidHints(ctx, t, r, assertStatic)
+}
+
+func assertDockerInvalidHints(ctx context.Context, t *testing.T, r *harness.Run, assertStatic func()) {
+	t.Helper()
+	network := r.Compose.Project + "_mesh"
+	host := r.Compose.Project + ".test"
+	launch := func(name, path string, hints map[string]string) string {
+		t.Helper()
+		labels := map[string]string{
+			"statute.enable": "true", "statute.host": host, "statute.path": path,
+			"statute.port": "7000", "statute.network": network,
+		}
+		maps.Copy(labels, hints)
+		return mustCreateContainer(ctx, r, harness.ContainerSpec{
+			Name: r.Compose.Project + "-" + name, Image: os.Getenv("STATUTE_E2E_IMAGE"), Network: network,
+			Entrypoint: []string{"/origin"}, Env: []string{"ORIGIN_ADDR=:7000", "ORIGIN_ID=" + name}, Labels: labels,
+		}, true)
+	}
+	public := launch("hint-public", "/*", nil)
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/public", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"origin":"hint-public"`}})
+	for i, hints := range []map[string]string{
+		{"statute.timeout": "invalid", "statute.ratelimit": "60/min"},
+		{"statute.ratelimit": "5e-324/h"},
+		{"statute.compress": "gzip,unknown", "statute.ratelimit": "60/min"},
+	} {
+		id := launch(fmt.Sprintf("hint-broken-%d", i), "/echo", hints)
+		awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+			report.WaitSpec{Status: http.StatusNotFound})
+		assertStatic()
+		r.ExecutePlan(ctx, harness.Client1, &report.Plan{Name: fmt.Sprintf("hint-refusal-%d", i), Steps: []report.Step{{
+			Name: "healthy sibling still serves", URL: fmt.Sprintf("http://%s:%d/public", host, harness.PortHTTP),
+			TargetServer: harness.Server1, Proto: "h1", Count: 1,
+			Expect: report.Expect{Status: http.StatusOK, BodyContains: `"origin":"hint-public"`},
+		}}})
+		requireEngine(t, r.Engine.Remove(ctx, id))
+		fixed := launch(fmt.Sprintf("hint-fixed-%d", i), "/echo", map[string]string{"statute.timeout": "30s", "statute.ratelimit": "60/min"})
+		awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+			report.WaitSpec{Contains: []string{fmt.Sprintf(`"origin":"hint-fixed-%d"`, i)}})
+		requireEngine(t, r.Engine.Remove(ctx, fixed))
+	}
+	requireEngine(t, r.Engine.Remove(ctx, public))
+	awaitClient(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP), 30*time.Second,
+		report.WaitSpec{Contains: []string{`"request_id":"terminal-route"`}})
 }
 
 func assertDockerTerminalRefusal(ctx context.Context, t *testing.T, r *harness.Run, assertStatic func()) {

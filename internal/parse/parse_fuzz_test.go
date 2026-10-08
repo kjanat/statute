@@ -29,7 +29,7 @@ func FuzzParseDuration(f *testing.F) {
 // FuzzParseRate invariant: never panic; on err==nil the result is finite
 // and strictly positive. Overflow to +Inf would be a real bug.
 func FuzzParseRate(f *testing.F) {
-	for _, seed := range []string{"1/s", "60/min", "100/h", "0/min", "-1/s", "abc/min", "5", "5/", "/min"} {
+	for _, seed := range []string{"1/s", "60/min", "100/h", "0/min", "-1/s", "abc/min", "5", "5/", "/min", "5e-324/min", "5e-324/h", "5e-324/s"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
