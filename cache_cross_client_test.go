@@ -202,16 +202,18 @@ func TestCacheCannotBypassBasicAuth(t *testing.T) {
 				mws[0], mws[1] = mws[1], mws[0]
 			}
 			h := chain(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; _, _ = io.WriteString(w, "secret") }), mws...)
-			for _, valid := range []bool{true, false, true} {
+			for _, password := range []string{"password", "", "wrong", "password"} {
 				req := httptest.NewRequest("GET", "/", nil)
 				want := http.StatusUnauthorized
-				if valid {
-					req.SetBasicAuth("victim", "password")
+				if password != "" {
+					req.SetBasicAuth("victim", password)
+				}
+				if password == "password" {
 					want = http.StatusOK
 				}
 				rec := runRequest(t, h, req)
 				if rec.Code != want {
-					t.Fatalf("valid=%v: status=%d body=%q", valid, rec.Code, rec.Body.String())
+					t.Fatalf("password=%q: status=%d body=%q", password, rec.Code, rec.Body.String())
 				}
 			}
 			if calls != 2 {
