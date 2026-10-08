@@ -57,3 +57,22 @@ func TestResearchRouteFailureDoesNotDemotePool(t *testing.T) {
 		}
 	}
 }
+
+func TestResearchRouteRetryFallbackTrailers(t *testing.T) {
+	origin := retryProxyTrailerOrigin(t)
+	u, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	proxy := newBackendProxy(u, transport, &resolved.Pool{}, func(*http.Request) {})
+	h := chain(t, proxy, Retry(2).RequestBufferBudget("1B"), BodyLimit("4KiB"))
+	r := httptest.NewRequest(http.MethodPut, "http://route.test/", nil)
+	r = researchroute.WithWrapper(r, func(base http.RoundTripper) http.RoundTripper {
+		return researchRoundTrip(func(r *http.Request) (*http.Response, error) {
+			return base.RoundTrip(r.Clone(r.Context()))
+		})
+	})
+	assertRetryProxyTrailers(t, h, r)
+}

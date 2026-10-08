@@ -346,6 +346,11 @@ Streaming fallback owns a stable trailer map and publishes final values only
 after EOF, when the request trailer contract permits reading them. Partial and
 zero-byte non-EOF reads leave that map unchanged. Nested Retry and Timeout
 context clones share the stable map; the caller's Body remains unchanged.
+The fallback body carries a private association with that map, preserved by
+BodyLimit. The native transport restores it on its private request after proxy
+or research clones, preserving streaming fallback's declared trailers under the
+existing upstream framing rules.
+Replacing a body does not inherit the association from request context.
 The first Timeout snapshots announced trailer names before asynchronous work;
 nested Timeout and Retry reuse even an empty snapshot. A producer starting after
 timeout must never enumerate a map concurrently populated by server Close.

@@ -282,6 +282,8 @@ the producer's response and original body-close ownership. They introduce no
 status code or retry; response-budget 502/503 failures remain separate. A request
 body read error still returns 400. Non-idempotent and streaming/upgrade exclusions
 continue to bypass request buffering.
+Streaming fallback keeps its EOF trailer values attached to the body through
+BodyLimit and native proxy/rewrite clones; upstream framing rules are unchanged.
 
 The allocation stays charged through all attempts and final response delivery.
 If an inner Timeout returns before its producer stops, that producer retains a

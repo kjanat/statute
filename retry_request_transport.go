@@ -29,6 +29,9 @@ func (t *retryRequestTransport) RoundTrip(r *http.Request) (*http.Response, erro
 		}
 	}()
 	forwarded := r.WithContext(r.Context())
+	if source, ok := r.Body.(retryTrailerBody); ok {
+		forwarded.Trailer = source.liveRetryTrailers()
+	}
 	forwarded.Body = owner.wrap(r.Body)
 	if getBody := r.GetBody; getBody != nil {
 		forwarded.GetBody = func() (io.ReadCloser, error) {

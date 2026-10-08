@@ -145,6 +145,8 @@ type multiReadCloser struct {
 	trailers http.Header
 }
 
+func (m *multiReadCloser) liveRetryTrailers() http.Header { return m.trailers }
+
 // Read reads from the concatenated prefix+body reader.
 func (m *multiReadCloser) Read(p []byte) (int, error) {
 	n, err := m.r.Read(p)

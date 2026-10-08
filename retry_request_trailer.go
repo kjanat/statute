@@ -2,6 +2,7 @@ package statute
 
 import (
 	"context"
+	"io"
 	"net/http"
 )
 
@@ -9,6 +10,23 @@ type retryTrailerNamesKey struct{}
 
 // A nonnil snapshot also records an empty declaration before asynchronous work.
 type retryTrailerNames struct{ names []string }
+
+type retryTrailerBody interface{ liveRetryTrailers() http.Header }
+
+type retryTrailerReadCloser struct {
+	io.ReadCloser
+	trailers http.Header
+}
+
+func (b *retryTrailerReadCloser) liveRetryTrailers() http.Header { return b.trailers }
+
+// Trailer ownership follows the body through built-in read wrappers.
+func carryRetryTrailers(original, wrapped io.ReadCloser) io.ReadCloser {
+	if source, ok := original.(retryTrailerBody); ok {
+		return &retryTrailerReadCloser{ReadCloser: wrapped, trailers: source.liveRetryTrailers()}
+	}
+	return wrapped
+}
 
 func snapshotRetryTrailerNames(ctx context.Context, trailers http.Header) context.Context {
 	names := make([]string, 0, len(trailers))

@@ -20,6 +20,23 @@ type retryLeaseRoundTrip func(*http.Request) (*http.Response, error)
 
 func (f retryLeaseRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestRetryRequestTransportUnrelatedBodyTrailers(t *testing.T) {
+	r, lease := newRetryTransportTestLease(t, &retryTransportTestBody{})
+	r.Trailer = http.Header{"X-Replacement": {"independent"}}
+	transport := retryRequestLeaseTransport(retryLeaseRoundTrip(func(forwarded *http.Request) (*http.Response, error) {
+		defer forwarded.Body.Close()
+		if forwarded.Trailer.Get("X-Replacement") != "independent" {
+			t.Errorf("unrelated body trailers replaced: %v", forwarded.Trailer)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	}))
+	if _, err := transport.RoundTrip(r); err != nil {
+		t.Fatal(err)
+	}
+	lease.release()
+	assertRetryTransportCharge(t, lease, 0)
+}
+
 func TestRetryRequestTransportRetainsEarlyResponseBody(t *testing.T) {
 	var transportBody io.ReadCloser
 	var budget *responseBufferBudget
