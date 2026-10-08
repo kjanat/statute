@@ -1484,13 +1484,32 @@ func resolveRetryMW(m *retryMW) (resolved.Middleware, error) {
 	}, nil
 }
 
-// resolveCacheMW parses the cache TTL duration string.
+const defaultCacheMaxEntries = 1024
+
+// resolveCacheMW parses TTL and normalizes finite storage limits.
 func resolveCacheMW(m *cacheMW) (resolved.Middleware, error) {
 	d, err := parse.Duration(m.ttl)
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("cache: %w", err)
 	}
-	return resolved.Middleware{Type: resolved.MWCache, CacheTTL: d}, nil
+	if m.maxEntries < 0 {
+		return resolved.Middleware{}, errors.New("cache: max entries must be >= 0")
+	}
+	entries := m.maxEntries
+	if entries == 0 {
+		entries = defaultCacheMaxEntries
+	}
+	limit, err := resolveResponseBodyLimit(m.maxResponseBody)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("cache: %w", err)
+	}
+	budget, err := resolveResponseBufferBudget(m.bufferBudget, limit)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("cache: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWCache, CacheTTL: d,
+		CacheMaxEntries: entries, MaxResponseBodyBytes: limit,
+		ResponseBufferBudgetBytes: budget}, nil
 }
 
 // resolveCompressMW maps the requested compression algorithms to their

@@ -111,7 +111,10 @@ func (*timeoutMW) statuteMiddleware() {}
 // Timeout returns a per-request timeout middleware.
 func Timeout(dur string) *timeoutMW { return &timeoutMW{dur: dur} }
 
-type cacheMW struct{ ttl string }
+type cacheMW struct {
+	ttl, maxResponseBody, bufferBudget string
+	maxEntries                         int
+}
 
 func (*cacheMW) statuteMiddleware() {}
 
@@ -136,7 +139,32 @@ func (*cacheMW) statuteMiddleware() {}
 // Request or response Cache-Control: no-store prevents storage. Response-header
 // operations can additionally prohibit storage, but cannot erase an upstream
 // no-store prohibition. Request no-store does not invalidate existing entries.
+// Storage defaults to 1,024 entries, 8 MiB per response, and a 64 MiB instance
+// budget. Capacity overflow streams the response without retaining it. Flush is
+// deferred while buffering and forwarded once an overflow starts streaming.
 func Cache(ttl string) *cacheMW { return &cacheMW{ttl: ttl} }
+
+// MaxEntries bounds retained variants, active misses and retired reader leases
+// per compiled Cache instance. Zero selects the default of 1,024.
+func (m *cacheMW) MaxEntries(n int) *cacheMW {
+	m.maxEntries = n
+	return m
+}
+
+// MaxResponseBody sets the largest response body Cache may retain. The default
+// is 8 MiB. Oversized responses stream intact without entering the cache.
+func (m *cacheMW) MaxResponseBody(size string) *cacheMW {
+	m.maxResponseBody = size
+	return m
+}
+
+// BufferBudget bounds Cache-owned body capacity and accounted metadata, including
+// active scratch space and evicted entries still being replayed. The default is
+// 64 MiB. Each cache attempt needs 512 KiB scratch; smaller budgets bypass Cache.
+func (m *cacheMW) BufferBudget(size string) *cacheMW {
+	m.bufferBudget = size
+	return m
+}
 
 // CompressAlgo identifies a content-encoding algorithm.
 type CompressAlgo int

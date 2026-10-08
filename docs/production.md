@@ -167,8 +167,8 @@ For a temporary fail-open HTML-rewrite bypass, the original response is delivere
 with no-store and discarded after delivery. The next request reaches the origin
 again; a supported, successfully rewritten response can then be cached normally.
 
-This remains a small TTL cache: entries are unbounded, responses are buffered,
-and it does not implement per-user caches, conditional revalidation of stored
+Cache has finite per-instance entry, body and allocation limits. It does not
+implement per-user caches, conditional revalidation of stored
 entries, or origin freshness calculations. Origin max-age/s-maxage, Date/Age,
 Expires, and stale-response revalidation are not implemented; use it only for responses safe to share for the configured
 TTL under their selected Vary keys. Avoid it for personalized or streaming
@@ -176,6 +176,49 @@ routes. Applications using custom identity headers or request-context identity
 must mark personalized responses private/no-store or omit Cache; arbitrary
 application identity cannot be inferred. Use a suitable cache implementation for
 broader HTTP caching needs.
+
+### Cache capacity
+
+The defaults are **1,024 entries**, **8 MiB per buffered response body**, and a
+**64 MiB allocation budget** for each compiled Cache middleware. Configure them
+independently for each route:
+
+```go
+Cache("1m").MaxEntries(2048).MaxResponseBody("4MiB").BufferBudget("128MiB")
+```
+
+Each Vary variant counts as an entry. Active misses and retired entries still
+being read also consume entry capacity. Entries are removed from lookup on expiry,
+replacement or eviction; a slow response retains its allocation charge until its
+last reader finishes. Every cache operation sweeps expired entries across all
+keys. No background cleanup worker is started. Separate middleware instances,
+including routes sharing one upstream pool, have independent budgets.
+
+Cache accounts body capacity, overlapping allocations during growth, retained
+key/header/Vary metadata, and a conservative **512 KiB scratch reservation** for
+each active cache attempt. That reservation covers bounded request snapshots,
+response-header projection, variant selection and replay copies. A budget smaller
+than 512 KiB always takes the uncached path. The budget measures allocation
+ownership. Process RSS also includes producer-controlled `Header()` maps, other
+middleware, tracing propagator internals, allocator overhead and garbage awaiting
+collection. Native-route propagation snapshots have separate fixed ceilings of
+256 declared fields and 16 KiB of field names, checked before copying.
+
+Fixed admission ceilings are 16 KiB of key input, 64 KiB of accounted headers,
+256 header names, 1,024 header values, and 256 Vary tokens. Large request metadata
+or unavailable initial capacity goes directly to the producer. Oversized response
+bodies or metadata and unavailable growth capacity switch permanently to
+uncached streaming: the buffered prefix is delivered once, then writes continue
+downstream. Producer status, errors and trailers are preserved. Cache capacity
+does not produce a new 502/503, cancel the request or trigger a retry.
+
+`Flush` remains deferred while the response fits in the buffer. Unknown-length
+proxy responses, including HTML-rewritten responses, routinely request flushing
+and remain cacheable. After overflow, flushing is forwarded to the downstream
+writer. Streaming routes that need immediate delivery should omit Cache.
+
+The same rules apply through named/default Docker middleware and fallback routes.
+Changed resolved limits participate in normal Docker generation replacement.
 
 ## Buffered response limits
 
@@ -212,9 +255,10 @@ bytes, while ETag inside compression buffers identity bytes. Nested middleware
 charge their own copies. These are **not whole-process memory limits**: headers,
 request copies (including Retry's separately capped request body), codec memory,
 allocator overhead and garbage awaiting collection are excluded. Inner Cache or
-Timeout can buffer before the bounded writer sees any bytes. Cache's entry,
-metadata, concurrent-miss, and expiry bounds remain separate C06 work in issue
-[#152](https://github.com/kjanat/statute/issues/152).
+Timeout can buffer before the bounded writer sees any bytes. Cache has its own
+independent limits described above. Timeout's internal buffering remains outside
+this body budget. Retry request-body aggregate retention and Timeout limits are
+tracked separately in [#152](https://github.com/kjanat/statute/issues/152).
 
 ## Body-derived ETags
 

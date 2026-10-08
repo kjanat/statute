@@ -48,7 +48,11 @@ func newCacheProxyPolicy() *cacheProxyPolicy {
 // Fields is part of the propagator's contract. Invalid declarations cannot prove
 // selection safe. Valid field names cannot contain the signature's separator.
 func cachePropagationFields(p propagation.TextMapPropagator) ([]string, string, bool) {
-	fields := slices.Clone(p.Fields())
+	fields := p.Fields()
+	if !cachePropagationFieldsWithinLimits(fields) {
+		return nil, "", false
+	}
+	fields = slices.Clone(fields)
 	valid := true
 	for i, field := range fields {
 		if !httpguts.ValidHeaderFieldName(field) {
@@ -77,26 +81,24 @@ func cachePropagationAffectsEligibility(name string) bool {
 }
 
 func (p *cacheProxyPolicy) usable() bool {
-	if p == nil {
-		return true
-	}
-	if p.unsafe.Load() {
-		return false
-	}
-	_, signature, valid := cachePropagationFields(p.propagator)
-	if !valid || signature != p.signature {
-		p.unsafe.Store(true)
-		return false
-	}
-	return !p.unsafe.Load()
+	return cachePolicyUsable(p)
 }
 
-func (p *cacheProxyPolicy) requestEligible(r *http.Request) bool {
-	if p == nil {
-		return true
+// The route-level request snapshot exists before middleware admission. Bound
+// its copies independently; an oversized declaration bypasses caching while
+// retaining the selected propagator and its ordinary injection side effects.
+func cachePropagationFieldsWithinLimits(fields []string) bool {
+	if len(fields) > cacheHeaderNames {
+		return false
 	}
-	_, connection := cacheHeaderValues(r.Header, "Connection")
-	return !connection && p.usable()
+	remaining := cacheKeyBytes
+	for _, name := range fields {
+		if len(name) >= remaining {
+			return false
+		}
+		remaining -= len(name) + 1
+	}
+	return true
 }
 
 func (p *cacheProxyPolicy) allowsVary(names []string) bool {

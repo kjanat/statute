@@ -168,19 +168,18 @@ func TestCacheVariantExpiryAndSchemaChange(t *testing.T) {
 	key := cacheKey{target: "key"}
 	a := http.Header{"Accept-Language": {"en"}, "X-Variant": {"a"}}
 	b := http.Header{"Accept-Language": {"fr"}, "X-Variant": {"b"}}
-	one, two, three := newResponseBuffer(), newResponseBuffer(), newResponseBuffer()
-	c.put(key, a, []string{"accept-language"}, one, nil)
-	c.put(key, b, []string{"accept-language"}, two, nil)
-	c.entries[key][0].expires = time.Now().Add(-time.Second)
-	if c.get(key, a, nil) != nil || c.get(key, b, nil) != two {
+	one := publishCacheTestEntry(t, c, key, a, []string{"accept-language"}, "one")
+	two := publishCacheTestEntry(t, c, key, b, []string{"accept-language"}, "two")
+	one.expires = time.Now().Add(-time.Second)
+	if getCacheTestEntry(c, key, a) != nil || getCacheTestEntry(c, key, b) != two {
 		t.Fatal("expiring one variant invalidated its live sibling")
 	}
-	c.put(key, a, []string{"x-variant"}, three, nil)
-	if c.get(key, b, nil) != nil || c.get(key, a, nil) != three {
+	three := publishCacheTestEntry(t, c, key, a, []string{"x-variant"}, "three")
+	if getCacheTestEntry(c, key, b) != nil || getCacheTestEntry(c, key, a) != three {
 		t.Fatal("changed Vary schema retained incompatible entries")
 	}
-	c.put(key, a, []string{"x-variant"}, one, nil)
-	if c.get(key, a, nil) != one || len(c.entries[key]) != 1 {
+	one = publishCacheTestEntry(t, c, key, a, []string{"x-variant"}, "one")
+	if getCacheTestEntry(c, key, a) != one || c.count != 1 {
 		t.Fatal("replacing the same variant retained old data")
 	}
 }

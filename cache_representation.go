@@ -55,6 +55,14 @@ func cacheResponseEligible(buf *responseBuffer) bool {
 // The union prevents hoisted header operations from erasing origin variance.
 // Invalid Vary and wildcard variance cannot identify a reusable representation.
 func cacheVary(headers ...http.Header) ([]string, bool) {
+	tokens := 0
+	for _, h := range headers {
+		var ok bool
+		tokens, ok = cacheVaryTokenCount(h, tokens)
+		if !ok {
+			return nil, false
+		}
+	}
 	var names []string
 	for _, h := range headers {
 		values, _ := cacheHeaderValues(h, "Vary")
