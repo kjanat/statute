@@ -1389,12 +1389,23 @@ func (*etagMW) resolve() resolved.Middleware {
 }
 func (m *bodyLimitMW) resolve() (resolved.Middleware, error) { return resolveBodyLimitMW(m) }
 
-func (r *requestIDMW) resolve() resolved.Middleware {
+func (r *requestIDMW) resolve() (resolved.Middleware, error) {
+	header, err := normalizeRequestIDOutputHeader(r.header)
+	if err != nil {
+		return resolved.Middleware{}, err
+	}
+	from := r.fromHeader
+	if from != "" {
+		from, err = parse.HeaderName(from)
+		if err != nil {
+			return resolved.Middleware{}, fmt.Errorf("request_id source: %w", err)
+		}
+	}
 	return resolved.Middleware{
 		Type:                resolved.MWRequestID,
-		RequestIDHeader:     r.header,
-		RequestIDFromHeader: r.fromHeader,
-	}
+		RequestIDHeader:     header,
+		RequestIDFromHeader: from,
+	}, nil
 }
 
 func (s *securityHeadersMW) resolve() (resolved.Middleware, error) {

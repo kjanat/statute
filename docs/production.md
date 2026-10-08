@@ -64,9 +64,10 @@ come before named chains in label order. An unsafe Docker combination refuses
 that router without affecting siblings. Disabled caches (`Cache("0s")`) do not
 impose this restriction. Middleware declaration order otherwise stays unchanged.
 `RequestID()` must likewise precede every enabled Cache. It runs on each request
-and Cache selects variants using already-mapped headers. Origin response headers
-can still overwrite its response ID, including during cache replay; response-ID
-ownership is tracked separately in [#152](https://github.com/kjanat/statute/issues/152).
+and Cache selects variants using already-mapped headers. RequestID owns its
+response field at commitment, including cache replay; explicit route response-header
+operations retain outer precedence. See [request identity](request-id.md) for
+the complete reserved output set and the Authorization/Cookie exceptions.
 Place RateLimit
 before Cache to limit every request, or after Cache to limit only misses; both
 orders are supported. Routes that require custom authorization inside `Handle`
@@ -189,8 +190,8 @@ An aborted handler propagates its panic without finishing a compressed stream.
 
 Routes using enabled `Compress(...)` must not Set/Add/Remove the response `Content-Encoding`
 header: compression owns that metadata for the bytes it generates or preserves.
-`RequestID().Header("Content-Encoding")` is also rejected because it writes the
-response header, including when its value comes from an inbound header.
+`RequestID().Header("Content-Encoding")` is always rejected, including without
+compression, as part of its reserved output-header policy.
 Resolve rejects these combinations in either declaration order, including fallback
 routes and Docker middleware definitions. Docker also validates the complete chain
 after combining defaults, named middleware, and label hints; a conflicting route

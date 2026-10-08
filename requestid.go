@@ -28,11 +28,16 @@ func (*requestIDMW) statuteMiddleware() {}
 // "request_id" field on log lines.
 // A route may contain only one RequestID middleware, including middleware
 // combined from Docker defaults and named chains.
+// HTTP control fields are reserved output names. Authorization and Cookie remain
+// credential-writer exceptions and disable caching on their route.
+// The selected response ID is restored at commitment; explicit route response
+// header operations retain precedence. Hijacked handshakes remain untouched.
 func RequestID() *requestIDMW {
 	return &requestIDMW{header: defaultRequestIDHeader}
 }
 
-// Header overrides the name of the response header that carries the ID.
+// Header selects the request and response field carrying the ID. Resolve rejects
+// reserved HTTP control fields; docs/request-id.md lists the complete policy.
 func (r *requestIDMW) Header(name string) *requestIDMW {
 	r.header = name
 	return r
@@ -84,6 +89,7 @@ func requestIDHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	}
 	from := m.RequestIDFromHeader
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var responseWriter *requestIDResponseWriter
 		id := ""
 		if from != "" {
 			id = r.Header.Get(from)
@@ -94,12 +100,20 @@ func requestIDHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		if id != "" {
 			r.Header.Set(respHeader, id)
 			w.Header().Set(respHeader, id)
+			responseWriter = &requestIDResponseWriter{
+				headerResponseWriter: &headerResponseWriter{ResponseWriter: w, ops: []headerOp{{name: respHeader, value: id, identity: true}}},
+				name:                 respHeader,
+			}
+			w = responseWriter
 			r = r.WithContext(context.WithValue(r.Context(), ridCtxKey{}, id))
 			if h, ok := r.Context().Value(ridHolderKey{}).(*ridHolder); ok {
 				h.id = id
 			}
 		}
 		next.ServeHTTP(w, r)
+		if responseWriter != nil {
+			responseWriter.finish()
+		}
 	})
 }
 

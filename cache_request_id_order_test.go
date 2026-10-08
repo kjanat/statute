@@ -84,7 +84,7 @@ func TestCacheRequestIDFreshOnHits(t *testing.T) {
 
 func TestDockerCacheRequestIDOrder(t *testing.T) {
 	t.Parallel()
-	cfg, err := resolveDocker(Docker().Middleware("cache", Cache("1h")).Middleware("identity", RequestID().Header("Origin").From("X-Origin")))
+	cfg, err := resolveDocker(Docker().Middleware("cache", Cache("1h")).Middleware("identity", RequestID().Header("X-Identity").From("X-Origin")))
 	if err != nil {
 		t.Fatal(err)
 	}
