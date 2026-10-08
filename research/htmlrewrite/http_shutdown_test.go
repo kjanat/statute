@@ -85,9 +85,11 @@ func pollHTTPListenerClosed(probe func() error, timeout time.Duration) error {
 		if errors.Is(err, syscall.ECONNREFUSED) {
 			return nil
 		}
-		// Closing the listener can reset a connection still in the accept
-		// queue. Only a subsequent refused dial proves ingress is closed.
-		if err != nil && !errors.Is(err, syscall.ECONNRESET) {
+		// Reset and timeout are inconclusive while shutdown closes ingress.
+		// Keep probing within the deadline; only a refused dial proves closure.
+		var netErr net.Error
+		timedOut := errors.As(err, &netErr) && netErr.Timeout()
+		if err != nil && !errors.Is(err, syscall.ECONNRESET) && !timedOut {
 			return fmt.Errorf("checking closed ingress: %w", err)
 		}
 		if time.Now().After(deadline) {
@@ -100,6 +102,7 @@ func pollHTTPListenerClosed(probe func() error, timeout time.Duration) error {
 func TestPollHTTPListenerClosed(t *testing.T) {
 	reset := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNRESET}
 	refused := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	timedOut := &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
 	for _, tc := range []struct {
 		name     string
 		outcomes []error
@@ -111,7 +114,11 @@ func TestPollHTTPListenerClosed(t *testing.T) {
 		{"persistent reset", []error{reset}, 0, context.DeadlineExceeded},
 		{"still open", []error{nil}, 0, context.DeadlineExceeded},
 		{"unexpected error", []error{syscall.EACCES}, time.Second, syscall.EACCES},
-		{"dial timeout", []error{syscall.ETIMEDOUT}, time.Second, syscall.ETIMEDOUT},
+		{"timeout then reset then open then refused", []error{timedOut, reset, nil, refused}, time.Second, nil},
+		{"system timeout then refused", []error{syscall.ETIMEDOUT, refused}, time.Second, nil},
+		{"persistent dial timeout", []error{timedOut}, 0, context.DeadlineExceeded},
+		{"persistent system timeout", []error{syscall.ETIMEDOUT}, 0, context.DeadlineExceeded},
+		{"timeout then unexpected error", []error{timedOut, syscall.EACCES}, time.Second, syscall.EACCES},
 		{"reset then unexpected error", []error{reset, syscall.EACCES}, time.Second, syscall.EACCES},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
