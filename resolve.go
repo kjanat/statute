@@ -1436,7 +1436,23 @@ func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("timeout: %w", err)
 	}
-	return resolved.Middleware{Type: resolved.MWTimeout, Timeout: d}, nil
+	if m.maxInFlight < 0 {
+		return resolved.Middleware{}, errors.New("timeout: max in flight must be >= 0")
+	}
+	count := m.maxInFlight
+	if count == 0 {
+		count = defaultTimeoutMaxInFlight
+	}
+	limit, err := resolveResponseBodyLimit(m.maxResponseBody)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("timeout: %w", err)
+	}
+	budget, err := resolveResponseBufferBudget(m.bufferBudget, limit)
+	if err != nil {
+		return resolved.Middleware{}, fmt.Errorf("timeout: %w", err)
+	}
+	return resolved.Middleware{Type: resolved.MWTimeout, Timeout: d, TimeoutMaxInFlight: count,
+		MaxResponseBodyBytes: limit, ResponseBufferBudgetBytes: budget}, nil
 }
 
 // resolveRateLimitMW parses the rate string into requests/second and

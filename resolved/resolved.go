@@ -434,7 +434,8 @@ type Middleware struct {
 	Type MiddlewareType
 
 	// Timeout
-	Timeout time.Duration
+	Timeout            time.Duration
+	TimeoutMaxInFlight int
 
 	// RateLimit
 	RateLimitPerSecond  float64
@@ -447,7 +448,7 @@ type Middleware struct {
 	// RequestBufferBudgetBytes is Retry's separate request-body allocation budget.
 	RequestBufferBudgetBytes int64
 
-	// ETag, Retry and Cache: finite body bytes retained per render/attempt.
+	// ETag, Retry, Timeout and Cache: finite body bytes retained per render/attempt.
 	// Cache's aggregate budget also includes accounted metadata and scratch.
 	MaxResponseBodyBytes      int64
 	ResponseBufferBudgetBytes int64

@@ -115,12 +115,37 @@ func (m *retryMW) RequestBufferBudget(size string) *retryMW {
 	return m
 }
 
-type timeoutMW struct{ dur string }
+type timeoutMW struct {
+	dur, maxResponseBody, bufferBudget string
+	maxInFlight                        int
+}
 
 func (*timeoutMW) statuteMiddleware() {}
 
-// Timeout returns a per-request timeout middleware.
+// Timeout buffers a response until completion or its deadline. Defaults are
+// 8 MiB per response, a 64 MiB body budget and 128 active producers per instance.
+// Deadline expiry returns 503. HTTP/2 Push is unsupported inside this boundary.
 func Timeout(dur string) *timeoutMW { return &timeoutMW{dur: dur} }
+
+// MaxResponseBody bounds one buffered response. Overflow returns an empty 502.
+func (m *timeoutMW) MaxResponseBody(size string) *timeoutMW {
+	m.maxResponseBody = size
+	return m
+}
+
+// BufferBudget bounds body allocations across this Timeout instance, including
+// late producers and slow replay. Exhausted capacity returns an empty 503.
+func (m *timeoutMW) BufferBudget(size string) *timeoutMW {
+	m.bufferBudget = size
+	return m
+}
+
+// MaxInFlight bounds active producers. Zero selects 128. A timed-out producer
+// holds its slot until it exits; full capacity returns 503 without starting work.
+func (m *timeoutMW) MaxInFlight(n int) *timeoutMW {
+	m.maxInFlight = n
+	return m
+}
 
 type cacheMW struct {
 	ttl, maxResponseBody, bufferBudget string

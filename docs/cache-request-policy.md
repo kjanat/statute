@@ -116,5 +116,6 @@ Cache's entry, body and allocation bounds are described under
 [Cache capacity](production.md#cache-capacity); oversized responses stream without
 storage. [Origin freshness](production.md#cache-freshness) (C09) uses corrected Age
 and a TTL ceiling. Retry request-body retention (C22) has a separate allocation
-budget; Timeout buffering (C19) remains separate work. See
+budget; [Timeout buffering](production.md#timeout-bounds) (C19) has independent
+body and producer limits. See
 [production cache guidance](production.md) for storage and representation rules.

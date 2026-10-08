@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Bound each Timeout instance to an 8 MiB response body, 64 MiB body-allocation budget and 128 active producers by default, configurable with MaxResponseBody, BufferBudget and MaxInFlight. Retain capacity through late producers and slow replay; return 502 for oversize and 503 for capacity exhaustion. Preserve deadline/cancellation behavior and successful trailers, discard informational statuses, and make HTTP/2 Push explicitly unsupported inside Timeout.
+
 - Bound Retry request-body allocations with a separate, configurable `RequestBufferBudget` (64 MiB default). Preserve single-attempt passthrough on exhausted capacity or oversize; account for growth, concurrent reads and buffers retained by timed-out handlers or asynchronous upstream transports without changing response-budget failures.
 
 - Bound each Cache instance to 1,024 entries, 8 MiB per response and a 64 MiB allocation budget, configurable with `MaxEntries`, `MaxResponseBody` and `BufferBudget`. Account for concurrent misses, metadata, variants, growth and slow readers; retire expired entries across keys. Stream oversized or capacity-constrained responses without storing them, preserving status and trailers.

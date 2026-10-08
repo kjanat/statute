@@ -347,8 +347,40 @@ ReverseProxy's copy-error abort is converted only after a write was refused by
 that buffer; other aborts and application panics propagate. The owning Retry
 ends its loop, while an outer Retry retains its configured status policy.
 Accounting covers ETag/Retry-owned response-body allocations. Cache, Timeout's
-internal buffering, headers, request copies, codecs, and process RSS remain
+separate budget, headers, request copies, codecs, and process RSS remain
 outside this budget.
+
+### Timeout resource ownership
+
+Each compiled Timeout owns an 8 MiB response-body limit, a 64 MiB allocation
+budget and admission for 128 in-flight producers by default. MaxResponseBody,
+BufferBudget and MaxInFlight configure these normalized limits for static,
+fallback and Docker routes. Admission never queues; exhausted allocation or
+producer capacity returns empty 503, and body overflow returns empty 502.
+Resource failures carry no-store and discard all producer metadata and bytes.
+Deadline expiry retains 503 with `request timed out`; parent cancellation retains
+empty 503. Overflow cancels the child context immediately.
+
+Producer slots and inherited Retry request leases remain owned until the producer
+actually exits, even after timeout or cancellation. Body allocations remain charged
+through producer exit and downstream replay, including overlapping growth copies.
+Producer headers are private until completion; timeout and failure paths never
+inspect them. State locks cover only memory operations, never producer or network
+I/O. No server-startup resource, pool-owned state or persistent worker is added.
+
+Timeout buffers successful output through completion and preserves trailers.
+Informational statuses are discarded before the final status. It exposes neither
+Flusher, Hijacker nor downstream Unwrap; Push returns ErrNotSupported immediately.
+Downstream writer operations remain caller-owned. Application panics and
+independent proxy aborts propagate while waiting;
+copy aborts caused by this buffer's refusal become its resource failure.
+
+Cache freshness observation, RequestID ownership, hoisted headers, Retry re-entry
+and workload activity continue across this asynchronous boundary. Tests cover
+limits, concurrent capacity, growth, slow replay, late producers, panic/cancel,
+Push, metadata, compositions, normalized export and Docker-generation isolation.
+Producer header maps, other middleware allocations and process RSS are outside
+the Timeout body budget.
 
 ### Retry request-buffer ownership
 
