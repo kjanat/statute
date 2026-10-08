@@ -79,7 +79,12 @@ func TestHTTPConfigRepresentationHeaders(t *testing.T) {
 		for _, op := range []struct {
 			name string
 			mw   statute.Middleware
-		}{{"set", statute.SetResponseHeader(strings.ToLower(name), "value")}, {"append", statute.AddResponseHeader(name, "value")}, {"request ID", statute.RequestID().Header(name)}} {
+			want string
+		}{
+			{"set", statute.SetResponseHeader(strings.ToLower(name), "value"), "representation producer"},
+			{"append", statute.AddResponseHeader(name, "value"), "representation producer"},
+			{"request ID", statute.RequestID().Header(name), fmt.Sprintf("request_id output %q is reserved", http.CanonicalHeaderKey(name))},
+		} {
 			t.Run(name+"/"+op.name, func(t *testing.T) {
 				// Hoisting must not make declaration order or Retry a loophole.
 				for _, mws := range [][]statute.Middleware{
@@ -94,7 +99,7 @@ func TestHTTPConfigRepresentationHeaders(t *testing.T) {
 							cfg.Routes, cfg.FallbackRoutes = nil, cfg.Routes
 							path = "fallback_routes[0]"
 						}
-						if err := validateHTTPConfig(cfg); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "representation producer") {
+						if err := validateHTTPConfig(cfg); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), op.want) {
 							t.Fatalf("conflict did not fail configuration: %v", err)
 						}
 					}
