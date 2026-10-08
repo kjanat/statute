@@ -738,7 +738,7 @@ func errorSuccessGuard(pass *analysis.Pass, body *ast.BlockStmt, errVar *types.V
 }
 
 //nolint:gocyclo // Owner, order, exit, and provenance checks form one proof.
-func ownerRevalidation(pass *analysis.Pass, body *ast.BlockStmt, settlement *ast.CallExpr, owner *types.Var, workload *types.Var, after token.Pos, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) *ast.IfStmt {
+func ownerRevalidation(pass *analysis.Pass, body *ast.BlockStmt, settlement *ast.CallExpr, owner, workload *types.Var, after token.Pos, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node) *ast.IfStmt {
 	var found *ast.IfStmt
 	ast.Inspect(body, func(node ast.Node) bool {
 		stmt, ok := node.(*ast.IfStmt)

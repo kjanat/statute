@@ -2,13 +2,18 @@ package statute
 
 import "errors"
 
-type workloadStopKind uint8
-type workloadStop struct {
-	kind      workloadStopKind
-	persisted bool
-}
-type workload struct{}
-type workloadStopOwnership struct{ containerID string }
+type (
+	workloadStopKind uint8
+	workloadStop     struct {
+		kind      workloadStopKind
+		persisted bool
+	}
+)
+
+type (
+	workload              struct{}
+	workloadStopOwnership struct{ containerID string }
+)
 
 func (*workload) stopOwnershipLocked(*workloadStop) (workloadStopOwnership, bool) {
 	return workloadStopOwnership{containerID: "immutable"}, true

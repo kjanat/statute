@@ -1,9 +1,11 @@
 package statute
 
-type service struct{}
-type workloadStop struct{}
-type workload struct{ stop *workloadStop }
-type dockerProvider struct{}
+type (
+	service        struct{}
+	workloadStop   struct{}
+	workload       struct{ stop *workloadStop }
+	dockerProvider struct{}
+)
 
 func (*workload) sameContainerLocked(*service) bool { return true }
 func (w *workload) supersedeBindingLocked()         { w.stop = nil }

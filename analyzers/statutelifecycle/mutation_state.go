@@ -51,12 +51,14 @@ func proofLiteral(pass *analysis.Pass, expr ast.Expr) (int64, bool) {
 	}
 	return 0, false
 }
+
 func proofBoolean(value bool) int64 {
 	if value {
 		return 1
 	}
 	return 0
 }
+
 func proofExpression(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver, expr ast.Expr, values proofValues) (int64, bool) {
 	switch n := ast.Unparen(expr).(type) {
 	case *ast.UnaryExpr:
@@ -76,6 +78,7 @@ func proofExpression(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathRes
 	}
 	return 0, false
 }
+
 func proofBinary(op token.Token, a int64, aok bool, b int64, bok bool) (int64, bool) {
 	if op == token.LAND {
 		return proofAnd(a, aok, b, bok)
@@ -95,6 +98,7 @@ func proofBinary(op token.Token, a int64, aok bool, b int64, bok bool) (int64, b
 	}
 	return 0, false
 }
+
 func proofAnd(a int64, aok bool, b int64, bok bool) (int64, bool) {
 	if (aok && a == 0) || (bok && b == 0) {
 		return 0, true
@@ -134,6 +138,7 @@ func proofReachesFrom(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathRe
 	}
 	return false
 }
+
 func proofBlockTarget(pass *analysis.Pass, block *cfg.Block, point flowPoint) (bool, bool) {
 	for index, node := range block.Nodes {
 		if block == point.block && index == point.index {
@@ -145,6 +150,7 @@ func proofBlockTarget(pass *analysis.Pass, block *cfg.Block, point flowPoint) (b
 	}
 	return false, false
 }
+
 func proofPanic(pass *analysis.Pass, call *ast.CallExpr) bool {
 	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
 	if !ok {
@@ -153,6 +159,7 @@ func proofPanic(pass *analysis.Pass, call *ast.CallExpr) bool {
 	builtin, _ := pass.TypesInfo.Uses[id].(*types.Builtin)
 	return builtin != nil && builtin.Name() == "panic"
 }
+
 func proofSuccessors(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver, block *cfg.Block, values proofValues) []*cfg.Block {
 	if len(block.Succs) != 2 || len(block.Nodes) == 0 {
 		return block.Succs
@@ -195,6 +202,7 @@ func checkMutationState(pass *analysis.Pass, info *functionInfo, resolver *pathR
 	})
 	checkAmbiguousReturn(pass, info, resolver, flow)
 }
+
 func checkStateNode(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node, node ast.Node) {
 	switch n := node.(type) {
 	case *ast.CompositeLit:
@@ -217,6 +225,7 @@ func checkStateNode(pass *analysis.Pass, info *functionInfo, resolver *pathResol
 		checkBindingReference(pass, info, resolver, flow, parents, n)
 	}
 }
+
 func checkStateRange(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node, n *ast.RangeStmt) {
 	if n.Tok != token.ASSIGN {
 		return
@@ -227,6 +236,7 @@ func checkStateRange(pass *analysis.Pass, info *functionInfo, resolver *pathReso
 		}
 	}
 }
+
 func checkStateAssignment(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node, n *ast.AssignStmt) {
 	for i, lhs := range n.Lhs {
 		var rhs ast.Expr
@@ -236,6 +246,7 @@ func checkStateAssignment(pass *analysis.Pass, info *functionInfo, resolver *pat
 		checkStateWrite(pass, info, resolver, flow, parents, n, lhs, rhs)
 	}
 }
+
 func checkStateAlias(pass *analysis.Pass, resolver *pathResolver, parents map[ast.Node]ast.Node, n *ast.Ident) {
 	v, _ := pass.TypesInfo.Uses[n].(*types.Var)
 	if v == nil || !resolver.addrAliases[v] || resolver.aliasRHS[n] || !protectedStorage(pass, resolver, n) {
@@ -247,6 +258,7 @@ func checkStateAlias(pass *analysis.Pass, resolver *pathResolver, parents map[as
 	}
 	pass.Reportf(n.Pos(), "[SLC107] protected mutation state address alias may not escape")
 }
+
 func checkStateCall(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node, n *ast.CallExpr) {
 	fn := calledFunction(pass, n)
 	if isLocalMethod(fn, "workload", "applyStopAttempt") && !synchronousEvidenceProven(pass, info, resolver, flow, parents, n) {
@@ -265,8 +277,8 @@ func checkStateCall(pass *analysis.Pass, info *functionInfo, resolver *pathResol
 	if isLocalMethod(fn, "mutationRegistry", "delete") && isLocalMethod(info.fn, "workload", "applyStopAttempt") {
 		checkTerminalEligibility(pass, info, resolver, flow, n)
 	}
-
 }
+
 func checkRawTransitionCall(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node, n *ast.CallExpr) {
 	fn := calledFunction(pass, n)
 	if isLocalMethod(fn, "workload", "transitionLocked") {
@@ -281,8 +293,8 @@ func checkRawTransitionCall(pass *analysis.Pass, info *functionInfo, resolver *p
 			pass.Reportf(n.Pos(), "[SLC109] raw phase transition requires the mutation quarantine guard or canonical settlement")
 		}
 	}
-
 }
+
 func checkStateReference(pass *analysis.Pass, parents map[ast.Node]ast.Node, n *ast.SelectorExpr) {
 	if checkStateInterfaceReference(pass, parents, n) {
 		return
@@ -338,6 +350,7 @@ func checkStateConstruction(pass *analysis.Pass, info *functionInfo, literal *as
 		}
 	}
 }
+
 func checkWorkloadConstruction(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, literal *ast.CompositeLit) {
 	if isNamedPackageType(pass.TypesInfo.TypeOf(literal), "workload") {
 		var stop, phase ast.Expr
@@ -408,6 +421,7 @@ func checkStateWrite(pass *analysis.Pass, info *functionInfo, resolver *pathReso
 	checkOwnerStateWrite(pass, info, resolver, flow, node, lhs, rhs, local)
 	checkBindingWrite(pass, info, resolver, flow, node, lhs, rhs, local)
 }
+
 func checkMonotonicStateWrite(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, node ast.Node, lhs, rhs ast.Expr, local bool) {
 	if protectedStateField(pass, resolver, lhs, "workloadStop", "persisted") {
 		v, ok := proofValue(pass, info.decl.Body, resolver, rhs, nil)
@@ -421,8 +435,8 @@ func checkMonotonicStateWrite(pass *analysis.Pass, info *functionInfo, resolver 
 			pass.Reportf(node.Pos(), "[SLC108] mutation uncertainty is monotonic and may only be set true")
 		}
 	}
-
 }
+
 func checkTerminalStateWrite(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, node ast.Node, lhs, rhs ast.Expr, local bool) {
 	if protectedStateField(pass, resolver, lhs, "workloadStop", "terminal") || protectedStateField(pass, resolver, lhs, "workloadStop", mutationResultField) {
 		canonicalOwner := terminalOwnerMatches(info, resolver, lhs)
@@ -440,12 +454,12 @@ func checkTerminalStateWrite(pass *analysis.Pass, info *functionInfo, resolver *
 			}
 		}
 	}
-
 }
 
 func terminalBoundary(fn *types.Func) bool {
 	return isLocalMethod(fn, "workload", "applyStopAttempt") || isLocalMethod(fn, "dockerProvider", "recordObservedStopLocked")
 }
+
 func terminalOwnerMatches(info *functionInfo, resolver *pathResolver, lhs ast.Expr) bool {
 	sig, _ := info.fn.Type().(*types.Signature)
 	root, path, ok := resolver.resolveExpr(lhs)
@@ -460,6 +474,7 @@ func terminalOwnerMatches(info *functionInfo, resolver *pathResolver, lhs ast.Ex
 	}
 	return false
 }
+
 func terminalOwnerPath(sig *types.Signature, index int, root *types.Var, path, terminal, result string) bool {
 	return sig.Params().Len() > index && root == sig.Params().At(index) && (path == terminal || path == result)
 }
@@ -479,8 +494,8 @@ func checkTerminalResultWrite(pass *analysis.Pass, info *functionInfo, resolver 
 			pass.Reportf(node.Pos(), "[SLC108] terminal result must preserve the canonical attempt or stopped evidence")
 		}
 	}
-
 }
+
 func checkPhaseStateWrite(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, node ast.Node, lhs, rhs ast.Expr, local bool) {
 	if protectedStateField(pass, resolver, lhs, "workload", "phase") {
 		sig, _ := info.fn.Type().(*types.Signature)
@@ -490,8 +505,8 @@ func checkPhaseStateWrite(pass *analysis.Pass, info *functionInfo, resolver *pat
 			pass.Reportf(node.Pos(), "[SLC109] workload phase writes must use the guarded transition boundary and preserve its requested phase")
 		}
 	}
-
 }
+
 func checkOwnerStateWrite(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, node ast.Node, lhs, rhs ast.Expr, local bool) {
 	if protectedStateField(pass, resolver, lhs, "workloadStopAttempt", mutationResultField) {
 		pass.Reportf(node.Pos(), "[SLC108] attempt result evidence may not be rewritten")
@@ -596,6 +611,7 @@ func checkAmbiguousReturn(pass *analysis.Pass, info *functionInfo, resolver *pat
 func guardedObsoleteReturn(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, ret *ast.ReturnStmt, values proofValues) bool {
 	return isObsoleteReturn(pass, info, resolver, ret) && obsoleteReturnGuarded(pass, info, resolver, flow, ret, values)
 }
+
 func isObsoleteReturn(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, ret *ast.ReturnStmt) bool {
 	if len(ret.Results) != 1 {
 		return false
@@ -608,6 +624,7 @@ func isObsoleteReturn(pass *analysis.Pass, info *functionInfo, resolver *pathRes
 	v, known := proofValue(pass, info.decl.Body, resolver, value, nil)
 	return known && v == obsolete
 }
+
 func uncertaintyDominates(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, ret *ast.ReturnStmt, stop *types.Var) bool {
 	marked := false
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
@@ -620,6 +637,7 @@ func uncertaintyDominates(pass *analysis.Pass, info *functionInfo, resolver *pat
 	})
 	return marked
 }
+
 func assignmentMarksUncertainty(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, assign *ast.AssignStmt, stop *types.Var) bool {
 	for i, lhs := range assign.Lhs {
 		root, path, ok := resolver.resolveExpr(lhs)
@@ -708,6 +726,7 @@ func observedStopCallProven(pass *analysis.Pass, info *functionInfo, resolver *p
 	}
 	return retiredObservationLoopProven(pass, info, resolver, flow, call, sig)
 }
+
 func retiredObservationLoopProven(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, call *ast.CallExpr, sig *types.Signature) bool {
 	proven := false
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
@@ -726,6 +745,7 @@ func retiredObservationLoopProven(pass *analysis.Pass, info *functionInfo, resol
 	})
 	return proven
 }
+
 func observationLoopEntry(pass *analysis.Pass, resolver *pathResolver, flow *functionFlow, loop *ast.RangeStmt, call *ast.CallExpr, sig *types.Signature) (*types.Var, *cfg.Block) {
 	if sig.Params().Len() < 2 || !sameResolvedValue(resolver, loop.X, sig.Params().At(1), "") {
 		return nil, nil
@@ -745,6 +765,7 @@ func observationLoopEntry(pass *analysis.Pass, resolver *pathResolver, flow *fun
 	}
 	return nil, nil
 }
+
 func observationLoopExcludes(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, loop *ast.RangeStmt, call *ast.CallExpr, start *cfg.Block, w, container *types.Var) bool {
 	if nodeContains(loop.Body, call) {
 		other := proofValues{{root: w, path: mutationContainerIDPath}: 1, {root: container, path: ".ID"}: 2, {root: container, path: mutationRunningPath}: 0}
@@ -771,6 +792,7 @@ func attemptEvidenceProven(pass *analysis.Pass, info *functionInfo, resolver *pa
 	}
 	return terminalReplayProven(pass, info, resolver, flow, apply, sig, result)
 }
+
 func attemptApplySignature(info *functionInfo, resolver *pathResolver, apply *ast.CallExpr) *types.Signature {
 	if !isLocalMethod(info.fn, "dockerProvider", "executeOwnedStopAttempt") || len(apply.Args) != 3 {
 		return nil
@@ -788,10 +810,12 @@ func attemptApplySignature(info *functionInfo, resolver *pathResolver, apply *as
 	}
 	return sig
 }
+
 func matchingAttemptOwner(resolver *pathResolver, sig *types.Signature, call *ast.CallExpr) bool {
 	sel, _ := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	return len(call.Args) == 3 && sel != nil && sameResolvedValue(resolver, sel.X, sig.Recv(), "") && sameResolvedValue(resolver, call.Args[1], sig.Params().At(1), "") && sameResolvedValue(resolver, call.Args[2], sig.Params().At(2), "")
 }
+
 func literalField(expr ast.Expr, name string) ast.Expr {
 	literal, ok := ast.Unparen(expr).(*ast.CompositeLit)
 	if !ok || len(literal.Elts) != 1 {
@@ -807,6 +831,7 @@ func literalField(expr ast.Expr, name string) ast.Expr {
 	}
 	return field.Value
 }
+
 func terminalReplayProven(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, apply *ast.CallExpr, sig *types.Signature, result ast.Expr) bool {
 	valid := false
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
@@ -823,6 +848,7 @@ func terminalReplayProven(pass *analysis.Pass, info *functionInfo, resolver *pat
 	})
 	return valid
 }
+
 func replayAssignment(pass *analysis.Pass, resolver *pathResolver, sig *types.Signature, assign *ast.AssignStmt) []*types.Var {
 	if len(assign.Lhs) != 3 || len(assign.Rhs) != 1 {
 		return nil
@@ -837,6 +863,7 @@ func replayAssignment(pass *analysis.Pass, resolver *pathResolver, sig *types.Si
 	}
 	return definedVariables(pass, assign.Lhs)
 }
+
 func definedVariables(pass *analysis.Pass, exprs []ast.Expr) []*types.Var {
 	var vars []*types.Var
 	for _, expr := range exprs {
@@ -858,6 +885,7 @@ func checkStateAddress(pass *analysis.Pass, resolver *pathResolver, n *ast.Unary
 		pass.Reportf(n.Pos(), "[SLC107] protected mutation state address may not escape its typed boundary")
 	}
 }
+
 func synchronousEvidenceProven(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, flow *functionFlow, parents map[ast.Node]ast.Node, n *ast.CallExpr) bool {
 	return !enclosedByFuncLiteral(n, info.decl.Body, parents) && !insideDeferredOrGo(n, info.decl.Body, parents) && attemptEvidenceProven(pass, info, resolver, flow, n)
 }

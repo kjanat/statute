@@ -16,5 +16,21 @@
     "@types/node": "26.6.4",
     "typescript": "7.0.2",
     "yaml": "2.9.1"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": ">=12"
+    },
+    "runtime": [{
+      "name": "node",
+      "version": ">=26"
+    }, {
+      "name": "bun",
+      "version": ">=1.4"
+    }, {
+      "name": "deno",
+      "version": ">=2"
+    }]
   }
 }

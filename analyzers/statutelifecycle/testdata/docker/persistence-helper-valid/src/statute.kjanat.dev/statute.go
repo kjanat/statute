@@ -2,14 +2,19 @@ package statute
 
 import "errors"
 
-type workloadStopKind uint8
-type workloadStop struct {
-	kind      workloadStopKind
-	persisted bool
-	ref       string
-}
-type workload struct{}
-type workloadStopOwnership struct{ containerID string }
+type (
+	workloadStopKind uint8
+	workloadStop     struct {
+		kind      workloadStopKind
+		persisted bool
+		ref       string
+	}
+)
+
+type (
+	workload              struct{}
+	workloadStopOwnership struct{ containerID string }
+)
 
 func (*workload) stopOwnershipLocked(*workloadStop) (workloadStopOwnership, bool) {
 	return workloadStopOwnership{containerID: "immutable"}, true
@@ -50,7 +55,7 @@ func (p *dockerProvider) persistOwnedStop(w *workload, stop *workloadStop) error
 	if registry == nil {
 		return errors.New("unavailable")
 	}
-	if err := (registry.put)(record); err != nil {
+	if err := registry.put(record); err != nil {
 		return err
 	}
 	if !owner.currentLocked(w) {

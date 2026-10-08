@@ -11,8 +11,10 @@ import (
 	"statute.kjanat.dev/internal/parse"
 )
 
-const defaultMaxResponseBodyBytes int64 = 8 << 20
-const defaultResponseBufferBudgetBytes int64 = 64 << 20
+const (
+	defaultMaxResponseBodyBytes      int64 = 8 << 20
+	defaultResponseBufferBudgetBytes int64 = 64 << 20
+)
 
 func resolveResponseBodyLimit(size string) (int64, error) {
 	return resolveBufferSize(size, defaultMaxResponseBodyBytes)

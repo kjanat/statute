@@ -136,11 +136,13 @@ func (h bucketHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 	h[i].index, h[j].index = i, j
 }
+
 func (h *bucketHeap) Push(value any) {
 	b := value.(*bucket)
 	b.index = len(*h)
 	*h = append(*h, b)
 }
+
 func (h *bucketHeap) Pop() any {
 	old := *h
 	b := old[len(old)-1]

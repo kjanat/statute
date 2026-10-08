@@ -201,7 +201,8 @@ func TestFallbackRoutesMatchedErrorsAreFinal(t *testing.T) {
 		for _, terminal := range []bool{false, true} {
 			var native, legacy atomic.Int64
 			matched := Match("/*").Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }))
-			cfg := Config{Listeners: Listeners{HTTP(":0")},
+			cfg := Config{
+				Listeners:      Listeners{HTTP(":0")},
 				FallbackRoutes: Routes{Match("/*").Handle(countingFallback(&native))},
 				Fallback:       countingFallback(&legacy),
 			}
@@ -268,12 +269,15 @@ func TestFallbackRoutesQuarantineSurvivesRetirement(t *testing.T) {
 	host, port := backendHostPort(t, backend)
 	p, srv, daemon := newFakeProviderDaemon(t, &resolved.Docker{
 		Workloads: map[string]resolved.Workload{"a": testWorkloadPolicy()},
-	}, []fakeDaemonContainer{{name: "container-c", ip: host, port: port,
+	}, []fakeDaemonContainer{{
+		name: "container-c", ip: host, port: port,
 		labels: map[string]string{"statute.enable": "true", "statute.service": "a", "statute.host": "a.example"},
 	}})
 	var native, legacy atomic.Int64
-	srv.cfg = mustResolve(t, Config{Listeners: Listeners{HTTP(":0")},
-		FallbackRoutes: Routes{Match("/*").Handle(countingFallback(&native))}, Fallback: countingFallback(&legacy)})
+	srv.cfg = mustResolve(t, Config{
+		Listeners:      Listeners{HTTP(":0")},
+		FallbackRoutes: Routes{Match("/*").Handle(countingFallback(&native))}, Fallback: countingFallback(&legacy),
+	})
 	daemon.stopStarted = make(chan struct{})
 	daemon.stopRelease = make(chan struct{})
 	started, release := daemon.stopStarted, daemon.stopRelease
@@ -288,7 +292,8 @@ func TestFallbackRoutesQuarantineSurvivesRetirement(t *testing.T) {
 	w := p.workloadFor("a")
 	waitSignal(t, started, "idle stop not issued")
 	router := srv.buildRouter()
-	daemon.swap([]fakeDaemonContainer{{name: "container-c", stopped: true,
+	daemon.swap([]fakeDaemonContainer{{
+		name: "container-c", stopped: true,
 		labels: map[string]string{"statute.enable": "true", "statute.service": "b", "statute.host": "b.example"},
 	}})
 	mustSync(t, p)

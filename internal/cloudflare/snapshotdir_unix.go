@@ -19,7 +19,8 @@ func syncSnapshotDirectory(path string) error {
 func syncCloseSnapshotDirectory(dir interface {
 	Sync() error
 	Close() error
-}) error {
+},
+) error {
 	syncErr := dir.Sync()
 	return errors.Join(syncErr, dir.Close())
 }

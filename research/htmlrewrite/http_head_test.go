@@ -20,9 +20,11 @@ func TestHTTPHeadRepresentation(t *testing.T) {
 				if r.Method != http.MethodHead || r.Header.Get("If-None-Match") != "" || r.Header.Get("Range") != "" {
 					t.Fatal("HEAD must stay HEAD and request fresh metadata")
 				}
-				return &http.Response{StatusCode: 200, ContentLength: 7,
+				return &http.Response{
+					StatusCode: 200, ContentLength: 7,
 					Header: http.Header{"Content-Type": {media}, "Content-Length": {"7"}, "Etag": {`"origin"`}, "etag": {`"lower"`}, "Repr-Digest": {"origin"}},
-					Body:   &countingBody{Reader: strings.NewReader("unread!"), reads: &reads}}, nil
+					Body:   &countingBody{Reader: strings.NewReader("unread!"), reads: &reads},
+				}, nil
 			})
 			rt := httpTestTransport(t, e, base, testHTTPPolicy(failClosed))
 			req := httpTestRequest(t, "HEAD", "http://example.test")

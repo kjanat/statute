@@ -2,12 +2,14 @@ package statute
 
 import "context"
 
-type workload struct{}
-type workloadStop struct{}
-type workloadStopAttempt struct{}
-type workloadStopApply uint8
-type dockerProvider struct{}
-type workloadPhase uint8
+type (
+	workload            struct{}
+	workloadStop        struct{}
+	workloadStopAttempt struct{}
+	workloadStopApply   uint8
+	dockerProvider      struct{}
+	workloadPhase       uint8
+)
 
 type evidenceApplier interface {
 	applyStopAttempt(*dockerProvider, *workloadStop, workloadStopAttempt) workloadStopApply

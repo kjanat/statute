@@ -9,8 +9,10 @@ import (
 	"golang.org/x/tools/go/cfg"
 )
 
-const retiredRegistryField = "retiredMutations"
-const workloadRegistryField = "workloadEntries"
+const (
+	retiredRegistryField  = "retiredMutations"
+	workloadRegistryField = "workloadEntries"
+)
 
 type registryReference struct {
 	provider *types.Var
@@ -338,6 +340,7 @@ func emptyRegistryInitialization(pass *analysis.Pass, info *functionInfo, resolv
 	})
 	return guarded
 }
+
 func nilRegistryCondition(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, condition ast.Expr, r registryReference) bool {
 	binary, ok := ast.Unparen(condition).(*ast.BinaryExpr)
 	if !ok || binary.Op != token.EQL || !isNil(pass, binary.Y) {
@@ -361,6 +364,7 @@ func registryEntryGuarded(pass *analysis.Pass, info *functionInfo, resolver *pat
 	})
 	return guarded
 }
+
 func registryEntryCondition(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, condition ast.Expr, r registryReference, owner *types.Var) bool {
 	binary, ok := ast.Unparen(condition).(*ast.BinaryExpr)
 	if !ok || binary.Op != token.NEQ {
@@ -470,6 +474,7 @@ func registryPruneProven(pass *analysis.Pass, info *functionInfo, resolver *path
 	})
 	return proven
 }
+
 func pruneRangeOwner(pass *analysis.Pass, info *functionInfo, resolver *pathResolver, loop *ast.RangeStmt, r registryReference) *types.Var {
 	base, ok := registryReferenceFor(pass, info.decl.Body, resolver, loop.X, 0)
 	if !ok || !sameRegistry(r, base) || base.sliced {
@@ -541,6 +546,7 @@ func pruneRangeBody(flow *functionFlow, loop *ast.RangeStmt) *cfg.Block {
 	}
 	return nil
 }
+
 func pruneIterationBoundary(block *cfg.Block, loop *ast.RangeStmt, retained bool) (bool, bool) {
 	if block.Kind == cfg.KindRangeLoop && block.Stmt == loop {
 		return true, retained

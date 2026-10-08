@@ -40,8 +40,12 @@ func TestCacheCORSVariance(t *testing.T) {
 					}
 				}), append(slices.Clone(order), op)...)
 				for _, tc := range []struct{ origin, selected string }{
-					{"", "none"}, {"https://a.example", "a"}, {"https://b.example", "b"},
-					{"", "none"}, {"https://a.example", "a"}, {"https://b.example", "b"},
+					{"", "none"},
+					{"https://a.example", "a"},
+					{"https://b.example", "b"},
+					{"", "none"},
+					{"https://a.example", "a"},
+					{"https://b.example", "b"},
 				} {
 					r := httptest.NewRequest("GET", "/", nil)
 					if tc.origin != "" {

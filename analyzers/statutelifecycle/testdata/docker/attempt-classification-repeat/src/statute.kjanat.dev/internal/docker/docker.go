@@ -2,8 +2,10 @@ package docker
 
 import "context"
 
-type Client struct{}
-type Inspection struct{ Running bool }
+type (
+	Client     struct{}
+	Inspection struct{ Running bool }
+)
 
 func (*Client) StopContainer(context.Context, string) error { return nil }
 func (*Client) InspectContainer(context.Context, string) (Inspection, error) {

@@ -13,12 +13,16 @@ import (
 
 func TestCacheRequestSpecificSelection(t *testing.T) {
 	for _, field := range []struct{ name, value string }{
-		{"If-Match", `"current"`}, {"If-None-Match", `"current"`},
+		{"If-Match", `"current"`},
+		{"If-None-Match", `"current"`},
 		{"If-Modified-Since", "Wed, 21 Oct 2015 07:28:00 GMT"},
 		{"If-Unmodified-Since", "Wed, 21 Oct 2015 07:28:00 GMT"},
-		{"Range", "bytes=0-1"}, {"If-Range", `"current"`},
-		{"Cache-Control", "no-transform"}, {"cache-control", `ext="a,b", No-Transform`},
-		{"Cache-Control", "no-cache"}, {"Cache-Control", `ext="invalid`},
+		{"Range", "bytes=0-1"},
+		{"If-Range", `"current"`},
+		{"Cache-Control", "no-transform"},
+		{"cache-control", `ext="a,b", No-Transform`},
+		{"Cache-Control", "no-cache"},
+		{"Cache-Control", `ext="invalid`},
 	} {
 		t.Run(field.name+"/"+field.value, func(t *testing.T) {
 			for _, retryFirst := range []bool{false, true} {

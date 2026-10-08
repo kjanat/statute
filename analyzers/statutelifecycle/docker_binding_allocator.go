@@ -8,8 +8,10 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-const bindingCounterField = "nextWorkloadBinding"
-const bindingCounterPath = ".nextWorkloadBinding"
+const (
+	bindingCounterField = "nextWorkloadBinding"
+	bindingCounterPath  = ".nextWorkloadBinding"
+)
 
 func checkBindingAllocator(pass *analysis.Pass, info *functionInfo) {
 	if !isLocalMethod(info.fn, "dockerProvider", "nextWorkloadBindingLocked") || !helperHasField(info.fn.Type().(*types.Signature).Recv().Type(), bindingCounterField) {

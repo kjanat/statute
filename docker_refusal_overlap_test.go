@@ -91,9 +91,13 @@ func TestDockerRejectedRoutePrecedenceAndRepair(t *testing.T) {
 		status  int
 		backend bool
 	}{
-		{"/admin", 404, false}, {"/admin/users", 404, false}, {"/admin-secret", 404, false},
-		{"/%61dmin/users", 404, false}, {"/admin/health", 204, true},
-		{"/public", 204, true}, {"/admin/static", 204, false},
+		{"/admin", 404, false},
+		{"/admin/users", 404, false},
+		{"/admin-secret", 404, false},
+		{"/%61dmin/users", 404, false},
+		{"/admin/health", 204, true},
+		{"/public", 204, true},
+		{"/admin/static", 204, false},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			before := calls.Load()

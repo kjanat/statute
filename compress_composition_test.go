@@ -43,10 +43,14 @@ func TestCompressionNegotiationCacheVariants(t *testing.T) {
 
 func TestCompressionRejectionPrecedesETagConditions(t *testing.T) {
 	for _, mws := range [][]Middleware{
-		{ETag(), Compress(Gzip)}, {Compress(Gzip), ETag()},
-		{Cache("1h"), ETag(), Compress(Gzip)}, {Cache("1h"), Compress(Gzip), ETag()},
-		{ETag(), Cache("1h"), Compress(Gzip)}, {Compress(Gzip), Cache("1h"), ETag()},
-		{ETag(), Compress(Gzip), Cache("1h")}, {Compress(Gzip), ETag(), Cache("1h")},
+		{ETag(), Compress(Gzip)},
+		{Compress(Gzip), ETag()},
+		{Cache("1h"), ETag(), Compress(Gzip)},
+		{Cache("1h"), Compress(Gzip), ETag()},
+		{ETag(), Cache("1h"), Compress(Gzip)},
+		{Compress(Gzip), Cache("1h"), ETag()},
+		{ETag(), Compress(Gzip), Cache("1h")},
+		{Compress(Gzip), ETag(), Cache("1h")},
 	} {
 		base := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = io.WriteString(w, "body")

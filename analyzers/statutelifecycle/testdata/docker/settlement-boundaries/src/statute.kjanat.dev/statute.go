@@ -2,10 +2,12 @@ package statute
 
 import "errors"
 
-type workloadBindingKey uint64
-type workloadStopResult uint8
-type workloadStopApply uint8
-type workloadStopAttempt struct{ result workloadStopResult }
+type (
+	workloadBindingKey  uint64
+	workloadStopResult  uint8
+	workloadStopApply   uint8
+	workloadStopAttempt struct{ result workloadStopResult }
+)
 
 type workloadStop struct {
 	binding workloadBindingKey
@@ -97,7 +99,7 @@ func aliasedRelease(w *workload, stop *workloadStop) {
 }
 
 func declaredAliasRelease(w *workload, stop *workloadStop) {
-	var done = stop.done
+	done := stop.done
 	close(done) // want `\[SLC107\].*waiters may only be released`
 	var zero *workloadStop
 	w.stop = zero   // want `\[SLC107\].*workload.stop may only be cleared`

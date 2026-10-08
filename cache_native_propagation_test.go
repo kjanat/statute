@@ -23,6 +23,7 @@ func (p cacheTestPropagator) Fields() []string { return p.fields() }
 func (p cacheTestPropagator) Extract(ctx context.Context, _ propagation.TextMapCarrier) context.Context {
 	return ctx
 }
+
 func (p cacheTestPropagator) Inject(ctx context.Context, c propagation.TextMapCarrier) {
 	p.inject(ctx, c)
 }
@@ -154,7 +155,6 @@ func testCacheInjectedFields(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func testCacheStablePropagation(t *testing.T) {
@@ -200,7 +200,6 @@ func testCacheUncachedPropagation(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func testCacheReplacedPropagation(t *testing.T) {

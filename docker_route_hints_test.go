@@ -95,8 +95,11 @@ func TestDockerRouteHintsIndependentOnSharedPool(t *testing.T) {
 					path string
 					want int
 				}{
-					{"/limited", 204}, {"/limited", 429},
-					{"/other", 204}, {"/other", otherSecond}, {"/other", otherSecond},
+					{"/limited", 204},
+					{"/limited", 429},
+					{"/other", 204},
+					{"/other", otherSecond},
+					{"/other", otherSecond},
 				} {
 					if got := routeHintsStatus(t, frontend, tc.path); got != tc.want {
 						t.Errorf("%s: status=%d want=%d", tc.path, got, tc.want)
@@ -136,8 +139,10 @@ func TestDockerRouteHintsConflictRefusesAndRepairs(t *testing.T) {
 					path string
 					want int
 				}{
-					{"/admin/private", 404}, {"/public", 204},
-					{"/admin/health", 204}, {"/admin/static", 204},
+					{"/admin/private", 404},
+					{"/public", 204},
+					{"/admin/health", 204},
+					{"/admin/static", 204},
 				} {
 					if got := routeHintsStatus(t, frontend, check.path); got != check.want {
 						t.Errorf("conflict %s: status=%d want=%d", check.path, got, check.want)

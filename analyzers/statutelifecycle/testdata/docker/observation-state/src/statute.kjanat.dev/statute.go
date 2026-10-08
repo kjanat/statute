@@ -12,35 +12,43 @@ type workloadStop struct {
 	issued, terminal, uncertain bool
 	result                      workloadStopResult
 }
-type workloadBinding struct{ containerID string }
-type workload struct {
-	stop    *workloadStop
-	binding *workloadBinding
-}
+type (
+	workloadBinding struct{ containerID string }
+	workload        struct {
+		stop    *workloadStop
+		binding *workloadBinding
+	}
+)
+
 type container struct {
 	ID      string
 	Running bool
 }
-type service struct{ Running bool }
-type dockerProvider struct{}
+type (
+	service        struct{ Running bool }
+	dockerProvider struct{}
+)
 
 func (p *dockerProvider) recordObservedStopLocked(w *workload) {
 	stop := w.stop
 	stop.terminal = true
 	stop.result = workloadStopSucceeded
 }
+
 func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 	if w.stop.issued {
 		return
 	}
 	p.recordObservedStopLocked(w)
 }
+
 func (p *dockerProvider) observeWorkloadLocked(w *workload, svc *service) {
 	if svc.Running {
 		return
 	}
 	p.observeStoppedWorkloadLocked(w)
 }
+
 func (p *dockerProvider) reconcileRetiredMutationObservationLocked(w *workload, containers []container) {
 	if w.stop.issued {
 		return

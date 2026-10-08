@@ -1,10 +1,12 @@
 package statute
 
-type workloadStopResult uint8
-type workloadStop struct {
-	terminal bool
-	result   workloadStopResult
-}
+type (
+	workloadStopResult uint8
+	workloadStop       struct {
+		terminal bool
+		result   workloadStopResult
+	}
+)
 type workload struct{ stop *workloadStop }
 
 func (w *workload) stopResult(operation *workloadStop) (workloadStopResult, bool, bool) {

@@ -386,7 +386,6 @@ func TestBackendTLSConfig(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no certificates found") {
 		t.Errorf("junk CA file: got %v, want no-certificates error", err)
 	}
-
 }
 
 func TestBackendTLSConfigClientCertificate(t *testing.T) {

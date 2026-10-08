@@ -4,11 +4,13 @@ type workloadPhase uint8
 
 const workloadReady workloadPhase = 2
 
-type workloadStop struct{ uncertain bool }
-type workload struct {
-	phase workloadPhase
-	stop  *workloadStop
-}
+type (
+	workloadStop struct{ uncertain bool }
+	workload     struct {
+		phase workloadPhase
+		stop  *workloadStop
+	}
+)
 
 func decrement(w *workload) {
 	w.phase-- // want `\[SLC109\].*phase writes`

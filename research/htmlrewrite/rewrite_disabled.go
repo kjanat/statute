@@ -10,8 +10,10 @@ import (
 
 var errRewriteUnavailable = errors.New("HTML rewriting is unavailable: rebuild with -tags statute_htmlrewrite")
 
-type engine struct{}
-type stream struct{}
+type (
+	engine struct{}
+	stream struct{}
+)
 
 func newEngine(context.Context) (*engine, error) { return nil, errRewriteUnavailable }
 func (*engine) close() error                     { return nil }

@@ -26,8 +26,10 @@ type workloadStop struct {
 	ref     string
 }
 
-type workloadStopAttempt struct{ err error }
-type workload struct{}
+type (
+	workloadStopAttempt struct{ err error }
+	workload            struct{}
+)
 
 func (*workload) callRef(workloadBindingKey, string) string { return "container-id" }
 

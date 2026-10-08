@@ -29,8 +29,10 @@ func newTimeoutHandler(m resolved.Middleware, next http.Handler) *timeoutHandler
 	if count <= 0 {
 		count = defaultTimeoutMaxInFlight
 	}
-	return &timeoutHandler{next: next, duration: m.Timeout, bodyLimit: m.MaxResponseBodyBytes,
-		budget: newResponseBufferBudget(m.ResponseBufferBudgetBytes), maxInFlight: int64(count)}
+	return &timeoutHandler{
+		next: next, duration: m.Timeout, bodyLimit: m.MaxResponseBodyBytes,
+		budget: newResponseBufferBudget(m.ResponseBufferBudgetBytes), maxInFlight: int64(count),
+	}
 }
 
 func (h *timeoutHandler) acquire() bool {

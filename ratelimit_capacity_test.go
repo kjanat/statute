@@ -84,9 +84,13 @@ func TestBucketStoreExistingKeysAtCapacity(t *testing.T) {
 		delay time.Duration
 		want  int
 	}{
-		{"old", 0, 0}, {"new", 0, 503}, {"old", 0, 0}, {"old", 0, 429},
+		{"old", 0, 0},
+		{"new", 0, 503},
+		{"old", 0, 0},
+		{"old", 0, 429},
 		{"new", time.Second, 503}, // One token is not a fully replenished burst.
-		{"old", time.Second, 0}, {"new", 2 * time.Second, 503},
+		{"old", time.Second, 0},
+		{"new", 2 * time.Second, 503},
 		{"new", 3 * time.Second, 0},
 	} {
 		if got := s.allow(tc.key, now.Add(tc.delay)); got != tc.want {
@@ -197,8 +201,10 @@ func TestRateLimitCapacityHTTP(t *testing.T) {
 		status       int
 		retry, cache string
 	}{
-		{"A.example", 204, "", ""}, {"A.example", 429, "1", ""},
-		{"a.example", 503, "", "no-store"}, {"A.example:80", 503, "", "no-store"},
+		{"A.example", 204, "", ""},
+		{"A.example", 429, "1", ""},
+		{"a.example", 503, "", "no-store"},
+		{"A.example:80", 503, "", "no-store"},
 	} {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.Host = tc.host
@@ -212,7 +218,8 @@ func TestRateLimitCapacityHTTP(t *testing.T) {
 func TestRateLimitMaxBucketsResolveAndExport(t *testing.T) {
 	t.Parallel()
 	for _, limit := range []int{0, 1, 73, -1} {
-		cfg := Config{Listeners: Listeners{HTTP(":0")},
+		cfg := Config{
+			Listeners:      Listeners{HTTP(":0")},
 			Routes:         Routes{Match("/static").Handle(noContentHandler).With(RateLimit("1/h").MaxBuckets(limit))},
 			FallbackRoutes: Routes{Match("/*").Handle(noContentHandler).With(RateLimit("1/h").MaxBuckets(limit))},
 			Docker:         Docker().DefaultMiddleware(RateLimit("1/h").MaxBuckets(limit)).Middleware("named", RateLimit("1/h").MaxBuckets(limit)),

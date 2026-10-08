@@ -18,7 +18,8 @@ func TestRetryRequestBudgetProxyTrailers(t *testing.T) {
 		{"fallback_body_limit", []Middleware{Retry(2).RequestBufferBudget("1B"), BodyLimit("4KiB")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := fallbackRouter(t, Config{Listeners: Listeners{HTTP(":0")},
+			h := fallbackRouter(t, Config{
+				Listeners: Listeners{HTTP(":0")},
 				Upstreams: Upstreams{"origin": Pool{Backends: []Backend{{Address: origin.URL}}}},
 				Routes:    Routes{Match("/*").ProxyTo("origin").With(tc.middleware...)},
 			})

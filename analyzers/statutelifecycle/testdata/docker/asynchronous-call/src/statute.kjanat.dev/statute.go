@@ -9,19 +9,24 @@ import (
 
 const workloadStopTimeout = time.Second
 
-type workloadBindingKey uint64
-type workloadPolicy struct{ StartTimeout time.Duration }
-type workloadActivation struct {
-	policy  workloadPolicy
-	binding workloadBindingKey
-	ref     string
-}
+type (
+	workloadBindingKey uint64
+	workloadPolicy     struct{ StartTimeout time.Duration }
+	workloadActivation struct {
+		policy  workloadPolicy
+		binding workloadBindingKey
+		ref     string
+	}
+)
+
 type workloadStop struct {
 	binding workloadBindingKey
 	ref     string
 }
-type workloadStopAttempt struct{}
-type workload struct{}
+type (
+	workloadStopAttempt struct{}
+	workload            struct{}
+)
 
 func (*workload) callRef(workloadBindingKey, string) string { return "container-id" }
 

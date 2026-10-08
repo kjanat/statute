@@ -8,8 +8,10 @@ import (
 	"statute.kjanat.dev/internal/docker"
 )
 
-const workloadStopTimeout = time.Second
-const workloadProbeTimeout = time.Second
+const (
+	workloadStopTimeout  = time.Second
+	workloadProbeTimeout = time.Second
+)
 
 type workloadBindingKey uint64
 
@@ -39,6 +41,7 @@ const (
 	workloadStopRejected
 	workloadStopAmbiguous
 )
+
 const (
 	workloadStopObsolete workloadStopApply = iota
 	workloadStopUnsettled

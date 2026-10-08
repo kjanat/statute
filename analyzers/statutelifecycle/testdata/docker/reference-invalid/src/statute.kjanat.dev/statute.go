@@ -1,11 +1,13 @@
 package statute
 
-type workloadBindingKey uint64
-type workloadBinding struct {
-	key         workloadBindingKey
-	container   string
-	containerID string
-}
+type (
+	workloadBindingKey uint64
+	workloadBinding    struct {
+		key         workloadBindingKey
+		container   string
+		containerID string
+	}
+)
 type workload struct{ binding *workloadBinding }
 
 func (b *workloadBinding) ref() string {
@@ -14,6 +16,7 @@ func (b *workloadBinding) ref() string {
 	}
 	return b.container // want "\\[SLC105\\].*prefer its immutable container ID"
 }
+
 func (w *workload) callRef(key workloadBindingKey, fallback string) string {
 	if w.binding == nil {
 		return fallback

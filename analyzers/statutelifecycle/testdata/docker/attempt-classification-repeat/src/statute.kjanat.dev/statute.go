@@ -7,20 +7,26 @@ import (
 	"statute.kjanat.dev/internal/docker"
 )
 
-const workloadStopTimeout = time.Second
-const workloadProbeTimeout = time.Second
+const (
+	workloadStopTimeout  = time.Second
+	workloadProbeTimeout = time.Second
+)
 
-type workloadBindingKey uint64
-type workloadStop struct {
-	binding workloadBindingKey
-	ref     string
-}
+type (
+	workloadBindingKey uint64
+	workloadStop       struct {
+		binding workloadBindingKey
+		ref     string
+	}
+)
 type workload struct{}
 
 func (*workload) callRef(workloadBindingKey, string) string { return "immutable" }
 
-type dockerProvider struct{ client *docker.Client }
-type workloadStopResult uint8
+type (
+	dockerProvider     struct{ client *docker.Client }
+	workloadStopResult uint8
+)
 
 const (
 	workloadStopSucceeded workloadStopResult = iota

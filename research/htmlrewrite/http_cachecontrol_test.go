@@ -62,8 +62,10 @@ func TestHTTPNoTransformPolicy(t *testing.T) {
 						if source == "response" {
 							h["cAcHe-CoNtRoL"] = []string{"public", value}
 						}
-						return &http.Response{StatusCode: 200, Header: h, ContentLength: -1,
-							Body: &countingBody{Reader: strings.NewReader(original), reads: &reads}}, nil
+						return &http.Response{
+							StatusCode: 200, Header: h, ContentLength: -1,
+							Body: &countingBody{Reader: strings.NewReader(original), reads: &reads},
+						}, nil
 					})
 					rt := httpTestTransport(t, e, base, testHTTPPolicy(policy))
 					res, err := rt.RoundTrip(req)

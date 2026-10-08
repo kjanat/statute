@@ -39,9 +39,11 @@ func TestHTTPFullRepresentationRequest(t *testing.T) {
 							t.Fatalf("changed %s", field)
 						}
 					}
-					return &http.Response{StatusCode: 200, ContentLength: -1,
+					return &http.Response{
+						StatusCode: 200, ContentLength: -1,
 						Header: http.Header{"Content-Type": {media}, "Vary": {"Accept-Language", "Accept-Encoding"}},
-						Body:   io.NopCloser(strings.NewReader(`<a class="rewrite">whole</a>`))}, nil
+						Body:   io.NopCloser(strings.NewReader(`<a class="rewrite">whole</a>`)),
+					}, nil
 				})
 				rt := httpTestTransport(t, e, base, testHTTPPolicy(failClosed))
 				res, err := rt.RoundTrip(req)
@@ -65,8 +67,10 @@ func TestHTTPUnsolicitedRepresentations(t *testing.T) {
 				t.Run(fmt.Sprintf("%d/%d/%s", status, policy, media), func(t *testing.T) {
 					var reads atomic.Int64
 					base := roundTripFunc(func(*http.Request) (*http.Response, error) {
-						return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {media}},
-							Body: &countingBody{Reader: strings.NewReader("unread"), reads: &reads}}, nil
+						return &http.Response{
+							StatusCode: status, Header: http.Header{"Content-Type": {media}},
+							Body: &countingBody{Reader: strings.NewReader("unread"), reads: &reads},
+						}, nil
 					})
 					rt := httpTestTransport(t, e, base, testHTTPPolicy(policy))
 					res, err := rt.RoundTrip(httpTestRequest(t, "GET", "http://example.test"))
@@ -98,9 +102,11 @@ func TestHTTPSelectedRepresentationConditions(t *testing.T) {
 				t.Run(method+"/"+media+"/"+tc.field+"/"+tc.value, func(t *testing.T) {
 					var reads atomic.Int64
 					base := roundTripFunc(func(*http.Request) (*http.Response, error) {
-						return &http.Response{StatusCode: 200, ContentLength: -1,
+						return &http.Response{
+							StatusCode: 200, ContentLength: -1,
 							Header: http.Header{"Content-Type": {media}, "ETag": {`"origin"`}, "Last-Modified": {"Wed, 21 Oct 2015 07:28:00 GMT"}},
-							Body:   &countingBody{Reader: strings.NewReader(`<a class="rewrite">body</a>`), reads: &reads}}, nil
+							Body:   &countingBody{Reader: strings.NewReader(`<a class="rewrite">body</a>`), reads: &reads},
+						}, nil
 					})
 					rt := httpTestTransport(t, e, base, testHTTPPolicy(failClosed))
 					req := httpTestRequest(t, method, "http://example.test")

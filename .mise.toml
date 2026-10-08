@@ -2,48 +2,48 @@
 #:tombi toml-version = "v1.1.0"
 
 [tools]
-go         = "latest"
-node       = "26"
-shellcheck = "latest"
-runner-run = { version = "0.27.1", filter_bins = ["run", "runner"] }
-tombi      = "1.7.3"
+go   = "latest"
+node = "latest"
+npm  = "12"
 
-[tools.actionlint]
+[tools."go:actionlint.kjanat.dev/cmd/actionlint"]
 prerelease          = true
-version             = "latest"
+version             = "master"
 minimum_release_age = "0s"
-depends             = ["shellcheck"]
+depends             = ["github:koalaman/shellcheck"]
 lazy                = true
 
-[tools.binaryen]
+[tools."github:WebAssembly/binaryen"]
 version        = "133"
 version_prefix = "version_"
 filter_bins    = ["wasm-opt"]
 
-[tools.dprint]
+[tools."github:kjanat/dprint"]
 prerelease          = true
 version             = "latest"
 minimum_release_age = "0s"
 rename_exe          = "kprint"
 postinstall         = "kprint"
-depends             = ["tombi", "go"]
-tag_regex           = '^\d+\.\d+\.\d+.kjanat$'
+depends             = ["github:tombi-toml/tombi", "go"]
 
 [tools."golangci-lint"]
 version = "2.14.0"
 depends = ["go"]
 
-[tool_alias]
-actionlint = "go:actionlint.kjanat.dev/cmd/actionlint"
-binaryen   = "github:WebAssembly/binaryen"
-dprint     = "github:kjanat/dprint"
-runner-run = "github:kjanat/runner"
-shellcheck = "github:koalaman/shellcheck"
-tombi      = "github:tombi-toml/tombi"
+[tools."github:kjanat/runner"]
+version = "0.27.1"
+
+[tools."github:tombi-toml/tombi"]
+version = "1.7.3"
+
+[tools."github:koalaman/shellcheck"]
+version = "latest"
 
 [settings]
-idiomatic_version_file_enable_tools = ["go"]
+idiomatic_version_file_enable_tools = ["go", "node"]
+node.npm_shim                       = true
 minimum_release_age                 = "0s"
+minimum_release_age_excludes        = ["github:kjanat/dprint"]
 prereleases                         = true
 experimental                        = true
 
@@ -55,3 +55,6 @@ wiki = { url = "https://github.com/kjanat/statute.wiki.git" }
 [deps.npm]
 auto = true
 run  = "npm ci --no-audit --no-fund"
+
+[shell_alias]
+dprint = "kprint"

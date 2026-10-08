@@ -45,7 +45,8 @@ func TestCacheLimitInvalidConfiguration(t *testing.T) {
 func TestCacheLimitExportAndDocker(t *testing.T) {
 	t.Parallel()
 	cache := Cache("1h").MaxEntries(7).MaxResponseBody("16KiB").BufferBudget("2MiB")
-	cfg := Config{Listeners: Listeners{HTTP(":0")},
+	cfg := Config{
+		Listeners:      Listeners{HTTP(":0")},
 		Routes:         Routes{Match("/*").Handle(http.NotFoundHandler()).With(cache)},
 		FallbackRoutes: Routes{Match("/*").Handle(http.NotFoundHandler()).With(cache)},
 	}

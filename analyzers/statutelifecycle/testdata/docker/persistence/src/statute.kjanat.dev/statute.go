@@ -2,10 +2,12 @@ package statute
 
 import "context"
 
-type workload struct{}
-type workloadStop struct{}
-type workloadStopAttempt struct{}
-type dockerProvider struct{}
+type (
+	workload            struct{}
+	workloadStop        struct{}
+	workloadStopAttempt struct{}
+	dockerProvider      struct{}
+)
 
 func (*dockerProvider) persistOwnedStop(*workload, *workloadStop) error { return nil }
 func (*dockerProvider) attemptOwnedStop(context.Context, *workload, *workloadStop) workloadStopAttempt {

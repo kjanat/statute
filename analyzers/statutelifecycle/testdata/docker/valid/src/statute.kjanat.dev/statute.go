@@ -28,8 +28,10 @@ type workloadStop struct {
 	done    chan struct{}
 }
 
-type workloadStopResult uint8
-type workloadStopApply uint8
+type (
+	workloadStopResult uint8
+	workloadStopApply  uint8
+)
 
 type workloadStopAttempt struct {
 	result workloadStopResult

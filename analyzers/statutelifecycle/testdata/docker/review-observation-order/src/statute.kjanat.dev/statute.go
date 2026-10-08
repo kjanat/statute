@@ -1,11 +1,14 @@
 package statute
 
-type workloadStop struct{ issued bool }
-type workloadBinding struct{ containerID string }
-type workload struct {
-	stop    *workloadStop
-	binding *workloadBinding
-}
+type (
+	workloadStop    struct{ issued bool }
+	workloadBinding struct{ containerID string }
+	workload        struct {
+		stop    *workloadStop
+		binding *workloadBinding
+	}
+)
+
 type container struct {
 	ID      string
 	Running bool

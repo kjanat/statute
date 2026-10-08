@@ -1451,8 +1451,10 @@ func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("timeout: %w", err)
 	}
-	return resolved.Middleware{Type: resolved.MWTimeout, Timeout: d, TimeoutMaxInFlight: count,
-		MaxResponseBodyBytes: limit, ResponseBufferBudgetBytes: budget}, nil
+	return resolved.Middleware{
+		Type: resolved.MWTimeout, Timeout: d, TimeoutMaxInFlight: count,
+		MaxResponseBodyBytes: limit, ResponseBufferBudgetBytes: budget,
+	}, nil
 }
 
 // resolveRateLimitMW parses the rate string into requests/second and
@@ -1528,9 +1530,11 @@ func resolveCacheMW(m *cacheMW) (resolved.Middleware, error) {
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("cache: %w", err)
 	}
-	return resolved.Middleware{Type: resolved.MWCache, CacheTTL: d,
+	return resolved.Middleware{
+		Type: resolved.MWCache, CacheTTL: d,
 		CacheMaxEntries: entries, MaxResponseBodyBytes: limit,
-		ResponseBufferBudgetBytes: budget}, nil
+		ResponseBufferBudgetBytes: budget,
+	}, nil
 }
 
 // resolveCompressMW maps the requested compression algorithms to their

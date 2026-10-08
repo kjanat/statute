@@ -117,9 +117,11 @@ func (*duplexBody) Close() error { return nil }
 func TestHTTPNoncanonicalHTMLHeaders(t *testing.T) {
 	e := httpTestEngine(t, 1)
 	base := roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, ContentLength: -1,
+		return &http.Response{
+			StatusCode: 200, ContentLength: -1,
 			Header: http.Header{"content-type": {"text/html; charset=UTF-8"}, "content-encoding": {" identity \t"}},
-			Body:   io.NopCloser(strings.NewReader(`<a class="rewrite">page</a>`))}, nil
+			Body:   io.NopCloser(strings.NewReader(`<a class="rewrite">page</a>`)),
+		}, nil
 	})
 	rt := httpTestTransport(t, e, base, testHTTPPolicy(failClosed))
 	res, err := rt.RoundTrip(httpTestRequest(t, "GET", "http://example.test"))

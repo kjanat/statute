@@ -7,11 +7,13 @@ import "sync"
 
 // Two groups on one returned owner: a wait on one group cannot discharge
 // work launched through the other.
-type twoGroupWorker struct{}
-type twoGroupRun struct {
-	workWG  sync.WaitGroup
-	otherWG sync.WaitGroup
-}
+type (
+	twoGroupWorker struct{}
+	twoGroupRun    struct {
+		workWG  sync.WaitGroup
+		otherWG sync.WaitGroup
+	}
+)
 
 func (*twoGroupWorker) start() *twoGroupRun { // want `\[SLC103\].*on WaitGroup twoGroupRun\.workWG but stop never waits on that group`
 	r := &twoGroupRun{}
@@ -22,11 +24,13 @@ func (*twoGroupWorker) start() *twoGroupRun { // want `\[SLC103\].*on WaitGroup 
 func (r *twoGroupRun) stop() { r.otherWG.Wait() }
 
 // Both groups launched, one waited: only the uncovered group is reported.
-type halfWaitedWorker struct{}
-type halfWaitedRun struct {
-	a sync.WaitGroup
-	b sync.WaitGroup
-}
+type (
+	halfWaitedWorker struct{}
+	halfWaitedRun    struct {
+		a sync.WaitGroup
+		b sync.WaitGroup
+	}
+)
 
 func (*halfWaitedWorker) start() *halfWaitedRun { // want `\[SLC103\].*on WaitGroup halfWaitedRun\.b but stop never waits on that group`
 	r := &halfWaitedRun{}
@@ -39,12 +43,14 @@ func (r *halfWaitedRun) stop() { r.a.Wait() }
 
 // Nested paths: r.a.wg and r.b.wg end in the same declared field type but
 // are different groups.
-type nestedGroup struct{ wg sync.WaitGroup }
-type nestedWorker struct{}
-type nestedRun struct {
-	a nestedGroup
-	b nestedGroup
-}
+type (
+	nestedGroup  struct{ wg sync.WaitGroup }
+	nestedWorker struct{}
+	nestedRun    struct {
+		a nestedGroup
+		b nestedGroup
+	}
+)
 
 func (*nestedWorker) start() *nestedRun { // want `\[SLC103\].*on WaitGroup nestedRun\.a\.wg but stop never waits on that group`
 	r := &nestedRun{}
@@ -55,11 +61,13 @@ func (*nestedWorker) start() *nestedRun { // want `\[SLC103\].*on WaitGroup nest
 func (r *nestedRun) stop() { r.b.wg.Wait() }
 
 // Matching nested path is clean.
-type nestedCleanWorker struct{}
-type nestedCleanRun struct {
-	a nestedGroup
-	b nestedGroup
-}
+type (
+	nestedCleanWorker struct{}
+	nestedCleanRun    struct {
+		a nestedGroup
+		b nestedGroup
+	}
+)
 
 func (*nestedCleanWorker) start() *nestedCleanRun {
 	r := &nestedCleanRun{}
@@ -71,11 +79,13 @@ func (r *nestedCleanRun) stop() { r.a.wg.Wait() }
 
 // The same declared field on an unrelated object is not the returned
 // owner's wait.
-type unrelatedObjectWorker struct{}
-type unrelatedObjectRun struct {
-	wg    sync.WaitGroup
-	other *unrelatedObjectRun
-}
+type (
+	unrelatedObjectWorker struct{}
+	unrelatedObjectRun    struct {
+		wg    sync.WaitGroup
+		other *unrelatedObjectRun
+	}
+)
 
 func (*unrelatedObjectWorker) start() *unrelatedObjectRun { // want `\[SLC103\].*on WaitGroup unrelatedObjectRun\.wg but stop never waits on that group`
 	r := &unrelatedObjectRun{}
@@ -86,12 +96,14 @@ func (*unrelatedObjectWorker) start() *unrelatedObjectRun { // want `\[SLC103\].
 func (r *unrelatedObjectRun) stop() { r.other.wg.Wait() }
 
 // A matching Wait inside sync.Once.Do counts; a mismatching one does not.
-type onceMismatchWorker struct{}
-type onceMismatchRun struct {
-	workWG  sync.WaitGroup
-	otherWG sync.WaitGroup
-	once    sync.Once
-}
+type (
+	onceMismatchWorker struct{}
+	onceMismatchRun    struct {
+		workWG  sync.WaitGroup
+		otherWG sync.WaitGroup
+		once    sync.Once
+	}
+)
 
 func (*onceMismatchWorker) start() *onceMismatchRun { // want `\[SLC103\].*on WaitGroup onceMismatchRun\.workWG but stop never waits on that group`
 	r := &onceMismatchRun{}
@@ -105,8 +117,10 @@ func (r *onceMismatchRun) stop() {
 
 // Simple aliases resolve on both sides: the launch through a run alias and
 // the wait through a group pointer alias are the same group.
-type aliasWorker struct{}
-type aliasRun struct{ wg sync.WaitGroup }
+type (
+	aliasWorker struct{}
+	aliasRun    struct{ wg sync.WaitGroup }
+)
 
 func (*aliasWorker) start() *aliasRun {
 	r := &aliasRun{}
@@ -126,11 +140,13 @@ func (r *aliasRun) stop() {
 
 // A reassigned alias is ambiguous and is not proof: the wait through it
 // does not discharge the receiver group.
-type reassignedAliasWorker struct{}
-type reassignedAliasRun struct {
-	wg    sync.WaitGroup
-	other *reassignedAliasRun
-}
+type (
+	reassignedAliasWorker struct{}
+	reassignedAliasRun    struct {
+		wg    sync.WaitGroup
+		other *reassignedAliasRun
+	}
+)
 
 func (*reassignedAliasWorker) start() *reassignedAliasRun { // want `\[SLC103\].*on WaitGroup reassignedAliasRun\.wg but stop never waits on that group`
 	r := &reassignedAliasRun{}
@@ -147,8 +163,10 @@ func (r *reassignedAliasRun) stop() {
 // A reassigned root variable may denote different objects at different
 // points: the launch ran on the first object, the caller holds the second,
 // and stop would wait an empty group. Fails closed as unresolved.
-type reassignedRootWorker struct{}
-type reassignedRootRun struct{ wg sync.WaitGroup }
+type (
+	reassignedRootWorker struct{}
+	reassignedRootRun    struct{ wg sync.WaitGroup }
+)
 
 func (*reassignedRootWorker) start() *reassignedRootRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	r := &reassignedRootRun{}
@@ -163,9 +181,11 @@ func (r *reassignedRootRun) stop() { r.wg.Wait() }
 // names: the launch ran on the first child's group, stop waits the second
 // child's, even though both normalize to the same lexical path. A write to
 // any prefix of a group path fails closed as unresolved.
-type replacedChildGroup struct{ wg sync.WaitGroup }
-type replacedChildWorker struct{}
-type replacedChildRun struct{ child *replacedChildGroup }
+type (
+	replacedChildGroup  struct{ wg sync.WaitGroup }
+	replacedChildWorker struct{}
+	replacedChildRun    struct{ child *replacedChildGroup }
+)
 
 func (*replacedChildWorker) start() *replacedChildRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	r := &replacedChildRun{child: &replacedChildGroup{}}
@@ -178,8 +198,10 @@ func (r *replacedChildRun) stop() { r.child.wg.Wait() }
 
 // Replacing the intermediate field through a pointer alias is the same
 // storage replacement: the write through *p resolves to the same prefix.
-type derefWriteWorker struct{}
-type derefWriteRun struct{ child *replacedChildGroup }
+type (
+	derefWriteWorker struct{}
+	derefWriteRun    struct{ child *replacedChildGroup }
+)
 
 func (*derefWriteWorker) start() *derefWriteRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	r := &derefWriteRun{child: &replacedChildGroup{}}
@@ -196,8 +218,10 @@ func (r *derefWriteRun) stop() { r.child.wg.Wait() }
 // unresolvable.
 func swapChild(**replacedChildGroup) {}
 
-type escapedChildWorker struct{}
-type escapedChildRun struct{ child *replacedChildGroup }
+type (
+	escapedChildWorker struct{}
+	escapedChildRun    struct{ child *replacedChildGroup }
+)
 
 func (*escapedChildWorker) start() *escapedChildRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	r := &escapedChildRun{child: &replacedChildGroup{}}
@@ -211,8 +235,10 @@ func (r *escapedChildRun) stop() { r.child.wg.Wait() }
 // Escape through an already-created pointer alias is the same handover:
 // once the alias leaves the local model as a value, its target storage
 // can be replaced by code the model cannot see.
-type escapedAliasWorker struct{}
-type escapedAliasRun struct{ child *replacedChildGroup }
+type (
+	escapedAliasWorker struct{}
+	escapedAliasRun    struct{ child *replacedChildGroup }
+)
 
 func (*escapedAliasWorker) start() *escapedAliasRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	r := &escapedAliasRun{child: &replacedChildGroup{}}
@@ -228,11 +254,13 @@ func (r *escapedAliasRun) stop() { r.child.wg.Wait() }
 
 // A write to a sibling field replaces nothing along the group path: only a
 // prefix write invalidates provenance.
-type siblingWriteWorker struct{}
-type siblingWriteRun struct {
-	wg      sync.WaitGroup
-	started bool
-}
+type (
+	siblingWriteWorker struct{}
+	siblingWriteRun    struct {
+		wg      sync.WaitGroup
+		started bool
+	}
+)
 
 func (*siblingWriteWorker) start() *siblingWriteRun {
 	r := &siblingWriteRun{}
@@ -244,8 +272,10 @@ func (*siblingWriteWorker) start() *siblingWriteRun {
 func (r *siblingWriteRun) stop() { r.wg.Wait() }
 
 // A WaitGroup value copy has distinct storage and is foreign to the owner.
-type copiedGroupWorker struct{}
-type copiedGroupRun struct{ wg sync.WaitGroup }
+type (
+	copiedGroupWorker struct{}
+	copiedGroupRun    struct{ wg sync.WaitGroup }
+)
 
 func (*copiedGroupWorker) start() *copiedGroupRun { // want `\[SLC103\].*on WaitGroup wg outside its lifecycle owner`
 	r := &copiedGroupRun{}
@@ -257,8 +287,10 @@ func (*copiedGroupWorker) start() *copiedGroupRun { // want `\[SLC103\].*on Wait
 func (r *copiedGroupRun) stop() { r.wg.Wait() }
 
 // A value copy on the wait side is equally worthless as evidence.
-type copiedWaitWorker struct{}
-type copiedWaitRun struct{ wg sync.WaitGroup }
+type (
+	copiedWaitWorker struct{}
+	copiedWaitRun    struct{ wg sync.WaitGroup }
+)
 
 func (*copiedWaitWorker) start() *copiedWaitRun { // want `\[SLC103\].*on WaitGroup copiedWaitRun\.wg but stop never waits on that group`
 	r := &copiedWaitRun{}
@@ -273,8 +305,10 @@ func (r *copiedWaitRun) stop() {
 
 // The conventional Add(1) + go + defer Done() shape is one obligation on
 // that group, discharged by the matching Wait.
-type addDoneWorker struct{}
-type addDoneRun struct{ wg sync.WaitGroup }
+type (
+	addDoneWorker struct{}
+	addDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*addDoneWorker) start() *addDoneRun {
 	r := &addDoneRun{}
@@ -289,11 +323,13 @@ func (r *addDoneRun) stop() { r.wg.Wait() }
 
 // A Done deferred on a group nobody Adds to is not that shape: the launch
 // stays a raw goroutine owing a completion signal the wait cannot supply.
-type mismatchedAddDoneWorker struct{}
-type mismatchedAddDoneRun struct {
-	addWG  sync.WaitGroup
-	doneWG sync.WaitGroup
-}
+type (
+	mismatchedAddDoneWorker struct{}
+	mismatchedAddDoneRun    struct {
+		addWG  sync.WaitGroup
+		doneWG sync.WaitGroup
+	}
+)
 
 func (*mismatchedAddDoneWorker) start() *mismatchedAddDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &mismatchedAddDoneRun{}
@@ -312,8 +348,10 @@ func (r *mismatchedAddDoneRun) stop() {
 // One Add(1) cannot vouch for two deferred-Done goroutines: only one was
 // registered, so whichever finishes first releases Wait while the other
 // still runs. The second launch stays a raw obligation.
-type doubleDoneWorker struct{}
-type doubleDoneRun struct{ wg sync.WaitGroup }
+type (
+	doubleDoneWorker struct{}
+	doubleDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*doubleDoneWorker) start() *doubleDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &doubleDoneRun{}
@@ -331,8 +369,10 @@ func (r *doubleDoneRun) stop() { r.wg.Wait() }
 
 // Add(0) registers nothing; the deferred Done cannot spend capacity that
 // was never added, so the launch stays raw.
-type addZeroWorker struct{}
-type addZeroRun struct{ wg sync.WaitGroup }
+type (
+	addZeroWorker struct{}
+	addZeroRun    struct{ wg sync.WaitGroup }
+)
 
 func (*addZeroWorker) start() *addZeroRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &addZeroRun{}
@@ -347,8 +387,10 @@ func (r *addZeroRun) stop() { r.wg.Wait() }
 
 // Registration must precede the launch: an Add after the go statement
 // cannot prove the goroutine was registered when it started.
-type addAfterGoWorker struct{}
-type addAfterGoRun struct{ wg sync.WaitGroup }
+type (
+	addAfterGoWorker struct{}
+	addAfterGoRun    struct{ wg sync.WaitGroup }
+)
 
 func (*addAfterGoWorker) start() *addAfterGoRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &addAfterGoRun{}
@@ -362,8 +404,10 @@ func (*addAfterGoWorker) start() *addAfterGoRun { // want `\[SLC103\].*launches 
 func (r *addAfterGoRun) stop() { r.wg.Wait() }
 
 // Registration must dominate the launch; lexical order alone is insufficient.
-type conditionalAddWorker struct{}
-type conditionalAddRun struct{ wg sync.WaitGroup }
+type (
+	conditionalAddWorker struct{}
+	conditionalAddRun    struct{ wg sync.WaitGroup }
+)
 
 func (*conditionalAddWorker) start(cond bool) *conditionalAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &conditionalAddRun{}
@@ -380,8 +424,10 @@ func (r *conditionalAddRun) stop() { r.wg.Wait() }
 
 // A deferred Add occupies an earlier source position but executes only at
 // return: it registers nothing before the launch.
-type deferredAddWorker struct{}
-type deferredAddRun struct{ wg sync.WaitGroup }
+type (
+	deferredAddWorker struct{}
+	deferredAddRun    struct{ wg sync.WaitGroup }
+)
 
 func (*deferredAddWorker) start() *deferredAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &deferredAddRun{}
@@ -397,8 +443,10 @@ func (r *deferredAddRun) stop() { r.wg.Wait() }
 // A Done in the start body consumes registration the model granted: the
 // counter is back to zero before the launch, so the capacity is poisoned
 // and the goroutine stays raw.
-type depletedAddWorker struct{}
-type depletedAddRun struct{ wg sync.WaitGroup }
+type (
+	depletedAddWorker struct{}
+	depletedAddRun    struct{ wg sync.WaitGroup }
+)
 
 func (*depletedAddWorker) start() *depletedAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &depletedAddRun{}
@@ -415,8 +463,10 @@ func (r *depletedAddRun) stop() { r.wg.Wait() }
 // Block ordering is dominance only for structured control flow: a goto
 // can land between the Add and the launch, so it disables registration
 // for the whole body and the goroutine stays raw.
-type gotoAddWorker struct{}
-type gotoAddRun struct{ wg sync.WaitGroup }
+type (
+	gotoAddWorker struct{}
+	gotoAddRun    struct{ wg sync.WaitGroup }
+)
 
 func (*gotoAddWorker) start() *gotoAddRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &gotoAddRun{}
@@ -434,8 +484,10 @@ func (r *gotoAddRun) stop() { r.wg.Wait() }
 // A Done inside a synchronously invoked function literal consumes the
 // registration before the launch just as a direct Done does: counter
 // operations do not become invisible behind a literal.
-type iifeDoneWorker struct{}
-type iifeDoneRun struct{ wg sync.WaitGroup }
+type (
+	iifeDoneWorker struct{}
+	iifeDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*iifeDoneWorker) start() *iifeDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &iifeDoneRun{}
@@ -453,8 +505,10 @@ func (r *iifeDoneRun) stop() { r.wg.Wait() }
 
 // The same through a deferred literal: it mutates the counter at return,
 // a time the registration model cannot order against the launch.
-type deferLitDoneWorker struct{}
-type deferLitDoneRun struct{ wg sync.WaitGroup }
+type (
+	deferLitDoneWorker struct{}
+	deferLitDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*deferLitDoneWorker) start() *deferLitDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &deferLitDoneRun{}
@@ -473,8 +527,10 @@ func (r *deferLitDoneRun) stop() { r.wg.Wait() }
 // A loop between the registration and the launch multiplies the launch:
 // one Add(1) outside the loop cannot vouch for a go statement the runtime
 // executes ten times, so the launch stays raw.
-type loopLaunchWorker struct{}
-type loopLaunchRun struct{ wg sync.WaitGroup }
+type (
+	loopLaunchWorker struct{}
+	loopLaunchRun    struct{ wg sync.WaitGroup }
+)
 
 func (*loopLaunchWorker) start() *loopLaunchRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &loopLaunchRun{}
@@ -491,8 +547,10 @@ func (r *loopLaunchRun) stop() { r.wg.Wait() }
 
 // Registration and launch inside the same loop body pair one-to-one per
 // iteration and stay clean.
-type loopPairedWorker struct{}
-type loopPairedRun struct{ wg sync.WaitGroup }
+type (
+	loopPairedWorker struct{}
+	loopPairedRun    struct{ wg sync.WaitGroup }
+)
 
 func (*loopPairedWorker) start() *loopPairedRun {
 	r := &loopPairedRun{}
@@ -511,8 +569,10 @@ func (r *loopPairedRun) stop() { r.wg.Wait() }
 // conventional shape: the goroutine consumes two registrations for one
 // launch, releasing Wait early and driving the counter negative. The
 // launch stays raw.
-type doubleDeferredDoneWorker struct{}
-type doubleDeferredDoneRun struct{ wg sync.WaitGroup }
+type (
+	doubleDeferredDoneWorker struct{}
+	doubleDeferredDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*doubleDeferredDoneWorker) start() *doubleDeferredDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &doubleDeferredDoneRun{}
@@ -529,8 +589,10 @@ func (r *doubleDeferredDoneRun) stop() { r.wg.Wait() }
 // One syntactic defer inside a loop registers per iteration: the first
 // Done releases Wait while the goroutine still runs, then the second
 // drives the counter negative. Not the conventional shape; stays raw.
-type loopDeferDoneWorker struct{}
-type loopDeferDoneRun struct{ wg sync.WaitGroup }
+type (
+	loopDeferDoneWorker struct{}
+	loopDeferDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*loopDeferDoneWorker) start() *loopDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &loopDeferDoneRun{}
@@ -547,8 +609,10 @@ func (r *loopDeferDoneRun) stop() { r.wg.Wait() }
 
 // A defer under a conditional may execute zero times, leaving the
 // registration unclaimed: not proof of one Done per launch.
-type conditionalDeferDoneWorker struct{}
-type conditionalDeferDoneRun struct{ wg sync.WaitGroup }
+type (
+	conditionalDeferDoneWorker struct{}
+	conditionalDeferDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*conditionalDeferDoneWorker) start(cond bool) *conditionalDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &conditionalDeferDoneRun{}
@@ -565,8 +629,10 @@ func (r *conditionalDeferDoneRun) stop() { r.wg.Wait() }
 
 // A goto inside the launched literal can revisit the registration, so the
 // literal is not the conventional shape even with the defer first.
-type gotoDeferDoneWorker struct{}
-type gotoDeferDoneRun struct{ wg sync.WaitGroup }
+type (
+	gotoDeferDoneWorker struct{}
+	gotoDeferDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*gotoDeferDoneWorker) start() *gotoDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &gotoDeferDoneRun{}
@@ -585,11 +651,13 @@ func (r *gotoDeferDoneRun) stop() { r.wg.Wait() }
 // A deferred Done preceded by other statements can be skipped by an early
 // return before its registration: only the first statement provably
 // executes once per launch.
-type lateDeferDoneWorker struct{}
-type lateDeferDoneRun struct {
-	wg    sync.WaitGroup
-	ready bool
-}
+type (
+	lateDeferDoneWorker struct{}
+	lateDeferDoneRun    struct {
+		wg    sync.WaitGroup
+		ready bool
+	}
+)
 
 func (*lateDeferDoneWorker) start() *lateDeferDoneRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &lateDeferDoneRun{}
@@ -606,12 +674,14 @@ func (*lateDeferDoneWorker) start() *lateDeferDoneRun { // want `\[SLC103\].*lau
 func (r *lateDeferDoneRun) stop() { r.wg.Wait() }
 
 // A rejected literal's Done poisons capacity, so competing launches remain raw.
-type contaminatedCapacityWorker struct{}
-type contaminatedCapacityRun struct {
-	wg      sync.WaitGroup
-	rawDone chan struct{}
-	block   chan struct{}
-}
+type (
+	contaminatedCapacityWorker struct{}
+	contaminatedCapacityRun    struct {
+		wg      sync.WaitGroup
+		rawDone chan struct{}
+		block   chan struct{}
+	}
+)
 
 func (*contaminatedCapacityWorker) start(cond bool) *contaminatedCapacityRun { // want `\[SLC103\].*launches 2 lifecycle goroutine.*waits for only 1`
 	r := &contaminatedCapacityRun{rawDone: make(chan struct{}), block: make(chan struct{})}
@@ -636,8 +706,10 @@ func (r *contaminatedCapacityRun) stop() {
 
 // Two accepted launches with separate registrations remain clean; only
 // unaccounted operations poison capacity.
-type pairedAddDoneWorker struct{}
-type pairedAddDoneRun struct{ wg sync.WaitGroup }
+type (
+	pairedAddDoneWorker struct{}
+	pairedAddDoneRun    struct{ wg sync.WaitGroup }
+)
 
 func (*pairedAddDoneWorker) start() *pairedAddDoneRun {
 	r := &pairedAddDoneRun{}
@@ -657,13 +729,15 @@ func (r *pairedAddDoneRun) stop() { r.wg.Wait() }
 // A perfectly shaped launch that no registration dominates is still raw,
 // and its Done poisons the group: at runtime that Done consumes the later
 // Add(1), releasing Wait while the second goroutine is still blocked.
-type orphanedShapeWorker struct{}
-type orphanedShapeRun struct {
-	wg      sync.WaitGroup
-	rawDone chan struct{}
-	release chan struct{}
-	block   chan struct{}
-}
+type (
+	orphanedShapeWorker struct{}
+	orphanedShapeRun    struct {
+		wg      sync.WaitGroup
+		rawDone chan struct{}
+		release chan struct{}
+		block   chan struct{}
+	}
+)
 
 func (*orphanedShapeWorker) start() *orphanedShapeRun { // want `\[SLC103\].*launches 2 lifecycle goroutine.*waits for only 1`
 	r := &orphanedShapeRun{rawDone: make(chan struct{}), release: make(chan struct{}), block: make(chan struct{})}
@@ -688,8 +762,10 @@ func (r *orphanedShapeRun) stop() {
 
 // An Add in an enclosing block dominates a launch nested below it: every
 // structured path to the go statement passes the registration first.
-type dominatingAddWorker struct{}
-type dominatingAddRun struct{ wg sync.WaitGroup }
+type (
+	dominatingAddWorker struct{}
+	dominatingAddRun    struct{ wg sync.WaitGroup }
+)
 
 func (*dominatingAddWorker) start(cond bool) *dominatingAddRun {
 	r := &dominatingAddRun{}
@@ -706,11 +782,13 @@ func (r *dominatingAddRun) stop() { r.wg.Wait() }
 
 // Mixed raw go and WaitGroup work: the group wait alone cannot discharge
 // the raw goroutine, and the channel join alone cannot discharge the group.
-type mixedWaitOnlyWorker struct{}
-type mixedWaitOnlyRun struct {
-	wg   sync.WaitGroup
-	done chan struct{}
-}
+type (
+	mixedWaitOnlyWorker struct{}
+	mixedWaitOnlyRun    struct {
+		wg   sync.WaitGroup
+		done chan struct{}
+	}
+)
 
 func (*mixedWaitOnlyWorker) start() *mixedWaitOnlyRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	r := &mixedWaitOnlyRun{done: make(chan struct{})}
@@ -721,11 +799,13 @@ func (*mixedWaitOnlyWorker) start() *mixedWaitOnlyRun { // want `\[SLC103\].*lau
 
 func (r *mixedWaitOnlyRun) stop() { r.wg.Wait() }
 
-type mixedJoinOnlyWorker struct{}
-type mixedJoinOnlyRun struct {
-	wg   sync.WaitGroup
-	done chan struct{}
-}
+type (
+	mixedJoinOnlyWorker struct{}
+	mixedJoinOnlyRun    struct {
+		wg   sync.WaitGroup
+		done chan struct{}
+	}
+)
 
 func (*mixedJoinOnlyWorker) start() *mixedJoinOnlyRun { // want `\[SLC103\].*on WaitGroup mixedJoinOnlyRun\.wg but stop never waits on that group`
 	r := &mixedJoinOnlyRun{done: make(chan struct{})}
@@ -737,11 +817,13 @@ func (*mixedJoinOnlyWorker) start() *mixedJoinOnlyRun { // want `\[SLC103\].*on 
 func (r *mixedJoinOnlyRun) stop() { <-r.done }
 
 // Both obligations discharged is clean.
-type mixedCleanWorker struct{}
-type mixedCleanRun struct {
-	wg   sync.WaitGroup
-	done chan struct{}
-}
+type (
+	mixedCleanWorker struct{}
+	mixedCleanRun    struct {
+		wg   sync.WaitGroup
+		done chan struct{}
+	}
+)
 
 func (*mixedCleanWorker) start() *mixedCleanRun {
 	r := &mixedCleanRun{done: make(chan struct{})}
@@ -756,8 +838,10 @@ func (r *mixedCleanRun) stop() {
 }
 
 // Multiple variables at one owner result position are ambiguous and fail closed.
-type multiReturnWorker struct{}
-type multiReturnRun struct{ wg sync.WaitGroup }
+type (
+	multiReturnWorker struct{}
+	multiReturnRun    struct{ wg sync.WaitGroup }
+)
 
 func (*multiReturnWorker) start(cond bool) *multiReturnRun { // want `\[SLC103\].*WaitGroup whose provenance cannot be resolved to a lifecycle owner`
 	a := &multiReturnRun{}
@@ -773,8 +857,10 @@ func (r *multiReturnRun) stop() { r.wg.Wait() }
 
 // Several return statements of the same variable are one unambiguous
 // owner root: plural returns are not plural owners.
-type multiReturnSameWorker struct{}
-type multiReturnSameRun struct{ wg sync.WaitGroup }
+type (
+	multiReturnSameWorker struct{}
+	multiReturnSameRun    struct{ wg sync.WaitGroup }
+)
 
 func (*multiReturnSameWorker) start(cond bool) *multiReturnSameRun {
 	r := &multiReturnSameRun{}
@@ -789,9 +875,11 @@ func (r *multiReturnSameRun) stop() { r.wg.Wait() }
 
 // Two returned lifecycle owners are evaluated independently: only the
 // owner whose group is never waited reports.
-type dualOwnerWorker struct{}
-type dualOwnerA struct{ wg sync.WaitGroup }
-type dualOwnerB struct{ wg sync.WaitGroup }
+type (
+	dualOwnerWorker struct{}
+	dualOwnerA      struct{ wg sync.WaitGroup }
+	dualOwnerB      struct{ wg sync.WaitGroup }
+)
 
 func (*dualOwnerWorker) start() (*dualOwnerA, *dualOwnerB) { // want `\[SLC103\].*on WaitGroup dualOwnerB\.wg but stop never waits on that group`
 	a := &dualOwnerA{}

@@ -49,7 +49,8 @@ func TestResolveResponseBufferInvalidLimits(t *testing.T) {
 }
 
 func TestExportResponseBufferLimits(t *testing.T) {
-	cfg := Config{Listeners: Listeners{HTTP(":8080")},
+	cfg := Config{
+		Listeners:      Listeners{HTTP(":8080")},
 		Routes:         Routes{Match("/*").Handle(http.NotFoundHandler()).With(ETag().MaxResponseBody("16KiB").BufferBudget("128KiB"))},
 		FallbackRoutes: Routes{Match("/*").Handle(http.NotFoundHandler()).With(Retry(2).MaxResponseBody("16KiB").BufferBudget("128KiB"))},
 	}

@@ -18,7 +18,9 @@ import (
 func TestRequestIDOwnsCachedOriginEcho(t *testing.T) {
 	t.Parallel()
 	for order, tail := range [][]Middleware{
-		{Cache("1h")}, {ETag(), Cache("1h")}, {Retry(2), ETag(), Cache("1h")},
+		{Cache("1h")},
+		{ETag(), Cache("1h")},
+		{Retry(2), ETag(), Cache("1h")},
 		{Cache("1h"), ETag(), Retry(2)},
 	} {
 		t.Run(fmt.Sprint(order), func(t *testing.T) {

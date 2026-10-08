@@ -45,10 +45,13 @@ func TestRetryRequestBudgetStaticSharedPool(t *testing.T) {
 	for _, fallback := range []bool{false, true} {
 		t.Run(fmt.Sprint(fallback), func(t *testing.T) {
 			origin, calls := retryRequestBudgetOrigin(t)
-			cfg := Config{Listeners: Listeners{HTTP(":0")},
+			cfg := Config{
+				Listeners: Listeners{HTTP(":0")},
 				Upstreams: Upstreams{"shared": Pool{Backends: []Backend{{Address: origin.URL}}}},
-				Routes: Routes{Match("/small").ProxyTo("shared").With(requestBudgetRetry("1B")),
-					Match("/large").ProxyTo("shared").With(requestBudgetRetry("4KiB"))},
+				Routes: Routes{
+					Match("/small").ProxyTo("shared").With(requestBudgetRetry("1B")),
+					Match("/large").ProxyTo("shared").With(requestBudgetRetry("4KiB")),
+				},
 			}
 			if fallback {
 				cfg.FallbackRoutes, cfg.Routes = cfg.Routes, nil

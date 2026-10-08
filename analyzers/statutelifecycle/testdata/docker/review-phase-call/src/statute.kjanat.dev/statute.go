@@ -12,12 +12,14 @@ const (
 	workloadFailed
 )
 
-type workloadStop struct{}
-type workload struct {
-	stop  *workloadStop
-	phase workloadPhase
-	other *workload
-}
+type (
+	workloadStop struct{}
+	workload     struct {
+		stop  *workloadStop
+		phase workloadPhase
+		other *workload
+	}
+)
 
 func (w *workload) transitionLocked(next workloadPhase) bool {
 	w.phase = next

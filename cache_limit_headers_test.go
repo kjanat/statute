@@ -30,9 +30,11 @@ type cacheUnknownLengthTransport struct{ calls int }
 
 func (t *cacheUnknownLengthTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	t.calls++
-	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+	return &http.Response{
+		StatusCode: http.StatusOK, Header: make(http.Header),
 		Body:          io.NopCloser(strings.NewReader("<html>representation</html>")),
-		ContentLength: -1, Request: r}, nil
+		ContentLength: -1, Request: r,
+	}, nil
 }
 
 func TestCacheUnknownLengthProxyFlush(t *testing.T) {

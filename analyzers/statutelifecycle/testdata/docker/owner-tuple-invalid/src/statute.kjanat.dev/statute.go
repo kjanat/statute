@@ -1,16 +1,22 @@
 package statute
 
-type workloadBindingKey uint64
-type workloadBinding struct {
-	key                    workloadBindingKey
-	containerID, container string
-}
-type workloadStop struct{ binding workloadBindingKey }
-type workload struct {
-	stop    *workloadStop
-	binding *workloadBinding
-	service string
-}
+type (
+	workloadBindingKey uint64
+	workloadBinding    struct {
+		key                    workloadBindingKey
+		containerID, container string
+	}
+)
+
+type (
+	workloadStop struct{ binding workloadBindingKey }
+	workload     struct {
+		stop    *workloadStop
+		binding *workloadBinding
+		service string
+	}
+)
+
 type workloadStopOwnership struct {
 	stop                                *workloadStop
 	binding                             *workloadBinding
@@ -31,6 +37,7 @@ func (w *workload) stopOwnershipLocked(stop *workloadStop) (workloadStopOwnershi
 		service:       w.service,
 	}, true
 }
+
 func (o workloadStopOwnership) currentLocked(w *workload) bool {
 	return w.stop == o.stop && w.binding == o.binding && o.binding.key == o.bindingKey && o.binding.containerID == o.containerID // want `\[SLC107\].*complete stop, binding, key, and immutable ID tuple`
 }

@@ -8,8 +8,10 @@ import (
 	"statute.kjanat.dev/internal/docker"
 )
 
-const workloadStopTimeout = time.Second
-const workloadProbeTimeout = time.Second
+const (
+	workloadStopTimeout  = time.Second
+	workloadProbeTimeout = time.Second
+)
 
 type workloadBindingKey uint64
 
@@ -39,6 +41,7 @@ const (
 	workloadStopRejected
 	workloadStopAmbiguous
 )
+
 const (
 	workloadStopObsolete workloadStopApply = iota
 	workloadStopUnsettled
@@ -227,10 +230,12 @@ func (w *workload) toLocked(next workloadPhase) bool {
 func (w *workload) transitionLocked(next workloadPhase) bool { w.phase = next; return true }
 func retireGrant(w *workload)                                { w.retired = true }
 func acceptedMonotonicAlias(stop *workloadStop)              { alias := stop; more := alias; more.uncertain = true }
+
 func badRetirement(w *workload) {
 	w.retired = true
 	w.stop = &workloadStop{} // want "\\[SLC107\\].*installing a stop"
 }
+
 func badUncertainty(stop *workloadStop) {
 	alias := stop
 	alias.uncertain = false // want "\\[SLC108\\].*uncertainty is monotonic"
@@ -252,7 +257,7 @@ func chainedEscape(w *workload) {
 func clearOwner(v **workloadStop)                    { *v = nil }
 func goodAddressRead(stop *workloadStop) bool        { ptr := &stop.uncertain; return *ptr }
 func badAddressWrite(stop *workloadStop)             { ptr := &stop.uncertain; *ptr = false } // want "\\[SLC108\\].*uncertainty is monotonic"
-func parenthesizedDelete(registry *mutationRegistry) { _ = (registry.delete)("id") }          // want "\\[SLC107\\].*only be deleted"
+func parenthesizedDelete(registry *mutationRegistry) { _ = registry.delete("id") }            // want "\\[SLC107\\].*only be deleted"
 func arbitraryContext(ctx context.Context, p *dockerProvider, w *workload) {
 	p.runOwnedStop(ctx, w, w.stop) // want "\\[SLC106\\].*provider-derived tracked context"
 }

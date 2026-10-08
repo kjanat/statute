@@ -34,7 +34,8 @@ func TestRetryRequestBudgetConfiguration(t *testing.T) {
 }
 
 func TestRetryRequestBudgetExport(t *testing.T) {
-	cfg := Config{Listeners: Listeners{HTTP(":8080")},
+	cfg := Config{
+		Listeners:      Listeners{HTTP(":8080")},
 		Routes:         Routes{Match("/*").Handle(http.NotFoundHandler()).With(Retry(2).RequestBufferBudget("128KiB"))},
 		FallbackRoutes: Routes{Match("/*").Handle(http.NotFoundHandler()).With(Retry(2).RequestBufferBudget("1B"))},
 	}

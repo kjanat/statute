@@ -1,10 +1,12 @@
 package statute
 
-type workloadBindingKey uint64
-type workloadStopResult uint8
-type workloadStopApply uint8
-type workloadStopAttempt struct{ result workloadStopResult }
-type workloadStop struct{ binding workloadBindingKey }
+type (
+	workloadBindingKey  uint64
+	workloadStopResult  uint8
+	workloadStopApply   uint8
+	workloadStopAttempt struct{ result workloadStopResult }
+	workloadStop        struct{ binding workloadBindingKey }
+)
 
 type workloadStopOwnership struct {
 	containerID string

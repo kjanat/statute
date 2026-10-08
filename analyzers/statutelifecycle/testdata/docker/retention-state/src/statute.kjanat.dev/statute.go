@@ -2,11 +2,14 @@ package statute
 
 import "sync"
 
-type workloadStop struct{}
-type workload struct {
-	mu   sync.Mutex
-	stop *workloadStop
-}
+type (
+	workloadStop struct{}
+	workload     struct {
+		mu   sync.Mutex
+		stop *workloadStop
+	}
+)
+
 type dockerProvider struct {
 	retiredMutations []*workload
 	workloadEntries  map[string]*workload
@@ -22,6 +25,7 @@ func (p *dockerProvider) prepareWorkloadObservationLocked(svc *service) {
 	}
 	p.workloadEntries[svc.Name] = &workload{}
 }
+
 func (p *dockerProvider) detachMutationOwnerHeldLocked(old *workload, service string) {
 	if p.workloadEntries[service] != old {
 		panic("different owner")
@@ -29,6 +33,7 @@ func (p *dockerProvider) detachMutationOwnerHeldLocked(old *workload, service st
 	p.retiredMutations = append(p.retiredMutations, old)
 	p.workloadEntries[service] = &workload{}
 }
+
 func (p *dockerProvider) retiredMutationContainerRefsLocked() {
 	kept := p.retiredMutations[:0]
 	for _, w := range p.retiredMutations {
@@ -40,6 +45,7 @@ func (p *dockerProvider) retiredMutationContainerRefsLocked() {
 	}
 	p.retiredMutations = kept
 }
+
 func discard(p *dockerProvider, w *workload) {
 	p.retiredMutations = nil // want "\\[SLC107\\].*registry changes must preserve"
 	p.workloadEntries = nil  // want "\\[SLC107\\].*registry changes must preserve"

@@ -193,8 +193,10 @@ func passReturnedOwner(w *returnedWorker) {
 	acceptReturnedOwner(w.start())
 }
 
-type secondOwnerWorker struct{}
-type secondOwnerRun struct{}
+type (
+	secondOwnerWorker struct{}
+	secondOwnerRun    struct{}
+)
 
 func (*secondOwnerWorker) start() (error, *secondOwnerRun) {
 	return nil, &secondOwnerRun{}
@@ -211,8 +213,10 @@ func retainSecondOwner(w *secondOwnerWorker) (error, *secondOwnerRun) {
 	return w.start()
 }
 
-type unrelatedStarter struct{}
-type unrelatedResult struct{}
+type (
+	unrelatedStarter struct{}
+	unrelatedResult  struct{}
+)
 
 func (*unrelatedStarter) start() (*unrelatedResult, error) { return nil, nil }
 
@@ -260,11 +264,13 @@ func (r *shutdownOwner) shutdown() {
 	<-r.worker.done
 }
 
-type waitGroupWorker struct{ stopCh chan struct{} }
-type waitGroupRun struct {
-	worker *waitGroupWorker
-	wg     sync.WaitGroup
-}
+type (
+	waitGroupWorker struct{ stopCh chan struct{} }
+	waitGroupRun    struct {
+		worker *waitGroupWorker
+		wg     sync.WaitGroup
+	}
+)
 
 func (w *waitGroupWorker) start() *waitGroupRun { // want `\[SLC103\].*on WaitGroup waitGroupRun\.wg but stop never waits on that group`
 	r := &waitGroupRun{worker: w}
@@ -275,12 +281,14 @@ func (w *waitGroupWorker) start() *waitGroupRun { // want `\[SLC103\].*on WaitGr
 
 func (r *waitGroupRun) stop() { close(r.worker.stopCh) }
 
-type joinedWaitGroupWorker struct{ stopCh chan struct{} }
-type joinedWaitGroupRun struct {
-	worker *joinedWaitGroupWorker
-	wg     sync.WaitGroup
-	once   sync.Once
-}
+type (
+	joinedWaitGroupWorker struct{ stopCh chan struct{} }
+	joinedWaitGroupRun    struct {
+		worker *joinedWaitGroupWorker
+		wg     sync.WaitGroup
+		once   sync.Once
+	}
+)
 
 func (w *joinedWaitGroupWorker) start() *joinedWaitGroupRun {
 	r := &joinedWaitGroupRun{worker: w}
@@ -296,8 +304,10 @@ func (r *joinedWaitGroupRun) stop() {
 	})
 }
 
-type strongReceiverWorker struct{ wg sync.WaitGroup }
-type weakReturnedRun struct{}
+type (
+	strongReceiverWorker struct{ wg sync.WaitGroup }
+	weakReturnedRun      struct{}
+)
 
 func (w *strongReceiverWorker) start() *weakReturnedRun { // want `\[SLC103\].*on WaitGroup strongReceiverWorker\.wg outside its lifecycle owner`
 	w.wg.Go(func() {})
@@ -309,8 +319,10 @@ func (w *strongReceiverWorker) stop() { w.wg.Wait() }
 
 func (*weakReturnedRun) stop() {}
 
-type weakReceiverWorker struct{}
-type strongReturnedRun struct{ wg sync.WaitGroup }
+type (
+	weakReceiverWorker struct{}
+	strongReturnedRun  struct{ wg sync.WaitGroup }
+)
 
 func (*weakReceiverWorker) start() *strongReturnedRun {
 	r := &strongReturnedRun{}
@@ -323,11 +335,13 @@ func (*weakReceiverWorker) stop() {}
 
 func (r *strongReturnedRun) stop() { r.wg.Wait() }
 
-type onceWorker struct{ done chan struct{} }
-type onceRun struct {
-	worker *onceWorker
-	once   sync.Once
-}
+type (
+	onceWorker struct{ done chan struct{} }
+	onceRun    struct {
+		worker *onceWorker
+		once   sync.Once
+	}
+)
 
 func (w *onceWorker) start() *onceRun {
 	go func() { close(w.done) }()
@@ -342,8 +356,10 @@ type fakeGroup struct{}
 
 func (*fakeGroup) Go(func()) {}
 
-type fakeGroupWorker struct{ group fakeGroup }
-type fakeGroupRun struct{}
+type (
+	fakeGroupWorker struct{ group fakeGroup }
+	fakeGroupRun    struct{}
+)
 
 func (w *fakeGroupWorker) start() *fakeGroupRun {
 	w.group.Go(func() {})
@@ -353,11 +369,13 @@ func (w *fakeGroupWorker) start() *fakeGroupRun {
 
 func (*fakeGroupRun) stop() {}
 
-type callbackWorker struct{ done chan struct{} }
-type waitGroupCallbackRun struct {
-	worker *callbackWorker
-	wg     sync.WaitGroup
-}
+type (
+	callbackWorker       struct{ done chan struct{} }
+	waitGroupCallbackRun struct {
+		worker *callbackWorker
+		wg     sync.WaitGroup
+	}
+)
 
 func (w *callbackWorker) start() *waitGroupCallbackRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	go func() { close(w.done) }()
@@ -372,11 +390,13 @@ type fakeOnce struct{}
 
 func (*fakeOnce) Do(func()) {}
 
-type fakeOnceWorker struct{ done chan struct{} }
-type fakeOnceRun struct {
-	worker *fakeOnceWorker
-	once   fakeOnce
-}
+type (
+	fakeOnceWorker struct{ done chan struct{} }
+	fakeOnceRun    struct {
+		worker *fakeOnceWorker
+		once   fakeOnce
+	}
+)
 
 func (w *fakeOnceWorker) start() *fakeOnceRun { // want `\[SLC103\].*launches 1 lifecycle goroutine.*waits for only 0`
 	go func() { close(w.done) }()

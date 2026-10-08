@@ -19,7 +19,8 @@ func TestHostsToolingMatchesManualExpansion(t *testing.T) {
 		},
 	}
 	manual := multi
-	manual.Routes = Routes{multi.Routes[0],
+	manual.Routes = Routes{
+		multi.Routes[0],
 		Match("/*").Host("a.example").Handle(noContentHandler).With(RateLimit("1/h")),
 		Match("/*").Host("b.example").Handle(noContentHandler).With(RateLimit("1/h")),
 		multi.Routes[2],
