@@ -224,6 +224,11 @@ func TestCacheHTTP3ExplicitZeroLengthWire(t *testing.T) {
 		if r.ProtoMajor != 3 || r.ContentLength != 0 {
 			t.Errorf("origin request protocol=%s length=%d, want HTTP/3 length=0", r.Proto, r.ContentLength)
 		}
+		// Observe FIN before responding: quic-go cancels an unread request
+		// stream when the handler returns, which can race the client's Close.
+		if n, err := io.Copy(io.Discard, r.Body); err != nil || n != 0 {
+			t.Errorf("empty request body: bytes=%d error=%v", n, err)
+		}
 		_, _ = fmt.Fprintf(w, "origin-%d", calls.Add(1))
 	}))
 	conn := cacheHTTP3Conn(t, udpAddr)
