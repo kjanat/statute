@@ -190,7 +190,7 @@ and incoming `Age` plus request/response delay. Buffering, cache residence and
 slow delivery continue consuming freshness; publication does not restart the
 clock. For example, `max-age=60` with `Age: 50` has at most ten seconds left,
 even with `Cache("1h")`. Hits emit the current `Age`; missing `Date` is supplied
-from receipt time. These calculations follow [RFC 9111 section 4.2](rfc/rfc9111.html#section-4.2).
+from receipt time. These calculations follow [RFC 9111 section 4.2](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.2).
 
 Malformed or duplicate effective freshness values, ambiguous `Date`/`Age`, and
 freshness fields declared as trailers prevent storage without rejecting the
