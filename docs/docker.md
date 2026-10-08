@@ -418,10 +418,26 @@ fall through into operator code that does not know the registration asked
 for a policy statute could not supply. So the generation keeps a
 **tombstone** for it: a matcher with no upstream and no middleware that
 answers the same 404, consulted after the discovered routes and before the
-terminal route table and handler fallback. Without either configured nothing changes.
+terminal route table and handler fallback.
 
-A tombstone covers everything the dropped registration could have matched,
-never less. Constraints statute cannot represent are dropped:
+If its matcher was successfully parsed, the rejected route also participates
+in normal dynamic-route precedence, returning **404 before broader or equally
+specific serving routes**. Rejection wins ties even between contributors to the
+same service. A more-specific healthy route still serves. For example, a rejected
+protected `/admin` prefix cannot fall through to a public `/` route, while an
+explicit healthy `/admin/health` route can retain precedence. Repairing the
+middleware chain replaces the rejection in the next generation and restores the
+route's authentication policy.
+
+These original predicates are kept separately from widened tombstones. An
+unparseable or unsupported rule contributes only a fallback-tier tombstone:
+overlapping valid Docker routes can still shadow it. This compatibility trade-off
+keeps a malformed global rule from disabling healthy routes; it is **not a
+universal fail-closed guarantee**. Static routes retain priority over Docker, and
+workload-mutation quarantine arbitration and its `503` responses are unchanged.
+
+A fallback-tier tombstone's matcher covers everything the dropped registration
+could have matched, never less. Constraints statute cannot represent are dropped:
 
 | Rule                                                         | Refuses                                                     |
 | ------------------------------------------------------------ | ----------------------------------------------------------- |

@@ -62,6 +62,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Prevent rejected Docker routes with parsed matchers from falling through to broader or equally specific public routes, including authentication-chain conflicts. Preserve more-specific healthy routes, static-route priority, and mutation quarantine; keep unparseable rules' widened refusals fallback-only.
+
 - Reject RequestID output fields reserved for HTTP framing, representation, validators, caching, and state/security, regardless of other middleware. Preserve Authorization/Cookie credential writers and their cache bypass. Restore the current response ID across origin overwrites, cache replay, and late buffered writes; exclude identity trailers. Explicit route response-header operations retain precedence.
 
 - Isolate certificate-bearing requests from shared response-cache entries, including optional and application-verified TLS client certificates. Preserve anonymous HTTPS caching and listener authentication policy.

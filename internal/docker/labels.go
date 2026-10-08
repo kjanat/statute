@@ -143,22 +143,31 @@ func routeClaims(service string, matchers []Matcher) []RouteClaim {
 // Warnings describe labels that were understood but could not be applied.
 // They are stable strings suitable for deduplicated logging.
 func Extract(c Container, opts ExtractOptions) ([]Service, []Matcher, []string) {
+	svcs, tombs, _, warns := ExtractWithRejections(c, opts)
+	return svcs, tombs, warns
+}
+
+// ExtractWithRejections also retains the original parsed matchers of rejected
+// registrations. They participate in route precedence; widened refusal envelopes
+// remain fallback-only. Neither normalization nor absorption may erase a claim.
+func ExtractWithRejections(c Container, opts ExtractOptions) ([]Service, []Matcher, []Matcher, []string) {
 	var svcs []Service
 	var tombs []Matcher
+	var rejected []Matcher
 	var warns []string
 
-	native, nt, nw := extractNative(c, opts)
+	native, nt, nw := extractNative(c, opts, &rejected)
 	svcs = append(svcs, native...)
 	tombs = append(tombs, nt...)
 	warns = append(warns, nw...)
 
 	if opts.TraefikLabels {
-		tfk, tt, tw := extractTraefik(c, opts)
+		tfk, tt, tw := extractTraefik(c, opts, &rejected)
 		svcs = append(svcs, tfk...)
 		tombs = append(tombs, tt...)
 		warns = append(warns, tw...)
 	}
-	return svcs, tombs, warns
+	return svcs, tombs, rejected, warns
 }
 
 // describeEnvelope renders a refusal envelope for a log line, so an
@@ -400,7 +409,7 @@ func backendAddress(c Container, scheme, ip string, port int) (string, string) {
 //	statute.strategy=round_robin|least_connections|ip_hash|weighted
 //	statute.healthcheck.path/.interval/.timeout
 //	statute.timeout=30s  statute.ratelimit=100/min  statute.compress=gzip,br
-func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []string) {
+func extractNative(c Container, opts ExtractOptions, rejected *[]Matcher) ([]Service, []Matcher, []string) {
 	labels := c.Labels
 	on, enableWarn := nativeEnabled(c, opts)
 	if !on {
@@ -409,7 +418,7 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []st
 		if enableWarn == "" {
 			return nil, nil, nil
 		}
-		tombs, warns := refuseNative(c, labels, []string{enableWarn})
+		tombs, warns := refuseNative(c, labels, []string{enableWarn}, rejected)
 		return nil, tombs, warns
 	}
 	if !nativeApplies(labels, opts) {
@@ -418,7 +427,7 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []st
 
 	backend, warns := nativeBackendFor(c, labels, opts)
 	if backend == nil {
-		tombs, refused := refuseNative(c, labels, warns)
+		tombs, refused := refuseNative(c, labels, warns, rejected)
 		return nil, tombs, refused
 	}
 
@@ -449,7 +458,11 @@ func extractNative(c Container, opts ExtractOptions) ([]Service, []Matcher, []st
 
 // refuseNative drops a container's native registration, returning its
 // refusal envelope and the warnings that explain it.
-func refuseNative(c Container, labels map[string]string, warns []string) ([]Matcher, []string) {
+func refuseNative(c Container, labels map[string]string, warns []string, rejected *[]Matcher) ([]Matcher, []string) {
+	if hasPrefixedLabels(labels, statutePrefix) {
+		routes, _ := nativeRoutes(c, labels)
+		*rejected = append(*rejected, routes...)
+	}
 	tombs := nativeTombstones(c, labels)
 	if len(tombs) > 0 {
 		warns = append(warns, RefusalWarning("container "+c.Name, tombs))
@@ -651,7 +664,7 @@ type traefikService struct {
 // loadbalancer server port/scheme, and loadbalancer health checks.
 // Recognized-but-unsupported labels produce warnings; unknown traefik
 // labels are ignored the way Traefik ignores other providers' labels.
-func extractTraefik(c Container, opts ExtractOptions) ([]Service, []Matcher, []string) {
+func extractTraefik(c Container, opts ExtractOptions, rejected *[]Matcher) ([]Service, []Matcher, []string) {
 	labels := c.Labels
 	if !hasPrefixedLabels(labels, traefikPrefix) {
 		return nil, nil, nil
@@ -663,7 +676,7 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []Matcher, []s
 		if enableWarn == "" {
 			return nil, nil, nil
 		}
-		tombs, tw := traefikTombstones(c)
+		tombs, tw := traefikTombstones(c, rejected)
 		return nil, tombs, append([]string{enableWarn}, tw...)
 	}
 
@@ -689,7 +702,7 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []Matcher, []s
 	var tombs []Matcher
 	for _, rn := range routerNames {
 		r := routers[rn]
-		svc, env, w := bindTraefikRouter(c, r, services, serviceNames, ip)
+		svc, env, w := bindTraefikRouter(c, r, services, serviceNames, ip, rejected)
 		warns = append(warns, w...)
 		tombs = append(tombs, env...)
 		if svc == nil {
@@ -712,14 +725,16 @@ func extractTraefik(c Container, opts ExtractOptions) ([]Service, []Matcher, []s
 // traefik.enable value could not be read. Nothing here may serve: the
 // routers are never bound to a service. Every rule still names traffic
 // that reaches Config.Fallback unless refused, so each router leaves the
-// envelope of its own rule. RuleEnvelope reads it even where ParseRule
-// would have succeeded: no matcher was ever built, and the envelope is a
-// superset of the rule's request set by construction.
-func traefikTombstones(c Container) ([]Matcher, []string) {
+// envelope of its own rule. Successfully parsed predicates additionally retain
+// ordinary route precedence; unreadable rules contribute only the envelope.
+func traefikTombstones(c Container, rejected *[]Matcher) ([]Matcher, []string) {
 	routers, _, _ := collectTraefikLabels(c)
 	var tombs []Matcher
 	var warns []string
 	for _, rn := range sortedKeys(routers) {
+		if matchers, err := ParseRule(routers[rn].rule); err == nil {
+			*rejected = append(*rejected, matchers...)
+		}
 		env := RuleEnvelope(routers[rn].rule)
 		if len(env) == 0 {
 			continue
@@ -829,9 +844,11 @@ func traefikServiceName(c Container, r *traefikRouter, serviceNames []string) (s
 // bindTraefikRouter resolves one router into a Service carrying its
 // matchers and this container's backend. When the router cannot be bound it
 // returns the refusal envelope covering the traffic its rule claimed.
-func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string) (*Service, []Matcher, []string) {
+func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string, rejected *[]Matcher) (*Service, []Matcher, []string) {
 	var warns []string
+	var parsed []Matcher
 	refuse := func(env []Matcher) (*Service, []Matcher, []string) {
+		*rejected = append(*rejected, parsed...)
 		return nil, env, append(warns, RefusalWarning(fmt.Sprintf("container %s: router %q", c.Name, r.name), env))
 	}
 	// A router with no rule declares no match condition. Trim here:
@@ -845,6 +862,7 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, dropping its routes", c.Name, r.name, err))
 		return refuse(RuleEnvelope(r.rule))
 	}
+	parsed = matchers
 	if ip == "" && c.Running {
 		return refuse(EnvelopeOf(matchers))
 	}

@@ -23,6 +23,8 @@ import (
 // validate their handler-carried policy revision after a readiness wait.
 type dynamicTable struct {
 	routes []compiledRoute
+	// rejections retain parsed predicates before refusal-envelope widening.
+	rejections []compiledRoute
 	// quarantines retain container provenance between valid routes and tombstones.
 	quarantines []compiledRoute
 	// tombstones are the refusal envelopes of the registrations this
@@ -414,20 +416,20 @@ func (p *dockerProvider) sync(ctx context.Context) error {
 			return err
 		}
 		contributions := p.deriveContributions(containers)
-		observed, _ := mergeContributions(contributions, nil)
+		observed, _, _ := mergeContributions(contributions, nil)
 		topology := p.workloadCandidateTopology(containers)
 		quarantine, current := p.updateWorkloads(observed, containers, topology, workloadTickets) //nolint:contextcheck // observations spawn provider-run work
 		if !current {
 			continue
 		}
 		p.publishContributionWarnings(contributions, quarantine)
-		services, tombstones := mergeContributions(contributions, quarantine.matches)
+		services, tombstones, rejected := mergeContributions(contributions, quarantine.matches)
 		quarantine.routes = p.quarantineRouteClaims(containers, quarantine)
 
 		prev := p.srv.dynamic.Load()
 		// Pool health checkers deliberately outlive this sync call; they derive
 		// their own lifetime and stop on generation retirement or shutdown.
-		next, retired := p.buildTable(services, tombstones, quarantine.routes, prev) //nolint:contextcheck
+		next, retired := p.buildTable(services, tombstones, rejected, quarantine.routes, prev) //nolint:contextcheck
 		next.workloadMutations = versions.mutations
 		if !p.publishGeneration(next, versions) {
 			shutdownUnpublishedPools(next, prev)
@@ -522,6 +524,7 @@ type dockerContribution struct {
 	container  docker.Container
 	services   []docker.Service
 	tombstones []docker.Matcher
+	rejections []docker.Matcher
 	warnings   []string
 }
 
@@ -533,13 +536,13 @@ func (p *dockerProvider) deriveContributions(containers []docker.Container) []do
 	opts := p.extractOptions()
 	var out []dockerContribution
 	for _, c := range containers {
-		svcs, envelopes, warns := docker.Extract(c, opts)
+		svcs, envelopes, rejected, warns := docker.ExtractWithRejections(c, opts)
 		// A stopped container participates only when a workload policy
 		// names it; see workloadIntended.
 		if !c.Running && !p.workloadIntended(c, opts) {
 			continue
 		}
-		out = append(out, dockerContribution{container: c, services: svcs, tombstones: envelopes, warnings: warns})
+		out = append(out, dockerContribution{container: c, services: svcs, tombstones: envelopes, rejections: rejected, warnings: warns})
 	}
 	return out
 }
@@ -555,15 +558,17 @@ func (p *dockerProvider) publishContributionWarnings(contributions []dockerContr
 // mergeContributions builds the logical service view after optionally
 // excluding exact container contributions. Containers are already ordered, so
 // the existing first-container-wins pool policy remains stable.
-func mergeContributions(contributions []dockerContribution, excluded func(docker.Container) bool) ([]docker.Service, []docker.Matcher) {
+func mergeContributions(contributions []dockerContribution, excluded func(docker.Container) bool) ([]docker.Service, []docker.Matcher, []docker.Matcher) {
 	merged := map[string]*docker.Service{}
 	var order []string
 	var tombs []docker.Matcher
+	var rejected []docker.Matcher
 	for _, contribution := range contributions {
 		if excluded != nil && excluded(contribution.container) {
 			continue
 		}
 		tombs = append(tombs, contribution.tombstones...)
+		rejected = append(rejected, contribution.rejections...)
 		for _, svc := range contribution.services {
 			existing, ok := merged[svc.Name]
 			if !ok {
@@ -580,7 +585,7 @@ func mergeContributions(contributions []dockerContribution, excluded func(docker
 	for _, name := range order {
 		out = append(out, *merged[name])
 	}
-	return out, tombs
+	return out, tombs, rejected
 }
 
 func (p *dockerProvider) quarantineRouteClaims(containers []docker.Container, quarantine retiredMutationQuarantine) []docker.RouteClaim {
@@ -669,8 +674,9 @@ func (p *dockerProvider) workloadCandidateTopology(containers []docker.Container
 // reusing pool handlers whose resolved config is unchanged. It returns the
 // handlers from prev that were replaced or dropped and must be shut down
 // after the swap.
-func (p *dockerProvider) buildTable(services []docker.Service, tombstones []docker.Matcher, quarantines []docker.RouteClaim, prev *dynamicTable) (*dynamicTable, []*runningPool) {
+func (p *dockerProvider) buildTable(services []docker.Service, tombstones, rejected []docker.Matcher, quarantines []docker.RouteClaim, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
+		rejections:        compileRefusals(rejected),
 		pools:             make(map[string]*runningPool, len(services)),
 		fingerprints:      make(map[string]string, len(services)),
 		workloadBindings:  make(map[string]workloadBindingKey, len(p.cfg.Workloads)),
@@ -695,6 +701,7 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones []dock
 		}
 	}
 	sortDynamicRoutes(next.routes)
+	sortDynamicRoutes(next.rejections)
 	next.quarantines = compileQuarantineRoutes(quarantines)
 	sortDynamicRoutes(next.quarantines)
 	next.tombstones = p.compileTombstones(tombs)
@@ -725,10 +732,10 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	rp, err := p.resolveServicePool(svc, pool, gated)
 	if err != nil {
 		p.warn([]string{fmt.Sprintf("service %q: %v, dropping its routes", svc.Name, err)})
-		return p.refuse(svc.Name, svc.Routes)
+		return p.refuse(next, svc.Name, svc.Routes)
 	}
 
-	kept, tombs := p.routeChains(svc)
+	kept, tombs := p.routeChains(svc, next)
 	if len(kept) == 0 {
 		return tombs
 	}
@@ -744,7 +751,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 		for _, rc := range kept {
 			keptMatchers = append(keptMatchers, rc.m)
 		}
-		return append(tombs, p.refuse(svc.Name, keptMatchers)...)
+		return append(tombs, p.refuse(next, svc.Name, keptMatchers)...)
 	}
 	// The gate resolves the pool at proxy time: the generation that
 	// queued a waiter cannot carry a dormant container's backend.
@@ -844,7 +851,7 @@ func fingerprintWorkloadRoutes(chains []routeChain) workloadRoutingRevision {
 // routeChains resolves each of the service's routes into its middleware
 // chain. A route referencing an unregistered middleware fails closed per
 // matcher: it joins the refusal envelope while its siblings keep routing.
-func (p *dockerProvider) routeChains(svc *docker.Service) ([]routeChain, []docker.Matcher) {
+func (p *dockerProvider) routeChains(svc *docker.Service, next *dynamicTable) ([]routeChain, []docker.Matcher) {
 	hints, warns := serviceHints(svc)
 	p.warn(warns)
 	var kept []routeChain
@@ -853,7 +860,7 @@ func (p *dockerProvider) routeChains(svc *docker.Service) ([]routeChain, []docke
 		mws, warn := p.routeMiddleware(svc, m, hints)
 		if warn != "" {
 			p.warn([]string{warn})
-			tombs = append(tombs, p.refuse(svc.Name, []docker.Matcher{m})...)
+			tombs = append(tombs, p.refuse(next, svc.Name, []docker.Matcher{m})...)
 			continue
 		}
 		kept = append(kept, routeChain{m: m, mws: mws})
@@ -883,9 +890,9 @@ func applyPoolPolicy(pool *resolved.Pool, policy resolved.PoolPolicy) {
 	pool.HostValue = policy.HostValue
 }
 
-// refuse turns dropped matchers into a refusal envelope and logs it.
-// Widening here would shadow the fallback for traffic the service never asked for.
-func (p *dockerProvider) refuse(service string, ms []docker.Matcher) []docker.Matcher {
+// refuse retains parsed claims before deriving and logging their fallback envelope.
+func (p *dockerProvider) refuse(next *dynamicTable, service string, ms []docker.Matcher) []docker.Matcher {
+	next.rejections = append(next.rejections, compileRefusals(ms)...)
 	env := docker.EnvelopeOf(ms)
 	if len(env) == 0 {
 		return nil
@@ -899,11 +906,15 @@ func (p *dockerProvider) refuse(service string, ms []docker.Matcher) []docker.Ma
 func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute {
 	env := docker.EnvelopeOf(ms)
 	p.announceRefusal(env)
-	if len(env) == 0 {
-		return nil
-	}
-	out := make([]compiledRoute, 0, len(env))
-	for _, m := range env {
+	return compileRefusals(env)
+}
+
+// compileRefusals preserves each input predicate. Only fallback tombstones may
+// be widened and absorbed before compilation.
+func compileRefusals(matchers []docker.Matcher) []compiledRoute {
+	out := make([]compiledRoute, 0, len(matchers))
+	for _, m := range matchers {
+		m.Middlewares = nil
 		out = append(out, compiledRoute{
 			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
 			handler: tombstoneHandler,
@@ -1102,23 +1113,8 @@ func sortDynamicRoutes(routes []compiledRoute) {
 
 func dynamicRoutePrecedes(aRoute, bRoute compiledRoute) bool {
 	a, b := aRoute.matcher, bRoute.matcher
-	if (a.Host != "") != (b.Host != "") {
-		return a.Host != ""
-	}
-	aExact, aLen, aKind := dynamicPatternSpecificity(a)
-	bExact, bLen, bKind := dynamicPatternSpecificity(b)
-	if aExact != bExact {
-		return aExact
-	}
-	if aLen != bLen {
-		return aLen > bLen
-	}
-	if aKind != bKind {
-		return aKind > bKind
-	}
-	aHost, bHost := dynamicHostSpecificity(a), dynamicHostSpecificity(b)
-	if aHost != bHost {
-		return aHost > bHost
+	if order := compareDynamicSpecificity(a, b); order != 0 {
+		return order > 0
 	}
 	if a.Host != b.Host {
 		return a.Host < b.Host
@@ -1127,6 +1123,33 @@ func dynamicRoutePrecedes(aRoute, bRoute compiledRoute) bool {
 		return a.Path < b.Path
 	}
 	return aRoute.service < bRoute.service
+}
+
+// compareDynamicSpecificity excludes spelling and service tiebreakers so a
+// rejected predicate wins a specificity tie with any serving registration.
+func compareDynamicSpecificity(a, b docker.Matcher) int {
+	if (a.Host != "") != (b.Host != "") {
+		if a.Host != "" {
+			return 1
+		}
+		return -1
+	}
+	aExact, aLen, aKind := dynamicPatternSpecificity(a)
+	bExact, bLen, bKind := dynamicPatternSpecificity(b)
+	if aExact != bExact {
+		if aExact {
+			return 1
+		}
+		return -1
+	}
+	if aLen != bLen {
+		return aLen - bLen
+	}
+	if aKind != bKind {
+		return aKind - bKind
+	}
+	aHost, bHost := dynamicHostSpecificity(a), dynamicHostSpecificity(b)
+	return aHost - bHost
 }
 
 func dynamicHostSpecificity(m docker.Matcher) int {
