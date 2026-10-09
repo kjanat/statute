@@ -23,7 +23,7 @@ func TestWorkloadDiagnosticsMetricsPaths(t *testing.T) {
 			if _, err := resolveMetrics(Prometheus("127.0.0.1:0", path)); err == nil {
 				t.Fatalf("conflicting path %q accepted", path)
 			}
-			s := &server{stats: newStats()}
+			s := &server{cfg: mustResolve(t, redirectHealthConfig("127.0.0.1:0")), stats: newStats()}
 			if _, err := s.buildMetricsServer(resolved.Metrics{Enabled: true, Path: path}); err == nil {
 				t.Fatalf("runtime accepted conflicting path %q", path)
 			}
@@ -39,7 +39,7 @@ func TestWorkloadDiagnosticsAllowedMetricsPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			s := &server{stats: newStats()}
+			s := &server{cfg: mustResolve(t, redirectHealthConfig("127.0.0.1:0")), stats: newStats()}
 			hs, err := s.buildMetricsServer(m)
 			if err != nil {
 				t.Fatal(err)

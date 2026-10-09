@@ -1,6 +1,18 @@
 name: HTML rewrite research
 on:
-  workflow_call:
+  pull_request:
+    paths:
+      - "*.go"
+      - go.mod
+      - go.sum
+      - .mise.toml
+      - mise.lock
+      - package.json
+      - package-lock.json
+      - internal/**
+      - resolved/**
+      - research/htmlrewrite/**
+      - .github/workflows/research-htmlrewrite.yml
   push:
     branches: [master]
     paths:

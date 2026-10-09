@@ -917,6 +917,11 @@ and join it. No predecessor can publish into a retried startup after rollback.
 
 ### Server resources
 
+Health and metrics HTTP servers consume the same normalized timeout and
+header-size defaults as content listeners. They retain their own handlers and
+lifecycle owners; applying these limits does not alter readiness or shutdown
+ordering. Zero durations retain the standard Go HTTP server fallback semantics.
+
 Lifecycle changes must state ownership rather than relying on `Serve` goroutines to
 hide it.
 

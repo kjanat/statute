@@ -10,11 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Normalize direct-client IP attribution independently of source ports, preserving rate-limit debt and IPHash affinity across reconnects. Direct-peer access logs now record port-free IP addresses.
 
+- Bind the development Compose metrics port to host loopback, limiting exposure of unauthenticated metrics, profiling and workload diagnostics.
+
 - Omit Cloudflare DNS-01 API tokens from configuration exports and direct resolved-model JSON encoding while preserving runtime authentication. Rotate tokens exposed in older snapshots or CI artifacts.
 
 - Bound response-trailer metadata processing by deduplicating names and scanning headers once per removal stage, preventing repeated declarations from multiplying work in buffered replay, compression, and 406 responses.
 
 - Synchronize RequestID publication across timed-out handlers and keep its downstream header mutations private, preventing races with listener access logging. Preserve live request trailers and select Retry attempt IDs from the original inbound headers.
+
+- Apply configured read, write, idle, header-read and header-size limits to health and metrics listeners.
 
 ### Fixed
 

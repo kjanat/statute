@@ -108,6 +108,14 @@ Observability: statute.Observability{
 
 Prometheus exposition format on a separate listener. The metrics listener is intended to be **private** — bind it to a loopback address or a private interface and scrape it from your monitoring system. Do not expose it publicly: the same unauthenticated listener exposes `pprof` and workload diagnostics (see below). Statute does not enforce a private bind address.
 
+For containers, distinguish the listener inside the container from the published
+host port. The development Compose example keeps the container listener on
+`:9090` and publishes `127.0.0.1:9090:9090`, reachable on the host at
+`http://127.0.0.1:9090/metrics`. This limits host publication to IPv4 loopback;
+containers sharing its network can still reach the listener. Use a current Docker
+Engine: releases before 28.0.0 have a documented same-network exception to
+[localhost port isolation](https://docs.docker.com/engine/network/port-publishing/).
+
 ### Metric names
 
 | Name                                                | Type    | Description                                                                                                               |
@@ -176,6 +184,16 @@ The metrics listener also serves Go's standard pprof endpoints:
 Use `go tool pprof http://localhost:9090/debug/pprof/profile` for live profiling. Because pprof and metrics share a listener, the same "do not expose publicly" warning applies.
 
 ## Health endpoint
+
+Health and metrics listeners inherit `Defaults.ReadHeaderTimeout`, `ReadTimeout`,
+`WriteTimeout`, `IdleTimeout`, and `MaxHeaderBytes`, just like content listeners.
+The defaults include a five-second header timeout, 30-second write timeout,
+120-second idle timeout and 1 MiB header limit. `ReadTimeout` defaults to zero;
+configure a nonzero value when incomplete request bodies must time out. Explicit
+zero durations retain their normal Go HTTP server semantics. The standard Go
+CPU, trace and delta-profile handlers extend a positive write deadline by the
+requested collection duration, so longer profiles do not require increasing
+`WriteTimeout` just to cover collection time.
 
 ```go
 Observability: statute.Observability{
