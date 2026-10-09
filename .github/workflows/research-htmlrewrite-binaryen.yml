@@ -1,6 +1,18 @@
 name: HTML rewrite Binaryen comparison
 on:
-  workflow_call:
+  pull_request:
+    paths:
+      - "*.go"
+      - go.mod
+      - go.sum
+      - .mise.toml
+      - mise.lock
+      - package.json
+      - package-lock.json
+      - internal/**
+      - resolved/**
+      - research/htmlrewrite/**
+      - .github/workflows/research-htmlrewrite-binaryen.yml
   workflow_dispatch:
 permissions: { contents: read }
 concurrency: { group: "htmlrewrite-binaryen-${{ github.ref }}", cancel-in-progress: true }

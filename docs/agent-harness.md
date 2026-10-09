@@ -28,23 +28,16 @@ Run `make typecheck` to check the repository scripts. Mise selects the tools
 from `.mise.toml` and installs npm dependencies when needed before invoking
 `tsc --noEmit`.
 
-### CI merge gate
+### CI checks
 
-The required `ci gate` waits for every job in the PR's main CI workflow,
-including the complete dynamically discovered fuzz matrix and both reusable
-research workflows. A path selector uses the exact PR base/head commits to
-select rewrite, Binaryen and read-only label validation. Unselected lanes may
-skip; selected lanes must succeed. Missing selection, failed discovery,
-cancellation and unexpected skipping fail the gate. Documentation-only PRs do
-not run the expensive research matrices.
+Build, test, formatting, lint, typecheck and script checks report their own job
+results. Research workflows use GitHub's pull-request path filters for shared
+tools, dependencies, runtime code and research files. Label changes run a
+read-only validation on pull requests; publication runs on master pushes or
+manual dispatch.
 
-When adding a job, add it to the gate’s `needs` list. The validator checks
-every supplied dependency; it does not maintain a second job list. `CodeQL gate`
-covers its complete language matrix. Every standalone PR workflow must declare
-its merge gate.
-Comment Cop and registered external security checks remain separately required.
-Push-only publication and manually started experiments are separate workflows.
-Enable auto-merge for the reviewed head without bypassing the ruleset.
+CodeQL retains its separate aggregate check. Required status checks are managed
+in the repository ruleset.
 
 ### 1. Freeze the change contract
 
@@ -108,7 +101,7 @@ The custom-build configuration selects the base release; mise installs the CLI.
 Renovate groups updates to these two files in one PR.
 
 CI runs formatting (`make fmt-check`) and linting (`make lint-code`) in independent
-jobs. Both are required by `ci gate`; `make lint` runs both locally. Typechecking
+jobs. `make lint` runs both locally. Typechecking
 has its own job; documentation links, Comment Cop tests and RFC checks run in
 `script tests and documentation`. Mise installs tools from `.mise.toml`, with Go
 and Rust selected from the applicable `go.mod` and `rust-toolchain.toml`. Changes

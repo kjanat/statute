@@ -1,13 +1,24 @@
 name: Sync Labels
 on:
   push: { branches: [master], paths: [".github/**/labels.yml"] }
+  pull_request: { paths: [".github/**/labels.yml"] }
   workflow_dispatch: null
-concurrency: { group: labels, cancel-in-progress: false }
+concurrency: { group: "labels-${{ github.ref }}", cancel-in-progress: false }
 permissions: { contents: read, issues: write }
 jobs:
   sync:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { sparse-checkout: .github }
       - uses: kjanat/github-labelmanager@e968d59fb16afae3a977f7620089e14ac3bd8872 # v1
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-slim
+    permissions: { contents: read, issues: read }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { sparse-checkout: .github, persist-credentials: false }
+      - uses: kjanat/github-labelmanager@e968d59fb16afae3a977f7620089e14ac3bd8872 # v1
+        with: { dry-run: "true" }
