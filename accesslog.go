@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/rand/v2"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -175,6 +176,9 @@ func clientIP(r *http.Request) string {
 		if tc := r.Header.Get("True-Client-IP"); tc != "" {
 			return tc
 		}
+	}
+	if peer, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		return peer.Addr().Unmap().String()
 	}
 	return r.RemoteAddr
 }

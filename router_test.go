@@ -56,14 +56,14 @@ func TestClientIPXFF(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "10.0.0.1:1234"
 	r.Header.Set("X-Forwarded-For", "203.0.113.5, 198.51.100.1")
-	if got := clientIP(r); got != "10.0.0.1:1234" {
-		t.Errorf("unconfigured XFF trust: got %q, want the peer %q", got, "10.0.0.1:1234")
+	if got := clientIP(r); got != "10.0.0.1" {
+		t.Errorf("unconfigured XFF trust: got %q, want the peer %q", got, "10.0.0.1")
 	}
 
 	r2 := httptest.NewRequest("GET", "/", nil)
 	r2.RemoteAddr = "10.0.0.2:5678"
-	if got := clientIP(r2); got != "10.0.0.2:5678" {
-		t.Errorf("no XFF: got %q, want %q", got, "10.0.0.2:5678")
+	if got := clientIP(r2); got != "10.0.0.2" {
+		t.Errorf("no XFF: got %q, want %q", got, "10.0.0.2")
 	}
 }
 
@@ -75,7 +75,7 @@ func TestClientIPCloudflare(t *testing.T) {
 	r.RemoteAddr = "10.0.0.1:1234"
 	r.Header.Set("CF-Connecting-IP", "203.0.113.5")
 	r.Header.Set("X-Forwarded-For", "198.51.100.1")
-	if got := clientIP(r); got != "10.0.0.1:1234" {
+	if got := clientIP(r); got != "10.0.0.1" {
 		t.Errorf("untrusted: got %q, want the peer address", got)
 	}
 

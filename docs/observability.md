@@ -38,7 +38,13 @@ The `remote` field comes from `clientIP()`, which resolves in order:
 
 1. If the listener declares a `TrustedProxy()` policy: the policy decides — a trusted direct peer speaks through the configured forwarded header, any other peer is its own client.
 2. Otherwise, on a `BehindCloudflare()` listener: `CF-Connecting-IP`, then `True-Client-IP`.
-3. Fallback: `r.RemoteAddr`.
+3. Fallback: the connecting IP from `r.RemoteAddr`, without its source port.
+
+Valid peer IP:port values are normalized, including IPv4-mapped IPv6 addresses.
+Unparseable custom addresses remain verbatim for diagnostics. This keeps rate-limit
+debt and IPHash affinity stable when a client reconnects from another source port.
+Direct-peer `remote` log values therefore contain the IP only; the request's
+original `RemoteAddr` remains unchanged.
 
 `X-Forwarded-For` is never consulted without explicit trust configuration — it is client-controlled, and rate limiting, the IP lists, and client-IP route matching all key on this value. The raw header still lands in the `forwarded_for` log field, unparsed, for forensics.
 
