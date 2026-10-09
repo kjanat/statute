@@ -1331,6 +1331,9 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 	if err := validateRequestIDOwnership(out); err != nil {
 		return nil, err
 	}
+	if err := validateBasicAuthCredentials(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

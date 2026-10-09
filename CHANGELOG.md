@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Reject hoisted request-header operations that can replace BasicAuth credentials, including indirect Authorization mapping through RequestID. Invalid assembled Docker chains refuse affected routes without disabling healthy siblings.
+
 - Restrict mTLS health-check redirects to the selected backend origin, preventing a backend from presenting the pool's client identity to another destination. Prohibited redirects count as failed probes; same-origin redirects and explicit probe status policies retain their behavior.
 
 - Normalize direct-client IP attribution independently of source ports, preserving rate-limit debt and IPHash affinity across reconnects. Direct-peer access logs now record port-free IP addresses.

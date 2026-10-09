@@ -95,6 +95,14 @@ use these options only when that disclosure is intended. This mapping provides
 no credential verification; authentication remains the responsibility of the
 appropriate policy or backend.
 
+With BasicAuth later in the chain, an Authorization-writing RequestID may only
+read its From value without a raw request-header Set/Add/Remove operation on
+that input. Such operations run before the entire chain and could supply accepted
+credentials for an unauthenticated client. Resolve rejects this combination in
+any declaration order, including final Docker chain assembly. A credential mapper
+after the last BasicAuth remains supported; ordinary client-provided credential
+mapping remains supported before authentication.
+
 Other custom identity/tracing fields remain configurable. This named set does
 not infer semantics of arbitrary application-specific headers: assigning an ID
 to a custom authorization or routing field remains an explicit application policy.

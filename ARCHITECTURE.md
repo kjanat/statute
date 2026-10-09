@@ -174,6 +174,15 @@ repeat them per attempt. Consequences that changes must preserve:
   accumulating transformation;
 - request cloning must include a distinct URL object when rewriting it.
 
+BasicAuth must not authenticate credentials supplied by hoisted header operations.
+Resolve rejects Set/Add/Remove request operations on Authorization anywhere in a
+chain containing BasicAuth. If an Authorization-writing RequestID precedes
+BasicAuth, its From header cannot be mutated by those operations either. Ordinary
+client-supplied credential mapping and RequestID after the last BasicAuth remain
+supported. Docker validates its final combined chain and refuses only conflicting
+routes through the existing rejection path. Validation adds no runtime state and
+preserves header hoisting, declaration order, Retry and cache credential bypass.
+
 Do not move a transform into the ordinary wrapper chain without re-evaluating every
 re-entry path.
 
