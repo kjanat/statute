@@ -25,6 +25,11 @@ The `resolved` package is the canonical machine-readable contract used by runtim
 construction and by tooling such as export, graph, and lint. A feature is not
 complete when only the surface or runtime understands it.
 
+Cloudflare DNS-01 API tokens remain in the resolved model for runtime use but are
+excluded at its JSON boundary. Export and direct JSON encoding omit the credential
+without mutating live state. Diagnostic snapshots are not credential backups and
+do not sanitize arbitrary user-supplied header values or URLs.
+
 ## Ownership model
 
 | Layer           | Owns                                                                                                                  | Must not absorb                                                             |

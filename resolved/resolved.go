@@ -243,7 +243,8 @@ const (
 // CloudflareDNS01 is the resolved DNS-01 configuration. When non-nil, the
 // runtime uses Cloudflare's DNS API to satisfy challenges instead of HTTP-01.
 type CloudflareDNS01 struct {
-	APIToken string
+	// APIToken is runtime-only; diagnostic JSON must not disclose credentials.
+	APIToken string `json:"-"`
 	ZoneID   string // optional; empty means auto-discover
 
 	// Propagation is the source's DNS propagation policy: how long the
