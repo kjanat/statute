@@ -24,6 +24,10 @@ existing skill symlinks continue to expose [`skills/`](../skills/).
 
 ## Recommended flow
 
+Run `make typecheck` to check the repository scripts. Mise selects the tools
+from `.mise.toml` and installs npm dependencies when needed before invoking
+`tsc --noEmit`.
+
 ### CI merge gate
 
 The required `ci gate` waits for every job in the PR's main CI workflow,
@@ -34,7 +38,8 @@ skip; selected lanes must succeed. Missing selection, failed discovery,
 cancellation and unexpected skipping fail the gate. Documentation-only PRs do
 not run the expensive research matrices.
 
-When adding a job, update the gate and its validator together. `CodeQL gate`
+When adding a job, add it to the gate’s `needs` list. The validator checks
+every supplied dependency; it does not maintain a second job list. `CodeQL gate`
 covers its complete language matrix. Every standalone PR workflow must declare
 its merge gate.
 Comment Cop and registered external security checks remain separately required.
@@ -98,13 +103,16 @@ as `statutehttp` and can be run with:
 make lint-lifecycle
 ```
 
-Keep the golangci-lint versions in `.custom-gcl.yml` and `.tool-versions` aligned.
-Both CI lint action jobs read `.tool-versions`; Renovate
-groups updates to these two files in one PR.
+Keep the golangci-lint versions in `.custom-gcl.yml` and `.mise.toml` aligned.
+The custom-build configuration selects the base release; mise installs the CLI.
+Renovate groups updates to these two files in one PR.
 
-CI runs formatting (`make fmt-check`) and linting in independent jobs. Both are
-required by `ci gate`. `setup-go` selects the module's Go toolchain in each job;
-the format job disables mise's Go provider and uses mise for dprint and tombi.
+CI runs formatting (`make fmt-check`) and linting (`make lint-code`) in independent
+jobs. Both are required by `ci gate`; `make lint` runs both locally. Typechecking
+has its own job; documentation links, Comment Cop tests and RFC checks run in
+`script tests and documentation`. Mise installs tools from `.mise.toml`, with Go
+and Rust selected from the applicable `go.mod` and `rust-toolchain.toml`. Changes
+to shared tools, dependencies or runtime code select both research workflows.
 Renovate uses `gomodTidyAll` to tidy local replacement consumers, including the
 Traefik oracle, after updating a module they depend on.
 

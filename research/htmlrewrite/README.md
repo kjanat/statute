@@ -36,14 +36,15 @@ Linux load cell with a separate Statute process; `make memory` accepts
 
 ## Run
 
-Install Go 1.27.1 and rustup, then run:
+Install mise, then run:
 
 ```sh
 cd research/htmlrewrite
-make test
-make fuzz
-make bench
-make bench-native
+mise install
+mise exec -- make test
+mise exec -- make fuzz
+mise exec -- make bench
+mise exec -- make bench-native
 ```
 
 `rust-toolchain.toml` selects `nightly-2026-10-04` (Rust 1.101.0-nightly, commit `db8f076d2619ce2585b0380dda06e8da25a40da4`), rustfmt, clippy, and the `wasm32-unknown-unknown` target. `make build` builds both the Wasm guest and native output oracle with the committed Cargo lockfile. It copies the guest to `artifact/rewriter.wasm` for Go embedding. The test target uses `CGO_ENABLED=0`; parity tests and HTTP load setup launch the native oracle for expected output. Rewriting itself starts no subprocesses.

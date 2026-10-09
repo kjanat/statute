@@ -22,7 +22,7 @@ E2E_SOAK_TIMEOUT       ?= 120m
 COMMENT_COP_BASE       ?=
 
 .PHONY: all help comment-cop test test-race fmt-check lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff check-cloudflare-cidrs generate-cloudflare-cidrs typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
-.PHONY: vendor-rfcs check-rfcs test-rfcs test-comment-cop
+.PHONY: vendor-rfcs check-rfcs test-rfcs test-comment-cop lint-code
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -61,7 +61,9 @@ fmt-check: ## Fail if any tracked Go file is not formatted
 	if [ -n "$$drift" ]; then echo "goimports drift:"; echo "$$drift"; exit 1; fi
 	$(DPRINT) check
 
-lint: fmt-check ## Check formatting, build the custom golangci-lint, run all linters
+lint: fmt-check lint-code ## Check formatting, build the custom golangci-lint, run all linters
+
+lint-code: ## Build the custom golangci-lint and run all linters
 	$(GOLANGCI_LINT) custom
 	$(CUSTOM_GCL) run ./...
 
@@ -133,8 +135,7 @@ check-cloudflare-cidrs: ## Compare bundled Cloudflare ranges with the canonical 
 	$(GO) run ./scripts/check-cloudflare-cidrs
 
 typecheck: ## Strict-typecheck scripts/ (installs dev deps on first run)
-	@test -d node_modules || npm ci --no-audit --no-fund
-	npm run typecheck
+	mise exec -- npm run typecheck
 
 vendor-rfcs: ## Fetch RFC Editor HTML snapshots (RFCS="9110 9111" selects documents)
 	node scripts/vendor-rfcs.mjs fetch $(RFCS)

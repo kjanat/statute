@@ -41,7 +41,8 @@ jobs:
   gate:
     name: ci gate
     if: always() && github.event_name == 'pull_request'
-    needs: [test, format, lint, lifecycle_lint, discover_fuzz, fuzz, examples, apidiff, actionlint, typecheck, e2e, select_checks, rewrite, binaryen, labels]
+    # pretty-yaml-ignore
+    needs: [actionlint, apidiff, binaryen, discover_fuzz, e2e, examples, format, fuzz, labels, lifecycle_lint, lint, rewrite, script_checks, select_checks, test, typecheck]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -54,8 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - run: go vet ./...
       - run: go build ./...
       - { name: race, run: go test -race -coverprofile=cover.out -covermode=atomic ./... }
@@ -82,10 +82,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
-      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with: { version-file: .tool-versions, args: --timeout=5m }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: make lint-code
   lifecycle_lint:
     name: lifecycle lint
     if: github.event_name == 'pull_request'
@@ -93,20 +91,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { fetch-depth: 0 }
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
-      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with:
-          version-file: .tool-versions
-          args: --enable-only=statutelifecycle --new-from-merge-base=origin/${{ github.base_ref }} --whole-files --timeout=5m
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: make lint-lifecycle LIFECYCLE_BASE="origin/${BASE_REF}"
+        env: { BASE_REF: "${{ github.base_ref }}" }
   discover_fuzz:
     name: discover fuzz targets
     runs-on: ubuntu-latest
     outputs: { matrix: "${{ steps.targets.outputs.matrix }}" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - name: discover fuzz targets
         id: targets
         run: |
@@ -127,8 +121,7 @@ jobs:
     env: { FUZZ_PACKAGE: "${{ matrix.package }}", FUZZ_TARGET: "${{ matrix.target }}" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - name: run fuzz target
         run: |
           printf '::group::%s\n' "${FUZZ_TARGET}"
@@ -139,16 +132,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - run: go build ./examples/...
   apidiff:
     name: api surface diff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       # Diffs the exported surface against the latest release on pkg.go.dev.
       # A deliberate break passes once this step carries
       # env: { APIDIFF_ALLOW_BREAKING: "1" }.
@@ -158,7 +149,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 # v1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: actionlint
   typecheck:
     name: typecheck scripts
     runs-on: ubuntu-latest
@@ -166,9 +158,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
-      # comment-cop.yml runs only base-branch tooling, so a PR cannot
-      # live-test its own copy; this is the enforceable check on it.
       - { name: typecheck, run: make typecheck }
+  script_checks:
+    name: script tests and documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - { name: documentation links, run: 'node scripts/wiki-sync.mjs docs "$(mktemp -d)"' }
       - { name: Comment Cop tests, run: make test-comment-cop }
       - { name: RFC snapshot tooling, run: make test-rfcs check-rfcs }
@@ -184,8 +181,7 @@ jobs:
       # credential must not reach the Docker build context.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - { name: vet e2e lane, run: go vet -tags e2e ./e2e/... }
       - { name: test e2e helpers, run: go test -race -tags e2e ./e2e/cmd/... ./e2e/harness ./e2e/report }
       - { name: smoke + regression tiers, run: make test-e2e-regression }

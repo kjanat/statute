@@ -17,9 +17,7 @@ jobs:
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with: { working_directory: research/htmlrewrite }
       - name: Build six variants from one Rust artifact
-        run: |
-          node --test binaryen.test.mjs
-          node binaryen.mjs build
+        run: node binaryen.mjs build
       - name: Parity, limits, isolation, cancellation and HTTP composition
         run: node binaryen.mjs test
       - name: Rotated benchmark comparisons

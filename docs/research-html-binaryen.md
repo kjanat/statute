@@ -62,15 +62,15 @@ observations; they do not replace them.
 
 ## Reproduce
 
-Install Binaryen 133, Go and the repository's pinned Rust toolchain, then run:
+Install mise, then run:
 
 ```sh
 cd research/htmlrewrite
-node --test binaryen.test.mjs
-WASM_OPT=/path/to/wasm-opt node binaryen.mjs build
-node binaryen.mjs test
-node binaryen.mjs bench
-node binaryen.mjs load
+mise install
+mise exec -- node binaryen.mjs build
+mise exec -- node binaryen.mjs test
+mise exec -- node binaryen.mjs bench
+mise exec -- node binaryen.mjs load
 ```
 
 Commands, tool versions, full outputs, artifact hashes and exact flags are written

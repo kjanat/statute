@@ -61,11 +61,11 @@ Go's race detector (and TSAN underneath) does not work on Raspberry Pi or older 
 
 Renovate owns dependency updates for this repository. The configuration lives in [`renovate.json`](../renovate.json) at the repository root, next to the other tool configs. Dependabot's config is gone; its _security alerts_ are a repository setting rather than a file, so those keep arriving independently.
 
-Renovate covers the Go module, the npm devDependencies and their lockfile, GitHub Actions, `.tool-versions`, and the container images in `e2e/` and `examples/`. Custom regex managers pick up the golangci-lint release in `.custom-gcl.yml` and the `kjanat/gpg-signing-service` release the `sign-commits` composite action installs.
+Renovate covers the Go module, the npm devDependencies and their lockfile, GitHub Actions, `.mise.toml`, and the container images in `e2e/` and `examples/`. Custom regex managers pick up the golangci-lint release in `.custom-gcl.yml` and the `kjanat/gpg-signing-service` release the `sign-commits` composite action installs.
 
 Two couplings are worth knowing about before you edit any of it by hand:
 
-- **golangci-lint is bumped in two files together.** `.custom-gcl.yml` pins the custom linter build; `.tool-versions` pins mise and both `golangci-lint-action` jobs through `version-file`. Renovate's native asdf manager reads `.tool-versions`. The package-name grouping rule joins that dependency with the custom-build regex dependency in one PR. Keep both versions aligned when editing by hand.
+- **golangci-lint is bumped in two files together.** `.custom-gcl.yml` pins the custom linter build; `.mise.toml` pins the CLI used locally and in CI. Renovate's native mise manager reads `.mise.toml`. The package-name grouping rule joins that dependency with the custom-build regex dependency in one PR. Keep both versions aligned when editing by hand.
 - **Images in `e2e/` are pinned as `image:tag@sha256:digest`.** The digest is what makes a run reproducible; the tag is what makes the pin readable and trackable. A bare `image@sha256:...` has no tag to anchor it, so it resolves against `latest`, and the next "digest refresh" silently swaps the image for something else entirely. Example images under `examples/` deliberately stay on plain tags, because they are documentation.
 
 The oracle's `statute.kjanat.dev v0.0.0` requirement is a placeholder for `replace statute.kjanat.dev => ..`. Renovate excludes only that dependency in `traefikoracle/go.mod`: the oracle must test the local checkout, and its other dependencies still receive updates.

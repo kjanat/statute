@@ -7,6 +7,10 @@ on:
       - "*.go"
       - go.mod
       - go.sum
+      - .mise.toml
+      - mise.lock
+      - package.json
+      - package-lock.json
       - internal/**
       - resolved/**
       - research/htmlrewrite/**
@@ -32,8 +36,6 @@ jobs:
           go test -run '^$' -bench . -benchtime=500ms -count=3 ./cancelprobe
       - name: Disabled feature without generated Wasm
         run: make test-disabled
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install --no-self-update
       - name: Build and test cgo-free host and native oracle
         run: make test
       - name: Race detector

@@ -84,7 +84,7 @@
       "addLabels": ["go"]
     },
     {
-      "description": "The go directive and toolchain line set the minimum supported Go for consumers and feed the CI go-version-file, so they never open a PR unattended",
+      "description": "The go directive and toolchain line set the minimum supported Go for consumers and feed mise’s Go version selection, so they never open a PR unattended",
       "matchManagers": ["gomod"],
       "matchDepNames": ["go", "toolchain"],
       "dependencyDashboardApproval": true
@@ -146,7 +146,7 @@
       "semanticCommitType": "chore"
     },
     {
-      "description": "Keep the custom linter build in .custom-gcl.yml and the shared CI version in .tool-versions on the same release",
+      "description": "Keep the custom linter build in .custom-gcl.yml and the mise CLI version in .mise.toml on the same release",
       "matchPackageNames": ["golangci/golangci-lint"],
       "groupName": "golangci-lint",
       "semanticCommitType": "ci"

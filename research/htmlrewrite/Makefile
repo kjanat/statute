@@ -16,7 +16,6 @@ HTTP_LOAD_PACE ?= 0s
 .PHONY: update-lol-html test-update-lol-html
 
 build:
-	rustup show active-toolchain
 	CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='$(WASM_RUSTFLAGS)' cargo build --manifest-path guest/Cargo.toml --locked --release --lib --target wasm32-unknown-unknown -j 1
 	cargo build --manifest-path guest/Cargo.toml --locked --release --bin statute-htmlrewrite-spike -j 1
 	install -Dm644 guest/target/wasm32-unknown-unknown/release/statute_htmlrewrite_spike.wasm artifact/rewriter.wasm

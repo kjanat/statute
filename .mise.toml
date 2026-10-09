@@ -2,7 +2,6 @@
 #:tombi toml-version = "v1.1.0"
 
 [tools]
-go   = "latest"
 node = "latest"
 npm  = "12"
 
@@ -15,6 +14,7 @@ version             = "master"
 minimum_release_age = "0s"
 depends             = ["github:koalaman/shellcheck"]
 lazy                = true
+lazy_bins           = ["actionlint"]
 
 [tools."github:WebAssembly/binaryen"]
 version        = "133"
@@ -43,7 +43,7 @@ version = "1.7.3"
 version = "latest"
 
 [settings]
-idiomatic_version_file_enable_tools = ["go", "node"]
+idiomatic_version_file_enable_tools = ["go", "node", "rust"]
 node.npm_shim                       = true
 minimum_release_age                 = "0s"
 minimum_release_age_excludes        = ["github:kjanat/dprint"]
