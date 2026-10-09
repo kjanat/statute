@@ -102,6 +102,14 @@ Observability: statute.Observability{
 
 Prometheus exposition format on a separate listener. The metrics listener is intended to be **private** — bind it to a loopback address or a private interface and scrape it from your monitoring system. Do not expose it publicly: the same unauthenticated listener exposes `pprof` and workload diagnostics (see below). Statute does not enforce a private bind address.
 
+For containers, distinguish the listener inside the container from the published
+host port. The development Compose example keeps the container listener on
+`:9090` and publishes `127.0.0.1:9090:9090`, reachable on the host at
+`http://127.0.0.1:9090/metrics`. This limits host publication to IPv4 loopback;
+containers sharing its network can still reach the listener. Use a current Docker
+Engine: releases before 28.0.0 have a documented same-network exception to
+[localhost port isolation](https://docs.docker.com/engine/network/port-publishing/).
+
 ### Metric names
 
 | Name                                                | Type    | Description                                                                                                               |
