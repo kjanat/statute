@@ -26,6 +26,8 @@ func (*headerMW) statuteMiddleware() {}
 // the route runs, dropping whatever the client sent. Names are canonicalised
 // when the configuration resolves, so "x-real-ip" and "X-Real-IP" name the
 // same header.
+// Routes with BasicAuth reject operations on Authorization or on an input
+// mapped to Authorization by RequestID before authentication.
 //
 // Four names are rejected at resolve time because Go carries them outside the
 // header map, where a mutation here would be a silent no-op: Host (the request
