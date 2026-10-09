@@ -289,7 +289,7 @@ When `BehindCloudflare()` is enabled **without `TrustedProxy`**, statute checks 
 
 1. `CF-Connecting-IP` — Cloudflare's primary header for the originating client's IP. Always present on requests via the CF proxy.
 2. `True-Client-IP` — only present on Cloudflare Enterprise plans. Same value as `CF-Connecting-IP` when both are present.
-3. `r.RemoteAddr` — the connecting peer (Cloudflare's edge node).
+3. The normalized connecting IP from `r.RemoteAddr`, without its source port (Cloudflare's edge node).
 
 `X-Forwarded-For` is deliberately not in the list: without explicit trust configuration it is a client-controlled header, and consulting it would let a direct client dictate the address used for rate limiting, IP lists, and client-IP route matching. Forwarded headers count only under a `TrustedProxy` policy or the Cloudflare pair above.
 

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Normalize direct-client IP attribution independently of source ports, preserving rate-limit debt and IPHash affinity across reconnects. Direct-peer access logs now record port-free IP addresses.
+
 - Omit Cloudflare DNS-01 API tokens from configuration exports and direct resolved-model JSON encoding while preserving runtime authentication. Rotate tokens exposed in older snapshots or CI artifacts.
 
 - Bound response-trailer metadata processing by deduplicating names and scanning headers once per removal stage, preventing repeated declarations from multiplying work in buffered replay, compression, and 406 responses.
