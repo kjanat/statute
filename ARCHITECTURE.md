@@ -833,6 +833,14 @@ A pool owns backend selection and the transport shared by proxy traffic to its
 backends. Active health probes use that same transport so backend TLS verification
 cannot drift between health traffic and real traffic.
 
+When the pool supplies a client certificate, active-health redirects stay within
+the original probe URL's scheme and authority, including its port. Each hop is
+checked before dialing against the original URL; Host and TLS ServerName
+overrides do not widen this boundary. An escape is a failed probe. Same-origin redirects retain
+the ten-request bound. Explicit probe Host/Statuses still stop and judge the
+redirect response itself; pools without a client identity keep existing redirect
+behavior. The shared transport and backend failure thresholds remain unchanged.
+
 For Docker-discovered pools, Docker supplies backends and strategy while an
 exact-key `PoolPolicy` supplies the code-owned transport and health settings. The
 policy reaches the same pool construction path as static configuration; it does not

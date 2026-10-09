@@ -2,8 +2,10 @@ package statute
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,7 +45,7 @@ type healthRun struct {
 // default. A non-empty host is the probe Host newPoolHandler derived —
 // HealthCheck.Host when set, else the pool's explicit Host policy — carried
 // on every probe; empty leaves probes on each backend's own host.
-func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper, host string) *healthChecker {
+func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper, host string, hasClientIdentity bool) *healthChecker {
 	client := &http.Client{
 		Timeout:   cfg.Timeout,
 		Transport: transport,
@@ -55,6 +57,8 @@ func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transp
 		client.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
+	} else if hasClientIdentity {
+		client.CheckRedirect = sameOriginHealthRedirect
 	}
 	return &healthChecker{
 		cfg:      cfg,
@@ -62,6 +66,44 @@ func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transp
 		backends: backends,
 		client:   client,
 	}
+}
+
+// sameOriginHealthRedirect confines pool credentials to the selected backend's
+// URL authority. Host overrides and TLS ServerName do not grant redirect authority.
+func sameOriginHealthRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 || len(via) >= 10 {
+		return errors.New("health redirect chain is empty or exceeds ten requests")
+	}
+	origin := via[0].URL
+	if !strings.EqualFold(req.URL.Scheme, origin.Scheme) || !sameHealthAuthority(req.URL.Host, origin.Host) {
+		return errors.New("health redirect would send pool identity outside the selected origin")
+	}
+	return nil
+}
+
+// sameHealthAuthority folds ASCII only: Unicode folding can equate different
+// IDNA destinations (such as Greek sigma and final sigma).
+func sameHealthAuthority(a, b string) bool {
+	// Interface-zone names are case-sensitive even though DNS names are not.
+	if strings.Contains(a, "%") || strings.Contains(b, "%") {
+		return a == b
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		x, y := a[i], b[i]
+		if x >= 'A' && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if y >= 'A' && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *healthChecker) start() *healthRun {

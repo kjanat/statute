@@ -90,7 +90,7 @@ func TestProbeHostPolicy(t *testing.T) {
 		t.Helper()
 		b := &backendState{backend: &resolved.Backend{Address: targetHost}}
 		b.markHealthy(true)
-		hc := newHealthChecker(cfg, []*backendState{b}, nil, host)
+		hc := newHealthChecker(cfg, []*backendState{b}, nil, host, false)
 		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
 		run.active.Store(true)
 		run.probe(context.Background(), b)

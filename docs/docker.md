@@ -410,7 +410,11 @@ matches no discovered service produces a deduplicated provider warning. Traefik'
 The transport's upstream client certificate is pool-owned too: proxy requests
 and active health probes present the same identity. An unreadable, malformed, or
 mismatched certificate/key pair rejects only the matched discovered service and
-keeps its routes fail-closed; sibling services continue serving.
+keeps its routes fail-closed; sibling services continue serving. With this identity
+configured, health-check redirects must retain the original URL scheme and
+authority, including port. A prohibited hop fails the probe before connecting;
+Host and TLS ServerName overrides do not widen the allowed destination. Explicit
+probe Host/Statuses continue to judge the initial response without following it.
 
 ## Traefik compatibility (`TraefikLabels()`)
 
