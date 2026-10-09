@@ -257,6 +257,17 @@ Changed resolved limits participate in normal Docker generation replacement.
 
 ## Buffered response limits
 
+Trailer announcements are deduplicated before buffered replay and metadata
+removal. Repeating or announcing nonexistent trailer names does not trigger a
+full header-map scan per name. Compression and 406 rejection cleanup use the same
+bounded-pass approach, including removal of values supplied after commitment.
+This preserves normal trailers and representation metadata ownership; it does
+not impose a new header-size limit. Existing transport header limits still apply.
+
+`go test -run '^$' -bench '^BenchmarkTrailerMetadataWork$' -benchmem .` exercises
+replay, stripping, compression and rejection with growing sets of ordinary
+headers and unique or repeated announced names.
+
 ETag and Retry default to **8 MiB per rendered response body** and a **64 MiB
 response-body allocation budget per compiled middleware instance**. Configure
 them independently:
