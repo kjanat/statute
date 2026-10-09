@@ -4,6 +4,7 @@ import { appendFileSync } from 'node:fs';
 
 export const ordinaryJobs = [
 	'test',
+	'format',
 	'lint',
 	'lifecycle_lint',
 	'discover_fuzz',
