@@ -341,7 +341,11 @@ func (s *server) buildMetricsServer(m resolved.Metrics) (*http.Server, error) {
 	return &http.Server{
 		Addr:              m.Addr,
 		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: s.cfg.Defaults.ReadHeaderTimeout,
+		ReadTimeout:       s.cfg.Defaults.ReadTimeout,
+		WriteTimeout:      s.cfg.Defaults.WriteTimeout,
+		IdleTimeout:       s.cfg.Defaults.IdleTimeout,
+		MaxHeaderBytes:    s.cfg.Defaults.MaxHeaderBytes,
 	}, nil
 }
 
@@ -368,7 +372,11 @@ func (s *server) buildHealthServer(h resolved.Health) *http.Server {
 	return &http.Server{
 		Addr:              h.Addr,
 		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: s.cfg.Defaults.ReadHeaderTimeout,
+		ReadTimeout:       s.cfg.Defaults.ReadTimeout,
+		WriteTimeout:      s.cfg.Defaults.WriteTimeout,
+		IdleTimeout:       s.cfg.Defaults.IdleTimeout,
+		MaxHeaderBytes:    s.cfg.Defaults.MaxHeaderBytes,
 	}
 }
 
