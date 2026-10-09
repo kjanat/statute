@@ -242,6 +242,14 @@ Which resolvers to list: the authoritative nameservers for the zone are the stro
 
 The resolved schema and `-export` output carry the normalised policy under each DNS-01 source, defaults filled in and durations in nanoseconds.
 
+`Export`, `-export`, and direct JSON encoding of the resolved configuration omit
+the DNS-01 `APIToken` field. The in-memory token remains available to the runtime.
+These JSON snapshots cannot restore that credential; supply it from the original
+configuration or secret source. This omission does not sanitize arbitrary
+user-supplied header values or URLs elsewhere in the configuration. Treat such
+snapshots as sensitive when those fields contain secrets. Rotate tokens exposed
+in exports or CI artifacts produced by older versions and restrict those artifacts.
+
 If you have many zones in the account, pin the zone explicitly to skip auto-discovery:
 
 ```go

@@ -10,7 +10,8 @@ import (
 
 // Export validates and resolves the surface configuration, then writes the
 // canonical resolved schema as JSON. Useful for diffing deployments and
-// snapshotting in CI without starting a server.
+// snapshotting in CI without starting a server. Cloudflare DNS-01 API tokens
+// are omitted; arbitrary user-supplied header values and URLs are not redacted.
 func Export(cfg Config, w io.Writer) error {
 	resolved, err := Resolve(cfg)
 	if err != nil {
