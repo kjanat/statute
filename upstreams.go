@@ -138,7 +138,9 @@ type HealthCheck struct {
 	// keeps the default 200-399 range. Each entry must be within 100-599.
 	// Setting Host or Statuses stops probes from following redirects, so
 	// the health endpoint's own status is what is judged; default probes
-	// follow redirects and judge the final response.
+	// follow redirects and judge the final response. With ClientCertificate,
+	// redirects must keep the original URL scheme and authority (including
+	// port); a prohibited redirect counts as a failed probe.
 	Statuses []int
 }
 

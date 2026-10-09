@@ -27,7 +27,7 @@ func TestHealthCheck_RecordTransitions(t *testing.T) {
 	}
 	b := &backendState{backend: &resolved.Backend{Address: "x:1"}}
 	b.markHealthy(true)
-	hc := newHealthChecker(cfg, []*backendState{b}, nil, "")
+	hc := newHealthChecker(cfg, []*backendState{b}, nil, "", false)
 	run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
 	run.active.Store(true)
 
@@ -73,7 +73,7 @@ func TestHealthCheckStatuses(t *testing.T) {
 		}
 		b := &backendState{backend: &resolved.Backend{Address: strings.TrimPrefix(srv.URL, "http://")}}
 		b.markHealthy(true)
-		hc := newHealthChecker(cfg, []*backendState{b}, nil, "")
+		hc := newHealthChecker(cfg, []*backendState{b}, nil, "", false)
 		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
 		run.active.Store(true)
 		run.probe(context.Background(), b)
@@ -125,7 +125,7 @@ func TestHealthCheckStatusesRedirect(t *testing.T) {
 		}
 		b := &backendState{backend: &resolved.Backend{Address: strings.TrimPrefix(srv.URL, "http://")}}
 		b.markHealthy(true)
-		hc := newHealthChecker(cfg, []*backendState{b}, nil, host)
+		hc := newHealthChecker(cfg, []*backendState{b}, nil, host, false)
 		run := &healthRun{checker: hc, successes: make(map[*backendState]int), failures: make(map[*backendState]int)}
 		run.active.Store(true)
 		run.probe(context.Background(), b)
@@ -163,7 +163,7 @@ func TestHealthCheckStatusesRedirect(t *testing.T) {
 func TestHealthCheck_DisabledIsInert(t *testing.T) {
 	t.Parallel()
 	cfg := resolved.HealthCheck{Enabled: false}
-	hc := newHealthChecker(cfg, nil, nil, "")
+	hc := newHealthChecker(cfg, nil, nil, "", false)
 	run := hc.start() // must not panic
 	run.stop()        // must not block; cancel is nil
 }
@@ -195,7 +195,7 @@ func TestHealthCheck_StopCancellationIsNotFailure(t *testing.T) {
 		Timeout:   time.Minute,
 		Healthy:   2,
 		Unhealthy: 1,
-	}, []*backendState{b}, nil, "")
+	}, []*backendState{b}, nil, "", false)
 
 	run := hc.start()
 	<-reached  // the probe is in flight, blocked at the backend
@@ -225,7 +225,7 @@ func TestHealthCheck_RestartResetsState(t *testing.T) {
 		Timeout:   time.Minute,
 		Healthy:   2,
 		Unhealthy: 1,
-	}, []*backendState{b}, nil, "")
+	}, []*backendState{b}, nil, "", false)
 
 	first := hc.start()
 	first.stop()
@@ -247,7 +247,7 @@ func TestHealthRun_StoppedGenerationCannotAffectRestart(t *testing.T) {
 	hc := newHealthChecker(resolved.HealthCheck{
 		Enabled: false, Path: "/healthz", Interval: time.Hour,
 		Timeout: time.Second, Healthy: 1, Unhealthy: 1,
-	}, []*backendState{b}, nil, "")
+	}, []*backendState{b}, nil, "", false)
 
 	first := hc.start()
 	first.stop()

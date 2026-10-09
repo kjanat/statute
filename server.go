@@ -1179,7 +1179,7 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 	}
 	// hc.start is owned by the caller (server.Start, or the docker
 	// provider for label-derived pools), not construction.
-	ph.hc = newHealthChecker(p.HealthCheck, all, transport, probeHost)
+	ph.hc = newHealthChecker(p.HealthCheck, all, transport, probeHost, p.Transport.ClientCertificate != nil)
 	return ph, nil
 }
 
