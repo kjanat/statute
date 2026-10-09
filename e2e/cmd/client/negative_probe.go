@@ -25,9 +25,9 @@ const (
 	clientSchemeHTTPS = "https"
 )
 
-// runProbeNegative proves absence of contact. Protocol, TLS and response failures
-// after contacting a listener are failures, rather than evidence of rollback.
-// The explicit tls-rejection expectation proves one particular remote TLS denial.
+// runProbeNegative requires absence of contact for the unavailable expectation.
+// Protocol, TLS and response failures after contact fail that expectation.
+// The explicit tls-rejection expectation requires the remote certificate-required alert.
 func runProbeNegative(args []string) error {
 	fs := flag.NewFlagSet("probe-negative", flag.ContinueOnError)
 	target := fs.String("url", "", "HTTP(S) URL to probe")

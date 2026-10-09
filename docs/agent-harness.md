@@ -120,8 +120,8 @@ patch to miss:
   or escaped paths lose the exemption; opaque captures and variadic aggregate
   identities are not guessed. A fresh handle stored once into its owner before
   launch in the same straight-line scope is a supported ownership transfer.
-  This bounded provenance check is independent of `SLC103`, not a general
-  proof of termination or arbitrary program behavior.
+  The check covers bounded local provenance independently of `SLC103`.
+  Termination and arbitrary program behavior fall outside its scope.
 - `SLC101` — a constructor calls `start`/`Start` on an object that also has a
   `stop`/`Shutdown`/`Close` lifecycle. Construction must not silently acquire
   background lifetime that failed `Start` cannot own.

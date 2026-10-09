@@ -1004,12 +1004,13 @@ SLC100's early-publication exemption must identify the exact server field and th
 completion signal joined by rollback, relative to the same startup attempt.
 An owner type alone cannot prove cleanup of sibling fields or instances.
 Unknown identity receives no exemption; SLC103 join obligations remain independent.
-Selected-path replacements and escapes invalidate descendants, not sibling fields.
+Selected-path replacements and escapes invalidate the affected path and its
+descendants. Sibling fields retain their identities.
 Only an unreassigned fresh handle stored once in an owner before publication in
 the same straight-line scope can certify an initial ownership transfer.
 Unknown helper escapes, opaque function captures and unsupported aggregate
-identities cannot supply provenance. This is a bounded local identity check,
-not a general proof of termination or arbitrary lifecycle code.
+identities cannot supply provenance. The check covers bounded local resource
+identity. Termination and arbitrary lifecycle code fall outside its scope.
 
 ## Observability
 

@@ -101,7 +101,7 @@ func (w *publicationWalker) resolve(expr ast.Expr, bindings publicationBindings)
 	return key, ok && !w.invalidated(key)
 }
 
-//nolint:gocyclo // exact identities require explicit AST and binding cases, not name/type shortcuts.
+//nolint:gocyclo // exact identity resolution handles each supported AST and binding form.
 func (w *publicationWalker) resolveRaw(expr ast.Expr, bindings publicationBindings) (groupKey, bool) {
 	switch e := ast.Unparen(expr).(type) {
 	case *ast.Ident:
@@ -152,8 +152,8 @@ func (w *publicationWalker) function(fn *types.Func, bindings publicationBinding
 
 // localBindings recognizes single-assignment aliases and the bounded ownership
 // transfer used by early health startup: a fresh local handle stored once into
-// the attempt before launch. Reassignments remain unknown, rather than merging
-// sibling resource identities.
+// the attempt before launch. Reassignment invalidates the alias; each sibling
+// resource retains its own identity.
 //
 //nolint:gocyclo // bounded transfer certification keeps declaration, ordering, writes and aliases in one proof.
 func (w *publicationWalker) localBindings(body *ast.BlockStmt, incoming publicationBindings) publicationBindings {

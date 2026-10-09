@@ -151,6 +151,9 @@ func TestRedirectRoutePlaceholders(t *testing.T) {
 		{"absolute path boundary", "https://trusted.example{path}?{query}", "http://old.example.com/a?@evil.example", "https://trusted.example/a?@evil.example"},
 		{"absolute request URI boundary", "https://trusted.example{request_uri}", "http://old.example.com/a?@evil.example", "https://trusted.example/a?@evil.example"},
 		{"relative query protocol relative", "{query}", "http://old.example.com/a?//evil.example/x", "/evil.example/x"},
+		{"relative query slash backslash", "{query}", "http://old.example.com/a?/\\evil.example/x", "/evil.example/x"},
+		{"relative query root", "{query}", "http://old.example.com/a/b?/", "/"},
+		{"relative query rooted path", "{query}", "http://old.example.com/a/b?/next?raw=1", "/next?raw=1"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -245,7 +245,7 @@ func withUpgradeHeaders(r *http.Request, w http.ResponseWriter) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), upgradeHeadersKey{}, state))
 }
 
-// Native upgrades commit through the hijacked connection rather than WriteHeader.
+// Native upgrade responses commit directly through the hijacked connection.
 func applyUpgradeHeaders(resp *http.Response) {
 	if resp.StatusCode != http.StatusSwitchingProtocols || resp.Request == nil {
 		return

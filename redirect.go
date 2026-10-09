@@ -180,10 +180,10 @@ func redirectRouteHandler(rd *resolved.Redirect) http.Handler {
 				loc += "?" + query
 			}
 		}
-		if relative && !strings.HasPrefix(loc, "/") {
-			// Mark the substituted value as a relative path before Redirect
-			// parses it. Its ordinary request-directory resolution then keeps
-			// scheme-shaped query values on this origin.
+		rooted := strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") && !strings.HasPrefix(loc, "/\\")
+		if relative && !rooted {
+			// Prefix relative paths before Redirect parses them. Request-directory
+			// resolution keeps scheme-shaped query values on the current origin.
 			loc = "./" + loc
 		}
 		http.Redirect(w, r, loc, rd.Status)
