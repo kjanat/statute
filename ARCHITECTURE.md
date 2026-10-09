@@ -146,6 +146,12 @@ and Retry invocation scope remain unchanged. The owned field is excluded from
 trailers, and normal return restores the effective committed ID across late
 producer writes to mutable buffered headers.
 
+RequestID clones only the request headers before writing its output, preserving
+the original listener view and live Body/Trailer ownership. Its request-local
+publication holder synchronizes writers and readers across Timeout and Retry.
+Access logging samples the latest published ID at handler exit without waiting
+for a timed-out producer; an ID not yet published is absent from that record.
+
 Request-header operations and path rewrites are special. They are hoisted to the
 route edge and applied once so downstream re-entry, especially `Retry`, cannot
 repeat them per attempt. Consequences that changes must preserve:

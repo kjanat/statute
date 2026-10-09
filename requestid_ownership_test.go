@@ -147,8 +147,8 @@ func TestRequestIDRetryAttemptOwnership(t *testing.T) {
 		if len(ids) != 2 || rec.Code != http.StatusOK {
 			t.Fatalf("attempts=%v status=%d", ids, rec.Code)
 		}
-		if (ids[0] != ids[1]) != retryOutside || holder.id != ids[1] {
-			t.Fatalf("retryOutside=%v ids=%v holder=%s", retryOutside, ids, holder.id)
+		if (ids[0] != ids[1]) != retryOutside || holder.load() != ids[1] {
+			t.Fatalf("retryOutside=%v ids=%v holder=%s", retryOutside, ids, holder.load())
 		}
 		assertOnlyRequestID(t, rec.Result().Header, defaultRequestIDHeader, ids[1])
 	}

@@ -44,7 +44,7 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 				return
 			}
 			entry := accessLogEntry(r, ww, start)
-			id := rid.id
+			id := rid.load()
 			if id == "" {
 				id = inherited
 			}
