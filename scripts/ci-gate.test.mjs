@@ -114,13 +114,16 @@ test('gate needs every CI job, including complete dynamic and reusable matrices'
 });
 
 test('format and lint are independent with setup-go owning the compiler', () => {
-	const { format, lint } = workflow('ci').jobs;
+	/** @type {Record<string, {steps: {uses?: string, run?: string, with?: Record<string, unknown>}[], needs?: unknown, env?: Record<string, string>}>} */
+	const jobs = workflow('ci').jobs;
+	const { format, lint } = jobs;
 	for (const job of [format, lint]) {
 		assert.equal(job.needs, undefined);
 		assert.equal(job.steps.filter(step => step.uses?.startsWith('actions/setup-go@')).length, 1);
 	}
-	assert.equal(format.env.MISE_DISABLE_TOOLS, 'go');
+	assert.equal(format.env?.MISE_DISABLE_TOOLS, 'go');
 	const mise = format.steps.find(step => step.uses?.startsWith('jdx/mise-action@'));
+	assert.ok(mise?.with);
 	assert.equal(mise.with.install_args, 'dprint tombi');
 	assert.equal(mise.with.add_shims_to_path, false);
 	assert.ok(format.steps.some(step => step.run === 'make fmt-check'));
