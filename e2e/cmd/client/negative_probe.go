@@ -50,6 +50,10 @@ func runProbeNegative(args []string) error {
 		return err
 	}
 	var contacted atomic.Bool
+	if *expect == probeTLSRejection && *proto != "h3" {
+		probeErr := negativeTCPRejection(u, *proto, tlsCfg, *timeout, &contacted)
+		return reportNegativeProbe(*target, *proto, *expect, contacted.Load(), probeErr)
+	}
 	transport, cleanup, err := negativeProbeTransport(u, *proto, tlsCfg, *timeout, &contacted)
 	if err != nil {
 		return err
@@ -64,16 +68,57 @@ func runProbeNegative(args []string) error {
 		resp.Body.Close()
 		return fmt.Errorf("probe-negative: %s answered over %s with status %d", *target, *proto, resp.StatusCode)
 	}
-	if !negativeProbeMatches(*expect, *proto, contacted.Load(), probeErr) {
+	return reportNegativeProbe(*target, *proto, *expect, contacted.Load(), probeErr)
+}
+
+func reportNegativeProbe(target, proto, expect string, contacted bool, probeErr error) error {
+	if !negativeProbeMatches(expect, proto, contacted, probeErr) {
 		return fmt.Errorf("probe-negative: %s did not establish %s over %s (contacted=%t): %w",
-			*target, *expect, *proto, contacted.Load(), probeErr)
+			target, expect, proto, contacted, probeErr)
 	}
 	event := "unreachable"
-	if *expect == probeTLSRejection {
+	if expect == probeTLSRejection {
 		event = "tls-rejected"
 	}
-	fmt.Printf(`{"event":%q,"url":%q,"proto":%q,"err":%q}`+"\n", event, *target, *proto, probeErr.Error())
+	fmt.Printf(`{"event":%q,"url":%q,"proto":%q,"err":%q}`+"\n", event, target, proto, probeErr.Error())
 	return nil
+}
+
+// TLS 1.3 client handshake completion precedes the server's client-certificate
+// decision. Read its alert without an HTTP write racing that rejection.
+func negativeTCPRejection(u *url.URL, proto string, cfg *tls.Config, timeout time.Duration, contacted *atomic.Bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	contacted.Store(true)
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+	cfg = cfg.Clone()
+	cfg.ServerName = u.Hostname()
+	cfg.NextProtos = []string{"http/1.1"}
+	if proto == "h2" {
+		cfg.NextProtos = []string{"h2"}
+	}
+	secure := tls.Client(conn, cfg)
+	if err := secure.HandshakeContext(ctx); err != nil {
+		return err
+	}
+	var data [1]byte
+	n, err := secure.Read(data[:])
+	if n != 0 {
+		return errors.New("probe-negative: TLS peer sent application data instead of rejecting the certificate")
+	}
+	return err
 }
 
 func validateNegativeProbe(target, proto, expect string, timeout time.Duration) (*url.URL, error) {

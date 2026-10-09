@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -142,6 +143,103 @@ func TestNegativeProbeTLSCertificateAndRejection(t *testing.T) {
 	}
 }
 
+func TestNegativeProbeTLSRejectionALPN(t *testing.T) {
+	cert, roots := probeCertificate(t)
+	for _, proto := range []string{"h1", "h2"} {
+		t.Run(proto, func(t *testing.T) {
+			ln := probeTCPListener(t)
+			offered := make(chan []string, 1)
+			done := make(chan struct{})
+			cfg := &tls.Config{
+				Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13,
+				ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{"h2", "http/1.1"},
+				GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+					offered <- slices.Clone(hello.SupportedProtos)
+					return nil, nil
+				},
+			}
+			go func() {
+				defer close(done)
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(time.Second))
+				_ = tls.Server(conn, cfg).Handshake()
+			}()
+			t.Cleanup(func() { ln.Close(); <-done })
+			err := runProbeNegative([]string{
+				"-url", "https://" + ln.Addr().String(), "-proto", proto,
+				"-expect", "tls-rejection", "-roots", roots, "-timeout", "500ms",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "http/1.1"
+			if proto == "h2" {
+				want = "h2"
+			}
+			select {
+			case got := <-offered:
+				if !slices.Equal(got, []string{want}) {
+					t.Fatalf("offered ALPN %q, want only %q", got, want)
+				}
+			default:
+				t.Fatal("no TLS ClientHello observed")
+			}
+		})
+	}
+}
+
+func TestNegativeProbeAcceptedTLSNeverWritesHTTP(t *testing.T) {
+	cert, roots := probeCertificate(t)
+	for _, proto := range []string{"h1", "h2"} {
+		for _, behavior := range []string{"eof", "data", "stall"} {
+			t.Run(proto+"/"+behavior, func(t *testing.T) {
+				ln := probeTCPListener(t)
+				result := make(chan error, 1)
+				go func() {
+					conn, err := ln.Accept()
+					if err != nil {
+						result <- err
+						return
+					}
+					defer conn.Close()
+					_ = conn.SetDeadline(time.Now().Add(time.Second))
+					secure := tls.Server(conn, &tls.Config{
+						Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13,
+						NextProtos: []string{"h2", "http/1.1"},
+					})
+					if err := secure.Handshake(); err != nil {
+						result <- err
+						return
+					}
+					switch behavior {
+					case "data":
+						_, err = secure.Write([]byte("x"))
+					case "stall":
+						var buf [1]byte
+						if n, _ := secure.Read(buf[:]); n != 0 {
+							err = errors.New("probe sent HTTP application data")
+						}
+					}
+					result <- err
+				}()
+				if err := runProbeNegative([]string{
+					"-url", "https://" + ln.Addr().String(), "-proto", proto,
+					"-expect", "tls-rejection", "-roots", roots, "-timeout", "200ms",
+				}); err == nil {
+					t.Error("accepting TLS peer passed rejection expectation")
+				}
+				if err := <-result; err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
 func TestNegativeProbeQUICClosedAndAnsweringPackets(t *testing.T) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -234,6 +332,10 @@ func TestNegativeProbeFailureClassification(t *testing.T) {
 		&quic.TransportError{Remote: false, ErrorCode: 0x100 + 116},
 		&quic.TransportError{Remote: true, ErrorCode: 0x100 + 40},
 		&net.OpError{Op: "remote error", Err: errors.New("tls: handshake failure")},
+		io.EOF,
+		&net.OpError{Op: "write", Err: syscall.EPIPE},
+		&net.OpError{Op: "read", Err: syscall.ECONNRESET},
+		&net.OpError{Op: "read", Err: os.ErrDeadlineExceeded},
 	} {
 		if negativeProbeMatches("tls-rejection", "h3", true, err) {
 			t.Errorf("unrelated TLS error passed: %v", err)

@@ -157,6 +157,9 @@ Missing-client-certificate scenarios use `-expect tls-rejection` with HTTPS
 and trusted server roots. This requires the peer's certificate-required TLS
 alert; it rejects an unavailable listener, server-certificate verification
 errors, generic handshake failures and successful responses.
+For HTTP/1 and HTTP/2, the probe offers the requested ALPN and reads the TLS
+alert directly without sending HTTP data: TLS 1.3 client handshake completion
+alone does not confirm that the server accepted the client's certificate.
 
 Shutdown scenarios prove the exact container exits successfully after serving,
 and the in-flight scenario also proves the response completes during drain.
