@@ -179,6 +179,12 @@ page contents never enter the access record. Unit tests cover pre-header and
 informational-only aborts, partial writer failures, optimized/fallback body copies,
 normal responses, unchanged panic propagation, and filter/sampling precedence.
 
+The subprocess harness retries confirmed address-in-use failures before readiness,
+with at most five attempts sharing the original deadline. It joins each failed
+child before selecting new ports; other startup failures fail immediately with
+the child's logs. `TestHTTPStatuteMetricsPortCollision` holds the requested metrics
+port open and proves that the replacement serves both content and metrics.
+
 `TestHTTPStatuteMiddlewareInteractions` launches a separate Statute process and
 observes it through HTTP and its readiness/exit logs. The process routes private
 reverse proxies through existing `Handle` routes. It uses the real Cache, Retry,

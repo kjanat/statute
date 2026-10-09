@@ -15,7 +15,7 @@
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
   "rebaseWhen": "conflicted",
-  "postUpdateOptions": ["gomodTidy"],
+  "postUpdateOptions": ["gomodTidyAll"],
   "labels": ["dependencies"],
   "ignorePaths": [
     "**/node_modules/**",
@@ -99,7 +99,7 @@
       "description": "A Go major bump can move the import path, so rewrite imports before tidying",
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["major"],
-      "postUpdateOptions": ["gomodUpdateImportPaths", "gomodTidy"]
+      "postUpdateOptions": ["gomodUpdateImportPaths", "gomodTidyAll"]
     },
     {
       "description": "GitHub-hosted runner labels are not a reproducible artifact and pinning them only adds churn; the github-actions manager extracts them under the github-runners datasource",

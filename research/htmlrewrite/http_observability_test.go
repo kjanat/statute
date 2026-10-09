@@ -59,7 +59,36 @@ func TestHTTPStatuteAbortedStreamObservation(t *testing.T) {
 	if strings.Contains(logs.String(), "private-page-content") {
 		t.Fatal("response content leaked into access logs")
 	}
-	assertProcessAbortMetrics(t, client, metricsAddr, len(prefix))
+	assertProcessAbortMetrics(t, client, logs.metricsAddr, len(prefix))
+}
+
+func TestHTTPStatuteMetricsPortCollision(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ready")
+	}))
+	t.Cleanup(origin.Close)
+	endpoint, logs := startHTTPStatuteWithMetrics(t, origin.URL, ln.Addr().String())
+	if logs.metricsAddr == ln.Addr().String() {
+		t.Fatal("startup reused the occupied metrics address")
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	t.Cleanup(client.CloseIdleConnections)
+	for _, url := range []string{endpoint, "http://" + logs.metricsAddr + "/metrics"} {
+		res, err := client.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		if err != nil || res.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status=%d error=%v", url, res.StatusCode, err)
+		}
+	}
 }
 
 func awaitProcessAccessLog(t *testing.T, logs *processOutput) map[string]any {

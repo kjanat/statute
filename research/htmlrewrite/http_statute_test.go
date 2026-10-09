@@ -149,6 +149,33 @@ func startHTTPStatuteConfigured(t *testing.T, origin, metricsAddr string, env []
 
 func startHTTPStatuteBudget(t *testing.T, origin, metricsAddr string, env []string, budget time.Duration) (string, *processOutput) {
 	t.Helper()
+	deadline := time.Now().Add(budget)
+	for attempt := range 5 {
+		endpoint, output, collision := tryHTTPStatute(t, origin, metricsAddr, env, time.Until(deadline))
+		if !collision {
+			return endpoint, output
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		if metricsAddr != "" {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			metricsAddr = ln.Addr().String()
+			if err := ln.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Logf("retrying pre-ready port collision (attempt %d)", attempt+1)
+	}
+	t.Fatal("Statute could not bind after bounded startup attempts")
+	return "", nil
+}
+
+func tryHTTPStatute(t *testing.T, origin, metricsAddr string, env []string, budget time.Duration) (string, *processOutput, bool) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +217,21 @@ func startHTTPStatuteBudget(t *testing.T, origin, metricsAddr string, env []stri
 		}
 		logs <- lines.String()
 	}()
+	select {
+	case <-ready:
+	case logText := <-logs:
+		err := cmd.Wait()
+		cancel()
+		if err != nil && strings.Contains(logText, "statute: server start:") && strings.Contains(logText, "bind: address already in use") {
+			return "", nil, true
+		}
+		t.Fatalf("Statute exited before readiness: %v\n%s\n%s", err, logText, stdout.String())
+	case <-ctx.Done():
+		cancel()
+		logText := <-logs
+		err := cmd.Wait()
+		t.Fatalf("Statute did not become ready: %v\n%s\n%s", err, logText, stdout.String())
+	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			// Failed assertions may precede the HTTP shutdown request. Kill the
@@ -208,18 +250,15 @@ func startHTTPStatuteBudget(t *testing.T, origin, metricsAddr string, env []stri
 			t.Errorf("Statute process: %v\n%s\n%s", err, logText, stdout.String())
 		}
 	})
-	select {
-	case <-ready:
-	case <-ctx.Done():
-		t.Fatal("Statute did not become ready")
-	}
-	return "http://" + addr, &stdout
+	stdout.metricsAddr = metricsAddr
+	return "http://" + addr, &stdout, false
 }
 
 type processOutput struct {
-	pid int
-	mu  sync.Mutex
-	buf bytes.Buffer
+	metricsAddr string
+	pid         int
+	mu          sync.Mutex
+	buf         bytes.Buffer
 }
 
 func (o *processOutput) Write(p []byte) (int, error) {

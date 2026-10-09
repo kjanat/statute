@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Synchronize RequestID publication across timed-out handlers and keep its downstream header mutations private, preventing races with listener access logging. Preserve live request trailers and select Retry attempt IDs from the original inbound headers.
 
+### Fixed
+
+- Separate CI formatting and linting while requiring both checks; avoid mixed Go toolchains during formatting and tidy local replacement consumers in Renovate dependency updates.
+
 ## [0.8.0] - 2026-10-08
 
 This release adds native fallback routes and closes the cache, middleware, and Docker policy gaps tracked in [#152](https://github.com/kjanat/statute/issues/152). It introduces finite resource defaults and stricter configuration validation. Review the [upgrade guide](https://github.com/kjanat/statute/blob/v0.8.0/docs/upgrading-to-v0.8.md) before upgrading from v0.7.x.
