@@ -171,6 +171,16 @@ Use `go tool pprof http://localhost:9090/debug/pprof/profile` for live profiling
 
 ## Health endpoint
 
+Health and metrics listeners inherit `Defaults.ReadHeaderTimeout`, `ReadTimeout`,
+`WriteTimeout`, `IdleTimeout`, and `MaxHeaderBytes`, just like content listeners.
+The defaults include a five-second header timeout, 30-second write timeout,
+120-second idle timeout and 1 MiB header limit. `ReadTimeout` defaults to zero;
+configure a nonzero value when incomplete request bodies must time out. Explicit
+zero durations retain their normal Go HTTP server semantics. The standard Go
+CPU, trace and delta-profile handlers extend a positive write deadline by the
+requested collection duration, so longer profiles do not require increasing
+`WriteTimeout` just to cover collection time.
+
 ```go
 Observability: statute.Observability{
     Health: statute.Health(":8081", "/healthz"),
