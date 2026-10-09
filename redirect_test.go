@@ -51,6 +51,11 @@ func TestResolveRedirectErrors(t *testing.T) {
 		{"unknown placeholder", redirectConfig("/new/{foo}", 301), `unknown placeholder "{foo}"`},
 		{"unclosed placeholder", redirectConfig("/new/{path", 301), "unclosed placeholder"},
 		{"header injection", redirectConfig("/new\r\nSet-Cookie: x", 301), "invalid character"},
+		{"query in authority", redirectConfig("https://trusted.example{query}", 301), "authority"},
+		{"query before authority slash", redirectConfig("https://{host}{query}/", 301), "authority"},
+		{"query after scheme", redirectConfig("https:{query}", 301), "authority"},
+		{"query after incomplete authority separator", redirectConfig("https:/{query}", 301), "authority"},
+		{"query after empty authority", redirectConfig("https:///{query}", 301), "authority"},
 		{
 			"redirect plus proxy",
 			Config{
@@ -136,6 +141,16 @@ func TestRedirectRoutePlaceholders(t *testing.T) {
 		{"query recombined", "/search?{query}&from=old", "http://old.example.com/find?q=x", "/search?q=x&from=old"},
 		{"host carried, port stripped", "https://{host}/moved{path}", "http://old.example.com:8080/a", "https://old.example.com/moved/a"},
 		{"escaped path stays escaped", "https://new.example.com{path}", "http://old.example.com/a%2Fb", "https://new.example.com/a%2Fb"},
+		{"relative backslash", "{query}", "http://old.example.com/?\\evil.example/x", "/%5Cevil.example/x"},
+		{"relative traversal backslash", "{query}", "http://old.example.com/a?../\\evil.example/x", "/%5Cevil.example/x"},
+		{"relative query cannot introduce scheme", "{query}", "http://old.example.com/a/b?https://evil.example/x", "/a/https:/evil.example/x"},
+		{"relative query cannot introduce opaque scheme", "{query}", "http://old.example.com/a/b?javascript:alert(1)", "/a/javascript:alert(1)"},
+		{"relative host plus query cannot introduce scheme", "{host}{query}", "http://old.example.com/a/b?:https://evil.example", "/a/old.example.com:https:/evil.example"},
+		{"relative fixed path semantics", "../next?{query}", "http://old.example.com/a/b?q=1", "/next?q=1"},
+		{"explicit query remains raw", "https://trusted.example/?{query}", "http://old.example.com/a?@evil.example/https://next", "https://trusted.example/?@evil.example/https://next"},
+		{"absolute path boundary", "https://trusted.example{path}?{query}", "http://old.example.com/a?@evil.example", "https://trusted.example/a?@evil.example"},
+		{"absolute request URI boundary", "https://trusted.example{request_uri}", "http://old.example.com/a?@evil.example", "https://trusted.example/a?@evil.example"},
+		{"relative query protocol relative", "{query}", "http://old.example.com/a?//evil.example/x", "/evil.example/x"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

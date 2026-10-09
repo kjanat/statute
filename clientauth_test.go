@@ -155,18 +155,34 @@ func TestClientAuthAutomaticACMERequiresHTTPFallback(t *testing.T) {
 	for _, mode := range []ClientAuthMode{RequireAnyClientCert, RequireAndVerifyClientCert} {
 		cfg := auto(mode)
 		_, err := Resolve(cfg)
-		if err == nil || !strings.Contains(err.Error(), "requires a plain HTTP listener") {
+		if err == nil || !strings.Contains(err.Error(), "requires a plain HTTP listener") || !strings.Contains(err.Error(), `statute.HTTP(":80").RedirectTo("https")`) || !strings.Contains(err.Error(), "DNS-01") {
 			t.Errorf("mode %d without HTTP: %v", mode, err)
 		}
-		cfg.Listeners = append(cfg.Listeners, HTTP(":80"))
-		if _, err := Resolve(cfg); err != nil {
-			t.Errorf("mode %d with HTTP: %v", mode, err)
+		for _, listener := range []*Listener{HTTP(":80"), HTTP(":80").RedirectTo("https")} {
+			cfg := auto(mode)
+			cfg.Listeners = append(cfg.Listeners, listener)
+			if _, err := Resolve(cfg); err != nil {
+				t.Errorf("mode %d with HTTP: %v", mode, err)
+			}
 		}
 	}
 	for _, mode := range []ClientAuthMode{RequestClientCert, VerifyClientCertIfGiven} {
 		if _, err := Resolve(auto(mode)); err != nil {
 			t.Errorf("non-requiring mode %d: %v", mode, err)
 		}
+	}
+}
+
+func TestHTTP01DiagnosticRecommendsRedirectListener(t *testing.T) {
+	t.Parallel()
+	cfg := tlsRouterConfig(AutoTLS("mtls.example").Email("ops@example.test").Storage("/var/lib/statute/acme").HTTP01())
+	_, err := Resolve(cfg)
+	if err == nil || !strings.Contains(err.Error(), `statute.HTTP(":80").RedirectTo("https")`) || !strings.Contains(err.Error(), "DNS-01") {
+		t.Fatalf("HTTP-01 without HTTP: %v", err)
+	}
+	cfg.Listeners = append(cfg.Listeners, HTTP(":80").RedirectTo("https"))
+	if _, err := Resolve(cfg); err != nil {
+		t.Fatalf("HTTP-01 with redirect-only HTTP: %v", err)
 	}
 }
 

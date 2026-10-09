@@ -17,8 +17,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/quic-go/quic-go/http3"
 )
 
 // tlsConfigFor builds the client TLS policy for one target: an explicit
@@ -97,64 +95,6 @@ func runGet(args []string) error {
 // refused or timed-out connection is the pass condition. It proves a
 // released listener (TCP or QUIC/UDP) and a failed startup that never
 // exposed a route.
-func runProbeNegative(args []string) error {
-	fs := flag.NewFlagSet("probe-negative", flag.ExitOnError)
-	target := fs.String("url", "", "URL that must not answer")
-	proto := fs.String("proto", "h1", "h1 or h3")
-	timeout := fs.Duration("timeout", 3*time.Second, "per-attempt timeout")
-	roots := fs.String("roots", "", "PEM roots for HTTPS targets")
-	fs.Parse(args)
-	if *target == "" {
-		return errors.New("probe-negative: -url required")
-	}
-	tlsCfg, err := tlsConfigFor(*roots, "", "", "")
-	if err != nil {
-		return err
-	}
-	// A redirect would prove some other endpoint answered, not this one.
-	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	var probeErr error
-	switch *proto {
-	case "h3":
-		tr := &http3.Transport{TLSClientConfig: tlsCfg}
-		defer tr.Close()
-		client := &http.Client{Timeout: *timeout, Transport: tr, CheckRedirect: noRedirect}
-		probeErr = drainGet(client, *target)
-	case "h2":
-		client := &http.Client{
-			Timeout:       *timeout,
-			Transport:     &http.Transport{TLSClientConfig: tlsCfg, ForceAttemptHTTP2: true},
-			CheckRedirect: noRedirect,
-		}
-		probeErr = drainGet(client, *target)
-	case "h1":
-		client := &http.Client{
-			Timeout:       *timeout,
-			Transport:     &http.Transport{TLSClientConfig: tlsCfg},
-			CheckRedirect: noRedirect,
-		}
-		probeErr = drainGet(client, *target)
-	default:
-		return fmt.Errorf("probe-negative: unknown proto %q", *proto)
-	}
-	if probeErr == nil {
-		return fmt.Errorf("probe-negative: %s unexpectedly answered over %s", *target, *proto)
-	}
-	fmt.Printf(`{"event":"unreachable","url":%q,"proto":%q,"err":%q}`+"\n", *target, *proto, probeErr.Error())
-	return nil
-}
-
-func drainGet(client *http.Client, target string) error {
-	resp, err := get(client, target)
-	if err != nil {
-		return err
-	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	return nil
-}
-
-// runFetchRoots downloads a CA root PEM from inside the network —
 // Pebble's per-run issuance root — so a later plan can verify the
 // certificates Statute serves. The management endpoint's own TLS is
 // self-signed, hence the insecure toggle; the fetched root is then

@@ -43,6 +43,8 @@ func TestProxyUpstreamHostPolicies(t *testing.T) {
 		{"zero value is the default", UpstreamHost{}, "client.example.com"},
 		{"target host", TargetHost, targetHost},
 		{"explicit value", HostValue("api.internal.example"), "api.internal.example"},
+		{"Unicode value uses wire Punycode", HostValue("bücher.example:8443"), "xn--bcher-kva.example:8443"},
+		{"Go-compatible underscore keeps spelling", HostValue("API_internal:8443"), "API_internal:8443"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -134,6 +136,8 @@ func TestProbeHostPrecedence(t *testing.T) {
 		{"client host, override", ClientHost, probeOverride, probeOverride, "client.example.com"},
 		{"target host, override", TargetHost, probeOverride, probeOverride, "@target"},
 		{"explicit host, override", HostValue("pool.internal.example"), probeOverride, probeOverride, "pool.internal.example"},
+		{"Unicode pool host", HostValue("bücher.example:8443"), "", "xn--bcher-kva.example:8443", "xn--bcher-kva.example:8443"},
+		{"Unicode probe override", HostValue("pool.internal.example"), "bücher.example:8443", "xn--bcher-kva.example:8443", "pool.internal.example"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -267,5 +271,76 @@ func TestUpstreamHostString(t *testing.T) {
 		if got := u.String(); got != want {
 			t.Errorf("String: got %q, want %q", got, want)
 		}
+	}
+}
+
+func TestConfiguredHostValidationSharedBoundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		value string
+		valid bool
+	}{
+		{"api.internal:8443", true},
+		{"MiXeD.Example.", true},
+		{"api_internal:service", true},
+		{"[::1]:8443", true},
+		{"bücher.example:8443", true},
+		{"bad host", false},
+		{"bad\thost", false},
+		{" api.internal", false},
+		{"api.internal ", false},
+		{"api.internal/path", false},
+		{"api.internal\\path", false},
+		{"user@api.internal", false},
+		{"api.internal?query", false},
+		{"api.internal#fragment", false},
+		{"api.internal\r\nInjected: yes", false},
+		{"api.internal\x00", false},
+		{"api.internal\x01", false},
+		{"api.internal\x7f", false},
+		{"\xff.example", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Parallel()
+			for _, probe := range []bool{false, true} {
+				policy := PoolPolicy{UpstreamHost: HostValue(tc.value)}
+				if probe {
+					policy = PoolPolicy{HealthCheck: HealthCheck{Path: "/healthz", Host: tc.value}}
+				}
+				cfg := hostPoolConfig("http://127.0.0.1:9001", policy.UpstreamHost)
+				pool := cfg.Upstreams["api"]
+				pool.HealthCheck = policy.HealthCheck
+				cfg.Upstreams["api"] = pool
+				for _, docker := range []bool{false, true} {
+					if docker {
+						cfg = Config{Listeners: Listeners{HTTP(":0")}, Docker: Docker().PoolPolicy("api", policy)}
+					}
+					r, err := Resolve(cfg)
+					if !tc.valid {
+						if err == nil {
+							t.Errorf("probe=%v docker=%v: invalid Host %q resolved", probe, docker, tc.value)
+						}
+						continue
+					}
+					if err != nil {
+						t.Errorf("probe=%v docker=%v: valid Host %q: %v", probe, docker, tc.value, err)
+						continue
+					}
+					host := r.Upstreams["api"]
+					if docker {
+						p := r.Docker.PoolPolicy["api"]
+						host = &resolved.Pool{HostValue: p.HostValue, HealthCheck: p.HealthCheck}
+					}
+					got := host.HostValue
+					if probe {
+						got = host.HealthCheck.Host
+					}
+					if got != tc.value {
+						t.Errorf("probe=%v docker=%v: Host spelling %q, want %q", probe, docker, got, tc.value)
+					}
+				}
+			}
+		})
 	}
 }

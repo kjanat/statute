@@ -50,6 +50,7 @@ type cacheCommitObserver struct {
 	observation *cacheObservation
 	committed   time.Time
 	snapshot    cacheFreshness
+	multiplexed bool
 }
 
 func (w *cacheCommitObserver) capture() {
@@ -83,6 +84,9 @@ func (w *cacheCommitObserver) finish() {
 }
 
 func (w *cacheCommitObserver) WriteHeader(status int) {
+	if status == http.StatusSwitchingProtocols && w.multiplexed {
+		return
+	}
 	if status >= 200 || status == http.StatusSwitchingProtocols {
 		w.capture()
 	}
@@ -112,7 +116,7 @@ func observeCacheCommit(next http.Handler, w http.ResponseWriter, r *http.Reques
 		next.ServeHTTP(w, r)
 		return
 	}
-	observer := &cacheCommitObserver{ResponseWriter: w, observation: o}
+	observer := &cacheCommitObserver{ResponseWriter: w, observation: o, multiplexed: r.ProtoMajor >= 2}
 	if timeout {
 		next.ServeHTTP(cacheTimeoutObserver{observer}, r)
 	} else {

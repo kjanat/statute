@@ -38,6 +38,13 @@ statute.HTTPS(":443",
 
 `BehindCloudflare()` is independent of the cert mode. Use it whenever Cloudflare proxies traffic to the origin, regardless of how certs are issued.
 
+Use the redirect-only HTTP listener shown above when HTTPS enforces client
+certificates, including Authenticated Origin Pulls. Pending HTTP-01 challenge
+responses answer before its redirect; ordinary traffic continues to HTTPS.
+A bare `HTTP(":80")` intentionally serves application routes without the HTTPS
+listener's client-certificate policy. Pinning `HTTP01()` still requires HTTP;
+DNS-01 lets you omit the HTTP listener entirely.
+
 ## Why Cloudflare requires special handling
 
 Cloudflare's proxy ("orange-cloud" mode) terminates TLS at the edge and re-encrypts to the origin. This breaks two assumptions the default ACME and request-handling paths make.

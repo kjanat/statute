@@ -3,6 +3,7 @@ package statute
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"statute.kjanat.dev/internal/parse"
@@ -18,6 +19,8 @@ var redirectStatuses = map[int]bool{
 	http.StatusTemporaryRedirect: true, // 307
 	http.StatusPermanentRedirect: true, // 308
 }
+
+var redirectScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 
 // The whitelisted template vocabulary. redirectPlaceholderNames is the
 // order error messages list it in.
@@ -80,7 +83,11 @@ func resolveRedirect(target string, status int) (*resolved.Redirect, error) {
 	if _, err := parse.HeaderValue(target); err != nil {
 		return nil, fmt.Errorf("redirect_to: %w", err)
 	}
-	if _, err := parseRedirectTarget(target); err != nil {
+	segs, err := parseRedirectTarget(target)
+	if err != nil {
+		return nil, fmt.Errorf("redirect_to: %w", err)
+	}
+	if err := validateRedirectAuthority(target, segs); err != nil {
 		return nil, fmt.Errorf("redirect_to: %w", err)
 	}
 	if !redirectStatuses[status] {
@@ -89,13 +96,65 @@ func resolveRedirect(target string, status int) (*resolved.Redirect, error) {
 	return &resolved.Redirect{Target: target, Status: status}, nil
 }
 
+// validateRedirectAuthority prevents raw query data from supplying userinfo,
+// a port or a different host. A path placeholder supplies the leading slash
+// that ends the authority, so existing fixed-host + path templates remain valid.
+//
+//nolint:gocyclo // authority boundaries must distinguish fixed hosts, placeholders and literal delimiters.
+func validateRedirectAuthority(target string, segs []redirectSegment) error {
+	scheme := redirectScheme.FindString(target)
+	if scheme == "" {
+		return nil
+	}
+	hasQuery := false
+	for _, seg := range segs {
+		hasQuery = hasQuery || seg.placeholder == phQuery
+	}
+	if !hasQuery {
+		return nil
+	}
+	if !strings.HasPrefix(target[len(scheme):], "//") {
+		return fmt.Errorf("{query} requires an unambiguous redirect authority and path or '?' boundary")
+	}
+	hasHost := false
+	for i, seg := range segs {
+		if seg.placeholder == phQuery {
+			return fmt.Errorf("{query} cannot appear in a redirect authority; put it after a path or '?' boundary")
+		}
+		if seg.placeholder == phPath || seg.placeholder == phRequestURI {
+			if hasHost {
+				return nil
+			}
+			break
+		}
+		if seg.placeholder == phHost {
+			hasHost = true
+		}
+		literal := seg.literal
+		if i == 0 {
+			literal = strings.TrimPrefix(literal[len(scheme):], "//")
+		}
+		if boundary := strings.IndexAny(literal, "/?#"); boundary >= 0 {
+			if hasHost || boundary > 0 {
+				return nil
+			}
+			break
+		}
+		hasHost = hasHost || literal != ""
+	}
+	return fmt.Errorf("{query} requires a nonempty redirect authority before a path or '?' boundary")
+}
+
 // redirectRouteHandler answers every request with the configured redirect,
 // substituting the target's placeholders from the live request. The values
 // come out of net/http's request parsing — the escaped path, the raw query,
 // and the validated Host — so a client cannot smuggle header-breaking bytes
 // into the Location it is sent to.
+//
+//nolint:gocyclo // substitution and relative-path normalization form one ordered redirect boundary.
 func redirectRouteHandler(rd *resolved.Redirect) http.Handler {
 	segs, _ := parseRedirectTarget(rd.Target) // validated at resolve time
+	relative := !redirectScheme.MatchString(rd.Target)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var b strings.Builder
 		for _, seg := range segs {
@@ -112,7 +171,22 @@ func redirectRouteHandler(rd *resolved.Redirect) http.Handler {
 				b.WriteString(stripPort(r.Host))
 			}
 		}
-		http.Redirect(w, r, safeRedirectLocation(b.String()), rd.Status)
+		loc := safeRedirectLocation(b.String())
+		if relative {
+			pathPart, query, hasQuery := strings.Cut(loc, "?")
+			pathPart = strings.ReplaceAll(pathPart, "\\", "%5C")
+			loc = pathPart
+			if hasQuery {
+				loc += "?" + query
+			}
+		}
+		if relative && !strings.HasPrefix(loc, "/") {
+			// Mark the substituted value as a relative path before Redirect
+			// parses it. Its ordinary request-directory resolution then keeps
+			// scheme-shaped query values on this origin.
+			loc = "./" + loc
+		}
+		http.Redirect(w, r, loc, rd.Status)
 	})
 }
 

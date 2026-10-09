@@ -29,7 +29,7 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ww := &statusRecorder{ResponseWriter: w, status: 200}
+		ww := &statusRecorder{ResponseWriter: w, status: 200, multiplexed: r.ProtoMajor >= 2}
 		// Direct composition below the RequestID middleware (as unit
 		// fixtures do) finds the value already in the inbound context.
 		inherited := requestIDFromContext(r.Context())

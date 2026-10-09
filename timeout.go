@@ -55,6 +55,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.duration)
 	defer cancel()
 	buffer := newLimitedResponseBuffer(h.bodyLimit)
+	buffer.multiplexed = r.ProtoMajor >= 2
 	buffer.budget, buffer.cancel = h.budget, cancel
 	tw := &timeoutResponseWriter{buffer: buffer, ctx: ctx, done: make(chan struct{}), failed: make(chan struct{})}
 	defer tw.finishCaller()

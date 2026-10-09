@@ -99,6 +99,11 @@ A route action is mutually exclusive with the other route actions. When adding a
 new action, update the complete current action set rather than copying an older
 binary/three-way model from a stale plan.
 
+Redirect targets resolve once. Raw query substitution cannot form an explicit
+URL authority. A relative template stays same-origin after substitution and
+path normalization, including scheme-like and backslash-containing input.
+Explicit scheme/host templates retain their declared authority semantics.
+
 ## Middleware
 
 Response-trailer processing deduplicates case-folded names before scanning a
@@ -106,6 +111,19 @@ header map. Buffered replay, bodyless stripping, compression and rejection
 cleanup must not rescan all headers per untrusted declaration. Per-response sets
 preserve case aliases, late trailers, and representation-owner exclusions without
 adding shared state or changing response semantics.
+
+Native proxy upgrade handshakes apply route response-header operations at their
+alternate commitment boundary before the connection is hijacked. The attempt
+merges middleware and upstream headers privately, applies ordered operations
+once, and prevents the proxy from merging them twice. Failed upgrades restore
+the original middleware headers before ordinary error commitment. Policy stays
+request- and route-owned, including buffered writers and shared pools. Custom
+handlers writing raw bytes to a hijacked connection retain ownership of those bytes.
+
+The native attempt retains the upstream duplex body's cleanup obligation until
+a successful upgrade handoff. Validation or downstream Hijacker failures close it.
+Rejecting a valid backend handshake due to route policy or downstream limitations
+is not passive-health evidence against the shared backend pool.
 
 Middleware declaration order is semantic: the first declared middleware is the
 outermost ordinary wrapper.
@@ -859,6 +877,18 @@ create a second transport or health implementation.
 where meaningful, active probes. Any future probe-specific Host override must
 define precedence explicitly instead of silently creating two competing policies.
 
+Configured pool and probe Host values must survive Go's outgoing Host validation.
+Resolve checks their wire-compatible form without changing the original spelling
+or imposing a separate DNS grammar. Invalid explicit policy cannot silently turn
+into an empty Host and select the backend's default virtual host.
+
+Passive health observes raw upstream body-read errors as well as response statuses
+and transport failures. One request-local attempt records at most one failure
+into its pinned generation. Normal EOF, client cancellation, downstream write
+errors and response transformation failures do not supply backend evidence.
+Upgrade bodies retain their duplex capability and are not wrapped. Existing
+window recovery, degraded selection and body-copy abort behavior remain unchanged.
+
 Health is backend state. When passive health is added or changed, define whether
 failures are consecutive or windowed, whether Retry attempts count per backend
 attempt or only by final client-visible outcome, how recovery happens, and how the
@@ -893,6 +923,11 @@ An ACME TLS-ALPN-01 validator presents no client certificate. A client-auth mode
 that requires one therefore suppresses the challenge ALPN and needs a plain HTTP
 listener when an automatic source is present, allowing autocert's HTTP-01 fallback.
 Pinned HTTP-01 and DNS-01 sources keep their existing challenge ownership.
+
+HTTP-01 companions for authenticated HTTPS should redirect ordinary HTTP content
+to HTTPS while serving challenge tokens. Bare HTTP intentionally serves the common
+router without the HTTPS listener's client-auth policy; resolver guidance must make
+the redirect-only companion explicit. DNS-01 needs no HTTP listener.
 
 Automatic challenge selection uses the shared autocert manager. Pinned HTTP-01 and
 DNS-01 sources use in-tree managers. Their lifecycle and storage are distinct; do
@@ -965,6 +1000,17 @@ If a PR claims transactional or retryable startup, tests must prove both resourc
 release after failure and successful serving after retry. A nil return from the
 second `Start` is insufficient.
 
+SLC100's early-publication exemption must identify the exact server field and the
+completion signal joined by rollback, relative to the same startup attempt.
+An owner type alone cannot prove cleanup of sibling fields or instances.
+Unknown identity receives no exemption; SLC103 join obligations remain independent.
+Selected-path replacements and escapes invalidate descendants, not sibling fields.
+Only an unreassigned fresh handle stored once in an owner before publication in
+the same straight-line scope can certify an initial ownership transfer.
+Unknown helper escapes, opaque function captures and unsupported aggregate
+identities cannot supply provenance. This is a bounded local identity check,
+not a general proof of termination or arbitrary lifecycle code.
+
 ## Observability
 
 Docker workload diagnostics are owned by the Docker layer. Provider-lifetime
@@ -988,6 +1034,11 @@ continue to describe only static policy.
 Listener-level observability wraps the routed content path. Access logging and
 metrics use the final response status, including handlers that emit informational
 1xx responses before the final status.
+
+Written 101 is final only on HTTP/1; observation ignores this forbidden status
+on HTTP/2 and HTTP/3, preserving later final responses. Native transports reject
+informational upstream 101 before forwarding its callback to any downstream
+protocol. Successful HTTP/1 upgrade handshakes retain their existing 101 accounting.
 
 Observations run on handler exit, including panic unwinding. They preserve a
 committed status and use zero when an aborted handler committed none; they do

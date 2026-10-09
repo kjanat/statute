@@ -144,6 +144,21 @@ Workload checkpoints poll only private diagnostics. Content requests remain
 deliberate, one-shot activation or serving assertions. Log and container-state
 waits use the reused Engine client, while artifact-file waits stay on the host.
 
+`client probe-negative` defaults to `-expect unavailable`. It validates its
+HTTP(S) URL, protocol and positive timeout before probing. TCP refusal or a
+connection timeout before contact can establish unavailability; a successful
+TCP connection makes TLS, certificate, EOF, protocol and response-stall errors
+fail the probe. Any HTTP response, including a redirect, also fails it. HTTP/3
+accepts only a handshake timeout or connection refusal without any received
+packet; malformed packets and remote QUIC errors establish contact and fail.
+DNS and local setup errors never establish unavailability.
+
+Missing-client-certificate scenarios use `-expect tls-rejection` with HTTPS
+and trusted server roots. This requires the peer's certificate-required TLS
+alert; it rejects an unavailable listener, server-certificate verification
+errors, generic handshake failures and successful responses. Lifecycle rollback
+and shutdown scenarios retain the default unavailability expectation.
+
 ## Writing a scenario
 
 1. Add a config builder in `e2e/cmd/statute` and register it in the

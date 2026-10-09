@@ -55,6 +55,17 @@ proxies supplied through `Handle` routes.
 
 ## Response cache
 
+Native upstream body-read errors, including truncated responses after successful
+headers, count toward passive health once per backend attempt. Client cancellation,
+downstream write errors and response transformation failures do not demote a backend.
+Streaming abort behavior and degraded pool selection remain unchanged.
+
+Route response-header operations also apply to native proxy upgrade handshakes.
+For example, `RemoveResponseHeader("Set-Cookie")` removes cookies from a successful
+WebSocket handshake as well as ordinary responses. Operations run once in their
+declared order and preserve the duplex tunnel. A custom handler writing raw bytes
+after hijacking owns those bytes itself.
+
 Put `AllowIPs(...)` and `DenyIPs(...)` **before** every enabled `Cache(...)` in
 the route's `With(...)` list. Cache hits skip inner handlers, so the opposite
 order is a configuration error. IP checks run on cache hits and misses.
@@ -530,6 +541,21 @@ This makes ports 80–1023 unprivileged for all processes. Convenient but global
 ### Don't run as root
 
 Don't. There is no good reason. The proxy handles untrusted input from the network on every connection.
+
+## HTTP-01 with client-certificate authentication
+
+An HTTPS listener that requires client certificates cannot answer TLS-ALPN-01
+validation: the ACME validator presents no client certificate. Automatic ACME
+therefore needs a plain HTTP listener for HTTP-01 fallback. Configure
+`statute.HTTP(":80").RedirectTo("https")` so pending challenge responses answer
+before the redirect and ordinary requests continue to the authenticated HTTPS
+listener. Public port 80 must reach that HTTP listener, directly or through a
+port mapping.
+
+A bare `statute.HTTP(":80")` intentionally serves application routes on plain
+HTTP. Its requests do not inherit the HTTPS listener's client-certificate policy.
+Pinning a source with `HTTP01()` still needs an HTTP listener; DNS-01 is the
+alternative when no plain HTTP listener is wanted.
 
 ## Persistent storage
 

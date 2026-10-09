@@ -38,6 +38,9 @@ func newCacheWriter(w http.ResponseWriter, c *ttlCache, e *cacheEntry) *cacheWri
 func (w *cacheWriter) Header() http.Header { return w.buf.header }
 
 func (w *cacheWriter) WriteHeader(code int) {
+	if code == http.StatusSwitchingProtocols && w.buf.multiplexed {
+		return
+	}
 	if w.streaming || (code < 200 && code != http.StatusSwitchingProtocols) {
 		return
 	}

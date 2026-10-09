@@ -54,6 +54,22 @@ for _, host := range []string{"app.example.com", "www.example.com"} {
 }
 ```
 
+## Redirect template safety
+
+Route `RedirectTo` targets support `{path}`, `{request_uri}`, `{query}` and
+`{host}`. Substitution runs once; placeholder-shaped request text stays literal.
+Relative targets retain Go's request-directory path resolution and stay on the
+same origin even if `{query}` supplies `https://evil.example` or another scheme.
+Leading `//` and `/\\` are collapsed to a single slash, including paths exposed
+by a route rewrite.
+
+For absolute targets, raw `{query}` cannot be part of the authority. Resolution
+rejects `https://trusted.example{query}` and ambiguous or empty authority forms.
+Place it after a path or explicit `?` boundary instead:
+`https://trusted.example{path}?{query}`, `https://trusted.example{request_uri}`,
+and `https://{host}/?{query}` remain supported. Query text after an explicit `?`
+is carried unchanged.
+
 ## Terminal native routes
 
 `Config.FallbackRoutes` handles routing misses with the same native route actions

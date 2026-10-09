@@ -278,7 +278,7 @@ func assertMissingClientCertRejected(ctx context.Context, t *testing.T, r *harne
 	for _, proto := range []string{"h1", "h2", "h3"} {
 		out, err := r.Compose.RunClient(ctx, harness.Client1,
 			"probe-negative", "-url", "https://statute-1:8443/echo",
-			"-proto", proto, "-roots", "/certs/ca.crt")
+			"-proto", proto, "-expect", "tls-rejection", "-roots", "/certs/ca.crt")
 		if err != nil {
 			t.Errorf("missing certificate over %s was not rejected: %v\n%s", proto, err, out)
 		}

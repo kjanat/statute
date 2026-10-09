@@ -2,7 +2,6 @@ package statutelifecycle
 
 import (
 	"go/ast"
-	"go/token"
 	"go/types"
 	"strings"
 
@@ -60,6 +59,9 @@ func containsPublisher(pass *analysis.Pass, root ast.Node, functions map[*types.
 }
 
 func callPublishes(pass *analysis.Pass, call *ast.CallExpr, functions map[*types.Func]*functionInfo) bool {
+	if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
+		return containsPublisher(pass, lit.Body, functions, nil)
+	}
 	fn := calledFunction(pass, call)
 	if fn == nil {
 		return false
@@ -158,7 +160,7 @@ func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, function
 			}
 			rollback |= deferredRollbackBits(pass, node, roots)
 			exempt := func(call *ast.CallExpr) bool {
-				return rollbackOwnedCall(pass, call, roots, rollback, functions)
+				return rollbackOwnedCall(pass, call, roots, rollback, functions, info.decl.Body)
 			}
 			if !committed && containsPublisher(pass, node, functions, exempt) {
 				published = true
@@ -173,8 +175,9 @@ func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, function
 
 // rollbackRoot is a variable eligible to own a rollback-owned early publication, together with the owner types its rollback provably stops and awaits.
 type rollbackRoot struct {
-	v      *types.Var
-	owners map[*types.TypeName]bool
+	v     *types.Var
+	stops map[groupKey]bool
+	waits map[groupKey]bool
 }
 
 // collectRollbackRoots finds the variables eligible to own a rollback-owned early publication: each roots a deferred rollback call somewhere in the body, and that rollback provably stops and awaits at least one owner's allowlisted server.
@@ -191,9 +194,9 @@ func collectRollbackRoots(pass *analysis.Pass, info *functionInfo, functions map
 				continue
 			}
 			seen[v] = true
-			owners := rollbackStoppedOwners(pass, v.Type(), functions)
-			if len(owners) > 0 {
-				roots = append(roots, rollbackRoot{v: v, owners: owners})
+			stops, waits := rollbackResources(pass, v, functions)
+			if len(stops) > 0 && len(waits) > 0 {
+				roots = append(roots, rollbackRoot{v: v, stops: stops, waits: waits})
 			}
 		}
 		return true
@@ -267,192 +270,30 @@ func deferredRollbackBits(pass *analysis.Pass, node ast.Node, roots []rollbackRo
 }
 
 // rollbackOwnedCall reports whether call is attempt-bracketed: rooted at a variable whose qualifying rollback defer was already traversed, with every owner type whose server the call launches stopped and awaited by that rollback.
-func rollbackOwnedCall(pass *analysis.Pass, call *ast.CallExpr, roots []rollbackRoot, registered uint64, functions map[*types.Func]*functionInfo) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	v := selectorRootVar(pass, sel)
-	if v == nil {
+func rollbackOwnedCall(pass *analysis.Pass, call *ast.CallExpr, roots []rollbackRoot, registered uint64, functions map[*types.Func]*functionInfo, body *ast.BlockStmt) bool {
+	publications, resolved := publicationResources(pass, call, functions, body)
+	if !resolved || len(publications) == 0 {
 		return false
 	}
 	for i, root := range roots {
-		if v != root.v {
+		if registered&(1<<i) == 0 {
 			continue
 		}
-		if registered&(1<<i) == 0 {
-			return false
-		}
-		published, resolved := publishedOwners(pass, call, functions)
-		if !resolved || len(published) == 0 {
-			return false
-		}
-		for owner := range published {
-			if !root.owners[owner] {
-				return false
+		covered := true
+		for _, publication := range publications {
+			joined := false
+			for signal := range publication.signals {
+				joined = joined || root.waits[signal]
+			}
+			if !root.stops[publication.server] || !joined {
+				covered = false
 			}
 		}
-		return true
+		if covered {
+			return true
+		}
 	}
 	return false
-}
-
-// publishedOwners resolves the owner types of every allowlisted Serve call reachable from call through local callees and function literals; resolved is false when any reachable Serve has no field-selected owner.
-func publishedOwners(pass *analysis.Pass, call *ast.CallExpr, functions map[*types.Func]*functionInfo) (owners map[*types.TypeName]bool, resolved bool) {
-	owners = make(map[*types.TypeName]bool)
-	resolved = true
-	seen := make(map[*types.Func]bool)
-	var visitFn func(*types.Func)
-	visitCall := func(c *ast.CallExpr) {
-		fn := calledFunction(pass, c)
-		if fn == nil {
-			return
-		}
-		if !isServeFunction(fn) {
-			visitFn(fn)
-			return
-		}
-		var owner *types.TypeName
-		if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
-			owner = fieldOwner(pass, sel.X)
-		}
-		if owner == nil {
-			resolved = false
-			return
-		}
-		owners[owner] = true
-	}
-	visitFn = func(fn *types.Func) {
-		if seen[fn] {
-			return
-		}
-		seen[fn] = true
-		info := functions[fn]
-		if info == nil || info.decl.Body == nil {
-			return
-		}
-		ast.Inspect(info.decl.Body, func(node ast.Node) bool {
-			if c, ok := node.(*ast.CallExpr); ok {
-				visitCall(c)
-			}
-			return true
-		})
-	}
-	visitCall(call)
-	return owners, resolved
-}
-
-// rollbackStoppedOwners resolves owner's rollback via the method set and returns the owner types it provably stops and awaits.
-func rollbackStoppedOwners(pass *analysis.Pass, owner types.Type, functions map[*types.Func]*functionInfo) map[*types.TypeName]bool {
-	root := lookupMethod(owner, "rollback")
-	if root == nil {
-		return nil
-	}
-	return stoppedOwners(pass, root, functions)
-}
-
-// stoppedOwners runs the stopper fixpoint from root; an owner type qualifies only when one body in the transitive call closure both stops that owner's server and shows that same owner's completion-wait evidence.
-func stoppedOwners(pass *analysis.Pass, root *types.Func, functions map[*types.Func]*functionInfo) map[*types.TypeName]bool {
-	owners := make(map[*types.TypeName]bool)
-	seen := make(map[*types.Func]bool)
-	queue := []*types.Func{root}
-	for len(queue) > 0 {
-		fn := queue[0]
-		queue = queue[1:]
-		if seen[fn] {
-			continue
-		}
-		seen[fn] = true
-		info := functions[fn]
-		if info == nil || info.decl.Body == nil {
-			continue
-		}
-		stops, waits := bodyOwnerEvidence(pass, info.decl.Body)
-		for owner := range stops {
-			if waits[owner] {
-				owners[owner] = true
-			}
-		}
-		queue = append(queue, bodyCallees(pass, info.decl.Body)...)
-	}
-	return owners
-}
-
-// bodyOwnerEvidence collects per-owner evidence in one body: owner types whose allowlisted server is stopped, and owner types with completion-wait evidence (a receive from the owner's channel field or the owner's WaitGroup.Wait); function literals stay inert except sync.Once.Do bodies, per the SLC103 evidence machinery.
-func bodyOwnerEvidence(pass *analysis.Pass, body *ast.BlockStmt) (stops, waits map[*types.TypeName]bool) {
-	stops = make(map[*types.TypeName]bool)
-	waits = make(map[*types.TypeName]bool)
-	var inspect func(ast.Node)
-	inspect = func(root ast.Node) {
-		ast.Inspect(root, func(node ast.Node) bool {
-			switch n := node.(type) {
-			case nil, *ast.FuncLit:
-				return false
-			case *ast.UnaryExpr:
-				if n.Op == token.ARROW {
-					markOwner(waits, fieldOwner(pass, n.X))
-				}
-			case *ast.CallExpr:
-				scanOwnerCall(pass, n, stops, waits, inspect)
-			}
-			return true
-		})
-	}
-	inspect(body)
-	return stops, waits
-}
-
-// scanOwnerCall records call's per-owner stop or wait evidence and follows sync.Once.Do bodies via inspect.
-func scanOwnerCall(pass *analysis.Pass, call *ast.CallExpr, stops, waits map[*types.TypeName]bool, inspect func(ast.Node)) {
-	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-		if callee := calledFunction(pass, call); callee != nil && isServerStopFunction(callee) {
-			markOwner(stops, fieldOwner(pass, sel.X))
-		}
-		if isSyncMethodCall(pass, call, "WaitGroup", "Wait") {
-			markOwner(waits, fieldOwner(pass, sel.X))
-		}
-	}
-	if isSyncMethodCall(pass, call, "Once", "Do") {
-		for _, arg := range call.Args {
-			if lit, ok := arg.(*ast.FuncLit); ok {
-				inspect(lit.Body)
-			}
-		}
-	}
-}
-
-// markOwner adds owner to set unless the evidence had no resolvable owner.
-func markOwner(set map[*types.TypeName]bool, owner *types.TypeName) {
-	if owner != nil {
-		set[owner] = true
-	}
-}
-
-// bodyCallees returns every function body calls, function literals included, for the stopper fixpoint.
-func bodyCallees(pass *analysis.Pass, body *ast.BlockStmt) []*types.Func {
-	var callees []*types.Func
-	ast.Inspect(body, func(node ast.Node) bool {
-		if call, ok := node.(*ast.CallExpr); ok {
-			if callee := calledFunction(pass, call); callee != nil {
-				callees = append(callees, callee)
-			}
-		}
-		return true
-	})
-	return callees
-}
-
-// fieldOwner returns the named type owning expr's selected field (for p.f, the named type of p): the correlation granularity for publish, stop, and wait evidence; nil when expr is not a field selection or the parent type is unnamed.
-func fieldOwner(pass *analysis.Pass, expr ast.Expr) *types.TypeName {
-	sel, ok := ast.Unparen(expr).(*ast.SelectorExpr)
-	if !ok {
-		return nil
-	}
-	named := namedType(pass.TypesInfo.TypeOf(sel.X))
-	if named == nil {
-		return nil
-	}
-	return named.Obj()
 }
 
 // lookupMethod resolves name in the method sets of owner and its pointer type.

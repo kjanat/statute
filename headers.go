@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"golang.org/x/net/http/httpguts"
+
 	"statute.kjanat.dev/resolved"
 )
 
@@ -224,6 +226,88 @@ type forwardedOpsKey struct{}
 
 type responseHeaderOpsKey struct{}
 
+type upgradeHeadersKey struct{}
+
+// The native attempt owns this writer map, including private buffered writers.
+type upgradeHeaders struct {
+	header   http.Header
+	original http.Header
+	body     io.ReadCloser
+	valid    bool
+}
+
+func withUpgradeHeaders(r *http.Request, w http.ResponseWriter) *http.Request {
+	state := &upgradeHeaders{}
+	if ops, _ := r.Context().Value(responseHeaderOpsKey{}).([]headerOp); len(ops) > 0 {
+		state.header = w.Header()
+	}
+	return r.WithContext(context.WithValue(r.Context(), upgradeHeadersKey{}, state))
+}
+
+// Native upgrades commit through the hijacked connection rather than WriteHeader.
+func applyUpgradeHeaders(resp *http.Response) {
+	if resp.StatusCode != http.StatusSwitchingProtocols || resp.Request == nil {
+		return
+	}
+	state, _ := resp.Request.Context().Value(upgradeHeadersKey{}).(*upgradeHeaders)
+	if state == nil {
+		return
+	}
+	// ReverseProxy's early upgrade-validation and Hijacker failures do not
+	// close the duplex body. Keep ownership here until successful handoff.
+	state.body = resp.Body
+	state.valid = validNativeUpgrade(resp)
+	if state.header == nil {
+		return
+	}
+	state.original = state.header.Clone()
+	merged := state.header.Clone()
+	for name, values := range resp.Header {
+		merged[name] = append(merged[name], values...)
+	}
+	ops, _ := resp.Request.Context().Value(responseHeaderOpsKey{}).([]headerOp)
+	for _, op := range ops {
+		if op.op == resolved.MWSetResponseHeader || op.op == resolved.MWRemoveResponseHeader {
+			deleteHeaderFold(merged, op.name)
+		}
+		op.apply(merged)
+	}
+	clear(state.header)
+	resp.Header = merged
+}
+
+func validNativeUpgrade(resp *http.Response) bool {
+	protocol := resp.Header.Get("Upgrade")
+	_, duplex := resp.Body.(io.ReadWriteCloser)
+	return duplex && protocol != "" &&
+		strings.IndexFunc(protocol, func(r rune) bool { return r < 32 || r > 126 }) == -1 &&
+		httpguts.HeaderValuesContainsToken(resp.Header.Values("Connection"), "Upgrade") &&
+		strings.EqualFold(protocol, resp.Request.Header.Get("Upgrade"))
+}
+
+func localUpgradeFailure(r *http.Request) bool {
+	state, _ := r.Context().Value(upgradeHeadersKey{}).(*upgradeHeaders)
+	return state != nil && state.valid
+}
+
+func restoreUpgradeHeaders(r *http.Request) {
+	state, _ := r.Context().Value(upgradeHeadersKey{}).(*upgradeHeaders)
+	if state == nil {
+		return
+	}
+	if state.body != nil {
+		_ = state.body.Close()
+		state.body = nil
+	}
+	if state.original == nil {
+		return
+	}
+	clear(state.header)
+	for name, values := range state.original {
+		state.header[name] = values
+	}
+}
+
 // responseHeadersForCache projects hoisted operations onto a copy for cache
 // admission. The response writer still applies them once at final commitment.
 func responseHeadersForCache(ctx context.Context, h http.Header) http.Header {
@@ -252,10 +336,8 @@ func forwardedOpsFromContext(ctx context.Context) []headerOp {
 // response header is committed — by an explicit WriteHeader, the implicit one
 // from a first Write, or a Flush on a streaming response.
 //
-// A protocol upgrade is the one response it does not touch: the reverse proxy
-// hijacks the connection and writes the 101 handshake to it directly, from the
-// upstream's response rather than through this writer. Hijacking still works
-// (see Unwrap); the handshake simply is not a response this can rewrite.
+// Native proxy upgrades apply the same operations in ModifyResponse before
+// hijacking. Custom handlers writing raw handshake bytes own those bytes.
 type headerResponseWriter struct {
 	http.ResponseWriter
 	ops     []headerOp
