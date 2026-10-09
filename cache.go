@@ -49,6 +49,7 @@ func cacheHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			r = r.WithContext(context.WithValue(r.Context(), cacheObservationKey{}, observation))
 		}
 		writer := newCacheWriter(w, c, candidate)
+		writer.buf.multiplexed = r.ProtoMajor >= 2
 		writer.ctx = r.Context()
 		next.ServeHTTP(writer, r)
 		writer.finish(r.Context(), key, requestHeaders, requestAllowsStorage, policy)

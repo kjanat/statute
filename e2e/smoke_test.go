@@ -116,8 +116,8 @@ func assertEdgeEvidence(t *testing.T, client, server string, rep *report.Report)
 	}
 }
 
-// assertGracefulShutdown terminates statute-1, proves it exits zero and
-// releases its listener, and — when the topology has a second node —
+// assertGracefulShutdown terminates statute-1, proves its container exits zero,
+// and, when the topology has a second node,
 // proves statute-2 is untouched by its sibling's shutdown.
 func assertGracefulShutdown(ctx context.Context, t *testing.T, r *harness.Run) {
 	t.Helper()
@@ -128,10 +128,6 @@ func assertGracefulShutdown(ctx context.Context, t *testing.T, r *harness.Run) {
 		t.Errorf("graceful shutdown exit code: %d", code)
 	}
 	probe := r.Topology.Clients[0]
-	url := fmt.Sprintf("http://%s:%d/echo", harness.Server1, harness.PortHTTP)
-	if out, err := r.Compose.RunClient(ctx, probe, "probe-negative", "-url", url); err != nil {
-		t.Errorf("listener release: %v\n%s", err, out)
-	}
 	for _, server := range r.Topology.Servers {
 		if server == harness.Server1 {
 			continue

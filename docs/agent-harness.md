@@ -114,7 +114,14 @@ patch to miss:
 
 - `SLC100` — a startup/bind function can publish serving and later return an error.
   This protects the two-phase rule: acquire every fallible startup resource before
-  launching `Serve`.
+  launching `Serve`. A deferred rollback can exempt an early listener only when
+  it stops the exact launched server and joins that producer's exact completion
+  signal. Sibling instances or fields do not supply cleanup evidence. Replaced
+  or escaped paths lose the exemption; opaque captures and variadic aggregate
+  identities are not guessed. A fresh handle stored once into its owner before
+  launch in the same straight-line scope is a supported ownership transfer.
+  The check covers bounded local provenance independently of `SLC103`.
+  Termination and arbitrary program behavior fall outside its scope.
 - `SLC101` — a constructor calls `start`/`Start` on an object that also has a
   `stop`/`Shutdown`/`Close` lifecycle. Construction must not silently acquire
   background lifetime that failed `Start` cannot own.

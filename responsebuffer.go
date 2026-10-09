@@ -16,6 +16,7 @@ type responseBuffer struct {
 	status        int
 	body          bytes.Buffer
 	wroteHeader   bool
+	multiplexed   bool
 	maxBodyBytes  int64
 	overLimit     bool
 	failureStatus int
@@ -32,6 +33,9 @@ func (b *responseBuffer) Header() http.Header { return b.header }
 
 // WriteHeader records the status code once; later calls are ignored.
 func (b *responseBuffer) WriteHeader(code int) {
+	if code == http.StatusSwitchingProtocols && b.multiplexed {
+		return
+	}
 	if code < 200 && code != http.StatusSwitchingProtocols {
 		return
 	}

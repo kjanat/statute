@@ -1230,10 +1230,12 @@ func loadClientCertificate(c *resolved.ClientCertificate) ([]tls.Certificate, er
 }
 
 // newBackendProxy builds one backend's reverse proxy. recordFailure is the
-// passive-health hook, invoked once per failed attempt: on the transport
-// error path through ErrorHandler, or on a 5xx response through
-// ModifyResponse — the two paths are mutually exclusive per attempt.
+// passive-health hook. Headers, transport and body failures share one attempt.
 func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Pool, recordFailure func(*http.Request)) *httputil.ReverseProxy {
+	base := retryRequestLeaseTransport(transport)
+	if p.PassiveHealthCheck.Enabled {
+		base = &passiveBodyTransport{base: base, record: recordFailure}
+	}
 	return &httputil.ReverseProxy{
 		FlushInterval: p.Transport.FlushInterval,
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -1264,20 +1266,22 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 			// is registered, the propagator is a no-op.
 			injectProxyPropagation(pr.Out)
 		},
-		Transport: researchProxyTransport(retryRequestLeaseTransport(transport)),
+		Transport: &proxyInformationalTransport{base: researchProxyTransport(base)},
 		ModifyResponse: func(resp *http.Response) error {
+			applyUpgradeHeaders(resp)
 			if resp.StatusCode >= http.StatusInternalServerError {
-				recordFailure(resp.Request)
+				recordPassiveAttempt(resp.Request, recordFailure)
 			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			restoreUpgradeHeaders(r)
 			// SAFETY: a client abort lands here too, and recording it
 			// would hand unauthenticated clients a pool-wide demotion
 			// lever; deadlines and genuine transport failures still
 			// count.
-			if !errors.Is(r.Context().Err(), context.Canceled) && researchBackendFailure(err) {
-				recordFailure(r)
+			if !localUpgradeFailure(r) && !errors.Is(r.Context().Err(), context.Canceled) && researchBackendFailure(err) {
+				recordPassiveAttempt(r, recordFailure)
 			}
 			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		},
@@ -1326,9 +1330,10 @@ func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Pin the generation current at attempt start: each Retry re-entry
 	// records into its own generation, even across a swap.
 	if run := ph.passive.Load(); run != nil {
-		r = r.WithContext(withPassiveRun(r.Context(), run))
+		ctx := context.WithValue(r.Context(), passiveAttemptKey{}, &passiveAttempt{})
+		r = r.WithContext(withPassiveRun(ctx, run))
 	}
-	bs.rp.ServeHTTP(w, r)
+	bs.rp.ServeHTTP(w, withUpgradeHeaders(r, w))
 }
 
 // wrapMiddleware wraps the base handler with each middleware in declaration

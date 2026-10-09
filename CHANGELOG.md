@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Enforce route response-header operations on native proxy upgrade handshakes, including cookie removal, while preserving bidirectional streaming and isolated policies on shared upstream pools.
+
+- Prevent informational 101 responses from suppressing final HTTP/2 or HTTP/3 statuses. Reject invalid native upstream informational upgrades before downstream commitment.
+
+- Reject configured upstream and health-probe Host values that Go would silently discard, and constrain redirect query substitutions to prevent accidental authority injection while preserving explicit host templates.
+
 - Reject hoisted request-header operations that can replace BasicAuth credentials, including indirect Authorization mapping through RequestID. Invalid assembled Docker chains refuse affected routes without disabling healthy siblings.
 
 - Restrict mTLS health-check redirects to the selected backend origin, preventing a backend from presenting the pool's client identity to another destination. Prohibited redirects count as failed probes; same-origin redirects and explicit probe status policies retain their behavior.
@@ -25,6 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Apply configured read, write, idle, header-read and header-size limits to health and metrics listeners.
 
 ### Fixed
+
+- Count interrupted upstream response bodies once per passive-health attempt without counting client cancellations or response transformation failures.
+
+- Recommend redirect-only HTTP companions for ACME listeners requiring client certificates; preserve intentional listener-level authentication scope.
+
+- Correlate early-startup rollback exemptions with exact server and completion identities, protect unpushed commits during merged-worktree cleanup, and separate e2e reachability evidence from client-certificate rejection.
 
 - Separate CI formatting and linting while requiring both checks; avoid mixed Go toolchains during formatting and tidy local replacement consumers in Renovate dependency updates.
 

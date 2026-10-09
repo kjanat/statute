@@ -145,10 +145,10 @@ type HealthCheck struct {
 }
 
 // PassiveHealthCheck configures passive backend demotion from proxy
-// outcomes: a backend that accumulates MaxFailures failed attempts — a
-// transport error or a 5xx response — inside the sliding FailureWindow is
-// excluded from selection. A request its own client canceled is not a
-// failure; a deadline that expired waiting on the backend is. Failures
+// outcomes: a backend that accumulates MaxFailures failed attempts inside the
+// sliding FailureWindow is excluded from selection. Failures include transport
+// errors, interrupted upstream bodies and 5xx responses. A request its own
+// client canceled is not a failure; a deadline waiting on the backend is. Failures
 // count per backend attempt, so under
 // Retry each attempt counts against the backend that served it. A success
 // does not clear the window; a backend is re-admitted only as failures age

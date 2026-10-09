@@ -113,7 +113,7 @@ func (s *bracketServer) serveHealthEarly(a *bracketAttempt) {
 	a.serveEarly()
 }
 
-func earlyServeHelperRootStart(s *bracketServer, a *bracketAttempt) error { // want `\[SLC100\].*publish serving before a later error return`
+func earlyServeHelperRootStart(s *bracketServer, a *bracketAttempt) error {
 	defer a.rollback()
 	s.serveHealthEarly(a)
 	if _, err := bind(); err != nil {

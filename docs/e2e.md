@@ -50,6 +50,17 @@ Prerequisites: a local Docker daemon at `/var/run/docker.sock`, Compose v2, and 
 Nothing publishes a host port and images are digest-pinned, so runs are
 parallel-safe within one suite and, after the images are pulled once, offline.
 
+The Go builder uses Docker's [Go 1.27.2 Bookworm Official Image on ECR Public](https://aws.amazon.com/blogs/containers/docker-official-images-now-available-on-amazon-elastic-container-registry-public/).
+The observability collector uses [OpenTelemetry's GHCR distribution](https://opentelemetry.io/docs/collector/install/docker/).
+Both use tag and multi-architecture digest pins. The Debian builder compiles
+all four actors with `CGO_ENABLED=0`; the final distroless Debian 12 runtime
+image remains unchanged. The build prints its effective Go version after
+reading the module's toolchain policy. These publisher
+registries remove Docker Hub's anonymous pull limit from the lane; registry
+availability remains a prerequisite. Acquisition failures fail the build or
+affected scenario. The lane has no registry fallback or credential requirement.
+Renovate's existing `e2e/**` rule keeps updates tag-plus-digest pinned.
+
 The harness resolves Docker's effective selection before creating resources:
 `DOCKER_CONTEXT`, then `DOCKER_HOST`, then the selected CLI context. The endpoint
 must identify the local socket mounted by the fixtures; `/run/docker.sock` is
@@ -143,6 +154,32 @@ HTTPS/mTLS journal checks. Readiness without a specification still requires HTTP
 Workload checkpoints poll only private diagnostics. Content requests remain
 deliberate, one-shot activation or serving assertions. Log and container-state
 waits use the reused Engine client, while artifact-file waits stay on the host.
+
+`client probe-negative` defaults to `-expect unavailable`. It validates its
+HTTP(S) URL, protocol and positive timeout before probing. TCP refusal or a
+connection timeout before contact can establish unavailability; a successful
+TCP connection makes TLS, certificate, EOF, protocol and response-stall errors
+fail the probe. Any HTTP response, including a redirect, also fails it. HTTP/3
+accepts only a handshake timeout or connection refusal without any received
+packet; malformed packets and remote QUIC errors establish contact and fail.
+DNS and local setup errors never establish unavailability.
+
+Missing-client-certificate scenarios use `-expect tls-rejection` with HTTPS
+and trusted server roots. This requires the peer's certificate-required TLS
+alert; it rejects an unavailable listener, server-certificate verification
+errors, generic handshake failures and successful responses.
+For HTTP/1 and HTTP/2, the probe offers the requested ALPN and reads the TLS
+alert directly without sending HTTP data: TLS 1.3 client handshake completion
+alone does not confirm that the server accepted the client's certificate.
+
+Shutdown scenarios prove the exact container exits successfully after serving,
+and the in-flight scenario also proves the response completes during drain.
+The corrected-startup scenario proves a failed container exits nonzero and its
+replacement actually serves. They do not probe a stopped container's service
+name: Docker removes that DNS record, and resolving it cannot demonstrate socket
+cleanup. A historical IP can also be reassigned to the next one-shot client.
+These process-exit assertions do not prove live-process rollback or reusable
+server ownership; those require their own live-process serving/cleanup controls.
 
 ## Writing a scenario
 

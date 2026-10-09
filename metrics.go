@@ -80,7 +80,7 @@ func (s *stats) WritePrometheus(w io.Writer) {
 func metricsMiddleware(s *stats, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ww := &statusRecorder{ResponseWriter: w, status: 200}
+		ww := &statusRecorder{ResponseWriter: w, status: 200, multiplexed: r.ProtoMajor >= 2}
 		defer func() {
 			s.Observe(ww.observedStatus(), time.Since(start))
 			s.responseBytes.Add(uint64(max(ww.bytes, 0)))
@@ -103,6 +103,7 @@ type statusRecorder struct {
 	bytes       int64
 	bodyError   bool
 	returned    bool
+	multiplexed bool
 }
 
 // No final status exists when a handler aborts before commitment.
@@ -119,9 +120,12 @@ func (s *statusRecorder) observedStatus() int {
 // the one the access log and metrics must see. Latching on the preview
 // would also swallow the final WriteHeader, leaving net/http to commit an
 // implicit 200 whatever the handler actually answered. The one exception is
-// 101 Switching Protocols: net/http excludes it from the informational path
-// because no further response may follow it, so it latches as final here too.
+// 101 Switching Protocols is final on HTTP/1. It is forbidden on HTTP/2 and
+// HTTP/3, where ignoring it preserves the subsequent final response.
 func (s *statusRecorder) WriteHeader(code int) {
+	if code == http.StatusSwitchingProtocols && s.multiplexed {
+		return
+	}
 	if code < 200 && code != http.StatusSwitchingProtocols {
 		s.ResponseWriter.WriteHeader(code)
 		return

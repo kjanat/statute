@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme"
+	"golang.org/x/net/http/httpguts"
 
 	"statute.kjanat.dev/internal/parse"
 	"statute.kjanat.dev/resolved"
@@ -132,7 +133,7 @@ func validateClientAuthACMEHasPlainListener(listeners []*resolved.Listener) erro
 		}
 		for _, source := range listener.AutoTLSSources {
 			if source.Challenge == resolved.ChallengeAuto {
-				return fmt.Errorf("client_auth: mode %s on an automatic ACME listener requires a plain HTTP listener because TLS-ALPN-01 validators do not present client certificates; add statute.HTTP(\":80\") or pin the source with HTTP01", listener.ClientAuth.Mode)
+				return fmt.Errorf("client_auth: mode %s on an automatic ACME listener requires a plain HTTP listener because TLS-ALPN-01 validators do not present client certificates; add statute.HTTP(\":80\").RedirectTo(\"https\") for HTTP-01 fallback, or use DNS-01; pinning with HTTP01 still requires the HTTP listener", listener.ClientAuth.Mode)
 			}
 		}
 	}
@@ -157,7 +158,7 @@ func validateHTTP01HasPlainListener(listeners []*resolved.Listener) error {
 	for _, l := range listeners {
 		for _, a := range l.AutoTLSSources {
 			if a.Challenge == resolved.ChallengeHTTP01 {
-				return fmt.Errorf("auto_tls: HTTP-01 source for %s requires a plain HTTP listener to serve the challenge tokens; add statute.HTTP(\":80\") (a RedirectTo listener counts)", strings.Join(a.Domains, ", "))
+				return fmt.Errorf("auto_tls: HTTP-01 source for %s requires a plain HTTP listener to serve the challenge tokens; add statute.HTTP(\":80\").RedirectTo(\"https\"), or use DNS-01", strings.Join(a.Domains, ", "))
 			}
 		}
 	}
@@ -347,8 +348,8 @@ func resolveDormantPool(name string, p Pool) (*resolved.Pool, error) {
 
 // resolveUpstreamHost maps the surface Host policy onto the resolved pool.
 // An explicit value is a header value bound for the wire, so it gets the
-// header-injection validation configured headers get, plus a token check
-// light enough to admit any real host:port.
+// header-injection validation configured headers get and net/http's Host
+// validation, including its conversion of Unicode names for the wire.
 func resolveUpstreamHost(u UpstreamHost, rp *resolved.Pool) error {
 	switch u.mode {
 	case hostModeClient:
@@ -359,11 +360,28 @@ func resolveUpstreamHost(u UpstreamHost, rp *resolved.Pool) error {
 		if strings.TrimSpace(u.value) == "" {
 			return errors.New("HostValue is empty")
 		}
-		if _, err := parse.HeaderValue(u.value); err != nil {
+		if err := validateConfiguredHost(u.value); err != nil {
 			return err
 		}
 		rp.UpstreamHost = resolved.HostExplicit
 		rp.HostValue = u.value
+	}
+	return nil
+}
+
+// validateConfiguredHost matches net/http's Host write path without changing
+// the configured spelling or imposing stricter DNS or port grammar. Generic
+// header validation alone accepts values the transport silently drops.
+func validateConfiguredHost(host string) error {
+	if _, err := parse.HeaderValue(host); err != nil {
+		return err
+	}
+	wireHost, err := httpguts.PunycodeHostPort(host)
+	if err != nil {
+		return fmt.Errorf("invalid Host %q: %w", host, err)
+	}
+	if !httpguts.ValidHostHeader(wireHost) {
+		return fmt.Errorf("invalid Host %q", host)
 	}
 	return nil
 }
@@ -420,7 +438,7 @@ func validateProbePolicy(h HealthCheck) error {
 		if strings.TrimSpace(h.Host) == "" {
 			return errors.New("host: value is blank")
 		}
-		if _, err := parse.HeaderValue(h.Host); err != nil {
+		if err := validateConfiguredHost(h.Host); err != nil {
 			return fmt.Errorf("host: %w", err)
 		}
 	}

@@ -828,7 +828,7 @@ func supersessionConditionProven(pass *analysis.Pass, condition ast.Expr, supers
 func closesStopDone(pass *analysis.Pass, body *ast.BlockStmt, resolver *pathResolver, call *ast.CallExpr) bool {
 	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
 	builtin, _ := pass.TypesInfo.Uses[id].(*types.Builtin)
-	if !ok || builtin == nil || builtin.Name() != "close" || len(call.Args) != 1 {
+	if !ok || builtin == nil || builtin.Name() != builtinCloseName || len(call.Args) != 1 {
 		return false
 	}
 	target := stableDefinitionExpr(pass, body, call.Args[0], 0)

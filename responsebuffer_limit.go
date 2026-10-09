@@ -93,6 +93,7 @@ func newLimitedResponseBuffer(limit int64) *responseBuffer {
 // ErrAbortHandler. Convert that abort only when this buffer refused a write.
 // Independent aborts and application panics retain their normal propagation.
 func (b *responseBuffer) render(next http.Handler, r *http.Request) (complete bool) {
+	b.multiplexed = r.ProtoMajor >= 2
 	ctx, cancel := context.WithCancel(r.Context())
 	b.cancel = cancel
 	defer cancel()

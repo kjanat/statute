@@ -59,7 +59,7 @@ func compressionAlgorithms(algos []resolved.CompressAlgo) (gzipEnabled, brotliEn
 }
 
 func serveCompressed(w http.ResponseWriter, r *http.Request, next http.Handler, n *compressionNegotiator) {
-	cw := &compressResponseWriter{ResponseWriter: w, negotiation: n, head: r.Method == http.MethodHead}
+	cw := &compressResponseWriter{ResponseWriter: w, negotiation: n, head: r.Method == http.MethodHead, multiplexed: r.ProtoMajor >= 2}
 	cw.buffered, _ = r.Context().Value(bufferedETagRenderKey{}).(bool)
 	returned := false
 	defer func() { cw.finish(returned) }()
@@ -97,6 +97,7 @@ type compressResponseWriter struct {
 	rejected        bool
 	hijacked        bool
 	encoded         bool
+	multiplexed     bool
 	droppedTrailers headerNameSet
 }
 
@@ -118,6 +119,9 @@ func (c *compressResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (c *compressResponseWriter) WriteHeader(code int) {
+	if code == http.StatusSwitchingProtocols && c.multiplexed {
+		return
+	}
 	if c.status != 0 {
 		return
 	}

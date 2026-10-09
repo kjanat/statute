@@ -9,6 +9,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
+const builtinCloseName = "close"
+
 func assumeCallReturns(*ast.CallExpr) bool { return true }
 
 func isSyncMethodCall(pass *analysis.Pass, call *ast.CallExpr, owner, method string) bool {

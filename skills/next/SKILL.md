@@ -124,20 +124,36 @@ run ends — so each run clears out what earlier runs left behind. Do this once,
 before creating this run's worktree.
 
 For every issue worktree and issue branch other than the one this run is about,
-ask GitHub whether its pull request merged (`gh pr list --state all --json
-number,state,headRefName,mergedAt`). Retire only those whose PR is `MERGED`:
+resolve its exact local tip and remote repository. Query candidate pull requests,
+then inspect each candidate's state, head repository, head branch and immutable
+head SHA. A matching branch name or a `MERGED` state alone is insufficient:
+the PR must be merged in this repository, from the expected head repository and
+branch, and its head SHA must equal the current local tip.
+
+Before removing a branch, independently prove that its exact tip remains
+reachable from another retained local or remote ref. Exclude the branch being
+removed and the PR's potentially deleted head ref from that proof. A fetched
+default branch containing the tip qualifies; a squash merge alone does not.
+If either proof is unavailable, retain the branch and worktree and report why.
+In particular, preserve clean worktrees with unpushed commits, divergent tips,
+or tips no longer reachable elsewhere. Do not automatically archive or move
+those commits to make deletion possible.
+
+Only after both proofs, check the worktree for staged, unstaged and untracked
+changes. Preserve dirty worktrees. Remove a proven clean worktree without force,
+then remove its proven redundant branch:
 
 ```sh
-git worktree remove <path>          # --force only for an empty, unmodified tree
-git branch -D <branch>              # -d refuses after a squash merge
+git worktree remove <path>          # never use --force to bypass dirty state
+git branch -D <branch>              # only after the exact-tip retention proof
 git worktree prune                  # clears metadata for a directory already gone
 ```
 
 Leave everything else alone. A branch whose PR is open, closed unmerged, or
 absent may hold unpushed work, and a worktree with uncommitted changes is
 someone's work in progress: report those and move on rather than deleting them.
-Never touch the primary checkout or a worktree this run did not create unless
-GitHub says its pull request merged.
+Never touch the primary checkout. A worktree this run did not create requires
+both the exact merged-PR identity and independent retained-tip proofs above.
 
 ## Implement the issue
 
