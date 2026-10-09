@@ -34,10 +34,9 @@ skip; selected lanes must succeed. Missing selection, failed discovery,
 cancellation and unexpected skipping fail the gate. Documentation-only PRs do
 not run the expensive research matrices.
 
-`scripts/ci-gate.test.mjs` verifies that every CI job is a gate dependency.
 When adding a job, update the gate and its validator together. `CodeQL gate`
-covers its complete language matrix. Tests also require every standalone PR
-workflow to declare its merge gate.
+covers its complete language matrix. Every standalone PR workflow must declare
+its merge gate.
 Comment Cop and registered external security checks remain separately required.
 Push-only publication and manually started experiments are separate workflows.
 Enable auto-merge for the reviewed head without bypassing the ruleset.
