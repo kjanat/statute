@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- Synchronize RequestID publication across timed-out handlers and keep its downstream header mutations private, preventing races with listener access logging. Preserve live request trailers and select Retry attempt IDs from the original inbound headers.
+
 ### Fixed
 
 - Separate CI formatting and linting while requiring both checks; avoid mixed Go toolchains during formatting and tidy local replacement consumers in Renovate dependency updates.

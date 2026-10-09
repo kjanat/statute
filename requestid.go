@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"sync"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -66,7 +67,22 @@ func requestIDFromContext(ctx context.Context) string {
 // middleware chain, so a value stored only in a derived downstream
 // context can never reach it; the logger installs a holder ahead of
 // routing and requestIDHandler fills it when it runs.
-type ridHolder struct{ id string }
+type ridHolder struct {
+	mu sync.RWMutex
+	id string
+}
+
+func (h *ridHolder) load() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.id
+}
+
+func (h *ridHolder) store(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.id = id
+}
 
 type ridHolderKey struct{}
 
@@ -98,6 +114,10 @@ func requestIDHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			id = newRequestID()
 		}
 		if id != "" {
+			// Timeout may return while this invocation is still running. Keep
+			// caller headers immutable, without cloning live request trailers.
+			r = r.WithContext(context.WithValue(r.Context(), ridCtxKey{}, id))
+			r.Header = r.Header.Clone()
 			r.Header.Set(respHeader, id)
 			w.Header().Set(respHeader, id)
 			responseWriter = &requestIDResponseWriter{
@@ -105,9 +125,8 @@ func requestIDHandler(m resolved.Middleware, next http.Handler) http.Handler {
 				name:                 respHeader,
 			}
 			w = responseWriter
-			r = r.WithContext(context.WithValue(r.Context(), ridCtxKey{}, id))
 			if h, ok := r.Context().Value(ridHolderKey{}).(*ridHolder); ok {
-				h.id = id
+				h.store(id)
 			}
 		}
 		next.ServeHTTP(w, r)

@@ -11,6 +11,16 @@ Configure at most one RequestID per assembled route, before every enabled Cache.
 Retry outside RequestID invokes it per attempt; the final attempt supplies the
 returned ID. Put RequestID outside Retry to retain one ID across attempts.
 
+RequestID changes a private downstream header copy, preserving caller headers.
+When Retry wraps RequestID, each attempt reads the original inbound `From` value;
+an absent value generates a fresh ID even when `From` names the output header.
+The request body and live trailers remain shared normally.
+
+Access logging reads a synchronized snapshot of the latest published ID at
+handler exit. It does not wait for a timed-out producer. If RequestID has not
+run yet, that record has no generated ID; a later publication cannot change it.
+Place RequestID before Timeout when timeout records must include its ID.
+
 ## Response ownership
 
 RequestID restores its selected response ID at final header commitment, including
