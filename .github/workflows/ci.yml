@@ -14,8 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { fetch-depth: 0, persist-credentials: false }
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: "26" }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - id: select
         run: node scripts/ci-gate.mjs select
         env:
@@ -24,11 +23,11 @@ jobs:
   rewrite:
     needs: select_checks
     if: needs.select_checks.outputs.rewrite == 'true'
-    uses: ./.github/workflows/research-htmlrewrite.yml
+    uses: $/.github/workflows/research-htmlrewrite.yml
   binaryen:
     needs: select_checks
     if: needs.select_checks.outputs.binaryen == 'true'
-    uses: ./.github/workflows/research-htmlrewrite-binaryen.yml
+    uses: $/.github/workflows/research-htmlrewrite-binaryen.yml
   labels:
     needs: select_checks
     if: needs.select_checks.outputs.labels == 'true'
@@ -47,8 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: "26" }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - run: node scripts/ci-gate.mjs validate
         env: { NEEDS_JSON: "${{ toJSON(needs) }}" }
   test:
@@ -71,17 +69,12 @@ jobs:
   format:
     name: format
     runs-on: ubuntu-slim
-    env: { MISE_DISABLE_TOOLS: go }
     steps:
       # This job runs repository-controlled commands, so the checkout must
       # not leave a usable token in .git/config for them to reach.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with: { go-version-file: go.mod, cache: true }
-      # setup-go owns Go; mise installs only the non-Go formatters.
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
-        with: { install_args: "dprint tombi", add_shims_to_path: false }
       - { name: format check, run: make fmt-check }
   lint:
     name: lint
@@ -172,8 +165,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: "26", cache: npm }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       # comment-cop.yml runs only base-branch tooling, so a PR cannot
       # live-test its own copy; this is the enforceable check on it.
       - { name: typecheck, run: make typecheck }

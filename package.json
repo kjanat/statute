@@ -10,11 +10,10 @@
   "type": "module",
   "scripts": {
     "docs:generate": "node scripts/wiki-sync.mjs docs wiki",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "mise exec -- tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "26.6.4",
-    "typescript": "7.0.2",
     "yaml": "2.9.1"
   },
   "devEngines": {
