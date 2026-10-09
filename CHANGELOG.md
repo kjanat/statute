@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Bind the development Compose metrics port to host loopback, limiting exposure of unauthenticated metrics, profiling and workload diagnostics.
+
 - Omit Cloudflare DNS-01 API tokens from configuration exports and direct resolved-model JSON encoding while preserving runtime authentication. Rotate tokens exposed in older snapshots or CI artifacts.
 
 - Bound response-trailer metadata processing by deduplicating names and scanning headers once per removal stage, preventing repeated declarations from multiplying work in buffered replay, compression, and 406 responses.
