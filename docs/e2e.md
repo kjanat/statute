@@ -50,6 +50,17 @@ Prerequisites: a local Docker daemon at `/var/run/docker.sock`, Compose v2, and 
 Nothing publishes a host port and images are digest-pinned, so runs are
 parallel-safe within one suite and, after the images are pulled once, offline.
 
+The Go builder uses Docker's [Go 1.27.2 Bookworm Official Image on ECR Public](https://aws.amazon.com/blogs/containers/docker-official-images-now-available-on-amazon-elastic-container-registry-public/).
+The observability collector uses [OpenTelemetry's GHCR distribution](https://opentelemetry.io/docs/collector/install/docker/).
+Both use tag and multi-architecture digest pins. The Debian builder compiles
+all four actors with `CGO_ENABLED=0`; the final distroless Debian 12 runtime
+image remains unchanged. The build prints its effective Go version after
+reading the module's toolchain policy. These publisher
+registries remove Docker Hub's anonymous pull limit from the lane; registry
+availability remains a prerequisite. Acquisition failures fail the build or
+affected scenario. The lane has no registry fallback or credential requirement.
+Renovate's existing `e2e/**` rule keeps updates tag-plus-digest pinned.
+
 The harness resolves Docker's effective selection before creating resources:
 `DOCKER_CONTEXT`, then `DOCKER_HOST`, then the selected CLI context. The endpoint
 must identify the local socket mounted by the fixtures; `/run/docker.sock` is
