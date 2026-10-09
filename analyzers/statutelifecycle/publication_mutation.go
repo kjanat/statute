@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"maps"
 	"strings"
 )
 
@@ -210,7 +211,7 @@ func (w *publicationWalker) mutationCall(call *ast.CallExpr, bindings publicatio
 	}
 	fn := calledFunction(w.pass, call)
 	if id, ok := ast.Unparen(call.Fun).(*ast.Ident); ok {
-		if builtin, ok := w.pass.TypesInfo.Uses[id].(*types.Builtin); ok && builtin.Name() == "close" {
+		if builtin, ok := w.pass.TypesInfo.Uses[id].(*types.Builtin); ok && builtin.Name() == builtinCloseName {
 			if !w.completion[call] {
 				for _, arg := range call.Args {
 					w.escape(arg, bindings)
@@ -324,9 +325,7 @@ func evaluatedCalls(call *ast.CallExpr, visit func(*ast.CallExpr)) {
 
 func (w *publicationWalker) literalBindings(lit *ast.FuncLit, args []ast.Expr, incoming publicationBindings) publicationBindings {
 	bindings := make(publicationBindings)
-	for v, key := range incoming {
-		bindings[v] = key
-	}
+	maps.Copy(bindings, incoming)
 	sig, _ := w.pass.TypesInfo.TypeOf(lit).(*types.Signature)
 	for i := 0; i < sig.Params().Len() && i < len(args); i++ {
 		if sig.Variadic() && i == sig.Params().Len()-1 {

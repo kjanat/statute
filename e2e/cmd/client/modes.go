@@ -260,7 +260,7 @@ func echoRoundTrips(conn net.Conn, br *bufio.Reader, lines int) error {
 func dialUpgrade(u *url.URL, roots string) (net.Conn, error) {
 	host := u.Host
 	if u.Port() == "" {
-		if u.Scheme == "https" {
+		if u.Scheme == clientSchemeHTTPS {
 			host += ":443"
 		} else {
 			host += ":80"
@@ -268,7 +268,7 @@ func dialUpgrade(u *url.URL, roots string) (net.Conn, error) {
 	}
 	d := &net.Dialer{Timeout: 10 * time.Second}
 	ctx := context.Background()
-	if u.Scheme != "https" {
+	if u.Scheme != clientSchemeHTTPS {
 		return d.DialContext(ctx, "tcp", host)
 	}
 	tlsCfg, err := tlsConfigFor(roots, u.Hostname(), "", "")

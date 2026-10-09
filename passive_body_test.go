@@ -148,15 +148,15 @@ func TestPassiveBodyPreservesErrors(t *testing.T) {
 				record: func(*http.Request) { failures++ },
 			}
 			for range 2 {
-				if n, err := body.Read(make([]byte, 1)); n != 0 || err != readErr {
+				if n, err := body.Read(make([]byte, 1)); n != 0 || err != readErr { //nolint:errorlint // The observer must preserve error identity, including no extra wrapping.
 					t.Fatalf("read changed: n=%d err=%v", n, err)
 				}
 			}
-			if err := body.Close(); err != closeErr {
+			if err := body.Close(); err != closeErr { //nolint:errorlint // Close must return the identical underlying error.
 				t.Fatalf("close changed: %v", err)
 			}
 			want := 0
-			if readErr == io.ErrUnexpectedEOF {
+			if errors.Is(readErr, io.ErrUnexpectedEOF) {
 				want = 1
 			}
 			if failures != want {

@@ -321,27 +321,19 @@ func runHTTP3(t *testing.T, topo harness.Topology) {
 		}
 	}
 
-	assertSocketRelease(ctx, t, r)
+	assertProcessExit(ctx, t, r)
 }
 
-// assertSocketRelease terminates statute-1 and proves both socket kinds
-// are gone; the QUIC probe would hang forever on a leaked UDP
-// listener's silence, so unreachability is its timeout.
-func assertSocketRelease(ctx context.Context, t *testing.T, r *harness.Run) {
+// assertProcessExit proves the serving container terminates successfully.
+// Docker retires that network namespace; DNS disappearance is not a probe of
+// live-process socket cleanup or reusable server ownership.
+func assertProcessExit(ctx context.Context, t *testing.T, r *harness.Run) {
 	t.Helper()
 	if err := r.Compose.Signal(ctx, harness.Server1, "SIGTERM"); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
 	}
 	if code := r.WaitExit(ctx, harness.Server1); code != 0 {
 		t.Errorf("shutdown exit code: %d", code)
-	}
-	for _, probe := range [][]string{
-		{"probe-negative", "-url", fmt.Sprintf("http://%s:%d/echo", harness.Server1, harness.PortHTTP), "-proto", "h1"},
-		{"probe-negative", "-url", fmt.Sprintf("https://%s:%d/echo", harness.Server1, harness.PortHTTPS), "-proto", "h3", "-roots", "/certs/ca.crt"},
-	} {
-		if out, err := r.Compose.RunClient(ctx, harness.Client1, probe...); err != nil {
-			t.Errorf("release proof %v: %v\n%s", probe[2], err, out)
-		}
 	}
 }
 
@@ -367,8 +359,8 @@ func TestRegression_StreamingAndUpgrade(t *testing.T) {
 	}
 }
 
-// TestRegression_StartupRetry proves a failed startup exposes no route
-// and exits non-zero, and that a corrected configuration in the same
+// TestRegression_StartupRetry proves failed startup exits non-zero,
+// and that a corrected configuration in the same
 // service slot actually serves — not merely starts.
 func TestRegression_StartupRetry(t *testing.T) {
 	t.Parallel()
@@ -383,9 +375,6 @@ func TestRegression_StartupRetry(t *testing.T) {
 		t.Fatal("startup with missing TLS material exited 0")
 	}
 	probe := fmt.Sprintf("http://%s:%d/echo", harness.Server1, harness.PortHTTP)
-	if out, err := r.Compose.RunClient(ctx, harness.Client1, "probe-negative", "-url", probe); err != nil {
-		t.Errorf("failed startup exposed a route: %v\n%s", err, out)
-	}
 
 	// The corrected retry: same service slot, fixed configuration.
 	r.Compose.Env["STATUTE_SCENARIO"] = "mesh"
@@ -444,10 +433,6 @@ func runShutdownInFlight(t *testing.T, topo harness.Topology) {
 	}
 	if code := r.WaitExit(ctx, harness.Server1); code != 0 {
 		t.Errorf("drain exit code: %d", code)
-	}
-	probe := fmt.Sprintf("http://%s:%d/echo", harness.Server1, harness.PortHTTP)
-	if out, err := r.Compose.RunClient(ctx, harness.Client1, "probe-negative", "-url", probe); err != nil {
-		t.Errorf("listener after drain: %v\n%s", err, out)
 	}
 }
 

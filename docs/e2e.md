@@ -156,8 +156,16 @@ DNS and local setup errors never establish unavailability.
 Missing-client-certificate scenarios use `-expect tls-rejection` with HTTPS
 and trusted server roots. This requires the peer's certificate-required TLS
 alert; it rejects an unavailable listener, server-certificate verification
-errors, generic handshake failures and successful responses. Lifecycle rollback
-and shutdown scenarios retain the default unavailability expectation.
+errors, generic handshake failures and successful responses.
+
+Shutdown scenarios prove the exact container exits successfully after serving,
+and the in-flight scenario also proves the response completes during drain.
+The corrected-startup scenario proves a failed container exits nonzero and its
+replacement actually serves. They do not probe a stopped container's service
+name: Docker removes that DNS record, and resolving it cannot demonstrate socket
+cleanup. A historical IP can also be reassigned to the next one-shot client.
+These process-exit assertions do not prove live-process rollback or reusable
+server ownership; those require their own live-process serving/cleanup controls.
 
 ## Writing a scenario
 

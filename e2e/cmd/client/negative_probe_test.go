@@ -194,7 +194,8 @@ func TestNegativeProbeQUICMTLS(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = server.Serve(pc) }()
 	t.Cleanup(func() { server.Close(); pc.Close(); <-done })
-	args := []string{"-url", "https://" + pc.LocalAddr().String(), "-proto", "h3", "-roots", roots, "-timeout", "1s"}
+	args := make([]string, 0, 10)
+	args = append(args, "-url", "https://"+pc.LocalAddr().String(), "-proto", "h3", "-roots", roots, "-timeout", "1s")
 	if err := runProbeNegative(args); err == nil {
 		t.Fatal("QUIC client certificate rejection passed unavailability")
 	}

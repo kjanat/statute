@@ -20,6 +20,11 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
+const (
+	probeTLSRejection = "tls-rejection"
+	clientSchemeHTTPS = "https"
+)
+
 // runProbeNegative proves absence of contact. Protocol, TLS and response failures
 // after contacting a listener are failures, rather than evidence of rollback.
 // The explicit tls-rejection expectation proves one particular remote TLS denial.
@@ -64,7 +69,7 @@ func runProbeNegative(args []string) error {
 			*target, *expect, *proto, contacted.Load(), probeErr)
 	}
 	event := "unreachable"
-	if *expect == "tls-rejection" {
+	if *expect == probeTLSRejection {
 		event = "tls-rejected"
 	}
 	fmt.Printf(`{"event":%q,"url":%q,"proto":%q,"err":%q}`+"\n", event, *target, *proto, probeErr.Error())
@@ -85,11 +90,11 @@ func validateNegativeProbe(target, proto, expect string, timeout time.Duration) 
 		return nil, fmt.Errorf("probe-negative: unknown proto %q", proto)
 	}
 	switch expect {
-	case "unavailable", "tls-rejection":
+	case "unavailable", probeTLSRejection:
 	default:
 		return nil, fmt.Errorf("probe-negative: unknown expectation %q", expect)
 	}
-	if (proto == "h3" || expect == "tls-rejection") && u.Scheme != "https" {
+	if (proto == "h3" || expect == probeTLSRejection) && u.Scheme != clientSchemeHTTPS {
 		return nil, errors.New("probe-negative: HTTP/3 and TLS rejection require an HTTPS URL")
 	}
 	return u, nil
@@ -97,7 +102,7 @@ func validateNegativeProbe(target, proto, expect string, timeout time.Duration) 
 
 func negativeProbeURL(target string) (*url.URL, error) {
 	u, err := url.Parse(target)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Opaque != "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != clientSchemeHTTPS) || u.Hostname() == "" || u.User != nil || u.Opaque != "" {
 		return nil, errors.New("probe-negative: -url must be an absolute HTTP(S) URL without user information")
 	}
 	if !negativeProbePortValid(u.Port()) {
@@ -116,7 +121,7 @@ func negativeProbePortValid(port string) bool {
 
 func negativeProbeTransport(u *url.URL, proto string, tlsCfg *tls.Config, timeout time.Duration, contacted *atomic.Bool) (http.RoundTripper, func(), error) {
 	if proto == "h3" {
-		return negativeQUICTransport(u, tlsCfg, timeout, contacted)
+		return negativeQUICTransport(context.Background(), u, tlsCfg, timeout, contacted)
 	}
 	dialer := &net.Dialer{Timeout: timeout}
 	tr := &http.Transport{
@@ -134,7 +139,7 @@ func negativeProbeTransport(u *url.URL, proto string, tlsCfg *tls.Config, timeou
 }
 
 func negativeProbeMatches(expect, proto string, contacted bool, err error) bool {
-	if expect == "tls-rejection" {
+	if expect == probeTLSRejection {
 		return contacted && certificateRequiredAlert(err)
 	}
 	if contacted {
@@ -163,8 +168,7 @@ func negativeTCPUnavailable(err error) bool {
 }
 
 func certificateRequiredAlert(err error) bool {
-	var remoteQUIC *quic.TransportError
-	if errors.As(err, &remoteQUIC) {
+	if remoteQUIC, ok := errors.AsType[*quic.TransportError](err); ok {
 		// RFC 9001 encodes TLS alerts as CRYPTO_ERROR(0x100 + alert).
 		return remoteQUIC.Remote && remoteQUIC.ErrorCode == 0x100+116
 	}
@@ -195,7 +199,7 @@ func (c *negativeProbePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	return n, addr, err
 }
 
-func negativeQUICTransport(u *url.URL, cfg *tls.Config, timeout time.Duration, contacted *atomic.Bool) (*http3.Transport, func(), error) {
+func negativeQUICTransport(ctx context.Context, u *url.URL, cfg *tls.Config, timeout time.Duration, contacted *atomic.Bool) (*http3.Transport, func(), error) {
 	port := u.Port()
 	if port == "" {
 		port = "443"
@@ -204,7 +208,7 @@ func negativeQUICTransport(u *url.URL, cfg *tls.Config, timeout time.Duration, c
 	if err != nil {
 		return nil, nil, err
 	}
-	packetConn, err := net.ListenPacket("udp", ":0")
+	packetConn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", ":0")
 	if err != nil {
 		return nil, nil, err
 	}

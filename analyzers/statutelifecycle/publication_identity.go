@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"maps"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -157,9 +158,7 @@ func (w *publicationWalker) function(fn *types.Func, bindings publicationBinding
 //nolint:gocyclo // bounded transfer certification keeps declaration, ordering, writes and aliases in one proof.
 func (w *publicationWalker) localBindings(body *ast.BlockStmt, incoming publicationBindings) publicationBindings {
 	bindings := make(publicationBindings)
-	for v, key := range incoming {
-		bindings[v] = key
-	}
+	maps.Copy(bindings, incoming)
 	resolver := w.pathResolver(body)
 	for v := range resolver.mutated {
 		if prior, ok := incoming[v]; ok && prior.root != nil {
@@ -169,7 +168,7 @@ func (w *publicationWalker) localBindings(body *ast.BlockStmt, incoming publicat
 		bindings[v] = groupKey{}
 	}
 	for v, alias := range resolver.aliases {
-		key := groupKey{root: alias.root, path: alias.path}
+		key := groupKey(alias)
 		if bound, ok := bindings[key.root]; ok {
 			key = groupKey{root: bound.root, path: bound.path + key.path}
 		}
@@ -261,7 +260,7 @@ func (w *publicationWalker) body(body *ast.BlockStmt, bindings publicationBindin
 			continue
 		}
 		call := deferred.Call
-		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "close" && len(call.Args) == 1 {
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == builtinCloseName && len(call.Args) == 1 {
 			if _, builtin := w.pass.TypesInfo.Uses[id].(*types.Builtin); !builtin {
 				continue
 			}
@@ -360,7 +359,7 @@ func (w *publicationWalker) call(call *ast.CallExpr, bindings publicationBinding
 	for i := 0; i < sig.Params().Len(); i++ {
 		param := sig.Params().At(i)
 		key := groupKey{}
-		if i < len(call.Args) && !(sig.Variadic() && i == sig.Params().Len()-1) {
+		if i < len(call.Args) && (!sig.Variadic() || i != sig.Params().Len()-1) {
 			key, _ = w.resolve(call.Args[i], bindings)
 		}
 		next[param] = key

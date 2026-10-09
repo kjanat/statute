@@ -1232,7 +1232,7 @@ func loadClientCertificate(c *resolved.ClientCertificate) ([]tls.Certificate, er
 // newBackendProxy builds one backend's reverse proxy. recordFailure is the
 // passive-health hook. Headers, transport and body failures share one attempt.
 func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Pool, recordFailure func(*http.Request)) *httputil.ReverseProxy {
-	var base http.RoundTripper = retryRequestLeaseTransport(transport)
+	base := retryRequestLeaseTransport(transport)
 	if p.PassiveHealthCheck.Enabled {
 		base = &passiveBodyTransport{base: base, record: recordFailure}
 	}
@@ -1330,8 +1330,8 @@ func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Pin the generation current at attempt start: each Retry re-entry
 	// records into its own generation, even across a swap.
 	if run := ph.passive.Load(); run != nil {
-		r = r.WithContext(withPassiveRun(r.Context(), run))
-		r = r.WithContext(context.WithValue(r.Context(), passiveAttemptKey{}, &passiveAttempt{}))
+		ctx := context.WithValue(r.Context(), passiveAttemptKey{}, &passiveAttempt{})
+		r = r.WithContext(withPassiveRun(ctx, run))
 	}
 	bs.rp.ServeHTTP(w, withUpgradeHeaders(r, w))
 }

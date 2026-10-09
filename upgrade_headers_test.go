@@ -2,6 +2,7 @@ package statute
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -91,7 +92,7 @@ func TestNativeUpgradeRouteHeaders(t *testing.T) {
 				assertHeader(t, resp.Header, "Vary", "Origin")
 			}
 			_, _ = io.WriteString(conn, "ping")
-			readExactWithin(t, rd, "ping", 5*time.Second)
+			readExactWithin(t, rd, "ping", 4*time.Second)
 		})
 	}
 }
@@ -165,7 +166,7 @@ func TestNativeFailedUpgradeClosesBackend(t *testing.T) {
 			}
 			select {
 			case err := <-closed:
-				if err != io.EOF {
+				if !errors.Is(err, io.EOF) {
 					t.Fatalf("backend socket not retired cleanly: %v", err)
 				}
 			case <-time.After(5 * time.Second):

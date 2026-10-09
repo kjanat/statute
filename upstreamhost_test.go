@@ -274,6 +274,7 @@ func TestUpstreamHostString(t *testing.T) {
 	}
 }
 
+//nolint:gocyclo // the shared invalid-value matrix exercises static, Docker and probe resolution together.
 func TestConfiguredHostValidationSharedBoundaries(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

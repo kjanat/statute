@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -303,9 +304,7 @@ func restoreUpgradeHeaders(r *http.Request) {
 		return
 	}
 	clear(state.header)
-	for name, values := range state.original {
-		state.header[name] = values
-	}
+	maps.Copy(state.header, state.original)
 }
 
 // responseHeadersForCache projects hoisted operations onto a copy for cache

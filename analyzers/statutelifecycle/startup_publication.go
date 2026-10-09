@@ -270,6 +270,8 @@ func deferredRollbackBits(pass *analysis.Pass, node ast.Node, roots []rollbackRo
 }
 
 // rollbackOwnedCall reports whether call is attempt-bracketed: rooted at a variable whose qualifying rollback defer was already traversed, with every owner type whose server the call launches stopped and awaited by that rollback.
+//
+//nolint:gocyclo // every publication needs both exact stop and matching completion evidence from one registered owner.
 func rollbackOwnedCall(pass *analysis.Pass, call *ast.CallExpr, roots []rollbackRoot, registered uint64, functions map[*types.Func]*functionInfo, body *ast.BlockStmt) bool {
 	publications, resolved := publicationResources(pass, call, functions, body)
 	if !resolved || len(publications) == 0 {
