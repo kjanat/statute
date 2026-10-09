@@ -9,10 +9,11 @@ func (c *compressResponseWriter) finishTrailers() {
 	if !c.encoded {
 		return
 	}
-	c.droppedTrailers = append(c.droppedTrailers, stripCompressionTrailers(c.Header())...)
-	for _, name := range c.droppedTrailers {
-		deleteHeaderFold(c.Header(), name)
+	dropped := stripCompressionTrailers(c.Header())
+	for name := range c.droppedTrailers {
+		dropped[name] = struct{}{}
 	}
+	dropped.removeFrom(c.Header())
 	// A forbidden late trailer must not erase this stage's own coding.
 	deleteHeaderFold(c.Header(), "Content-Encoding")
 	c.Header().Set("Content-Encoding", c.coding)
@@ -20,20 +21,21 @@ func (c *compressResponseWriter) finishTrailers() {
 
 // A codec cannot forward identity metadata supplied after header commitment.
 // Keep the removed announcement names until the handler has written its tail.
-func stripCompressionTrailers(h http.Header) []string {
+func stripCompressionTrailers(h http.Header) headerNameSet {
 	announced, present := cacheHeaderValues(h, "Trailer")
-	var keep, dropped []string
+	var keep []string
+	dropped := make(headerNameSet)
 	for _, line := range announced {
 		for name := range strings.SplitSeq(line, ",") {
 			name = strings.Trim(name, " \t")
 			if compressionOwnedTrailer(name) {
-				dropped = append(dropped, name)
-				deleteHeaderFold(h, name)
+				dropped.add(name)
 			} else if name != "" {
 				keep = append(keep, name)
 			}
 		}
 	}
+	dropped.removeFrom(h)
 	if present {
 		deleteHeaderFold(h, "Trailer")
 		if len(keep) > 0 {

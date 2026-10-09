@@ -101,6 +101,12 @@ binary/three-way model from a stale plan.
 
 ## Middleware
 
+Response-trailer processing deduplicates case-folded names before scanning a
+header map. Buffered replay, bodyless stripping, compression and rejection
+cleanup must not rescan all headers per untrusted declaration. Per-response sets
+preserve case aliases, late trailers, and representation-owner exclusions without
+adding shared state or changing response semantics.
+
 Middleware declaration order is semantic: the first declared middleware is the
 outermost ordinary wrapper.
 

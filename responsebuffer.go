@@ -61,9 +61,10 @@ func (b *responseBuffer) Flush() {}
 func (b *responseBuffer) replay(w http.ResponseWriter) {
 	maps.Copy(w.Header(), b.header.Clone())
 	trailers := make(http.Header)
-	for _, name := range responseTrailerNames(b.header) {
+	names := responseTrailerNames(b.header)
+	if len(names) > 0 {
 		for key, values := range w.Header() {
-			if strings.EqualFold(key, name) {
+			if names.contains(key) {
 				trailers[key] = values
 				delete(w.Header(), key)
 			}

@@ -15,24 +15,22 @@ const (
 )
 
 func (c *compressResponseWriter) finishRejection() {
-	for _, name := range c.droppedTrailers {
-		deleteHeaderFold(c.Header(), name)
-	}
+	c.droppedTrailers.removeFrom(c.Header())
 	stripUnacceptableRepresentation(c.Header())
 }
 
 // Rejections have an empty body; origin representation metadata and trailers
 // must not describe that response. Keep unrelated policy and error headers.
-func stripUnacceptableRepresentation(h http.Header) []string {
+func stripUnacceptableRepresentation(h http.Header) headerNameSet {
 	announced, _ := cacheHeaderValues(h, headerTrailer)
-	var dropped []string
+	dropped := make(headerNameSet)
 	for _, line := range announced {
 		for name := range strings.SplitSeq(line, ",") {
 			name = strings.Trim(name, " \t")
-			deleteHeaderFold(h, name)
-			dropped = append(dropped, name)
+			dropped.add(name)
 		}
 	}
+	dropped.removeFrom(h)
 	for name := range h {
 		if len(name) >= len(http.TrailerPrefix) && strings.EqualFold(name[:len(http.TrailerPrefix)], http.TrailerPrefix) {
 			delete(h, name)

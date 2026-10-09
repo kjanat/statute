@@ -97,7 +97,7 @@ type compressResponseWriter struct {
 	rejected        bool
 	hijacked        bool
 	encoded         bool
-	droppedTrailers []string
+	droppedTrailers headerNameSet
 }
 
 // Write forwards bytes to the underlying compressing writer.

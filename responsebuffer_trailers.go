@@ -7,29 +7,29 @@ import (
 
 // Buffered trailer values remain in Header until replay. Keep them distinct
 // from initial metadata even when the synthetic GET body is not delivered.
-func responseTrailerNames(h http.Header) []string {
-	var names []string
-	values, _ := cacheHeaderValues(h, headerTrailer)
-	for _, value := range values {
-		for name := range strings.SplitSeq(value, ",") {
-			if name = strings.TrimSpace(name); name != "" {
-				names = append(names, name)
+func responseTrailerNames(h http.Header) headerNameSet {
+	names := make(headerNameSet)
+	for key, values := range h {
+		if strings.EqualFold(key, headerTrailer) {
+			for _, value := range values {
+				for name := range strings.SplitSeq(value, ",") {
+					if name = strings.TrimSpace(name); name != "" {
+						names.add(name)
+					}
+				}
 			}
 		}
-	}
-	for name := range h {
-		if strings.HasPrefix(name, http.TrailerPrefix) {
-			names = append(names, name)
+		if strings.HasPrefix(key, http.TrailerPrefix) {
+			names.add(key)
 		}
 	}
 	return names
 }
 
 func stripResponseTrailers(h http.Header) {
-	for _, name := range responseTrailerNames(h) {
-		deleteHeaderFold(h, name)
-	}
-	deleteHeaderFold(h, headerTrailer)
+	names := responseTrailerNames(h)
+	names.add(headerTrailer)
+	names.removeFrom(h)
 }
 
 // Remove one field from trailer announcements without changing its ordinary
