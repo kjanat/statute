@@ -2,9 +2,10 @@ module statute.kjanat.dev/research/htmlrewrite
 
 go 1.27
 
-toolchain go1.27.1
+toolchain go1.27.2
 
 require (
+	github.com/andybalholm/brotli v1.2.5
 	github.com/quic-go/quic-go v0.63.0
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/net v0.59.0
@@ -12,7 +13,6 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.5 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect

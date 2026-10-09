@@ -100,8 +100,14 @@ make lint-lifecycle
 ```
 
 Keep the golangci-lint versions in `.custom-gcl.yml` and `.tool-versions` aligned.
-CI's mise installation and both lint action jobs read `.tool-versions`; Renovate
+Both CI lint action jobs read `.tool-versions`; Renovate
 groups updates to these two files in one PR.
+
+CI runs formatting (`make fmt-check`) and linting in independent jobs. Both are
+required by `ci gate`. `setup-go` selects the module's Go toolchain in each job;
+the format job disables mise's Go provider and uses mise for dprint and tombi.
+Renovate uses `gomodTidyAll` to tidy local replacement consumers, including the
+Traefik oracle, after updating a module they depend on.
 
 Its first rules deliberately encode failures that are easy for a locally-correct
 patch to miss:
