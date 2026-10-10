@@ -319,7 +319,8 @@ type PoolPolicy struct {
 type HostPolicy int
 
 const (
-	// HostClient forwards the client's original Host header (default).
+	// HostClient forwards a usable client Host header and rejects an empty or
+	// invalid value before backend selection (default).
 	HostClient HostPolicy = iota
 	// HostTarget sends each backend its own host, from its address.
 	HostTarget

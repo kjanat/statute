@@ -41,7 +41,8 @@ type Backend struct {
 }
 
 // UpstreamHost is a pool's outgoing Host header policy. The zero value
-// forwards the client's Host unchanged; construct the other policies from
+// forwards the client's usable Host unchanged and rejects empty or invalid
+// values with 400 before backend selection; construct the other policies from
 // TargetHost or HostValue. Hostname-sensitive backends that reject the
 // client's Host usually want TargetHost.
 //
@@ -63,8 +64,9 @@ const (
 	hostModeExplicit
 )
 
-// ClientHost forwards the client's original Host header to the backend.
-// This is the default.
+// ClientHost forwards the client's original Host header to the backend. Empty
+// or invalid values are rejected with 400 before backend selection. This is
+// the default.
 var ClientHost = UpstreamHost{mode: hostModeClient}
 
 // TargetHost sends each backend its own host, taken from its address —
@@ -137,10 +139,11 @@ type HealthCheck struct {
 	// Statuses are the probe response statuses accepted as healthy; empty
 	// keeps the default 200-399 range. Each entry must be within 100-599.
 	// Setting Host or Statuses stops probes from following redirects, so
-	// the health endpoint's own status is what is judged; default probes
-	// follow redirects and judge the final response. With ClientCertificate,
-	// redirects must keep the original URL scheme and authority (including
-	// port); a prohibited redirect counts as a failed probe.
+	// the health endpoint's own status is what is judged. Default probes
+	// follow same-origin redirects and judge the final response: every hop
+	// must keep the original URL scheme and authority (including port), and
+	// a prohibited redirect counts as a failed probe. This applies whether
+	// or not the pool carries a client certificate.
 	Statuses []int
 }
 

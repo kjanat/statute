@@ -45,19 +45,19 @@ type healthRun struct {
 // default. A non-empty host is the probe Host newPoolHandler derived —
 // HealthCheck.Host when set, else the pool's explicit Host policy — carried
 // on every probe; empty leaves probes on each backend's own host.
-func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper, host string, hasClientIdentity bool) *healthChecker {
+func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transport http.RoundTripper, host string) *healthChecker {
 	client := &http.Client{
 		Timeout:   cfg.Timeout,
 		Transport: transport,
 	}
-	// COMPAT: an explicit probe policy judges the endpoint's own status,
-	// so redirects stop; gate on cfg.Host, not the derived host, so
-	// UpstreamHost-derived probes keep following redirects as before.
+	// An explicit probe policy judges the endpoint's own status, so redirects
+	// stop. Default probes may follow redirects within the selected backend's
+	// origin, but a backend response cannot steer a probe to another origin.
 	if cfg.Host != "" || len(cfg.Statuses) > 0 {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
-	} else if hasClientIdentity {
+	} else {
 		client.CheckRedirect = sameOriginHealthRedirect
 	}
 	return &healthChecker{
@@ -68,7 +68,7 @@ func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transp
 	}
 }
 
-// sameOriginHealthRedirect confines pool credentials to the selected backend's
+// sameOriginHealthRedirect confines active probes to the selected backend's
 // URL authority. Host overrides and TLS ServerName do not grant redirect authority.
 func sameOriginHealthRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 || len(via) >= 10 {
@@ -76,7 +76,7 @@ func sameOriginHealthRedirect(req *http.Request, via []*http.Request) error {
 	}
 	origin := via[0].URL
 	if !strings.EqualFold(req.URL.Scheme, origin.Scheme) || !sameHealthAuthority(req.URL.Host, origin.Host) {
-		return errors.New("health redirect would send pool identity outside the selected origin")
+		return errors.New("health redirect would leave the selected origin")
 	}
 	return nil
 }

@@ -60,7 +60,7 @@ func probeRedirectPool(ph *poolHandler) bool {
 	return ph.primary[0].isHealthy()
 }
 
-func TestHealthMTLSRedirectBoundary(t *testing.T) {
+func TestHealthRedirectBoundary(t *testing.T) {
 	pki := makeClientAuthPKI(t)
 	var destinationConnections, authenticated, sourceRequests, sourceAuthenticated atomic.Int64
 	destination := healthRedirectTLS(t, pki, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +102,8 @@ func TestHealthMTLSRedirectBoundary(t *testing.T) {
 		{"explicit host", "/off-origin", "probe.example", nil, true, true, false},
 		{"accept redirect status", "/off-origin", "", []int{302}, true, true, false},
 		{"reject redirect status", "/off-origin", "", []int{200}, true, false, false},
-		{"no identity", "/off-origin", "", nil, false, true, true},
+		{"no identity same origin", "/relative", "", nil, false, true, false},
+		{"no identity off origin", "/off-origin", "", nil, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before, requests, identities := destinationConnections.Load(), sourceRequests.Load(), sourceAuthenticated.Load()

@@ -860,13 +860,13 @@ A pool owns backend selection and the transport shared by proxy traffic to its
 backends. Active health probes use that same transport so backend TLS verification
 cannot drift between health traffic and real traffic.
 
-When the pool supplies a client certificate, active-health redirects stay within
-the original probe URL's scheme and authority, including its port. Each hop is
-checked before dialing against the original URL; Host and TLS ServerName
-overrides do not widen this boundary. An escape is a failed probe. Same-origin redirects retain
-the ten-request bound. Explicit probe Host/Statuses still stop and judge the
-redirect response itself; pools without a client identity keep existing redirect
-behavior. The shared transport and backend failure thresholds remain unchanged.
+Active-health redirects stay within the original probe URL's scheme and
+authority, including its port, whether or not the pool supplies a client
+certificate. Each hop is checked before dialing against the original URL; Host
+and TLS ServerName overrides do not widen this boundary. An escape is a failed
+probe. Same-origin redirects retain the ten-request bound. Explicit probe
+Host/Statuses still stop and judge the redirect response itself. The shared
+transport and backend failure thresholds remain unchanged.
 
 For Docker-discovered pools, Docker supplies backends and strategy while an
 exact-key `PoolPolicy` supplies the code-owned transport and health settings. The
@@ -881,6 +881,14 @@ Configured pool and probe Host values must survive Go's outgoing Host validation
 Resolve checks their wire-compatible form without changing the original spelling
 or imposing a separate DNS grammar. Invalid explicit policy cannot silently turn
 into an empty Host and select the backend's default virtual host.
+
+`ClientHost` validates the request Host at the pool boundary before backend
+selection. Empty values and values that cannot be represented as an outbound
+Host field fail that request with 400; they do not reach a backend, affect passive
+health, or inherit the HTTP/1 transport's invalid-Host-to-empty fallback.
+`TargetHost` and explicit `HostValue` policy remain independent of the request
+Host. The guard is pool-owned, so static routes, Docker routes, fallback routes,
+shared pools, and Retry re-entry use the same rule.
 
 Passive health observes raw upstream body-read errors as well as response statuses
 and transport failures. One request-local attempt records at most one failure

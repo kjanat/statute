@@ -131,6 +131,20 @@ pool. The later hostless routes deliberately provide a default for every other
 host. Add `Host` or `Hosts` constraints instead if unknown hosts should remain 404;
 omit `Fallback` to keep the final built-in 404 after all terminal routes miss.
 
+`UpstreamHost` is pool policy. Its default, `ClientHost`, forwards the request Host
+only when it is non-empty and valid for the outbound wire; otherwise Statute
+returns 400 before choosing or contacting a backend. This prevents an invalid
+HTTP/2 authority from becoming an empty HTTP/1 Host and selecting a backend's
+default virtual host. `TargetHost` and `HostValue` replace the request Host, so
+they remain usable when the inbound value is not.
+
+Default active-health probes may follow redirects only within the selected
+backend's original scheme and authority, including port. A cross-origin redirect
+fails the probe before the destination is contacted, with or without a configured
+client certificate. Setting `HealthCheck.Host` or `HealthCheck.Statuses` retains
+the stricter behavior of judging the initial redirect response without following
+it. Host and TLS ServerName overrides never widen the redirect boundary.
+
 `ProxyTo`, `Serve`, `RedirectTo`, and `Handle` all work in this table. Existing
 path, `Host`/`Hosts`, and `ClientIPs` matchers retain their semantics. A `ClientIPs`
 miss can select a later route; a matched `AllowIPs` denial cannot. Matching sees
