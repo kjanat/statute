@@ -1003,7 +1003,19 @@ second `Start` is insufficient.
 SLC100's early-publication exemption must identify the exact server field and the
 completion signal joined by rollback, relative to the same startup attempt.
 An owner type alone cannot prove cleanup of sibling fields or instances.
+Cleanup evidence comes from the actual selected deferred rollback method and its
+complete receiver storage path, including promoted fields and stable aliases.
+Each defer occurrence owns a separate registration that arms only when reached;
+a sibling or later defer cannot register another occurrence's cleanup.
+Deferred literal parameters rebase to caller storage, and inert nested literals
+cannot register rollback. Direct defer operands run at registration and cannot
+supply cleanup evidence for publication that follows.
 Unknown identity receives no exemption; SLC103 join obligations remain independent.
+Value receiver, helper argument, and literal parameter rebasing is conservative:
+value structs or arrays containing value-owned allowlisted servers or WaitGroups
+cannot certify caller storage. Pointer, channel, map, and slice fields retain
+their referenced identity across copies. Unsupported copies supply no exemption,
+and their shared-reference mutation effects still invalidate relevant caller paths.
 Selected-path replacements and escapes invalidate the affected path and its
 descendants. Sibling fields retain their identities.
 Only an unreassigned fresh handle stored once in an owner before publication in
@@ -1011,6 +1023,15 @@ the same straight-line scope can certify an initial ownership transfer.
 Unknown helper escapes, opaque function captures and unsupported aggregate
 identities cannot supply provenance. The check covers bounded local resource
 identity. Termination and arbitrary lifecycle code fall outside its scope.
+Startup caller provenance excludes only a final top-level straight-line success
+suffix ending in an explicit non-failing return. Control flow, labels, nested
+blocks, deferred calls and bare returns retain conservative whole-prefix evidence.
+Helper summaries and the startup CFG remain unchanged; an ownership transfer
+before a possible error return still invalidates affected rollback identities.
+Unmodeled external calls contribute no publication summary, but their evaluated
+operands and mutation escapes remain checked. Type-confirmed `sync.WaitGroup.Add`
+changes the counter without replacing group storage; it retains exact receiver
+and operand checks and does not prove counts or termination.
 
 ## Observability
 

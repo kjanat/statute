@@ -31,8 +31,9 @@ const (
 )
 
 // Analyzer checks Statute-specific lifecycle ownership invariants.
-// SLC100 exempts a rollback-owned early publication: a publication rooted at a value whose rollback is already deferred and provably stops and awaits every server it launches is attempt-bracketed, not a leak.
-// The evidence is correlated per owner type (the named struct from which the server field, done channel, or WaitGroup is selected): each owner type whose server the publication launches must have one function body in the rollback's transitive call closure containing both a Shutdown/Close on that owner's server and a completion wait on that same owner; a stop and a wait belonging to different owners, or split across unrelated bodies, arm nothing.
+// SLC100 exempts an early publication only when an already traversed defer's
+// actual rollback callee stops every exact launched server and joins its producer
+// completion, rebased to the full deferred receiver storage identity.
 var Analyzer = &analysis.Analyzer{
 	Name: pluginName,
 	Doc:  "trace Statute lifecycle publication, goroutine ownership, cleanup, and Docker mutation invariants",

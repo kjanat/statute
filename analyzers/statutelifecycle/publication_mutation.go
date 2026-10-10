@@ -158,7 +158,13 @@ func (w *publicationWalker) opaqueCaptures(expr ast.Expr, bindings publicationBi
 		case *ast.SelectorExpr:
 			selection := w.pass.TypesInfo.Selections[n]
 			if selection != nil && selection.Kind() == types.MethodVal {
-				if key, ok := w.resolveRaw(n.X, bindings); ok && w.relevant(key) {
+				key, ok := w.methodReceiver(n, bindings)
+				if !ok {
+					// Cleanup cannot use an unsupported receiver copy, but its
+					// captured references still escape through the method value.
+					key, ok = w.resolveRaw(n.X, bindings)
+				}
+				if ok && w.relevant(key) {
 					w.invalid[key] = true
 				}
 			}
@@ -193,8 +199,14 @@ func (w *publicationWalker) escape(expr ast.Expr, bindings publicationBindings) 
 		if !resolved {
 			return true
 		}
-		_, channel := w.pass.TypesInfo.TypeOf(value).Underlying().(*types.Chan)
-		if (isPointerType(w.pass.TypesInfo.TypeOf(value)) || channel) && w.relevant(key) {
+		t := w.pass.TypesInfo.TypeOf(value)
+		_, channel := t.Underlying().(*types.Chan)
+		aggregate := false
+		switch t.Underlying().(type) {
+		case *types.Struct, *types.Array:
+			aggregate = true // A value aggregate may retain shared reference fields.
+		}
+		if (isPointerType(t) || channel || aggregate || !publicationCopySafe(t)) && w.relevant(key) {
 			w.invalid[key] = true
 		}
 		return false // A scalar projection doesn't leak its owner's storage.
@@ -210,6 +222,16 @@ func (w *publicationWalker) mutationCall(call *ast.CallExpr, bindings publicatio
 		return
 	}
 	fn := calledFunction(w.pass, call)
+	if fn != nil {
+		sig, _ := fn.Type().(*types.Signature)
+		if sig.Recv() != nil {
+			sel, _ := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+			if _, ok := w.methodReceiver(sel, bindings); !ok {
+				w.unknownMutationCall(call, bindings)
+				return
+			}
+		}
+	}
 	if id, ok := ast.Unparen(call.Fun).(*ast.Ident); ok {
 		if builtin, ok := w.pass.TypesInfo.Uses[id].(*types.Builtin); ok && builtin.Name() == builtinCloseName {
 			if !w.completion[call] {
@@ -223,13 +245,15 @@ func (w *publicationWalker) mutationCall(call *ast.CallExpr, bindings publicatio
 	if fn != nil && (isServeFunction(fn) || isServerStopFunction(fn)) {
 		return
 	}
-	if isSyncMethodCall(w.pass, call, "WaitGroup", "Wait") {
+	if isSyncMethodCall(w.pass, call, "WaitGroup", "Wait") || isSyncMethodCall(w.pass, call, "WaitGroup", "Add") {
+		// Counter changes do not replace or escape the group storage. Operand
+		// effects and the exact receiver guard above still apply to Add.
 		return
 	}
 	if isSyncMethodCall(w.pass, call, "WaitGroup", "Done") {
 		if !w.completion[call] {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				if key, ok := w.resolveRaw(sel.X, bindings); ok && w.relevant(key) {
+			if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+				if key, ok := w.methodReceiver(sel, bindings); ok && w.relevant(key) {
 					w.invalid[key] = true
 				}
 			}
@@ -246,16 +270,7 @@ func (w *publicationWalker) mutationCall(call *ast.CallExpr, bindings publicatio
 	}
 	info := w.functions[fn]
 	if info == nil {
-		for _, arg := range call.Args {
-			w.escape(arg, bindings)
-			w.opaqueCaptures(arg, bindings)
-			if lit, ok := ast.Unparen(arg).(*ast.FuncLit); ok {
-				w.mutationBody(lit.Body, bindings)
-			}
-		}
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			w.escape(sel.X, bindings)
-		}
+		w.unknownMutationCall(call, bindings)
 		return
 	}
 	for _, arg := range call.Args {
@@ -269,9 +284,8 @@ func (w *publicationWalker) mutationCall(call *ast.CallExpr, bindings publicatio
 	next := make(publicationBindings)
 	sig, _ := fn.Type().(*types.Signature)
 	if sig.Recv() != nil {
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			next[receiverVar(w.pass, info.decl)], _ = w.resolveRaw(sel.X, bindings)
-		}
+		sel, _ := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		next[receiverVar(w.pass, info.decl)], _ = w.methodReceiver(sel, bindings)
 	}
 	for i := 0; i < sig.Params().Len() && i < len(call.Args); i++ {
 		if sig.Variadic() && i == sig.Params().Len()-1 {
@@ -280,7 +294,7 @@ func (w *publicationWalker) mutationCall(call *ast.CallExpr, bindings publicatio
 			}
 			break // Never equate a variadic aggregate with its first element.
 		}
-		next[sig.Params().At(i)], _ = w.resolveRaw(call.Args[i], bindings)
+		next[sig.Params().At(i)] = w.argumentIdentity(call.Args[i], sig.Params().At(i).Type(), bindings)
 	}
 	relevant := false
 	for _, key := range next {
@@ -300,6 +314,21 @@ func (w *publicationWalker) mutationCall(call *ast.CallExpr, bindings publicatio
 	w.active[fn] = true
 	w.mutationBody(info.decl.Body, next)
 	delete(w.active, fn)
+}
+
+// An unknown receiver or callee cannot justify parameter rebasing. Actual
+// pointer/aggregate arguments and captures retain conservative escape rules.
+func (w *publicationWalker) unknownMutationCall(call *ast.CallExpr, bindings publicationBindings) {
+	for _, arg := range call.Args {
+		w.escape(arg, bindings)
+		w.opaqueCaptures(arg, bindings)
+		if lit, ok := ast.Unparen(arg).(*ast.FuncLit); ok {
+			w.mutationBody(lit.Body, bindings)
+		}
+	}
+	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+		w.escape(sel.X, bindings)
+	}
 }
 
 // Function receivers and arguments execute before the called body; inert
@@ -335,7 +364,7 @@ func (w *publicationWalker) literalBindings(lit *ast.FuncLit, args []ast.Expr, i
 			bindings[sig.Params().At(i)] = groupKey{}
 			break
 		}
-		bindings[sig.Params().At(i)], _ = w.resolveRaw(args[i], incoming)
+		bindings[sig.Params().At(i)] = w.argumentIdentity(args[i], sig.Params().At(i).Type(), incoming)
 	}
 	return bindings
 }

@@ -116,10 +116,32 @@ patch to miss:
   This protects the two-phase rule: acquire every fallible startup resource before
   launching `Serve`. A deferred rollback can exempt an early listener only when
   it stops the exact launched server and joins that producer's exact completion
-  signal. Sibling instances or fields do not supply cleanup evidence. Replaced
+  signal. Cleanup summarizes the actual selected rollback method at its complete
+  deferred receiver path, including promoted fields and stable aliases; it never
+  substitutes the root owner's rollback method. Each defer occurrence registers
+  its own evidence only when reached, so a sibling or later defer cannot arm it.
+  Deferred literals rebase their parameters to caller storage; inert nested
+  literals and unsupported receiver identities supply no exemption.
+  Cleanup invoked in direct defer operands runs at registration and cannot
+  excuse later publication; calls inside a deferred literal run as cleanup.
+  Value receiver, helper argument, and literal parameter copies cannot certify
+  caller storage when their value structs or arrays contain value-owned HTTP
+  servers or WaitGroups. Pointer and channel resource fields keep their referenced
+  identities. Unsupported copies remain conservative, including their effects on
+  shared references.
+  Sibling instances or fields do not supply cleanup evidence. Replaced
   or escaped paths lose the exemption; opaque captures and variadic aggregate
   identities are not guessed. A fresh handle stored once into its owner before
   launch in the same straight-line scope is a supported ownership transfer.
+  Caller provenance excludes a final top-level straight-line suffix ending in an
+  explicit successful return, so a successful ownership transfer cannot poison
+  cleanup evidence for earlier errors. Conditional or nested suffixes, labels,
+  deferred calls and bare returns remain conservative; helper summaries and CFG
+  publication checks still cover their full bodies.
+  Unmodeled external calls do not supply publication evidence; evaluated operands
+  and mutation escapes remain checked. Type-confirmed `sync.WaitGroup.Add` does
+  not replace group storage, but retains receiver and operand checks without
+  proving counter balance or termination.
   The check covers bounded local provenance independently of `SLC103`.
   Termination and arbitrary program behavior fall outside its scope.
 - `SLC101` — a constructor calls `start`/`Start` on an object that also has a
