@@ -9,7 +9,7 @@ require (
 	github.com/quic-go/quic-go v0.63.0
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/net v0.60.0
-	statute.kjanat.dev v0.0.0
+	statute.kjanat.dev v0.8.1
 )
 
 require (
