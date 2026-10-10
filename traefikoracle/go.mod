@@ -5,7 +5,7 @@ go 1.27
 toolchain go1.27.2
 
 require (
-	github.com/traefik/traefik/v3 v3.7.13
+	github.com/traefik/traefik/v3 v3.7.14
 	statute.kjanat.dev v0.0.0
 )
 
