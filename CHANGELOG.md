@@ -6,9 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-10
+
+### Changed
+
+- Update OpenTelemetry to v1.47.0, HTTP instrumentation to v0.72.0, Brotli to v1.2.6, and the Moby API and client to v1.56.1 and v0.6.2. Refresh `golang.org/x` dependencies and synchronize the local replacement consumers' module graphs.
+
+- Update the Traefik compatibility oracle to v3.7.14 and the e2e observability collector to v0.162.0. Refresh development and research dependency locks and pinned images.
+
+### Fixed
+
+- Use the installed `dprint` executable in Make and Zed, retaining `kprint` as an interactive shell alias. Remove the obsolete executable rename and post-install command.
+
+- Disable Renovate self-updates for in-repository modules that replace Statute with the local checkout, and exclude the vendored RFC HTML references from dependency scanning.
+
 ### Security
 
 - Reject empty or invalid request Host values under the default `ClientHost` upstream policy before backend selection, preventing HTTP/2 authorities that Go's HTTP/1 transport would erase from reaching a backend's default virtual host. Constrain credential-free active-health redirects to the selected backend origin as well as mTLS probes.
+
+Known limitation: the Docker timing concern documented in the [v0.8.1 release notes](https://github.com/kjanat/statute/releases/tag/v0.8.1) remains unresolved. Passing subsequent checks does not establish that its cause is fixed.
 
 ## [0.8.1] - 2026-10-10
 
@@ -431,7 +447,8 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/kjanat/statute/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/kjanat/statute/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kjanat/statute/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/kjanat/statute/compare/v0.7.1...v0.7.2
