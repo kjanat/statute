@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/http/httpguts"
 
 	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
@@ -1179,7 +1180,7 @@ func newPoolHandler(p *resolved.Pool) (*poolHandler, error) {
 	}
 	// hc.start is owned by the caller (server.Start, or the docker
 	// provider for label-derived pools), not construction.
-	ph.hc = newHealthChecker(p.HealthCheck, all, transport, probeHost, p.Transport.ClientCertificate != nil)
+	ph.hc = newHealthChecker(p.HealthCheck, all, transport, probeHost)
 	return ph, nil
 }
 
@@ -1315,6 +1316,12 @@ func (ph *poolHandler) candidates() []*backendState {
 // ServeHTTP proxies the request to a healthy backend in the pool,
 // responding 503 when no backends are available.
 func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Reject unusable ClientHost before selection: HTTP/1 transport erases
+	// invalid Host values, potentially selecting a different default vhost.
+	if ph.pool.UpstreamHost == resolved.HostClient && !usableUpstreamHost(r.Host) {
+		http.Error(w, "invalid Host header", http.StatusBadRequest)
+		return
+	}
 	candidates := ph.candidates()
 	if len(candidates) == 0 {
 		http.Error(w, "no backends available", http.StatusServiceUnavailable)
@@ -1334,6 +1341,14 @@ func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(withPassiveRun(ctx, run))
 	}
 	bs.rp.ServeHTTP(w, withUpgradeHeaders(r, w))
+}
+
+func usableUpstreamHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	wireHost, err := httpguts.PunycodeHostPort(host)
+	return err == nil && httpguts.ValidHostHeader(wireHost)
 }
 
 // wrapMiddleware wraps the base handler with each middleware in declaration

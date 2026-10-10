@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- Reject empty or invalid request Host values under the default `ClientHost` upstream policy before backend selection, preventing HTTP/2 authorities that Go's HTTP/1 transport would erase from reaching a backend's default virtual host. Constrain credential-free active-health redirects to the selected backend origin as well as mTLS probes.
+
 ## [0.8.1] - 2026-10-10
 
 ### Changed
