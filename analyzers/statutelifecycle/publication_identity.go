@@ -33,16 +33,13 @@ type publicationWalker struct {
 	completion map[*ast.CallExpr]bool
 }
 
-func rollbackResources(pass *analysis.Pass, v *types.Var, functions map[*types.Func]*functionInfo) (map[groupKey]bool, map[groupKey]bool) {
+func rollbackResources(pass *analysis.Pass, call *ast.CallExpr, functions map[*types.Func]*functionInfo, body *ast.BlockStmt) (map[groupKey]bool, map[groupKey]bool) {
 	w := newPublicationWalker(pass, functions)
 	w.rollback = true
-	fn := lookupMethod(v.Type(), "rollback")
-	info := functions[fn]
-	if info != nil {
-		w.function(fn, publicationBindings{receiverVar(pass, info.decl): {root: v}}, nil)
-		w.trackCleanup()
-		w.mutationBody(info.decl.Body, publicationBindings{receiverVar(pass, info.decl): {root: v}})
-	}
+	bindings := w.localBindings(body, nil)
+	w.deferredRollback(call, bindings)
+	w.trackCleanup()
+	w.mutationCall(call, bindings)
 	for key := range w.stops {
 		if w.invalidated(key) {
 			delete(w.stops, key)
@@ -54,6 +51,36 @@ func rollbackResources(pass *analysis.Pass, v *types.Var, functions map[*types.F
 		}
 	}
 	return w.stops, w.waits
+}
+
+// deferredRollback discovers rollback calls executed by this deferred call.
+// Nested literals remain inert unless invoked; literal parameters share the
+// same caller identities as publication. Arbitrary deferred helpers are opaque.
+func (w *publicationWalker) deferredRollback(call *ast.CallExpr, bindings publicationBindings) {
+	if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
+		bindings = w.localBindings(lit.Body, w.literalBindings(lit, call.Args, bindings))
+		ast.Inspect(lit.Body, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.FuncLit, *ast.GoStmt:
+				return false
+			case *ast.CallExpr:
+				w.deferredRollback(n, bindings)
+				// Inspect evaluated operands, but never inert literal bodies.
+			}
+			return true
+		})
+		return
+	}
+	fn := calledFunction(w.pass, call)
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if fn == nil || fn.Name() != "rollback" || !ok {
+		return
+	}
+	if _, ok := w.methodReceiver(sel, bindings); ok {
+		// Direct defer operands execute at registration, so only its called
+		// body supplies cleanup. Literal-body operands are inspected above.
+		w.callBody(call, bindings, nil)
+	}
 }
 
 func publicationResources(pass *analysis.Pass, call *ast.CallExpr, functions map[*types.Func]*functionInfo, body *ast.BlockStmt) ([]publicationResource, bool) {
@@ -99,6 +126,54 @@ func (w *publicationWalker) invalidated(key groupKey) bool {
 func (w *publicationWalker) resolve(expr ast.Expr, bindings publicationBindings) (groupKey, bool) {
 	key, ok := w.resolveRaw(expr, bindings)
 	return key, ok && !w.invalidated(key)
+}
+
+// methodReceiver normalizes a direct method value's storage, including embedded
+// fields selecting a promoted method. The last selection index names the method,
+// so it is never interpreted as a field. Method expressions have no identity.
+func (w *publicationWalker) methodReceiver(sel *ast.SelectorExpr, bindings publicationBindings) (groupKey, bool) {
+	if sel == nil {
+		return groupKey{}, false
+	}
+	selection := w.pass.TypesInfo.Selections[sel]
+	if selection == nil || selection.Kind() != types.MethodVal {
+		return groupKey{}, false
+	}
+	fn, _ := selection.Obj().(*types.Func)
+	sig, _ := fn.Type().(*types.Signature)
+	if sig.Recv() == nil || !publicationCopySafe(sig.Recv().Type()) {
+		return groupKey{}, false
+	}
+	key, ok := w.resolveRaw(sel.X, bindings)
+	if !ok {
+		return groupKey{}, false
+	}
+	path, ok := methodReceiverPath(selection)
+	if !ok {
+		return groupKey{}, false
+	}
+	key.path += path
+	return key, true
+}
+
+func methodReceiverPath(selection *types.Selection) (string, bool) {
+	indices := selection.Index()
+	if len(indices) == 0 {
+		return "", false
+	}
+	var path strings.Builder
+	current := selection.Recv()
+	for _, index := range indices[:len(indices)-1] {
+		st := underlyingStruct(current)
+		if st == nil || index < 0 || index >= st.NumFields() {
+			return "", false
+		}
+		field := st.Field(index)
+		path.WriteString(".")
+		path.WriteString(field.Name())
+		current = field.Type()
+	}
+	return path.String(), true
 }
 
 //nolint:gocyclo // exact identity resolution handles each supported AST and binding form.
@@ -270,8 +345,8 @@ func (w *publicationWalker) body(body *ast.BlockStmt, bindings publicationBindin
 			}
 		}
 		if isSyncMethodCall(w.pass, call, "WaitGroup", "Done") {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				if key, ok := w.resolve(sel.X, bindings); ok {
+			if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+				if key, ok := w.methodReceiver(sel, bindings); ok && !w.invalidated(key) {
 					signals[key] = true
 					w.completion[call] = true
 				}
@@ -301,11 +376,17 @@ func (w *publicationWalker) body(body *ast.BlockStmt, bindings publicationBindin
 	})
 }
 
-//nolint:gocyclo // serving, stopping, joins and helper calls have deliberately separate provenance rules.
 func (w *publicationWalker) call(call *ast.CallExpr, bindings publicationBindings, signals map[groupKey]bool) {
 	// Go evaluates arguments before entering a helper. A local observer like
 	// logServeExit(..., server.Serve(...)) must not hide that publication.
 	evaluatedCalls(call, func(nested *ast.CallExpr) { w.call(nested, bindings, signals) })
+	w.callBody(call, bindings, signals)
+}
+
+// callBody binds the selected callee without crediting its evaluated operands.
+//
+//nolint:gocyclo // serving, stopping, joins and helper calls have deliberately separate provenance rules.
+func (w *publicationWalker) callBody(call *ast.CallExpr, bindings publicationBindings, signals map[groupKey]bool) {
 	if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
 		w.body(lit.Body, w.literalBindings(lit, call.Args, bindings), signals)
 		return
@@ -314,9 +395,28 @@ func (w *publicationWalker) call(call *ast.CallExpr, bindings publicationBinding
 	if fn == nil {
 		return
 	}
-	sel, selected := call.Fun.(*ast.SelectorExpr)
+	info := w.functions[fn]
+	if info == nil && fn.Pkg() != w.pass.Pkg && !publicationPrimitive(w.pass, call, fn) {
+		// Unmodeled external calls have no publication summary. Their operand
+		// calls were visited already, and mutation analysis retains escapes.
+		return
+	}
+	sel, selected := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	sig, _ := fn.Type().(*types.Signature)
+	receiver := groupKey{}
+	if sig.Recv() != nil {
+		var ok bool
+		receiver, ok = w.methodReceiver(sel, bindings)
+		if !ok {
+			// Method expressions include an explicit receiver argument;
+			// treating it as parameter zero silently shifts every binding.
+			w.resolved = false
+			return
+		}
+	}
 	if selected && (isServeFunction(fn) || isServerStopFunction(fn) || isSyncMethodCall(w.pass, call, "WaitGroup", "Wait")) {
-		key, ok := w.resolve(sel.X, bindings)
+		key, ok := w.methodReceiver(sel, bindings)
+		ok = ok && !w.invalidated(key)
 		if isServeFunction(fn) && !w.rollback {
 			w.resolved = w.resolved && ok
 			w.published = append(w.published, publicationResource{server: key, signals: signals})
@@ -337,7 +437,7 @@ func (w *publicationWalker) call(call *ast.CallExpr, bindings publicationBinding
 				joined := signals
 				if isSyncMethodCall(w.pass, call, "WaitGroup", "Go") {
 					joined = make(map[groupKey]bool)
-					if key, ok := w.resolve(sel.X, bindings); ok {
+					if key, ok := w.methodReceiver(sel, bindings); ok && !w.invalidated(key) {
 						joined[key] = true
 					}
 				}
@@ -346,23 +446,29 @@ func (w *publicationWalker) call(call *ast.CallExpr, bindings publicationBinding
 		}
 		return
 	}
-	info := w.functions[fn]
 	if info == nil {
 		return
 	}
 	next := make(publicationBindings)
-	sig, _ := fn.Type().(*types.Signature)
 	if sig.Recv() != nil {
-		key, _ := w.resolve(sel.X, bindings)
-		next[receiverVar(w.pass, info.decl)] = key
+		next[receiverVar(w.pass, info.decl)] = receiver
 	}
 	for i := 0; i < sig.Params().Len(); i++ {
 		param := sig.Params().At(i)
 		key := groupKey{}
 		if i < len(call.Args) && (!sig.Variadic() || i != sig.Params().Len()-1) {
-			key, _ = w.resolve(call.Args[i], bindings)
+			key = w.argumentIdentity(call.Args[i], param.Type(), bindings)
 		}
 		next[param] = key
 	}
 	w.function(fn, next, signals)
+}
+
+func publicationPrimitive(pass *analysis.Pass, call *ast.CallExpr, fn *types.Func) bool {
+	return isServeFunction(fn) || isServerStopFunction(fn) ||
+		isSyncMethodCall(pass, call, "Once", "Do") ||
+		isSyncMethodCall(pass, call, "WaitGroup", "Wait") ||
+		isSyncMethodCall(pass, call, "WaitGroup", "Add") ||
+		isSyncMethodCall(pass, call, "WaitGroup", "Done") ||
+		isSyncMethodCall(pass, call, "WaitGroup", "Go")
 }

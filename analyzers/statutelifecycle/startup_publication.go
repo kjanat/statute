@@ -36,8 +36,8 @@ func containsPublisher(pass *analysis.Pass, root ast.Node, functions map[*types.
 			// A function literal is inert unless a surrounding GoStmt launches it.
 			return false
 		case *ast.GoStmt:
-			if (exempt == nil || !exempt(n.Call)) && callPublishes(pass, n.Call, functions) {
-				found = true
+			if callPublishes(pass, n.Call, functions) {
+				found = exempt == nil || !exempt(n.Call)
 				return false
 			}
 			if lit, ok := n.Call.Fun.(*ast.FuncLit); ok && containsPublisher(pass, lit.Body, functions, exempt) {
@@ -123,7 +123,8 @@ func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, function
 	if len(graph.Blocks) == 0 {
 		return
 	}
-	roots := collectRollbackRoots(pass, info, functions)
+	proofBody := startupFailureBody(info.fn, info.decl.Body)
+	roots := collectRollbackRegistrations(pass, info, functions, proofBody)
 
 	type state struct {
 		block     *cfg.Block
@@ -158,9 +159,9 @@ func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, function
 				committed = true
 				published = false
 			}
-			rollback |= deferredRollbackBits(pass, node, roots)
+			rollback |= deferredRollbackBits(node, roots)
 			exempt := func(call *ast.CallExpr) bool {
-				return rollbackOwnedCall(pass, call, roots, rollback, functions, info.decl.Body)
+				return rollbackOwnedCall(pass, call, roots, rollback, functions, proofBody)
 			}
 			if !committed && containsPublisher(pass, node, functions, exempt) {
 				published = true
@@ -173,106 +174,86 @@ func checkPublishBeforeFailure(pass *analysis.Pass, info *functionInfo, function
 	}
 }
 
-// rollbackRoot is a variable eligible to own a rollback-owned early publication, together with the owner types its rollback provably stops and awaits.
-type rollbackRoot struct {
-	v     *types.Var
-	stops map[groupKey]bool
-	waits map[groupKey]bool
+// startupFailureBody bounds caller provenance to operations that can still
+// precede an error return. Only an explicit successful return and its final
+// top-level straight-line suffix are removed; helpers and the CFG stay intact.
+func startupFailureBody(fn *types.Func, body *ast.BlockStmt) *ast.BlockStmt {
+	if len(body.List) == 0 {
+		return body
+	}
+	last := len(body.List) - 1
+	ret, ok := body.List[last].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) == 0 || returnMayFail(fn, ret) {
+		return body
+	}
+	for last > 0 && successTailStatement(body.List[last-1]) {
+		last--
+	}
+	prefix := *body
+	prefix.List = body.List[:last]
+	return &prefix
 }
 
-// collectRollbackRoots finds the variables eligible to own a rollback-owned early publication: each roots a deferred rollback call somewhere in the body, and that rollback provably stops and awaits at least one owner's allowlisted server.
-func collectRollbackRoots(pass *analysis.Pass, info *functionInfo, functions map[*types.Func]*functionInfo) []rollbackRoot {
-	var roots []rollbackRoot
-	seen := make(map[*types.Var]bool)
+func successTailStatement(stmt ast.Stmt) bool {
+	switch stmt.(type) {
+	case *ast.AssignStmt, *ast.ExprStmt, *ast.DeclStmt, *ast.IncDecStmt, *ast.EmptyStmt, *ast.GoStmt, *ast.SendStmt:
+		return true
+	default:
+		return false // Control flow, labels, nested blocks and defers stay in the proof.
+	}
+}
+
+// rollbackRegistration belongs to one defer occurrence, with exact cleanup identities.
+type rollbackRegistration struct {
+	deferStmt *ast.DeferStmt
+	stops     map[groupKey]bool
+	waits     map[groupKey]bool
+}
+
+// collectRollbackRegistrations summarizes actual deferred callees at their full
+// receiver identities. Inert literals cannot register cleanup in this CFG.
+func collectRollbackRegistrations(pass *analysis.Pass, info *functionInfo, functions map[*types.Func]*functionInfo, proofBody *ast.BlockStmt) []rollbackRegistration {
+	var roots []rollbackRegistration
 	ast.Inspect(info.decl.Body, func(node ast.Node) bool {
+		if _, ok := node.(*ast.FuncLit); ok {
+			return false
+		}
 		ds, ok := node.(*ast.DeferStmt)
 		if !ok {
 			return true
 		}
-		for _, v := range deferredRollbackVars(pass, ds) {
-			if seen[v] || len(roots) >= 64 {
-				continue
-			}
-			seen[v] = true
-			stops, waits := rollbackResources(pass, v, functions)
-			if len(stops) > 0 && len(waits) > 0 {
-				roots = append(roots, rollbackRoot{v: v, stops: stops, waits: waits})
-			}
+		if len(roots) >= 64 {
+			return false
 		}
-		return true
+		stops, waits := rollbackResources(pass, ds.Call, functions, proofBody)
+		if len(stops) > 0 && len(waits) > 0 {
+			roots = append(roots, rollbackRegistration{deferStmt: ds, stops: stops, waits: waits})
+		}
+		return false
 	})
 	return roots
 }
 
-// deferredRollbackVars returns the variables whose rollback ds registers, directly (defer a.rollback()) or inside the deferred function literal.
-func deferredRollbackVars(pass *analysis.Pass, ds *ast.DeferStmt) []*types.Var {
-	if v := rollbackCallRoot(pass, ds.Call); v != nil {
-		return []*types.Var{v}
-	}
-	lit, ok := ds.Call.Fun.(*ast.FuncLit)
-	if !ok {
-		return nil
-	}
-	var out []*types.Var
-	ast.Inspect(lit.Body, func(node ast.Node) bool {
-		if call, ok := node.(*ast.CallExpr); ok {
-			if v := rollbackCallRoot(pass, call); v != nil {
-				out = append(out, v)
-			}
-		}
-		return true
-	})
-	return out
-}
-
-// rollbackCallRoot returns the root variable when call invokes a method named rollback through a selector chain rooted at an identifier, else nil.
-func rollbackCallRoot(pass *analysis.Pass, call *ast.CallExpr) *types.Var {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != "rollback" {
-		return nil
-	}
-	return selectorRootVar(pass, sel)
-}
-
-// selectorRootVar walks a selector chain to its root identifier and resolves it to a variable, else nil.
-func selectorRootVar(pass *analysis.Pass, sel *ast.SelectorExpr) *types.Var {
-	expr := sel.X
-	for {
-		switch x := expr.(type) {
-		case *ast.SelectorExpr:
-			expr = x.X
-		case *ast.ParenExpr:
-			expr = x.X
-		case *ast.Ident:
-			v, _ := pass.TypesInfo.Uses[x].(*types.Var)
-			return v
-		default:
-			return nil
-		}
-	}
-}
-
-// deferredRollbackBits returns the root bits a traversed defer statement registers; ordering matters, so only defers already reached in the CFG arm the exemption.
-func deferredRollbackBits(pass *analysis.Pass, node ast.Node, roots []rollbackRoot) uint64 {
+// deferredRollbackBits arms only the exact defer occurrence traversed in the CFG.
+func deferredRollbackBits(node ast.Node, roots []rollbackRegistration) uint64 {
 	ds, ok := node.(*ast.DeferStmt)
 	if !ok {
 		return 0
 	}
 	var bits uint64
-	for _, v := range deferredRollbackVars(pass, ds) {
-		for i, root := range roots {
-			if v == root.v {
-				bits |= 1 << i
-			}
+	for i, root := range roots {
+		if ds == root.deferStmt {
+			bits |= 1 << i
 		}
 	}
 	return bits
 }
 
-// rollbackOwnedCall reports whether call is attempt-bracketed: rooted at a variable whose qualifying rollback defer was already traversed, with every owner type whose server the call launches stopped and awaited by that rollback.
+// rollbackOwnedCall requires one registered defer to stop every exact server
+// published by this call and join its matching producer completion.
 //
 //nolint:gocyclo // every publication needs both exact stop and matching completion evidence from one registered owner.
-func rollbackOwnedCall(pass *analysis.Pass, call *ast.CallExpr, roots []rollbackRoot, registered uint64, functions map[*types.Func]*functionInfo, body *ast.BlockStmt) bool {
+func rollbackOwnedCall(pass *analysis.Pass, call *ast.CallExpr, roots []rollbackRegistration, registered uint64, functions map[*types.Func]*functionInfo, body *ast.BlockStmt) bool {
 	publications, resolved := publicationResources(pass, call, functions, body)
 	if !resolved || len(publications) == 0 {
 		return false
@@ -296,24 +277,6 @@ func rollbackOwnedCall(pass *analysis.Pass, call *ast.CallExpr, roots []rollback
 		}
 	}
 	return false
-}
-
-// lookupMethod resolves name in the method sets of owner and its pointer type.
-func lookupMethod(owner types.Type, name string) *types.Func {
-	sets := []*types.MethodSet{types.NewMethodSet(owner)}
-	if _, pointer := types.Unalias(owner).(*types.Pointer); !pointer {
-		if named := namedType(owner); named != nil {
-			sets = append(sets, types.NewMethodSet(types.NewPointer(named)))
-		}
-	}
-	for _, set := range sets {
-		for method := range set.Methods() {
-			if fn, _ := method.Obj().(*types.Func); fn != nil && fn.Name() == name {
-				return fn
-			}
-		}
-	}
-	return nil
 }
 
 func isStartupFunction(name string) bool {
