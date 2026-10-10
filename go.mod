@@ -7,7 +7,7 @@ toolchain go1.27.2
 tool golang.org/x/tools/cmd/goimports
 
 require (
-	github.com/andybalholm/brotli v1.2.5
+	github.com/andybalholm/brotli v1.2.6
 	github.com/containerd/errdefs v1.0.0
 	github.com/golangci/plugin-module-register v0.1.2
 	github.com/moby/moby/api v1.56.1
