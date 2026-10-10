@@ -16,26 +16,11 @@ import (
 	"golang.org/x/net/http2/hpack"
 )
 
-// TestClientHostRejectsUnusableHTTP2AuthorityBeforeHTTP1Backend exercises the
-// complete protocol boundary: a raw HTTP/2 authority reaches Statute, whose
-// selected pool would otherwise copy it to an HTTP/1 backend. An invalid Host
-// must fail at the pool before Go's HTTP/1 transport can silently replace it
-// with an empty Host and select the backend's default virtual host.
+// TestClientHostRejectsUnusableHTTP2AuthorityBeforeHTTP1Backend proves invalid
+// HTTP/2 authorities cannot select the HTTP/1 backend's default virtual host.
 func TestClientHostRejectsUnusableHTTP2AuthorityBeforeHTTP1Backend(t *testing.T) {
 	var backendRequests atomic.Int64
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendRequests.Add(1)
-		switch r.Host {
-		case "public.example":
-			_, _ = io.WriteString(w, "public")
-		case "xn--bcher-kva.example":
-			_, _ = io.WriteString(w, "unicode")
-		case "":
-			_, _ = io.WriteString(w, "sensitive-default")
-		default:
-			http.Error(w, "unknown virtual host", http.StatusMisdirectedRequest)
-		}
-	}))
+	backend := httptest.NewServer(clientHostVirtualHosts(&backendRequests))
 	t.Cleanup(backend.Close)
 
 	cfg := hostPoolConfig(backend.URL, ClientHost)
@@ -88,6 +73,22 @@ func TestClientHostRejectsUnusableHTTP2AuthorityBeforeHTTP1Backend(t *testing.T)
 			}
 		})
 	}
+}
+
+func clientHostVirtualHosts(requests *atomic.Int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.Host {
+		case "public.example":
+			_, _ = io.WriteString(w, "public")
+		case "xn--bcher-kva.example":
+			_, _ = io.WriteString(w, "unicode")
+		case "":
+			_, _ = io.WriteString(w, "sensitive-default")
+		default:
+			http.Error(w, "unknown virtual host", http.StatusMisdirectedRequest)
+		}
+	})
 }
 
 func TestClientHostRejectsEmptyHostBeforeBackendSelection(t *testing.T) {
@@ -162,12 +163,17 @@ func rawHTTP2AuthorityRequest(t *testing.T, addr, authority, path string) (int, 
 	if state := conn.ConnectionState(); state.NegotiatedProtocol != "h2" {
 		t.Fatalf("negotiated protocol %q, want h2", state.NegotiatedProtocol)
 	}
+	framer := http2.NewFramer(conn, conn)
+	framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
+	writeHTTP2AuthorityRequest(t, conn, framer, authority, path)
+	return readHTTP2AuthorityResponse(t, framer)
+}
 
+func writeHTTP2AuthorityRequest(t *testing.T, conn io.Writer, framer *http2.Framer, authority, path string) {
+	t.Helper()
 	if _, err := io.WriteString(conn, http2.ClientPreface); err != nil {
 		t.Fatal(err)
 	}
-	framer := http2.NewFramer(conn, conn)
-	framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	if err := framer.WriteSettings(); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +197,10 @@ func rawHTTP2AuthorityRequest(t *testing.T, addr, authority, path string) (int, 
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
 
+func readHTTP2AuthorityResponse(t *testing.T, framer *http2.Framer) (int, string) {
+	t.Helper()
 	status := 0
 	var body bytes.Buffer
 	for {
@@ -199,42 +208,53 @@ func rawHTTP2AuthorityRequest(t *testing.T, addr, authority, path string) (int, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		switch frame := frame.(type) {
-		case *http2.SettingsFrame:
-			if !frame.IsAck() {
-				if err := framer.WriteSettingsAck(); err != nil {
-					t.Fatal(err)
-				}
-			}
-		case *http2.MetaHeadersFrame:
-			if frame.StreamID != 1 {
-				continue
-			}
-			for _, field := range frame.Fields {
-				if field.Name == ":status" {
-					status, err = strconv.Atoi(field.Value)
-					if err != nil {
-						t.Fatalf("invalid response status %q", field.Value)
-					}
-				}
-			}
-			if frame.StreamEnded() {
-				return status, body.String()
-			}
-		case *http2.DataFrame:
-			if frame.StreamID != 1 {
-				continue
-			}
-			_, _ = body.Write(frame.Data())
-			if frame.StreamEnded() {
-				return status, body.String()
-			}
-		case *http2.RSTStreamFrame:
-			if frame.StreamID == 1 {
-				t.Fatalf("stream reset: %s", frame.ErrCode)
-			}
-		case *http2.GoAwayFrame:
-			t.Fatalf("connection closed: %s", frame.ErrCode)
+		if processHTTP2AuthorityResponse(t, framer, frame, &status, &body) {
+			return status, body.String()
 		}
 	}
+}
+
+func processHTTP2AuthorityResponse(t *testing.T, framer *http2.Framer, frame http2.Frame, status *int, body *bytes.Buffer) bool {
+	t.Helper()
+	if id := frame.Header().StreamID; id != 0 && id != 1 {
+		return false
+	}
+	switch frame := frame.(type) {
+	case *http2.SettingsFrame:
+		ackHTTP2AuthoritySettings(t, framer, frame)
+	case *http2.MetaHeadersFrame:
+		*status = http2AuthorityResponseStatus(t, frame, *status)
+		return frame.StreamEnded()
+	case *http2.DataFrame:
+		_, _ = body.Write(frame.Data())
+		return frame.StreamEnded()
+	case *http2.RSTStreamFrame:
+		t.Fatalf("stream reset: %s", frame.ErrCode)
+	case *http2.GoAwayFrame:
+		t.Fatalf("connection closed: %s", frame.ErrCode)
+	}
+	return false
+}
+
+func ackHTTP2AuthoritySettings(t *testing.T, framer *http2.Framer, frame *http2.SettingsFrame) {
+	t.Helper()
+	if !frame.IsAck() {
+		if err := framer.WriteSettingsAck(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func http2AuthorityResponseStatus(t *testing.T, frame *http2.MetaHeadersFrame, status int) int {
+	t.Helper()
+	for _, field := range frame.Fields {
+		if field.Name == ":status" {
+			value, err := strconv.Atoi(field.Value)
+			if err != nil {
+				t.Fatalf("invalid response status %q", field.Value)
+			}
+			return value
+		}
+	}
+	return status
 }

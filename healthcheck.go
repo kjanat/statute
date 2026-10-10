@@ -50,9 +50,8 @@ func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transp
 		Timeout:   cfg.Timeout,
 		Transport: transport,
 	}
-	// An explicit probe policy judges the endpoint's own status, so redirects
-	// stop. Default probes may follow redirects within the selected backend's
-	// origin, but a backend response cannot steer a probe to another origin.
+	// Explicit probe policy judges the initial response. Default probes
+	// follow redirects only within the selected backend's original origin.
 	if cfg.Host != "" || len(cfg.Statuses) > 0 {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse

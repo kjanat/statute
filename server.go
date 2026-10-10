@@ -1316,11 +1316,8 @@ func (ph *poolHandler) candidates() []*backendState {
 // ServeHTTP proxies the request to a healthy backend in the pool,
 // responding 503 when no backends are available.
 func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// ClientHost is the only policy that copies attacker-controlled ingress
-	// authority onto the backend request. Reject values the HTTP/1 transport
-	// cannot put on the wire before selecting a backend: net/http otherwise
-	// replaces an invalid Host with an empty one, which can select a different
-	// default virtual host. Empty is rejected explicitly for the same reason.
+	// Reject unusable ClientHost before selection: HTTP/1 transport erases
+	// invalid Host values, potentially selecting a different default vhost.
 	if ph.pool.UpstreamHost == resolved.HostClient && !usableUpstreamHost(r.Host) {
 		http.Error(w, "invalid Host header", http.StatusBadRequest)
 		return
