@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Set the preferred Go toolchain to `go1.27.2` across modules while retaining the Go 1.27 language requirement.
 
-- Consolidate CI and local tool installation in mise. Let CI jobs report their results independently rather than through the removed aggregate gate.
+- Use mise for CI and local tool installation.
 
 - Build e2e actors with the digest-pinned Go 1.27.2 Bookworm Official Image from ECR Public and obtain the observability collector from OpenTelemetry's GHCR distribution, removing Docker Hub's anonymous pull limit from those acquisitions. Preserve the existing distroless runtime image; registry availability remains a test prerequisite, with no fallback or new credential requirement.
 
@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Recommend redirect-only HTTP companions for ACME listeners requiring client certificates; preserve intentional listener-level authentication scope.
 
-- Bind SLC100 early-startup rollback exemptions to the actual selected deferred method, its complete receiver storage path, and the exact published server and completion identities. Unknown identities and unsupported value-owned copies receive no exemption. This is a bounded local identity check, not a proof of termination or arbitrary lifecycle code.
+- Bind SLC100 early-startup rollback exemptions to the actual selected deferred method, its complete receiver storage path, and the exact published server and completion identities. Unknown identities and unsupported value-owned copies receive no exemption. SLC100 checks local storage identity within its modeled startup and rollback patterns.
 
 - Protect unpushed commits during merged-worktree cleanup and separate e2e reachability evidence from client-certificate rejection.
 
