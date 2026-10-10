@@ -25,8 +25,6 @@ filter_bins    = ["wasm-opt"]
 prerelease          = true
 version             = "latest"
 minimum_release_age = "0s"
-rename_exe          = "kprint"
-postinstall         = "kprint"
 depends             = ["github:tombi-toml/tombi", "go"]
 
 [tools."golangci-lint"]
@@ -60,4 +58,4 @@ auto = true
 run  = "npm ci --no-audit --no-fund"
 
 [shell_alias]
-dprint = "kprint"
+kprint = "dprint"

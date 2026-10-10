@@ -7,7 +7,7 @@
 GO              ?= go
 GOFMT           ?= $(shell $(GO) env GOROOT)/bin/gofmt
 GOLANGCI_LINT   ?= golangci-lint
-DPRINT          ?= kprint
+DPRINT          ?= dprint
 CUSTOM_GCL      ?= ./custom-gcl
 COVER_PROFILE   ?= cover.out
 FUZZ_TIME       ?= 30s

@@ -10,49 +10,45 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2024"
-rust-version = "1.85"
-name = "lol_html"
-version = "3.0.1"
-authors = ["Ivan Nikulin <inikulin@cloudflare.com, ifaaan@gmail.com>"]
-build = false
-include = [
-    "/Cargo.toml",
-    "/LICENSE",
-    "/README.md",
-    "/media",
-    "/src",
-]
-autolib = false
-autobins = false
-autoexamples = false
-autotests = false
-autobenches = false
-description = "Streaming HTML rewriter/parser with CSS selector-based API"
+name          = "lol_html"
+version       = "3.0.1"
+authors       = ["Ivan Nikulin <inikulin@cloudflare.com, ifaaan@gmail.com>"]
+edition       = "2024"
+rust-version  = "1.85"
+description   = "Streaming HTML rewriter/parser with CSS selector-based API"
 documentation = "https://docs.rs/lol-html"
-readme = "README.md"
-keywords = [
-    "html",
-    "css-selectors",
-    "parser",
-    "rewriter",
-    "streaming",
+readme        = "README.md"
+repository    = "https://github.com/cloudflare/lol-html"
+license       = "BSD-3-Clause"
+keywords      = [
+  "css-selectors",
+  "html",
+  "parser",
+  "rewriter",
+  "streaming",
 ]
-categories = [
-    "parser-implementations",
-    "web-programming",
+categories    = [
+  "parser-implementations",
+  "web-programming",
 ]
-license = "BSD-3-Clause"
-repository = "https://github.com/cloudflare/lol-html"
-
-[features]
-_integration_test = []
-debug_trace = []
+build         = false
+include       = [
+  "/Cargo.toml",
+  "/LICENSE",
+  "/README.md",
+  "/media",
+  "/src",
+]
+autolib       = false
+autobins      = false
+autoexamples  = false
+autotests     = false
+autobenches   = false
 
 [lib]
-name = "lol_html"
-path = "src/lib.rs"
 bench = false
+name  = "lol_html"
+path  = "src/lib.rs"
 
 [dependencies.bitflags]
 version = "2.11.1"
@@ -67,7 +63,7 @@ version = "0.36"
 version = "0.8.35"
 
 [dependencies.foldhash]
-version = "0.2.0"
+version  = "0.2.0"
 features = ["std"]
 
 [dependencies.hashbrown]
@@ -95,7 +91,7 @@ version = "0.8.2"
 version = "0.3.3"
 
 [dev-dependencies.hashbrown]
-version = "0.17.0"
+version  = "0.17.0"
 features = ["serde"]
 
 [dev-dependencies.html5ever]
@@ -122,18 +118,22 @@ version = "1.0.149"
 [dev-dependencies.static_assertions]
 version = "1.1.0"
 
+[features]
+_integration_test = []
+debug_trace       = []
+
 [lints.rust]
 absolute_paths_not_starting_with_crate = "warn"
-elided_lifetimes_in_paths = "warn"
-for_loops_over_fallibles = "deny"
-macro_use_extern_crate = "warn"
-meta_variable_misuse = "warn"
-redundant_lifetimes = "warn"
-trivial_numeric_casts = "warn"
-unit_bindings = "deny"
-unnameable_types = "warn"
-unused_qualifications = "warn"
+elided_lifetimes_in_paths              = "warn"
+for_loops_over_fallibles               = "deny"
+macro_use_extern_crate                 = "warn"
+meta_variable_misuse                   = "warn"
+redundant_lifetimes                    = "warn"
+trivial_numeric_casts                  = "warn"
+unit_bindings                          = "deny"
+unnameable_types                       = "warn"
+unused_qualifications                  = "warn"
 
 [lints.rust.keyword_idents]
-level = "deny"
+level    = "deny"
 priority = 1

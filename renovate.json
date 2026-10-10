@@ -21,6 +21,7 @@
     "**/node_modules/**",
     "dist/**",
     ".worktrees/**",
+    "docs/rfc/**",
     "research/htmlrewrite/guest/vendor/**",
     "e2e/compose.yml"
   ],
@@ -72,9 +73,8 @@
       ]
     },
     {
-      "description": "The oracle tests the local checkout through replace, not a published Statute release",
+      "description": "In-repository modules use the local Statute checkout through replace, not a published release",
       "matchManagers": ["gomod"],
-      "matchFileNames": ["traefikoracle/go.mod"],
       "matchPackageNames": ["statute.kjanat.dev"],
       "enabled": false
     },

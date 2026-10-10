@@ -13,7 +13,7 @@
     "dprint": {
       "binary": {
         "path": "mise",
-        "arguments": ["exec", "--", "kprint", "lsp"]
+        "arguments": ["exec", "--", "dprint", "lsp"]
       }
     }
   }

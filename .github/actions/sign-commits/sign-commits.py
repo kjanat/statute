@@ -275,12 +275,10 @@ def resolve_base(branch: str, home: str) -> str:
         pinned = (
             f"base={BASE_REF} pins the range"
             if BASE_REF
-            else " ".join(
-                (
-                    f"{branch} is not {DEFAULT_BRANCH}, so the range starts at the",
-                    "merge base",
-                )
-            )
+            else " ".join((
+                f"{branch} is not {DEFAULT_BRANCH}, so the range starts at the",
+                "merge base",
+            ))
         )
         reason = "the scan for the last signed commit only runs when base is blank"
         warn(f"scan_limit={SCAN_LIMIT} was discarded because {pinned}; {reason}")
@@ -293,33 +291,27 @@ def resolve_base(branch: str, home: str) -> str:
 def report_empty_range(branch: str, head: bytes, base: str) -> None:
     if base != head.decode():
         warn(
-            " ".join(
-                (
-                    f"No commits in {base}..HEAD; nothing was signed. Check that base",
-                    "is an ancestor of HEAD on the branch you dispatched.",
-                )
-            )
+            " ".join((
+                f"No commits in {base}..HEAD; nothing was signed. Check that base",
+                "is an ancestor of HEAD on the branch you dispatched.",
+            ))
         )
     elif BASE_REF:
         remedy = "pass the commit before the first one you want signed"
         warn(
-            " ".join(
-                (
-                    f"base={BASE_REF} resolved to {base}, which is HEAD itself; base is",
-                    f"an exclusive lower bound, so the range is empty — {remedy}.",
-                )
-            )
+            " ".join((
+                f"base={BASE_REF} resolved to {base}, which is HEAD itself; base is",
+                f"an exclusive lower bound, so the range is empty — {remedy}.",
+            ))
         )
     elif branch == DEFAULT_BRANCH:
         print(f"Nothing to sign; HEAD ({base}) is already signed and verified.")
     else:
         print(
-            " ".join(
-                (
-                    f"Nothing to sign; {branch} adds no commits on top of",
-                    f"origin/{DEFAULT_BRANCH} ({base}).",
-                )
-            )
+            " ".join((
+                f"Nothing to sign; {branch} adds no commits on top of",
+                f"origin/{DEFAULT_BRANCH} ({base}).",
+            ))
         )
 
 
@@ -365,13 +357,11 @@ def report_if_nothing_to_rewrite(
     others = sum(1 for commit in commits if not mine[commit])
     if others == len(commits) and not SIGN_OTHERS:
         warn(
-            " ".join(
-                (
-                    f"Nothing was signed: all {others} commit(s) in {base}..HEAD were",
-                    "committed by identities the key does not carry — dispatch with",
-                    "sign_others to include them.",
-                )
-            )
+            " ".join((
+                f"Nothing was signed: all {others} commit(s) in {base}..HEAD were",
+                "committed by identities the key does not carry — dispatch with",
+                "sign_others to include them.",
+            ))
         )
     else:
         print(f"Nothing to sign in {base}..HEAD ({others} commit(s) by others).")
@@ -467,26 +457,22 @@ def report_rewrite_results(
         # signatures it cannot replace, and the log scrolls past.
         shas = ", ".join(commit.decode()[:8] for commit in dropped)
         warn(
-            " ".join(
-                (
-                    f"Dropped the signature on {len(dropped)} commit(s) ({shas}); they were",
-                    "committed by identities the key does not carry, so the rewrite stripped",
-                    "each signature and nothing replaced it — dispatch with sign_others to",
-                    "sign them instead.",
-                )
-            )
+            " ".join((
+                f"Dropped the signature on {len(dropped)} commit(s) ({shas}); they were",
+                "committed by identities the key does not carry, so the rewrite stripped",
+                "each signature and nothing replaced it — dispatch with sign_others to",
+                "sign them instead.",
+            ))
         )
 
     tip = rewritten.get(head, head)
     if not verify_status(tip, home)[0]:
         warn(
-            " ".join(
-                (
-                    f"Signed {signed} commit(s), but the tip {tip.decode()[:8]} still carries",
-                    "no signature this key can verify; it was committed by an identity the",
-                    "key does not carry — dispatch with sign_others to include it.",
-                )
-            )
+            " ".join((
+                f"Signed {signed} commit(s), but the tip {tip.decode()[:8]} still carries",
+                "no signature this key can verify; it was committed by an identity the",
+                "key does not carry — dispatch with sign_others to include it.",
+            ))
         )
     return tip
 
