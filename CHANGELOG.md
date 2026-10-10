@@ -6,7 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-10
+
+### Changed
+
+- Set the preferred Go toolchain to `go1.27.2` across modules while retaining the Go 1.27 language requirement.
+
+- Consolidate CI and local tool installation in mise. Let CI jobs report their results independently rather than through the removed aggregate gate.
+
+- Build e2e actors with the digest-pinned Go 1.27.2 Bookworm Official Image from ECR Public and obtain the observability collector from OpenTelemetry's GHCR distribution, removing Docker Hub's anonymous pull limit from those acquisitions. Preserve the existing distroless runtime image; registry availability remains a test prerequisite, with no fallback or new credential requirement.
+
+### Fixed
+
+- Count interrupted upstream response bodies once per passive-health attempt without counting client cancellations or response transformation failures.
+
+- Recommend redirect-only HTTP companions for ACME listeners requiring client certificates; preserve intentional listener-level authentication scope.
+
+- Bind SLC100 early-startup rollback exemptions to the actual selected deferred method, its complete receiver storage path, and the exact published server and completion identities. Unknown identities and unsupported value-owned copies receive no exemption. This is a bounded local identity check, not a proof of termination or arbitrary lifecycle code.
+
+- Protect unpushed commits during merged-worktree cleanup and separate e2e reachability evidence from client-certificate rejection.
+
+- Separate CI formatting and linting while requiring both checks; avoid mixed Go toolchains during formatting and tidy local replacement consumers in Renovate dependency updates.
+
 ### Security
+
+- Update `golang.org/x/net` to v0.60.0 across consuming modules for its security fixes.
 
 - Enforce route response-header operations on native proxy upgrade handshakes, including cookie removal, while preserving bidirectional streaming and isolated policies on shared upstream pools.
 
@@ -30,15 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Apply configured read, write, idle, header-read and header-size limits to health and metrics listeners.
 
-### Fixed
-
-- Count interrupted upstream response bodies once per passive-health attempt without counting client cancellations or response transformation failures.
-
-- Recommend redirect-only HTTP companions for ACME listeners requiring client certificates; preserve intentional listener-level authentication scope.
-
-- Correlate early-startup rollback exemptions with exact server and completion identities, protect unpushed commits during merged-worktree cleanup, and separate e2e reachability evidence from client-certificate rejection.
-
-- Separate CI formatting and linting while requiring both checks; avoid mixed Go toolchains during formatting and tidy local replacement consumers in Renovate dependency updates.
+Known limitation: the initial CI run for [#200](https://github.com/kjanat/statute/pull/200) returned 503 in `TestDockerPeriodicRefreshDiscoversExternalStopWithoutEvent`. The identical-code retry and nightly regression, repeated smoke, and soak checks passed. The cause remains unconfirmed; these passes do not establish that the Docker timing concern is resolved.
 
 ## [0.8.0] - 2026-10-08
 
@@ -411,7 +427,8 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/kjanat/statute/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kjanat/statute/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/kjanat/statute/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/kjanat/statute/compare/v0.7.0...v0.7.1
