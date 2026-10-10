@@ -10,7 +10,7 @@ require (
 	github.com/andybalholm/brotli v1.2.5
 	github.com/containerd/errdefs v1.0.0
 	github.com/golangci/plugin-module-register v0.1.2
-	github.com/moby/moby/api v1.56.0
+	github.com/moby/moby/api v1.56.1
 	github.com/moby/moby/client v0.6.0
 	github.com/quic-go/qpack v0.6.0
 	github.com/quic-go/quic-go v0.63.0
