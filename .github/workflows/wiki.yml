@@ -21,7 +21,7 @@ jobs:
           - name: configure git
             run: git config --global user.name 'github-actions[bot]';
               git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          - uses: kjanat/runner@1f0e35b1e967fb26a2fd38667d3369d66e9d43b1 # master
+          - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # master
           - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
             with: { bootstrap: true, bootstrap_args: --yes, bootstrap_skip: repos }
 
