@@ -32,7 +32,7 @@ version = "2.14.0"
 depends = ["go"]
 
 [tools."github:kjanat/runner"]
-version = "0.27.1"
+version = "0.28.0"
 
 [tools."github:tombi-toml/tombi"]
 version = "1.7.3"
