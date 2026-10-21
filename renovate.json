@@ -155,6 +155,42 @@
       "matchDepNames": ["kjanat/gpg-signing-service"],
       "addLabels": ["github-actions"],
       "semanticCommitType": "ci"
+    },
+    {
+      "description": "Group Go directives, toolchains and version-manager pins across modules",
+      "matchDatasources": [
+        "golang-version"
+      ],
+      "groupName": "Go runtime",
+      "groupSlug": "go-runtime",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
+      "dependencyDashboardApproval": true,
+      "addLabels": [
+        "go"
+      ],
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "Keep Go Docker image tags and digests with the Go toolchain group; override the broader e2e/example image groups",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "golang",
+        "docker.io/library/golang",
+        "public.ecr.aws/docker/library/golang",
+        "ghcr.io/kjanat/golang"
+      ],
+      "groupName": "Go runtime",
+      "groupSlug": "go-runtime",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
+      "dependencyDashboardApproval": true,
+      "addLabels": [
+        "go"
+      ],
+      "semanticCommitType": "chore"
     }
   ]
 }
