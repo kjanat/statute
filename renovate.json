@@ -179,7 +179,8 @@
       "matchPackageNames": [
         "golang",
         "docker.io/library/golang",
-        "public.ecr.aws/docker/library/golang"
+        "public.ecr.aws/docker/library/golang",
+        "ghcr.io/kjanat/golang"
       ],
       "groupName": "Go runtime",
       "groupSlug": "go-runtime",
