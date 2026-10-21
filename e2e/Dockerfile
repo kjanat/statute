@@ -9,7 +9,7 @@
 # against :latest, and a "digest refresh" would swap the image outright.
 # The runtime image is the root-variant distroless: the
 # per-node state volumes are created by the daemon as root-owned mounts.
-FROM public.ecr.aws/docker/library/golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS builder
+FROM ghcr.io/kjanat/golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go version && go mod download

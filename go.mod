@@ -2,7 +2,7 @@ module statute.kjanat.dev
 
 go 1.27
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 tool golang.org/x/tools/cmd/goimports
 
