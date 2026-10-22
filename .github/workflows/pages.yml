@@ -1,15 +1,22 @@
 # yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
 ---
 name: vanity
-on: { push: { branches: [master], paths: [".github/workflows/pages.yml", "scripts/api-page.mjs"] } }
+on:
+  push: { branches: [master], paths: [".github/workflows/pages.yml", "scripts/api-page.mjs", "assets/brand/**"] }
+  # Release completion includes pkg.go.dev indexing and metadata verification.
+  workflow_run: { workflows: [release], types: [completed] }
 permissions: { id-token: write, contents: read, pages: write }
-concurrency: { group: pages, cancel-in-progress: true }
+concurrency:
+  # A skipped failed release must not displace a pending or running deployment.
+  group: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' && format('pages-skipped-{0}', github.run_id) || 'pages' }}
+  cancel-in-progress: true
 env:
   HOST: statute.kjanat.dev
   GODEV: ${{ format('{0}/{1}', 'https://pkg.go.dev', vars.CNAME) }}
   REPO: ${{ format('{0}/{1}', github.server_url, github.repository) }}
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -28,6 +35,7 @@ jobs:
           BODY="Redirecting to <a href=\"${GODEV}\">pkg.go.dev</a>"
 
           mkdir -p dist
+          cp assets/brand/* dist/
 
           # Root: tooling reads the go-import/go-source meta; a browser is
           # bounced to the module page on pkg.go.dev.
@@ -35,6 +43,9 @@ jobs:
           <!DOCTYPE html>
           <html>
           	<head>
+          		<link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">
+          		<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+          		<link rel="manifest" href="/site.webmanifest">
           		<meta name="go-import" content="${GOIMPORT}">
           		<meta name="go-source" content="${GOSOURCE}">
           		<meta http-equiv="refresh" content="0; url=${GODEV}">
@@ -53,6 +64,9 @@ jobs:
           <!DOCTYPE html>
           <html>
           	<head>
+          		<link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">
+          		<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+          		<link rel="manifest" href="/site.webmanifest">
           		<meta name="go-import" content="${GOIMPORT}">
           		<meta name="go-source" content="${GOSOURCE}">
           		<script>location.replace("${GODEV}" + location.pathname + location.search)</script>

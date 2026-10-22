@@ -20,6 +20,13 @@ indexing is available, rerun only the verification job; do not move the tag or
 republish the release. Reruns use the workflow from the original tagged commit,
 so workflow fixes on `master` apply to future tags, not existing releases.
 
+After the complete release workflow succeeds, the Pages workflow rebuilds the
+static `/api/` reference from pkg.go.dev's latest indexed module. Failed or
+cancelled release runs do not rebuild the site or displace an ongoing Pages
+deployment. Rerunning a failed verification job successfully also triggers this
+refresh. Changes to the Pages workflow or API generator on `master` retain their
+own rebuild trigger; the release-completion wiring must exist on `master`.
+
 ### Build commands
 
 ```sh

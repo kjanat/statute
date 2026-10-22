@@ -1,0 +1,8 @@
+<svg viewBox="0 0 64 64" aria-labelledby="title" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title id="title">
+    Statute
+  </title>
+  <path d="M44 18H26L18 26L46 38L38 46H20"
+        fill="none" stroke="currentColor" stroke-width="8" stroke-linejoin="bevel" />
+  <path d="M40 14h8v8h-8zM16 42h8v8h-8z" fill="currentColor" />
+</svg>

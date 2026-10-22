@@ -1,3 +1,5 @@
+<p><img src="assets/brand/logo.svg" alt="statute" width="284" height="64"></p>
+
 # statute
 
 > Config-as-code reverse proxy in Go. The binary _is_ the configuration.
@@ -505,7 +507,7 @@ Resolve also rejects the combinations that could never serve. A suite list must 
 
 ```go
 statute.HTTPS(":443",
-	statute.StaticTLS("/etc/statute/server.crt", "/etc/statute/server.key"),
+  statute.StaticTLS("/etc/statute/server.crt", "/etc/statute/server.key"),
     statute.ClientAuth{
         Mode:    statute.RequireAndVerifyClientCert,
         CAFiles: []string{"/etc/statute/client-ca.pem"},
@@ -525,9 +527,9 @@ The normalised policy is present in `resolved.Listener.ClientAuth`, JSON export,
 
 ```go
 statute.HTTPS(":443",
-    statute.AutoTLS(...),
-    statute.HTTP2(),
-    statute.HTTP3(":443/udp"),
+  statute.AutoTLS(...),
+  statute.HTTP2(),
+  statute.HTTP3(":443/udp"),
 )
 ```
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // @ts-check
-// Builds a self-contained API reference at ${OUT}/api/index.html from the
+// Builds a static API reference at ${OUT}/api/index.html from the
 // pkg.go.dev v1 API (public, GET only, no auth). Run: node scripts/api-page.mjs
 //
-// The page is static: inline CSS, no external requests, no fonts, no analytics.
+// Inline CSS, local brand images, no external fonts or analytics.
+// Pages copies assets/brand/ to the output root alongside this generated page.
 // The only JavaScript is an optional client-side filter box that stays hidden
 // unless scripting is available, so the page is complete without it.
 
@@ -363,7 +364,10 @@ p { margin: 0.35rem 0; }
 h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 
 .masthead { border-bottom: 1px solid var(--line); padding-bottom: 1.25rem; margin-bottom: 2rem; }
-.masthead h1 { font-size: 1.5rem; }
+.masthead h1 { font-size: 1.5rem; overflow-wrap: anywhere; }
+.brand { display: flex; align-items: center; gap: 0.85rem; }
+.brand img { flex: 0 0 48px; }
+.brand h1 { min-width: 0; }
 .tag {
 	display: inline-block;
 	margin-left: 0.5rem;
@@ -509,6 +513,10 @@ function renderPage({ module: mod, packages, repo, total }) {
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<title>${esc(HOST)} API reference</title>
+		<link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+		<link rel="manifest" href="/site.webmanifest">
+		<meta name="theme-color" content="#24358b">
 		<meta name="description" content="Exported API surface of the ${
 		esc(HOST)
 	} Go module, generated from the pkg.go.dev API.">
@@ -519,7 +527,10 @@ function renderPage({ module: mod, packages, repo, total }) {
 	<body>
 		<div class="wrap">
 			<header class="masthead">
-				<h1>${esc(HOST)}<span class="tag">${esc(mod.version)}</span></h1>
+				<div class="brand">
+					<img src="/icon.svg" alt="" width="48" height="48">
+					<h1>${esc(HOST)}<span class="tag">${esc(mod.version)}</span></h1>
+				</div>
 				<p class="lede">${esc(packages[0]?.synopsis || '')}</p>
 				<nav class="links">
 					<a href="${esc(GODEV)}">pkg.go.dev</a>

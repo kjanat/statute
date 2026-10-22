@@ -1,0 +1,21 @@
+<svg viewBox="0 0 284 64" aria-labelledby="title" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title id="title">
+    statute
+  </title>
+  <style>
+    .wordmark { stroke: #17203a; } @media (prefers-color-scheme: dark) { .wordmark { stroke: #edf2ff; } }
+  </style>
+  <rect rx="14" width="64" height="64" fill="#24358b" />
+  <path d="M44 18H26L18 26L46 38L38 46H20"
+        fill="none" stroke="#fff" stroke-width="8" stroke-linejoin="bevel" />
+  <path d="M40 14h8v8h-8zM16 42h8v8h-8z" fill="#a9c1ff" />
+  <g class="wordmark" fill="none" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M101 23H89Q82 23 82 29Q82 34 91 35L94 36Q102 37 102 42Q102 48 95 48H82" />
+    <path d="M116 13V40Q116 48 124 48H126M108 23H126" />
+    <path d="M153 35Q153 23 143 23Q133 23 133 35Q133 48 143 48Q153 48 153 35M153 23V48" />
+    <path d="M169 13V40Q169 48 177 48H179M161 23H179" />
+    <path d="M188 23V38Q188 48 198 48Q208 48 208 38V23M208 38V48" />
+    <path d="M224 13V40Q224 48 232 48H234M216 23H234" />
+    <path d="M243 35H265Q265 23 254 23Q243 23 243 35Q243 48 255 48H264" />
+  </g>
+</svg>
