@@ -57,7 +57,7 @@ runs:
         GPG_SIGN_URL: ${{ inputs.signing-service-url }}
         SCAN_LIMIT: ${{ inputs.scan-limit }}
         SIGN_OTHERS: ${{ inputs.sign-others }}
-      run: python3 "${{ github.action_path }}/sign-commits.py"
+      run: python3 "${GITHUB_ACTION_PATH}/sign-commits.py"
 
     # gpg-sign surfaces only the HTTP status; the service sends a JSON body
     # naming the cause (untrusted subject, disallowed issuer, wrong key).
