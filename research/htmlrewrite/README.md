@@ -115,12 +115,12 @@ Context cancellation is enabled for guest execution. Tests cover cancellation be
 
 | Component | Pin                                                                                                                       | License                                                       |
 | --------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| LOL HTML  | `3.0.1` with the [local matcher ownership patch](guest/vendor/README.md); upstream archive checksum in `guest/Cargo.lock` | BSD-3-Clause                                                  |
+| LOL HTML  | `3.0.2` with the [local matcher ownership patch](guest/vendor/README.md); upstream archive checksum in `guest/Cargo.lock` | BSD-3-Clause                                                  |
 | Rust      | `nightly-2026-10-03`, `wasm32-unknown-unknown`, release/LTO/panic-abort                                                   | MIT OR Apache-2.0; bundled components have additional notices |
 | wazero    | `github.com/tetratelabs/wazero v1.12.0`; `go.sum`                                                                         | Apache-2.0                                                    |
 | Harness   | this repository revision                                                                                                  | MIT                                                           |
 
-Source references: [LOL HTML 3.0.1](https://docs.rs/crate/lol_html/3.0.1/source/), [wazero v1.12.0](https://github.com/wazero/wazero/tree/v1.12.0), [Rust licenses](https://github.com/rust-lang/rust/blob/0abfedbc7cd4e725f126913880c95800394f7c37/COPYRIGHT).
+Source references: [LOL HTML 3.0.2](https://docs.rs/crate/lol_html/3.0.2/source/), [wazero v1.12.0](https://github.com/wazero/wazero/tree/v1.12.0), [Rust licenses](https://github.com/rust-lang/rust/blob/0abfedbc7cd4e725f126913880c95800394f7c37/COPYRIGHT).
 
 Inspect the complete locked Rust license inventory with:
 
@@ -132,10 +132,10 @@ sha256sum artifact/rewriter.wasm
 
 The graph includes MPL-2.0 crates (`cssparser`, `cssparser-macros`, `dtoa-short`, `selectors`), Zlib (`foldhash`), and Unicode-3.0 obligations (`unicode-ident`), in addition to MIT/Apache/BSD alternatives. An embedded production distribution needs a complete target-specific notice/source bundle, including the Rust standard library; the top-level LOL HTML license alone is not sufficient. No prebuilt binary is distributed here.
 
-The batched Linux arm64 build is 563,685 bytes with SHA-256:
+The recorded LOL HTML 3.0.1 batched Linux arm64 build was 563,685 bytes with SHA-256:
 
 ```text
 821a59adaacf94d28afe76e07b6a3012b05d64bd47cc1aacf35c8b81fec9dd18
 ```
 
-A fresh `--target-dir guest/target/rebuild` build on the same host produced identical bytes. Cross-host reproducibility has not been established. The workflow builds from the locked source and prints its own checksum. Artifact signing, reproducible release packaging, and automated notice generation remain open research work.
+A fresh `--target-dir guest/target/rebuild` build on the same host produced identical bytes. These measurements describe the recorded 3.0.1 artifact. Cross-host reproducibility has not been established. The workflow builds from the locked source and prints its own checksum. Artifact signing, reproducible release packaging, and automated notice generation remain open research work.
