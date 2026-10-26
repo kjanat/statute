@@ -331,7 +331,7 @@ func TestFallbackRoutesListenerPolicyAndObservability(t *testing.T) {
 	}
 	var alive atomic.Bool
 	alive.Store(true)
-	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), &alive)
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), &alive, nil)
 	// Exercise policy directly with explicit peers; localhost is untrusted.
 	for _, tc := range []struct {
 		peer   string
@@ -421,5 +421,5 @@ func fallbackChallengeHandler(t *testing.T, mode, path string, native, legacy *a
 		solver.tokens[path] = "proof"
 		solver.mu.Unlock()
 	}
-	return srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil)
+	return srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil, nil)
 }

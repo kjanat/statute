@@ -200,6 +200,9 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 		if l.ClientAuth != nil {
 			label += fmt.Sprintf("\\nclient-auth=%s\\nclient-ca=%v", l.ClientAuth.Mode, l.ClientAuth.CAFiles)
 		}
+		for _, binding := range l.ClientAuthPolicies {
+			label += fmt.Sprintf("\\nclient-auth-for=%v: %s\\nclient-ca=%v", binding.Hosts, binding.Policy.Mode, binding.Policy.CAFiles)
+		}
 		if l.CloudflareTrustedProxy {
 			label += graphCloudflarePolicy(l)
 		}

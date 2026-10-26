@@ -326,6 +326,27 @@ Do not assume a direct client omits these headers: it can forge them. On a reach
 - `BehindCloudflare()` does not enable Authenticated Origin Pulls by itself. Enable Authenticated Origin Pulls in Cloudflare and select a supported HTTPS origin mode such as **Full** or **Full (strict)**. Then configure the HTTPS listener with `ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: ...}` and Cloudflare's origin-pull CA bundle; Statute rejects any edge connection whose client certificate does not chain to that CA. The policy covers the listener's TCP and HTTP/3 handshakes, although Cloudflare currently connects to origins over HTTP/1.1 or HTTP/2.
 - It does not change the upstream-facing transport. Requests to your backends still go out as configured in the pool's `Transport`.
 
+For mixed proxied and direct hostnames on one listener, scope Authenticated Origin
+Pulls to the proxied names:
+
+```go
+statute.HTTPS(":443",
+    statute.AutoTLS("proxied.example.test", "direct.example.test").HTTP01().
+        Email("ops@example.test").Storage("/var/lib/statute/acme"),
+    statute.ClientAuthFor([]string{"proxied.example.test"}, statute.ClientAuth{
+        Mode:    statute.RequireAndVerifyClientCert,
+        CAFiles: []string{"/etc/statute/cloudflare-origin-pull-ca.pem"},
+    }),
+)
+```
+
+Add `statute.HTTP(":80").RedirectTo("https")` for HTTP-01 challenge responses.
+The direct name accepts ordinary TLS clients when no listener-wide `ClientAuth`
+is configured. A connection using direct-name SNI cannot access the protected name
+through its HTTP Host: Statute returns 421 before routing. See
+[client authentication by hostname](production.md#client-certificate-authentication-by-hostname)
+for wildcard precedence, defaults, and connection reuse across equivalent policies.
+
 ## Quick checklist
 
 For HTTP-01 deployment behind Cloudflare:

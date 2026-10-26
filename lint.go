@@ -426,17 +426,28 @@ func ruleACMEDirectory(c *resolved.Config) []Finding {
 func ruleWeakClientAuth(c *resolved.Config) []Finding {
 	var out []Finding
 	for i, l := range c.Listeners {
-		if l.ClientAuth == nil || l.ClientAuth.Mode == resolved.ClientAuthRequireAndVerify {
-			continue
+		if finding := weakClientAuthFinding(l.ClientAuth, fmt.Sprintf("listeners[%d].client_auth.mode", i)); finding != nil {
+			out = append(out, *finding)
 		}
-		out = append(out, Finding{
-			Severity: SeverityWarning,
-			Code:     "TLS007",
-			Message:  fmt.Sprintf("Client certificate mode %q does not require a certificate that chains to the configured client CA; use require-and-verify for authentication.", l.ClientAuth.Mode),
-			Path:     fmt.Sprintf("listeners[%d].client_auth.mode", i),
-		})
+		for j, binding := range l.ClientAuthPolicies {
+			if finding := weakClientAuthFinding(&binding.Policy, fmt.Sprintf("listeners[%d].client_auth_policies[%d].policy.mode", i, j)); finding != nil {
+				out = append(out, *finding)
+			}
+		}
 	}
 	return out
+}
+
+func weakClientAuthFinding(policy *resolved.ClientAuth, path string) *Finding {
+	if policy == nil || policy.Mode == resolved.ClientAuthRequireAndVerify {
+		return nil
+	}
+	return &Finding{
+		Severity: SeverityWarning,
+		Code:     "TLS007",
+		Message:  fmt.Sprintf("Client certificate mode %q does not require a certificate that chains to the configured client CA; use require-and-verify for authentication.", policy.Mode),
+		Path:     path,
+	}
 }
 
 // catchAllPattern is the only pattern matchPattern accepts for every path:

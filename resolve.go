@@ -128,12 +128,22 @@ func validateClientAuthACMEHasPlainListener(listeners []*resolved.Listener) erro
 		}
 	}
 	for _, listener := range listeners {
-		if !clientAuthRequiresCertificate(listener.ClientAuth) {
-			continue
+		index, err := indexClientAuthPolicies(listener)
+		if err != nil {
+			return err
 		}
 		for _, source := range listener.AutoTLSSources {
-			if source.Challenge == resolved.ChallengeAuto {
-				return fmt.Errorf("client_auth: mode %s on an automatic ACME listener requires a plain HTTP listener because TLS-ALPN-01 validators do not present client certificates; add statute.HTTP(\":80\").RedirectTo(\"https\") for HTTP-01 fallback, or use DNS-01; pinning with HTTP01 still requires the HTTP listener", listener.ClientAuth.Mode)
+			if source.Challenge != resolved.ChallengeAuto {
+				continue
+			}
+			for _, domain := range source.Domains {
+				policy, found := index.lookup(domain)
+				if !found {
+					policy = listener.ClientAuth
+				}
+				if clientAuthRequiresCertificate(policy) {
+					return fmt.Errorf("client_auth: mode %s for %q on an automatic ACME listener requires a plain HTTP listener because TLS-ALPN-01 validators do not present client certificates; add statute.HTTP(\":80\").RedirectTo(\"https\") for HTTP-01 fallback, or use DNS-01; pinning with HTTP01 still requires the HTTP listener", policy.Mode, domain)
+				}
 			}
 		}
 	}

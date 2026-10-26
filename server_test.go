@@ -23,6 +23,32 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
+func TestBuildHTTPServerRequiresCompiledTLS(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, scheme, redirect string
+		wantErr                bool
+	}{
+		{"https without compiled state", schemeHTTPS, "", true},
+		{"plain http", schemeHTTP, "", false},
+		{"redirect-only https", schemeHTTPS, schemeHTTP, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &server{cfg: &resolved.Config{}}
+			hs, err := s.buildHTTPServer(&resolved.Listener{Addr: ":443", Scheme: tc.scheme, Redirect: tc.redirect}, http.NotFoundHandler())
+			if tc.wantErr {
+				if err == nil || hs != nil || !strings.Contains(err.Error(), "TLS state was not compiled") {
+					t.Fatalf("missing compiled TLS returned server=%v err=%v", hs, err)
+				}
+				return
+			}
+			if err != nil || hs == nil || hs.TLSConfig != nil {
+				t.Fatalf("nonterminating listener returned server=%v err=%v", hs, err)
+			}
+		})
+	}
+}
+
 type closeErrorListener struct {
 	err    error
 	closes int

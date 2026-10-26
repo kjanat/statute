@@ -919,17 +919,50 @@ exact match, then supported wildcard match, then hostless fallback. Once a sourc
 selected for an SNI name, an error from that source is not permission to silently
 fall through to another policy.
 
-Client-certificate authentication is listener-owned. One normalized `ClientAuth`
-policy covers every certificate source and both the TCP and QUIC TLS configs built
-for that listener. Route selection receives only connections admitted by the
-handshake, and client-certificate identity has no matcher. Resolve validates only
-shape and paths; construction loads the CA bundles before sockets open, and missing
-or malformed material aborts the listener. A verified peer's subject and SANs may
-enter the access log; certificates lacking a verified chain are omitted.
+Client-certificate authentication is listener-owned. The normalized `ClientAuth`
+is the listener-wide default; ordered `ClientAuthPolicies` assign policies
+to canonical SNI patterns through `ClientAuthFor`. Exact names precede single-label
+wildcards; unmatched names and no SNI retain the default. The selected policy
+replaces the default without combining CA pools and is independent of certificate
+source selection, including a hostless static certificate. Both TCP and QUIC select
+before client-certificate verification using private handshake configs that retain
+their transport's ALPN and listener TLS protocol policy.
+
+When scoped assignments exist, listener admission compares the effective policy
+selected by connection SNI with the policy selected by the original HTTP Host or
+authority. Different policies, malformed authorities, and absent TLS state receive
+421 before content routing, inside listener observability. Policies are equivalent
+exactly when their mode and loaded CA certificate DER sets match, independent of
+declaration grouping, file paths, PEM formatting, ordering, and duplicates. The
+default participates in the same equivalence domain. Different sets remain
+distinct even if they overlap or accept the same peer. This prevents public-SNI
+bypass and cross-policy HTTP/2 or HTTP/3 connection reuse. Existing configurations
+with only listener-wide authentication do not acquire this admission restriction.
+
+Construction compiles a listener-owned immutable authentication table before
+building its handler and transports. The table interns equivalent policies once,
+assigns explicit listener-local runtime IDs, and attaches loaded pools directly to
+their entries. Full sorted unique DER sets prove equivalence; resolved declaration
+addresses and certificate subjects never define identity. Every configured file
+must load before its policy can be interned. The resolved model stays offline and
+contains assignments, with no runtime IDs or loaded material. Certificate routing
+owns only certificate-source state. Both selectors and offline ACME validation use
+one indexed exact/single-label-wildcard matcher, with caller-owned defaults. TLS
+assembly takes TCP or QUIC explicitly and selects transport-appropriate ALPN.
+
+Client-certificate identity has no route matcher. Resolve validates only shape and
+paths; construction loads all default and scoped CA bundles before sockets open,
+and missing or malformed material aborts construction. Runtime policy and loaded
+pools are immutable and introduce no workers or shutdown owner. A verified peer's
+subject and SANs may enter the access log; certificates lacking a verified chain
+are omitted.
 
 An ACME TLS-ALPN-01 validator presents no client certificate. A client-auth mode
-that requires one therefore suppresses the challenge ALPN and needs a plain HTTP
-listener when an automatic source is present, allowing autocert's HTTP-01 fallback.
+that requires one therefore suppresses the challenge ALPN for its SNI names and
+needs a plain HTTP listener when it covers an automatic source's domain, allowing
+autocert's HTTP-01 fallback. Effective policy is checked per automatic domain:
+unrelated scoped requirements do not constrain another source, and a nonrequiring
+scoped policy can override a requiring default. No challenge bypasses client auth.
 Pinned HTTP-01 and DNS-01 sources keep their existing challenge ownership.
 
 HTTP-01 companions for authenticated HTTPS should redirect ordinary HTTP content

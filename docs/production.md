@@ -549,11 +549,59 @@ This makes ports 80–1023 unprivileged for all processes. Convenient but global
 
 Don't. There is no good reason. The proxy handles untrusted input from the network on every connection.
 
+## Client-certificate authentication by hostname
+
+Use `ClientAuthFor` when protected and direct hostnames share an HTTPS listener:
+
+```go
+statute.HTTPS(":443",
+    statute.StaticTLS("/etc/statute/server.pem", "/etc/statute/server.key"),
+    statute.HTTP2(),
+    statute.ClientAuthFor([]string{"proxied.example.test", "*.private.example.test"},
+        statute.ClientAuth{
+            Mode:    statute.RequireAndVerifyClientCert,
+            CAFiles: []string{"/etc/statute/origin-pull-ca.pem"},
+        }),
+)
+```
+
+SNI selects the policy before certificate verification, identically for TCP TLS
+and HTTP/3. Exact names take precedence over single-label wildcards. Names are
+normalized like TLS certificate sources (case, trailing dots, IDNA). Duplicate
+bindings fail resolution. Policy selection is independent of certificate selection;
+the example's hostless certificate must cover every hostname clients verify.
+
+An unmatched hostname or absent SNI uses the listener-wide `ClientAuth`, or requests
+no certificate when that default is absent. A scoped policy replaces the default,
+including its CA files. All CA files must load successfully before sockets open.
+`TLS007` reports weak modes for default and scoped policies separately; only
+`RequireAndVerifyClientCert` requires a verified certificate.
+
+The HTTP Host or HTTP/2/3 authority must select an equivalent policy to connection
+SNI. Different policies return `421 Misdirected Request` before routing, even when
+the connection has a valid certificate for another policy. This prevents selecting
+an unprotected SNI and requesting protected content.
+
+Policies are equivalent when they have the same client-auth mode and the same set
+of loaded CA certificate DER identities. File paths, PEM formatting, certificate
+ordering, duplicates, and declaration grouping have no effect on equivalence.
+Combining or splitting `ClientAuthFor` declarations therefore preserves connection
+reuse, including reuse with an equivalent listener-wide default. Equivalence is
+computed once during construction; every declared CA file must still load and
+contain a valid certificate. Different CA sets remain distinct even if they overlap
+or accept the same presented client certificate. Unmatched hostnames use the
+default policy. Listener-wide configurations without `ClientAuthFor` keep their
+existing HTTP admission behavior.
+
+Export exposes `Listeners[].ClientAuthPolicies` with ordered `Hosts` and `Policy`
+values. Graph output includes each binding's names, mode and CA files.
+
 ## HTTP-01 with client-certificate authentication
 
-An HTTPS listener that requires client certificates cannot answer TLS-ALPN-01
-validation: the ACME validator presents no client certificate. Automatic ACME
-therefore needs a plain HTTP listener for HTTP-01 fallback. Configure
+An SNI hostname that requires client certificates cannot answer TLS-ALPN-01
+validation: the ACME validator presents no client certificate. Automatic ACME for
+that hostname therefore needs a plain HTTP listener for HTTP-01 fallback. An
+unrelated scoped requirement does not constrain other automatic domains. Configure
 `statute.HTTP(":80").RedirectTo("https")` so pending challenge responses answer
 before the redirect and ordinary requests continue to the authenticated HTTPS
 listener. Public port 80 must reach that HTTP listener, directly or through a
@@ -703,7 +751,7 @@ Before considering a deployment "production":
 - [ ] Cloudflare client-IP headers are peer-verified on any directly reachable listener. Use `CloudflareTrustedProxy()` for startup and periodic refresh; monitor fallback/refresh warnings. Generate the embedded fallback before release with `make generate-cloudflare-cidrs`, review it, and check with `make check-cloudflare-cidrs`. Runtime range updates do not require a rebuild.
 - [ ] No secrets in the source. The Go config-as-code model makes this tempting; resist. Use env vars (`os.Getenv`) for tokens and credentials.
 - [ ] Downstream TLS policy reviewed. The floor is TLS 1.2 and nothing lowers it, but `statute.TLSPolicy{MinVersion: statute.TLS13}` raises it where every client is modern; pin `CipherSuites` only when a compliance regime names them, since the list applies to TLS 1.2 alone.
-- [ ] Client authentication is fail-closed where required. Use `ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: ...}`; `TLS007` warns when a softer mode admits an absent or unverified peer. CA files must be readable before startup.
+- [ ] Client authentication is fail-closed where required. Use `ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: ...}` listener-wide or through `ClientAuthFor` for selected SNI names; `TLS007` warns when a softer mode admits an absent or unverified peer. CA files must be readable before startup.
 - [ ] CSP / HSTS / X-Frame-Options on responses where appropriate. statute doesn't set these by default; add a small middleware if your backends don't.
 - [ ] Rate limiting on every public route. The token bucket is per-key; pick `ClientIP` (or `HostHeader` for tenant-isolation patterns) deliberately.
 

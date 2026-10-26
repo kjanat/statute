@@ -50,7 +50,7 @@ type server struct {
 
 	autocertMgr     *autocert.Manager
 	acmeManagers    map[*resolved.AutoTLS]*acmeManager // keyed by resolved source
-	certRouters     map[string]*certRouter             // keyed by listener address
+	listenerTLS     map[string]*listenerTLS            // keyed by listener address
 	tracingShutdown func(context.Context) error
 
 	mu      sync.Mutex
@@ -170,7 +170,19 @@ func (s *server) initPools(upstreams map[string]*resolved.Pool) error {
 // initListeners builds the HTTP (and, where configured, HTTP/3) servers
 // for every resolved listener, sharing the given handler.
 func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler) error {
+	s.listenerTLS = make(map[string]*listenerTLS)
 	for _, l := range listeners {
+		// Load all TLS material before assembling handlers. Admission and both
+		// transports must use the same compiled authentication assignments.
+		state, err := s.compileListenerTLS(l)
+		if err != nil {
+			return fmt.Errorf("listener %s: %w", l.Addr, err)
+		}
+		var auth *clientAuthTable
+		if state != nil {
+			s.listenerTLS[l.Addr] = state
+			auth = state.auth
+		}
 		// One liveness bit per HTTP/3 pair, created before either side:
 		// the Alt-Svc wrapper reads it, the serve loop writes it.
 		var h3Alive *atomic.Bool
@@ -182,7 +194,7 @@ func (s *server) initListeners(listeners []*resolved.Listener, mux http.Handler)
 		// middleware HTTP/1.1 and HTTP/2 do — trusted-proxy policy and
 		// observability included. Two transports with separately-assembled
 		// chains would drift apart.
-		handler := s.buildListenerHandler(l, mux, h3Alive)
+		handler := s.buildListenerHandler(l, mux, h3Alive, auth)
 		hs, err := s.buildHTTPServer(l, handler)
 		if err != nil {
 			return fmt.Errorf("listener %s: %w", l.Addr, err)
@@ -216,9 +228,11 @@ func (s *server) buildHTTPServer(l *resolved.Listener, handler http.Handler) (*h
 	}
 
 	if l.Scheme == schemeHTTPS && l.Redirect == "" {
-		if err := s.applyListenerTLS(hs, l); err != nil {
-			return nil, err
+		state := s.listenerTLS[l.Addr]
+		if state == nil {
+			return nil, errors.New("https listener TLS state was not compiled")
 		}
+		hs.TLSConfig = listenerTLSConfig(state, l, tlsTransportTCP)
 	}
 	return hs, nil
 }
@@ -226,13 +240,14 @@ func (s *server) buildHTTPServer(l *resolved.Listener, handler http.Handler) (*h
 // buildListenerHandler assembles the middleware chain for a listener. The
 // wrapping order is deliberate: each block comments why it must sit where it
 // does relative to the others.
-func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler, h3Alive *atomic.Bool) http.Handler {
+func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler, h3Alive *atomic.Bool, auth *clientAuthTable) http.Handler {
 	var handler http.Handler
 	if l.Redirect != "" {
 		handler = redirectHandler(l.Redirect)
 	} else {
 		handler = content
 	}
+	handler = clientAuthAdmission(auth, handler)
 
 	// When AutoTLS is configured anywhere, the plain-HTTP listener must
 	// serve /.well-known/acme-challenge/* so HTTP-01 can complete.
@@ -307,23 +322,6 @@ func (s *server) wrapACMEChallenges(next http.Handler) http.Handler {
 		next = m.wrapHTTPChallenges(next)
 	}
 	return next
-}
-
-// applyListenerTLS installs the listener's TLS material on hs: a cert
-// router over every declared source, dispatching per handshake by SNI. The
-// router is also stored by address so the listener's HTTP/3 server reuses
-// it instead of loading static key pairs a second time.
-func (s *server) applyListenerTLS(hs *http.Server, l *resolved.Listener) error {
-	cr, err := s.buildCertRouter(l)
-	if err != nil {
-		return err
-	}
-	if s.certRouters == nil {
-		s.certRouters = make(map[string]*certRouter)
-	}
-	s.certRouters[l.Addr] = cr
-	hs.TLSConfig = certRouterTLSConfig(cr, l)
-	return nil
 }
 
 func (s *server) buildMetricsServer(m resolved.Metrics) (*http.Server, error) {

@@ -33,7 +33,7 @@ func TestCacheRetryListenerObservation(t *testing.T) {
 			var logs bytes.Buffer
 			s := &server{cfg: &resolved.Config{}, stats: newStats()}
 			s.cfg.Observability.AccessLog = resolved.AccessLog{Enabled: true, Format: "json", Writer: &logs, SampleRate: 1}
-			h := s.buildListenerHandler(&resolved.Listener{Scheme: schemeHTTP}, chain(t, origin, mws...), nil)
+			h := s.buildListenerHandler(&resolved.Listener{Scheme: schemeHTTP}, chain(t, origin, mws...), nil, nil)
 			for _, id := range []string{"first", "second", "third"} {
 				r := httptest.NewRequest(http.MethodGet, "/", nil)
 				r.Header.Set("X-Input", id)
