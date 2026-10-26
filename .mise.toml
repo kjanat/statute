@@ -8,7 +8,7 @@ npm  = "12"
 [tools."github:microsoft/TypeScript"]
 version = "7.0.2"
 
-[tools."go:actionlint.kjanat.dev/cmd/actionlint"]
+[tools."go:actionlint.kjanat.dev/v2/cmd/actionlint"]
 prerelease          = true
 version             = "master"
 minimum_release_age = "0s"
