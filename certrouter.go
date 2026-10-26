@@ -2,11 +2,8 @@ package statute
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
-	"os"
-	"slices"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -76,11 +73,8 @@ type certGetter func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 // name is claimed twice, and a wildcard covers exactly one extra label, so
 // at most one pattern can match any host — selection is deterministic.
 type certRouter struct {
-	exact         map[string]certGetter // lowercased exact SNI name -> source
-	wildcards     map[string]certGetter // lowercased "*.suffix" pattern -> source
-	fallback      certGetter            // hostless static source; nil when absent
-	clientCAs     *x509.CertPool
-	clientAuthCAs map[*resolved.ClientAuth]*x509.CertPool
+	names    tlsNameIndex[certGetter]
+	fallback certGetter // hostless static source; nil when absent
 
 	// hasACMETLS records that an HTTP-01 ACME source is present, so the
 	// listener must advertise the acme-tls/1 ALPN protocol for TLS-ALPN-01
@@ -94,71 +88,17 @@ type certRouter struct {
 // sources, the per-source dns01Manager for DNS-01 sources. Static key pairs
 // load here so a bad path fails at construction, not mid-handshake.
 func (s *server) buildCertRouter(l *resolved.Listener) (*certRouter, error) {
-	clientCAs, err := buildClientCAPool(l.ClientAuth)
-	if err != nil {
-		return nil, err
-	}
-	cr := &certRouter{
-		exact:     make(map[string]certGetter),
-		wildcards: make(map[string]certGetter),
-		clientCAs: clientCAs,
-	}
-	if err := cr.loadScopedClientCAs(l); err != nil {
-		return nil, err
-	}
+	cr := &certRouter{}
 	if err := cr.indexACMESources(s, l.AutoTLSSources); err != nil {
 		return nil, err
 	}
 	if err := cr.indexStaticSources(l.StaticTLSSources); err != nil {
 		return nil, err
 	}
-	if len(cr.exact) == 0 && len(cr.wildcards) == 0 && cr.fallback == nil {
+	if len(cr.names.exact) == 0 && len(cr.names.wildcards) == 0 && cr.fallback == nil {
 		return nil, errors.New("https listener has no TLS material")
 	}
 	return cr, nil
-}
-
-func (cr *certRouter) loadScopedClientCAs(l *resolved.Listener) error {
-	cr.clientAuthCAs = map[*resolved.ClientAuth]*x509.CertPool{l.ClientAuth: cr.clientCAs}
-	claimed := make(map[string]bool)
-	for i, binding := range l.ClientAuthPolicies {
-		for _, name := range binding.Hosts {
-			host := canonicalTLSName(name)
-			if claimed[host] {
-				return fmt.Errorf("client_auth_policies[%d]: hostname %q is claimed by two bindings", i, host)
-			}
-			claimed[host] = true
-		}
-		pool, err := buildClientCAPool(&binding.Policy)
-		if err != nil {
-			return fmt.Errorf("client_auth_policies[%d]: %w", i, err)
-		}
-		cr.clientAuthCAs[&binding.Policy] = pool
-	}
-	return nil
-}
-
-func buildClientCAPool(policy *resolved.ClientAuth) (*x509.CertPool, error) {
-	if policy == nil {
-		return nil, nil
-	}
-	if len(policy.CAFiles) == 0 {
-		if policy.Mode == resolved.ClientAuthVerifyIfGiven || policy.Mode == resolved.ClientAuthRequireAndVerify {
-			return nil, fmt.Errorf("client_auth: mode %s requires at least one CA file", policy.Mode)
-		}
-		return nil, nil
-	}
-	pool := x509.NewCertPool()
-	for _, path := range policy.CAFiles {
-		pemBytes, err := os.ReadFile(path) //nolint:gosec // G304: operator-configured CA path
-		if err != nil {
-			return nil, fmt.Errorf("client CA file: %w", err)
-		}
-		if !pool.AppendCertsFromPEM(pemBytes) {
-			return nil, fmt.Errorf("client CA file %s: no certificates found", path)
-		}
-	}
-	return pool, nil
 }
 
 func (cr *certRouter) indexACMESources(s *server, sources []*resolved.AutoTLS) error {
@@ -214,16 +154,7 @@ func (cr *certRouter) indexStaticSources(sources []*resolved.StaticTLS) error {
 // makes it unreachable, and losing a configured certificate to map-write
 // order must stay structurally impossible if that validation ever slips.
 func (cr *certRouter) add(pattern string, g certGetter) error {
-	p := canonicalTLSName(pattern)
-	table := cr.exact
-	if strings.HasPrefix(p, "*.") {
-		table = cr.wildcards
-	}
-	if _, ok := table[p]; ok {
-		return fmt.Errorf("tls: %q is claimed by two sources on this listener", p)
-	}
-	table[p] = g
-	return nil
+	return cr.names.add(pattern, g)
 }
 
 // GetCertificate satisfies tls.Config.GetCertificate. A wildcard pattern
@@ -233,13 +164,8 @@ func (cr *certRouter) add(pattern string, g certGetter) error {
 // single map lookup on its first label replaced by "*".
 func (cr *certRouter) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := canonicalTLSName(hello.ServerName)
-	if g, ok := cr.exact[host]; ok {
+	if g, ok := cr.names.lookup(host); ok {
 		return g(hello)
-	}
-	if _, rest, ok := strings.Cut(host, "."); ok && rest != "" {
-		if g, ok := cr.wildcards["*."+rest]; ok {
-			return g(hello)
-		}
 	}
 	if cr.fallback != nil {
 		return cr.fallback(hello)
@@ -248,105 +174,4 @@ func (cr *certRouter) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certifica
 		return nil, errors.New("tls: no SNI hostname sent and listener has no fallback certificate")
 	}
 	return nil, fmt.Errorf("tls: no TLS source covers %q on this listener", host)
-}
-
-// certRouterTLSConfig builds the listener's *tls.Config around the router.
-// ALPN advertises h2 when HTTP/2 is enabled, and acme-tls/1 when a
-// ChallengeAuto ACME source may answer TLS-ALPN-01 challenges — sources
-// pinned to HTTP-01 or DNS-01 never advertise it, and neither does a
-// listener behind Cloudflare, whose edge terminates TLS and cannot forward
-// the challenge protocol.
-func certRouterTLSConfig(cr *certRouter, l *resolved.Listener) *tls.Config {
-	cfg := &tls.Config{
-		GetCertificate: cr.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
-	}
-	applyTLSPolicy(cfg, l.TLSPolicy)
-	applyClientAuth(cfg, l.ClientAuth, cr.clientCAs)
-	protos := []string{alpnHTTP1}
-	if l.EnableHTTP2 {
-		protos = append([]string{alpnHTTP2}, protos...)
-	}
-	if cr.hasACMETLS && !l.BehindCloudflare && !clientAuthRequiresCertificate(l.ClientAuth) {
-		protos = append(protos, alpnACMETLS)
-	}
-	cfg.NextProtos = protos
-	if len(l.ClientAuthPolicies) != 0 {
-		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			return cr.clientAuthTLSConfig(cfg, l, hello.ServerName), nil
-		}
-	}
-	return cfg
-}
-
-func (cr *certRouter) clientAuthTLSConfig(base *tls.Config, l *resolved.Listener, name string) *tls.Config {
-	selected := selectClientAuth(l, name)
-	handshake := base.Clone()
-	handshake.GetConfigForClient = nil
-	applyClientAuth(handshake, selected, cr.clientAuthCAs[selected])
-	// HTTP/3 replaces the base ALPN before serving. Preserve that
-	// transport's protocols, including net/http's HTTP/2 setup.
-	if clientAuthRequiresCertificate(selected) {
-		handshake.NextProtos = slices.DeleteFunc(slices.Clone(handshake.NextProtos), func(p string) bool { return p == alpnACMETLS })
-	} else if cr.hasACMETLS && !l.BehindCloudflare && !slices.Contains(handshake.NextProtos, alpnHTTP3) && !slices.Contains(handshake.NextProtos, alpnACMETLS) {
-		handshake.NextProtos = append(slices.Clone(handshake.NextProtos), alpnACMETLS)
-	}
-	return handshake
-}
-
-func applyClientAuth(cfg *tls.Config, policy *resolved.ClientAuth, clientCAs *x509.CertPool) {
-	cfg.ClientAuth = tls.NoClientCert
-	cfg.ClientCAs = nil
-	if policy == nil {
-		return
-	}
-	cfg.ClientCAs = clientCAs
-	switch policy.Mode {
-	case resolved.ClientAuthRequest:
-		cfg.ClientAuth = tls.RequestClientCert
-	case resolved.ClientAuthRequireAny:
-		cfg.ClientAuth = tls.RequireAnyClientCert
-	case resolved.ClientAuthVerifyIfGiven:
-		cfg.ClientAuth = tls.VerifyClientCertIfGiven
-	case resolved.ClientAuthRequireAndVerify:
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	default:
-		// A hand-built resolved schema must not widen an unknown policy.
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-		cfg.ClientCAs = x509.NewCertPool()
-	}
-}
-
-// applyTLSPolicy overlays the listener's resolved downstream TLS policy on
-// the config built above. Every listener's *tls.Config comes from
-// certRouterTLSConfig — the TCP server and the QUIC server both — so one
-// application here covers both transports. A nil policy leaves the
-// defaults; an unset bound leaves that field alone rather than zeroing it,
-// so an empty MinVersion keeps the TLS 1.2 floor set above.
-func applyTLSPolicy(cfg *tls.Config, p *resolved.TLSPolicy) {
-	if p == nil {
-		return
-	}
-	if v, ok := tlsVersionID(p.MinVersion); ok {
-		cfg.MinVersion = v
-	}
-	if v, ok := tlsVersionID(p.MaxVersion); ok {
-		cfg.MaxVersion = v
-	}
-	if len(p.CipherSuites) == 0 {
-		return
-	}
-	suites := make([]uint16, 0, len(p.CipherSuites))
-	for _, name := range p.CipherSuites {
-		// Resolve only ever writes names from cipherSuiteIDByName's own
-		// table, so an unknown one can only come from a hand-built schema.
-		// It is dropped rather than guessed at; if nothing maps, the empty
-		// non-nil slice reaches crypto/tls, which intersects its supported
-		// set with the list and ends up with no TLS 1.2 suites at all —
-		// failing closed instead of widening back to the full default set.
-		if id, ok := cipherSuiteIDByName[name]; ok {
-			suites = append(suites, id)
-		}
-	}
-	cfg.CipherSuites = suites
 }

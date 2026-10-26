@@ -316,7 +316,7 @@ func TestFallbackAndHTTP01ChallengePaths(t *testing.T) {
 	solver.tokens[path] = "tok-73.keyauth"
 	solver.mu.Unlock()
 
-	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil)
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil, nil)
 	rec := runRequest(t, h, httptest.NewRequest("GET", "http://foo.example.com"+path, nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "tok-73.keyauth" {
 		t.Errorf("challenge: code=%d body=%q, want the key authorization", rec.Code, rec.Body.String())
@@ -356,7 +356,7 @@ func TestFallbackNotConsultedForAutocertChallenge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil)
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil, nil)
 	rec := runRequest(t, h, httptest.NewRequest("GET", "http://foo.example.com/.well-known/acme-challenge/x", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown challenge token: got %d, want autocert's 404", rec.Code)
@@ -387,7 +387,7 @@ func TestFallbackNotReachedOnRedirectListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil)
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil, nil)
 	rec := runRequest(t, h, httptest.NewRequest("GET", "http://foo.example.com/anything", nil))
 	if rec.Code != http.StatusMovedPermanently {
 		t.Errorf("redirect listener: got %d, want 301", rec.Code)
@@ -413,7 +413,7 @@ func TestFallbackObservedByListenerObservability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil)
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil, nil)
 	rec := runRequest(t, h, httptest.NewRequest("GET", "http://x/nothing", nil))
 	if rec.Code != http.StatusTeapot || calls.Load() != 1 {
 		t.Fatalf("fallback: code=%d calls=%d", rec.Code, calls.Load())

@@ -143,7 +143,7 @@ type Listener struct {
 	// Nil means the listener does not request a client certificate.
 	ClientAuth *ClientAuth
 
-	// ClientAuthPolicies select independent client-auth bindings by SNI.
+	// ClientAuthPolicies assign client-auth requirements by SNI.
 	// Exact names precede single-label wildcards; unmatched names use ClientAuth.
 	ClientAuthPolicies []*ClientAuthPolicy `json:",omitempty"`
 
@@ -211,8 +211,9 @@ type ClientAuth struct {
 	CAFiles []string
 }
 
-// ClientAuthPolicy binds one client-auth policy to canonical SNI patterns.
-// All Hosts in a binding may share an HTTP connection; distinct bindings may not.
+// ClientAuthPolicy assigns one client-auth policy to canonical SNI patterns.
+// Declarations do not define connection isolation: runtime equivalence depends
+// on the mode and the set of loaded certificate DER identities.
 type ClientAuthPolicy struct {
 	Hosts  []string
 	Policy ClientAuth

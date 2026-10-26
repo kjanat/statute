@@ -199,11 +199,11 @@ func TestClientAuthSuppressesACMETLSALPN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	cr := srv.certRouters[":443"]
+	cr := srv.listenerTLS[":443"].certificates
 	if !cr.hasACMETLS {
 		t.Fatal("automatic source must remain indexed by the shared autocert manager")
 	}
-	if protos := certRouterTLSConfig(cr, r.Listeners[0]).NextProtos; slices.Contains(protos, "acme-tls/1") {
+	if protos := listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP).NextProtos; slices.Contains(protos, "acme-tls/1") {
 		t.Errorf("client-auth listener advertises unusable TLS-ALPN-01: %v", protos)
 	}
 }
@@ -235,7 +235,7 @@ func TestClientAuthMaterialFailsServerConstruction(t *testing.T) {
 	}
 }
 
-func TestBuildClientCAPoolRequiresFilesForVerifyingModes(t *testing.T) {
+func TestCompileClientAuthRequiresFilesForVerifyingModes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -251,12 +251,12 @@ func TestBuildClientCAPoolRequiresFilesForVerifyingModes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pool, err := buildClientCAPool(tc.policy)
+			policy, err := compileClientAuth(tc.policy)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("buildClientCAPool() error = %v, wantErr %v", err, tc.wantErr)
+				t.Fatalf("compileClientAuth() error = %v, wantErr %v", err, tc.wantErr)
 			}
-			if pool != nil {
-				t.Errorf("buildClientCAPool() pool = %v, want nil", pool)
+			if policy != nil && policy.clientCAs != nil {
+				t.Errorf("compileClientAuth() pool = %v, want nil", policy.clientCAs)
 			}
 		})
 	}
@@ -308,22 +308,21 @@ func TestClientAuthCoversEverySNISourceAndHTTP3(t *testing.T) {
 		t.Errorf("HTTP/3 client auth = %v, CAs nil=%v", h3cfg.ClientAuth, h3cfg.ClientCAs == nil)
 	}
 	for _, host := range []string{"one.example", "two.example"} {
-		cfg := certRouterTLSConfig(srv.certRouters[":443"], r.Listeners[0])
+		cfg := listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP)
 		assertTLSHandshakeForHost(t, cfg, pki, &pki.clientCert, host, true)
 	}
 }
 
-func TestApplyClientAuthUnknownModeFailsClosed(t *testing.T) {
+func TestCompileClientAuthUnknownModeFailsClosed(t *testing.T) {
 	t.Parallel()
-	cfg := &tls.Config{}
-	applyClientAuth(cfg, &resolved.ClientAuth{Mode: "unknown"}, x509.NewCertPool())
-	if cfg.ClientAuth != tls.RequireAndVerifyClientCert || cfg.ClientCAs == nil || !cfg.ClientCAs.Equal(x509.NewCertPool()) {
-		t.Errorf("unknown mode widened to ClientAuth=%v ClientCAs=%v", cfg.ClientAuth, cfg.ClientCAs)
+	if _, err := compileClientAuth(&resolved.ClientAuth{Mode: "unknown"}); err == nil {
+		t.Fatal("unknown client-auth mode did not abort construction")
 	}
 }
 
 type clientAuthPKI struct {
 	caFile              string
+	caDER               []byte
 	serverCertFile      string
 	serverKeyFile       string
 	clientCertFile      string
@@ -346,7 +345,7 @@ func makeClientAuthPKI(t *testing.T) clientAuthPKI {
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	return clientAuthPKI{
-		caFile: caFile, serverCertFile: serverCertFile, serverKeyFile: serverKeyFile,
+		caFile: caFile, caDER: caDER, serverCertFile: serverCertFile, serverKeyFile: serverKeyFile,
 		clientCertFile: clientCertFile, clientKeyFile: clientKeyFile,
 		clientCert: clientCert, untrustedClientCert: untrusted, serverRoots: pool,
 	}
@@ -423,7 +422,7 @@ func clientAuthServerConfig(t *testing.T, pki clientAuthPKI, mode ClientAuthMode
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	return certRouterTLSConfig(srv.certRouters[":443"], r.Listeners[0])
+	return listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP)
 }
 
 func assertTLSHandshake(t *testing.T, serverCfg *tls.Config, pki clientAuthPKI, cert *tls.Certificate, want bool) {

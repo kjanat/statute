@@ -345,7 +345,7 @@ The direct name accepts ordinary TLS clients when no listener-wide `ClientAuth`
 is configured. A connection using direct-name SNI cannot access the protected name
 through its HTTP Host: Statute returns 421 before routing. See
 [client authentication by hostname](production.md#client-certificate-authentication-by-hostname)
-for wildcard precedence, defaults, and connection reuse across bindings.
+for wildcard precedence, defaults, and connection reuse across equivalent policies.
 
 ## Quick checklist
 

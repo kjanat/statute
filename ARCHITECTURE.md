@@ -920,7 +920,7 @@ selected for an SNI name, an error from that source is not permission to silentl
 fall through to another policy.
 
 Client-certificate authentication is listener-owned. The normalized `ClientAuth`
-is the listener-wide default; ordered `ClientAuthPolicies` bind independent policies
+is the listener-wide default; ordered `ClientAuthPolicies` assign policies
 to canonical SNI patterns through `ClientAuthFor`. Exact names precede single-label
 wildcards; unmatched names and no SNI retain the default. The selected policy
 replaces the default without combining CA pools and is independent of certificate
@@ -928,14 +928,27 @@ source selection, including a hostless static certificate. Both TCP and QUIC sel
 before client-certificate verification using private handshake configs that retain
 their transport's ALPN and listener TLS protocol policy.
 
-When scoped bindings exist, listener admission compares the binding selected by
-connection SNI with the binding selected by the original HTTP Host or authority.
-Different bindings, malformed authorities, and absent TLS state receive 421 before
-content routing, inside listener observability. One declaration's hosts share a
-binding; distinct declarations remain separate even with identical modes and CA
-paths. Unmatched names share the default binding. This prevents public-SNI bypass
-and cross-policy HTTP/2 or HTTP/3 connection reuse. Existing configurations with
-only listener-wide authentication do not acquire this admission restriction.
+When scoped assignments exist, listener admission compares the effective policy
+selected by connection SNI with the policy selected by the original HTTP Host or
+authority. Different policies, malformed authorities, and absent TLS state receive
+421 before content routing, inside listener observability. Policies are equivalent
+exactly when their mode and loaded CA certificate DER sets match, independent of
+declaration grouping, file paths, PEM formatting, ordering, and duplicates. The
+default participates in the same equivalence domain. Different sets remain
+distinct even if they overlap or accept the same peer. This prevents public-SNI
+bypass and cross-policy HTTP/2 or HTTP/3 connection reuse. Existing configurations
+with only listener-wide authentication do not acquire this admission restriction.
+
+Construction compiles a listener-owned immutable authentication table before
+building its handler and transports. The table interns equivalent policies once,
+assigns explicit listener-local runtime IDs, and attaches loaded pools directly to
+their entries. Full sorted unique DER sets prove equivalence; resolved declaration
+addresses and certificate subjects never define identity. Every configured file
+must load before its policy can be interned. The resolved model stays offline and
+contains assignments, with no runtime IDs or loaded material. Certificate routing
+owns only certificate-source state. Both selectors and offline ACME validation use
+one indexed exact/single-label-wildcard matcher, with caller-owned defaults. TLS
+assembly takes TCP or QUIC explicitly and selects transport-appropriate ALPN.
 
 Client-certificate identity has no route matcher. Resolve validates only shape and
 paths; construction loads all default and scoped CA bundles before sockets open,

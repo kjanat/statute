@@ -577,14 +577,21 @@ including its CA files. All CA files must load successfully before sockets open.
 `TLS007` reports weak modes for default and scoped policies separately; only
 `RequireAndVerifyClientCert` requires a verified certificate.
 
-The HTTP Host or HTTP/2/3 authority must select the same policy binding as connection
-SNI. Crossing bindings returns `421 Misdirected Request` before routing, even when
-the connection has a valid certificate for another binding. This prevents selecting
-an unprotected SNI and requesting protected content. Hosts listed in one
-`ClientAuthFor` declaration may reuse a connection, as may hosts covered by one
-wildcard binding. Separate declarations remain separate bindings even when their
-mode and CA paths match. Unmatched hostnames share the default binding. Listener-wide
-configurations without `ClientAuthFor` keep their existing HTTP admission behavior.
+The HTTP Host or HTTP/2/3 authority must select an equivalent policy to connection
+SNI. Different policies return `421 Misdirected Request` before routing, even when
+the connection has a valid certificate for another policy. This prevents selecting
+an unprotected SNI and requesting protected content.
+
+Policies are equivalent when they have the same client-auth mode and the same set
+of loaded CA certificate DER identities. File paths, PEM formatting, certificate
+ordering, duplicates, and declaration grouping have no effect on equivalence.
+Combining or splitting `ClientAuthFor` declarations therefore preserves connection
+reuse, including reuse with an equivalent listener-wide default. Equivalence is
+computed once during construction; every declared CA file must still load and
+contain a valid certificate. Different CA sets remain distinct even if they overlap
+or accept the same presented client certificate. Unmatched hostnames use the
+default policy. Listener-wide configurations without `ClientAuthFor` keep their
+existing HTTP admission behavior.
 
 Export exposes `Listeners[].ClientAuthPolicies` with ordered `Hosts` and `Policy`
 values. Graph output includes each binding's names, mode and CA files.

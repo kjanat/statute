@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Add `ClientAuthFor` to require client certificates for selected SNI hostnames while allowing direct access to other names on the same HTTPS listener. Apply the selected policy to TCP and HTTP/3, and reject HTTP requests that cross authentication bindings on a connection. Preserve listener-wide `ClientAuth` as the default for unmatched names.
+- Add `ClientAuthFor` to require client certificates for selected SNI hostnames while allowing direct access to other names on the same HTTPS listener. Apply the selected policy to TCP and HTTP/3, and reject HTTP requests selecting a different authentication policy from connection SNI. Permit connection reuse across equivalent policies with the same mode and loaded CA certificate set, independent of declaration grouping or file paths. Preserve listener-wide `ClientAuth` as the default for unmatched names.
 
 ## [0.8.2] - 2026-10-10
 

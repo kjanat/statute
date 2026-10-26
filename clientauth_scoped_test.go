@@ -83,6 +83,10 @@ func TestScopedClientAuthSelection(t *testing.T) {
 		ClientAuthFor([]string{"one.example", "bücher.example"}, ClientAuth{Mode: VerifyClientCertIfGiven, CAFiles: []string{"ca.pem"}}),
 	))
 	l := r.Listeners[0]
+	index, err := indexClientAuthPolicies(l)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		host string
 		want *resolved.ClientAuth
@@ -96,7 +100,11 @@ func TestScopedClientAuthSelection(t *testing.T) {
 		{"", l.ClientAuth},
 		{"elsewhere.test", l.ClientAuth},
 	} {
-		if got := selectClientAuth(l, tc.host); got != tc.want {
+		got, found := index.lookup(tc.host)
+		if !found {
+			got = l.ClientAuth
+		}
+		if got != tc.want {
 			t.Errorf("%q: got %p, want %p", tc.host, got, tc.want)
 		}
 	}
@@ -144,6 +152,10 @@ func TestScopedClientAuthAuthorityAdmission(t *testing.T) {
 		ClientAuthFor([]string{"one.example", "alias.example", "*.protected.example"}, ClientAuth{Mode: RequestClientCert}),
 		ClientAuthFor([]string{"two.example"}, ClientAuth{Mode: RequestClientCert}),
 	))
+	table, err := buildClientAuthTable(r.Listeners[0])
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		sni, host string
 		tls       bool
@@ -151,7 +163,7 @@ func TestScopedClientAuthAuthorityAdmission(t *testing.T) {
 	}{
 		{"direct.example", "one.example", true, 421},
 		{"", "one.example", true, 421},
-		{"one.example", "two.example", true, 421},
+		{"one.example", "two.example", true, 204},
 		{"one.example", "direct.example", true, 421},
 		{"one.example", "ALIAS.EXAMPLE..:443", true, 204},
 		{"x.protected.example", "y.protected.example", true, 204},
@@ -176,7 +188,7 @@ func TestScopedClientAuthAuthorityAdmission(t *testing.T) {
 		}
 		rec := httptest.NewRecorder()
 		called := false
-		clientAuthAdmission(r.Listeners[0], http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { called = true; w.WriteHeader(204) })).ServeHTTP(rec, req)
+		clientAuthAdmission(table, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { called = true; w.WriteHeader(204) })).ServeHTTP(rec, req)
 		if rec.Code != tc.status || called != (tc.status == 204) {
 			t.Errorf("SNI=%q Host=%q tls=%v: status %d called=%v", tc.sni, tc.host, tc.tls, rec.Code, called)
 		}

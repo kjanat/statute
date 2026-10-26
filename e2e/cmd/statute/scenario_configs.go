@@ -171,7 +171,10 @@ func scopedClientMTLSConfig(node string) statute.Config {
 	cfg.Listeners[0] = statute.HTTPS(":8443",
 		statute.StaticTLS("/certs/statute.crt", "/certs/statute.key"),
 		statute.HTTP2(), statute.HTTP3(":8443/udp"),
-		statute.ClientAuthFor([]string{"statute-1", "statute-2"}, statute.ClientAuth{
+		statute.ClientAuthFor([]string{"statute-1"}, statute.ClientAuth{
+			Mode: statute.RequireAndVerifyClientCert, CAFiles: []string{caCertFile},
+		}),
+		statute.ClientAuthFor([]string{"statute-2"}, statute.ClientAuth{
 			Mode: statute.RequireAndVerifyClientCert, CAFiles: []string{caCertFile},
 		}),
 	)

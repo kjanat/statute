@@ -183,7 +183,7 @@ func TestCertRouterSelection(t *testing.T) {
 		}
 	}
 	var hit string
-	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
+	cr := &certRouter{}
 	mustAdd(t, cr, "foo.bar.example", tag("exact", &hit))
 	mustAdd(t, cr, "*.bar.example", tag("wildcard", &hit))
 
@@ -225,7 +225,7 @@ func TestCertRouterSelection(t *testing.T) {
 // fail the handshake rather than serve an arbitrary certificate.
 func TestCertRouterMisses(t *testing.T) {
 	t.Parallel()
-	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
+	cr := &certRouter{}
 	mustAdd(t, cr, "*.bar.example", func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		return &tls.Certificate{}, nil
 	})
@@ -268,7 +268,11 @@ func TestCertRouterTLSConfigALPN(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			cr := &certRouter{hasACMETLS: c.acme}
 			l := &resolved.Listener{EnableHTTP2: c.http2, BehindCloudflare: c.cf}
-			cfg := certRouterTLSConfig(cr, l)
+			auth, err := buildClientAuthTable(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := listenerTLSConfig(&listenerTLS{certificates: cr, auth: auth}, l, tlsTransportTCP)
 			if !slices.Equal(cfg.NextProtos, c.want) {
 				t.Errorf("NextProtos: got %v, want %v", cfg.NextProtos, c.want)
 			}
@@ -298,7 +302,7 @@ func TestSNIHandshakeRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	cfg := certRouterTLSConfig(srv.certRouters[":443"], r.Listeners[0])
+	cfg := listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP)
 
 	cases := []struct {
 		sni, wantDNS string
@@ -427,7 +431,7 @@ func TestCertRouterCanonicalLookup(t *testing.T) {
 			return &tls.Certificate{}, nil
 		}
 	}
-	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
+	cr := &certRouter{}
 	mustAdd(t, cr, "foo.example.com.", tag("dotted"))
 	mustAdd(t, cr, "münchen.example", tag("idn"))
 
@@ -474,15 +478,15 @@ func TestHTTP01PinIsEnforced(t *testing.T) {
 	if got := m.solver.challengeType(); got != "http-01" {
 		t.Errorf("challenge type: got %q", got)
 	}
-	cr := srv.certRouters[":443"]
+	cr := srv.listenerTLS[":443"].certificates
 	if cr.hasACMETLS {
 		t.Error("pinned HTTP-01 source must not mark the listener TLS-ALPN-capable")
 	}
-	if protos := certRouterTLSConfig(cr, r.Listeners[0]).NextProtos; slices.Contains(protos, "acme-tls/1") {
+	if protos := listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP).NextProtos; slices.Contains(protos, "acme-tls/1") {
 		t.Errorf("ALPN advertises acme-tls/1 for a pinned source: %v", protos)
 	}
-	if _, ok := cr.exact["foo.example.com"]; !ok {
-		t.Errorf("router must index the pinned domain: %v", cr.exact)
+	if _, ok := cr.names.exact["foo.example.com"]; !ok {
+		t.Errorf("router must index the pinned domain: %v", cr.names.exact)
 	}
 }
 
@@ -500,11 +504,11 @@ func TestAutoChallengeStaysTLSALPNCapable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	cr := srv.certRouters[":443"]
+	cr := srv.listenerTLS[":443"].certificates
 	if !cr.hasACMETLS {
 		t.Error("automatic source must keep the listener TLS-ALPN-capable")
 	}
-	if protos := certRouterTLSConfig(cr, r.Listeners[0]).NextProtos; !slices.Contains(protos, "acme-tls/1") {
+	if protos := listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP).NextProtos; !slices.Contains(protos, "acme-tls/1") {
 		t.Errorf("ALPN must advertise acme-tls/1 for the automatic policy: %v", protos)
 	}
 }
@@ -531,7 +535,7 @@ func TestHTTP01TokensServedOnPlainListener(t *testing.T) {
 	solver.tokens[path] = "tok-9.keyauth"
 	solver.mu.Unlock()
 
-	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil)
+	h := srv.buildListenerHandler(r.Listeners[0], srv.buildRouter(), nil, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://foo.example.com"+path, nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "tok-9.keyauth" {
@@ -652,7 +656,7 @@ func TestServeListenerTLS(t *testing.T) {
 	}
 	hs := &http.Server{
 		Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		TLSConfig:         certRouterTLSConfig(srv.certRouters[":443"], l),
+		TLSConfig:         listenerTLSConfig(srv.listenerTLS[":443"], l, tlsTransportTCP),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go serveListener(hs, l, ln)
@@ -689,12 +693,12 @@ func TestNewServerDNS01SourceGetsOwnManager(t *testing.T) {
 	if n := len(srv.acmeManagers); n != 1 {
 		t.Fatalf("acme managers: got %d, want 1", n)
 	}
-	cr := srv.certRouters[":443"]
+	cr := srv.listenerTLS[":443"].certificates
 	if cr == nil {
 		t.Fatal("no cert router stored for :443")
 	}
-	if _, ok := cr.wildcards["*.bar.example"]; !ok {
-		t.Errorf("router wildcards missing DNS-01 pattern: %v", cr.wildcards)
+	if _, ok := cr.names.wildcards["*.bar.example"]; !ok {
+		t.Errorf("router wildcards missing DNS-01 pattern: %v", cr.names.wildcards)
 	}
 	if cr.hasACMETLS {
 		t.Error("DNS-01-only ACME must not advertise acme-tls/1")
@@ -776,18 +780,18 @@ func TestResolveRejectsRepeatedTrailingDots(t *testing.T) {
 // must be structurally impossible even if it ever slips.
 func TestCertRouterAddRejectsDuplicate(t *testing.T) {
 	t.Parallel()
-	cr := &certRouter{exact: map[string]certGetter{}, wildcards: map[string]certGetter{}}
+	cr := &certRouter{}
 	g := func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &tls.Certificate{}, nil }
 	if err := cr.add("example.com..", g); err != nil {
 		t.Fatalf("first add: %v", err)
 	}
-	if err := cr.add("EXAMPLE.com.", g); err == nil || !strings.Contains(err.Error(), "claimed by two sources") {
+	if err := cr.add("EXAMPLE.com.", g); err == nil || !strings.Contains(err.Error(), "claimed twice") {
 		t.Errorf("duplicate exact name: %v", err)
 	}
 	if err := cr.add("*.example.com", g); err != nil {
 		t.Fatalf("first wildcard add: %v", err)
 	}
-	if err := cr.add("*.EXAMPLE.com..", g); err == nil || !strings.Contains(err.Error(), "claimed by two sources") {
+	if err := cr.add("*.EXAMPLE.com..", g); err == nil || !strings.Contains(err.Error(), "claimed twice") {
 		t.Errorf("duplicate wildcard pattern: %v", err)
 	}
 }
@@ -801,7 +805,7 @@ func TestBuildCertRouterPropagatesDuplicate(t *testing.T) {
 		{Domains: []string{"a.example"}},
 		{Domains: []string{"A.example."}},
 	}}
-	if _, err := s.buildCertRouter(l); err == nil || !strings.Contains(err.Error(), "claimed by two sources") {
+	if _, err := s.buildCertRouter(l); err == nil || !strings.Contains(err.Error(), "claimed twice") {
 		t.Errorf("buildCertRouter must propagate the duplicate: %v", err)
 	}
 }

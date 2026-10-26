@@ -66,16 +66,13 @@ func (s *server) buildHTTP3Server(l *resolved.Listener, parent *http.Server, ali
 		return nil, fmt.Errorf("http3 listener address is empty")
 	}
 
-	// The parent HTTPS listener's cert router (stored by applyListenerTLS,
-	// which initListeners runs first) dispatches certificates for QUIC
-	// handshakes exactly as it does for TCP.
-	cr := s.certRouters[l.Addr]
-	if cr == nil {
+	// The parent listener owns independent certificate and authentication
+	// tables compiled before either transport or the shared handler.
+	state := s.listenerTLS[l.Addr]
+	if state == nil {
 		return nil, fmt.Errorf("http3 listener requires AutoTLS or StaticTLS on the parent HTTPS listener")
 	}
-	tlsCfg := certRouterTLSConfig(cr, l)
-	// HTTP/3 mandates ALPN "h3".
-	tlsCfg.NextProtos = []string{alpnHTTP3}
+	tlsCfg := listenerTLSConfig(state, l, tlsTransportQUIC)
 
 	srv := &http3.Server{
 		Addr:      addr,

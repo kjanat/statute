@@ -290,7 +290,8 @@ func TestCertRouterTLSConfigPolicy(t *testing.T) {
 			"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
 		},
 	}}
-	cfg := certRouterTLSConfig(&certRouter{}, l)
+	state := &listenerTLS{certificates: &certRouter{}, auth: &clientAuthTable{defaultAuth: &compiledClientAuth{}}}
+	cfg := listenerTLSConfig(state, l, tlsTransportTCP)
 	if cfg.MinVersion != tls.VersionTLS12 || cfg.MaxVersion != tls.VersionTLS12 {
 		t.Errorf("versions: got %#04x/%#04x", cfg.MinVersion, cfg.MaxVersion)
 	}
@@ -302,7 +303,7 @@ func TestCertRouterTLSConfigPolicy(t *testing.T) {
 		t.Errorf("cipher suites: got %v, want %v", cfg.CipherSuites, want)
 	}
 
-	base := certRouterTLSConfig(&certRouter{}, &resolved.Listener{})
+	base := listenerTLSConfig(state, &resolved.Listener{}, tlsTransportTCP)
 	if base.MinVersion != tls.VersionTLS12 || base.MaxVersion != 0 || base.CipherSuites != nil {
 		t.Errorf("no policy: got min %#04x, max %#04x, suites %v; want the untouched defaults", base.MinVersion, base.MaxVersion, base.CipherSuites)
 	}
@@ -406,7 +407,7 @@ func policyServerConfig(t *testing.T, certFile, keyFile string, p TLSPolicy) *tl
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	return certRouterTLSConfig(srv.certRouters[":443"], r.Listeners[0])
+	return listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP)
 }
 
 // TestApplyTLSPolicyUnknownNamesFailClosed — the resolved schema is the

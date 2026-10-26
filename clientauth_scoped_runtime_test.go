@@ -38,7 +38,7 @@ func TestScopedClientAuthHandshakesAndIsolation(t *testing.T) {
 		ClientAuthFor([]string{"one.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}}),
 		ClientAuthFor([]string{"two.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{other.caFile}}),
 	)
-	base := certRouterTLSConfig(srv.certRouters[l.Addr], l)
+	base := listenerTLSConfig(srv.listenerTLS[l.Addr], l, tlsTransportTCP)
 	for _, tc := range []struct {
 		host string
 		cert *tls.Certificate
@@ -75,7 +75,7 @@ func TestScopedClientAuthDefaultOverrideAndNoSNI(t *testing.T) {
 		ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}},
 		ClientAuthFor([]string{"one.example"}, ClientAuth{Mode: RequestClientCert}),
 	)
-	base := certRouterTLSConfig(srv.certRouters[l.Addr], l)
+	base := listenerTLSConfig(srv.listenerTLS[l.Addr], l, tlsTransportTCP)
 	assertTLSHandshakeForHost(t, base, pki, nil, "one.example", true)
 	assertTLSHandshakeForHost(t, base, pki, nil, "two.example", false)
 	for _, host := range []string{"", "unknown.example"} {
@@ -99,7 +99,7 @@ func TestScopedClientAuthUnicodeTrailingSeparator(t *testing.T) {
 	pki := makeClientAuthPKI(t)
 	for _, suffix := range []string{"\u3002", "\uff0e", "\uff61", "\u3002\uff0e.\uff61.."} {
 		srv, l := scopedClientAuthConfig(t, pki, ClientAuthFor([]string{"one.example" + suffix}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}}))
-		base := certRouterTLSConfig(srv.certRouters[l.Addr], l)
+		base := listenerTLSConfig(srv.listenerTLS[l.Addr], l, tlsTransportTCP)
 		assertTLSHandshakeForHost(t, base, pki, nil, "one.example", false)
 		assertTLSHandshakeForHost(t, base, pki, &pki.untrustedClientCert, "one.example", false)
 		assertTLSHandshakeForHost(t, base, pki, &pki.clientCert, "one.example", true)
@@ -110,11 +110,13 @@ func TestScopedClientAuthSelectedCertificateFailure(t *testing.T) {
 	t.Parallel()
 	pki := makeClientAuthPKI(t)
 	srv, l := scopedClientAuthConfig(t, pki, ClientAuthFor([]string{"one.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}}))
-	cr := srv.certRouters[l.Addr]
-	cr.exact["one.example"] = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	cr := srv.listenerTLS[l.Addr].certificates
+	if err := cr.add("one.example", func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		return nil, errors.New("selected source unavailable")
+	}); err != nil {
+		t.Fatal(err)
 	}
-	base := certRouterTLSConfig(cr, l)
+	base := listenerTLSConfig(srv.listenerTLS[l.Addr], l, tlsTransportTCP)
 	assertTLSHandshakeForHost(t, base, pki, &pki.clientCert, "one.example", false)
 	assertTLSHandshakeForHost(t, base, pki, nil, "x.example", true)
 }
@@ -151,7 +153,7 @@ func TestScopedClientAuthALPNAndTLSPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, base := range []*tls.Config{certRouterTLSConfig(srv.certRouters[":443"], r.Listeners[0]), srv.http3Servers[0].srv.TLSConfig} {
+		for _, base := range []*tls.Config{listenerTLSConfig(srv.listenerTLS[":443"], r.Listeners[0], tlsTransportTCP), srv.http3Servers[0].srv.TLSConfig} {
 			assertScopedClientAuthALPN(t, base)
 		}
 	}
@@ -179,13 +181,20 @@ func assertScopedClientAuthALPN(t *testing.T, base *tls.Config) {
 
 func TestScopedClientAuthServesProtocolsAndGuardsReuse(t *testing.T) {
 	t.Parallel()
-	pki := makeClientAuthPKI(t)
+	pki, other := makeClientAuthPKI(t), makeClientAuthPKI(t)
+	caPEM := pemCert(pki.caDER)
+	dir := t.TempDir()
+	writeFile(t, dir, "alias.pem", "CA alias\n"+strings.ReplaceAll(caPEM+caPEM, "\n", "\r\n"))
 	tcpAddr, udpAddr := reserveAddr(t), reserveUDPAddr(t)
 	var logs bytes.Buffer
 	var logMu sync.Mutex
 	cfg := Config{
 		Listeners: Listeners{HTTPS(tcpAddr, StaticTLS(pki.serverCertFile, pki.serverKeyFile), HTTP2(), HTTP3(udpAddr+"/udp"),
-			ClientAuthFor([]string{"one.example", "two.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}}))},
+			ClientAuthFor([]string{"one.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}}),
+			ClientAuthFor([]string{"two.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{dir + "/alias.pem"}}),
+			ClientAuthFor([]string{"other-ca.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{other.caFile}}),
+			ClientAuthFor([]string{"other-mode.example"}, ClientAuth{Mode: RequireAnyClientCert, CAFiles: []string{pki.caFile}}),
+			ClientAuthFor([]string{"overlap.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile, other.caFile}}))},
 		Routes:        Routes{Match("/*").Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))},
 		Observability: Observability{AccessLog: JSONLog(LogWriter{w: &muWriter{Mutex: &logMu, w: &logs}, name: "test"})},
 	}
@@ -220,7 +229,7 @@ func assertScopedProtocolIdentity(t *testing.T, proto, identity string, pki clie
 	tlsCfg := scopedClientIdentity(pki, identity)
 	host := tlsCfg.ServerName
 	client, addr := scopedProtocolClient(t, proto, tlsCfg, tcpAddr, udpAddr)
-	for i, authority := range []string{host, "two.example", host} {
+	for i, authority := range []string{host, "two.example", "other-ca.example", "other-mode.example", "overlap.example", host} {
 		var reused bool
 		trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}
 		ctx := httptrace.WithClientTrace(t.Context(), trace)
@@ -240,11 +249,84 @@ func assertScopedProtocolIdentity(t *testing.T, proto, identity string, pki clie
 		if i > 0 && !reused {
 			t.Errorf("authority %q did not reuse the established connection", authority)
 		}
-		want := http.StatusNoContent
-		if identity == "public" && authority != host {
-			want = http.StatusMisdirectedRequest
-		}
+		want := scopedAuthorityStatus(identity, host, authority)
 		assertScopedHTTPResponse(t, resp, proto, authority, want)
+	}
+}
+
+func scopedAuthorityStatus(identity, sni, authority string) int {
+	if authority == sni || (identity == "valid" && authority == "two.example") {
+		return http.StatusNoContent
+	}
+	return http.StatusMisdirectedRequest
+}
+
+func TestScopedClientAuthEquivalentDefaultReuse(t *testing.T) {
+	t.Parallel()
+	pki := makeClientAuthPKI(t)
+	tcpAddr, udpAddr := reserveAddr(t), reserveUDPAddr(t)
+	policy := ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}}
+	cfg := Config{
+		Listeners: Listeners{HTTPS(tcpAddr, StaticTLS(pki.serverCertFile, pki.serverKeyFile), HTTP2(), HTTP3(udpAddr+"/udp"), policy, ClientAuthFor([]string{"two.example"}, policy))},
+		Routes: Routes{Match("/*").Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))},
+	}
+	srv, err := newServer(mustResolve(t, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, proto := range []string{"h1", "h2", "h3"} {
+		client, addr := scopedProtocolClient(t, proto, scopedClientIdentity(pki, "valid"), tcpAddr, udpAddr)
+		for i, host := range []string{"one.example", "two.example", "one.example"} {
+			var reused bool
+			ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }})
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+"/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = host
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertScopedHTTPResponse(t, resp, proto, host, http.StatusNoContent)
+			if i > 0 && !reused {
+				t.Errorf("%s %q did not reuse the default-auth connection", proto, host)
+			}
+		}
+	}
+}
+
+func TestScopedClientAuthTransportIsExplicit(t *testing.T) {
+	t.Parallel()
+	l := &resolved.Listener{EnableHTTP2: true, ClientAuthPolicies: []*resolved.ClientAuthPolicy{{Hosts: []string{"optional.example"}, Policy: resolved.ClientAuth{Mode: resolved.ClientAuthRequest}}}}
+	auth, err := buildClientAuthTable(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &listenerTLS{certificates: &certRouter{hasACMETLS: true}, auth: auth}
+	tcp := listenerTLSConfig(state, l, tlsTransportTCP)
+	// Mutable ALPN contents cannot change which transport this config serves.
+	// Preserve additions made by net/http while adjusting only challenge ALPN.
+	tcp.NextProtos = []string{alpnHTTP2, alpnHTTP3, "custom"}
+	selected, err := tcp.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "optional.example"})
+	if err != nil || !slices.Equal(selected.NextProtos, []string{alpnHTTP2, alpnHTTP3, "custom", alpnACMETLS}) {
+		t.Fatalf("explicit TCP config = %v, %v", selected, err)
+	}
+	quic := listenerTLSConfig(state, l, tlsTransportQUIC)
+	quic.NextProtos = []string{alpnHTTP2, alpnACMETLS}
+	selected, err = quic.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "optional.example"})
+	if err != nil || !slices.Equal(selected.NextProtos, []string{alpnHTTP3}) {
+		t.Fatalf("explicit QUIC config = %v, %v", selected, err)
 	}
 }
 
@@ -320,7 +402,7 @@ func TestScopedClientAuthResumption(t *testing.T) {
 		ClientAuthFor([]string{"one.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{pki.caFile}}),
 		ClientAuthFor([]string{"two.example"}, ClientAuth{Mode: RequireAndVerifyClientCert, CAFiles: []string{other.caFile}}),
 	)
-	base := certRouterTLSConfig(srv.certRouters[l.Addr], l)
+	base := listenerTLSConfig(srv.listenerTLS[l.Addr], l, tlsTransportTCP)
 	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
 		for _, source := range []string{"x.example", "one.example"} {
 			cache := &sharedTicketCache{}

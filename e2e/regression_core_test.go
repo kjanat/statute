@@ -271,6 +271,13 @@ func TestRegression_ScopedClientMTLS(t *testing.T) {
 	for _, proto := range []string{"h1", "h2", "h3"} {
 		plan.Steps = append(plan.Steps,
 			report.Step{
+				Name: proto + "-equivalent-policy", URL: "https://statute-1:8443/echo", TargetServer: harness.Server1,
+				Proto: proto, Count: 2, RootsFile: "/certs/ca.crt", ServerName: "statute-1",
+				ClientCertFile: "/certs/statute.crt", ClientKeyFile: "/certs/statute.key",
+				Headers: map[string]string{"Host": "statute-2"},
+				Expect:  report.Expect{Status: 200, BodyContains: `"origin":"origin-1"`},
+			},
+			report.Step{
 				Name: proto + "-public", URL: "https://statute-1:8443/echo", TargetServer: harness.Server1,
 				Proto: proto, Count: 2, RootsFile: "/certs/ca.crt", ServerName: "localhost",
 				Headers: map[string]string{"Host": "localhost"},

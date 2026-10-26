@@ -43,7 +43,9 @@ type clientAuthPolicy struct {
 // Names use TLS source canonicalization and exact-before-single-label-wildcard
 // precedence. Unmatched names and absent SNI use the listener-wide ClientAuth.
 // The policy is independent of certificate selection, including StaticTLS fallback.
-// HTTP requests crossing bindings on one connection are rejected with status 421.
+// HTTP requests whose authority selects a different effective policy receive 421.
+// Policies are equivalent when their mode and loaded CA certificate DER sets
+// match, regardless of declaration grouping, file paths, ordering or duplicates.
 func ClientAuthFor(hosts []string, policy ClientAuth) ListenerOption {
 	return clientAuthPolicy{hosts: append([]string(nil), hosts...), policy: cloneClientAuth(policy)}
 }
@@ -141,26 +143,18 @@ func resolveClientAuthPolicy(p ClientAuth) (*resolved.ClientAuth, error) {
 	}, nil
 }
 
-// selectClientAuth returns the binding's policy address, also used as its
-// identity at HTTP admission. The normalized configuration is immutable.
-func selectClientAuth(l *resolved.Listener, name string) *resolved.ClientAuth {
-	host := canonicalTLSName(name)
-	var wildcard *resolved.ClientAuth
-	_, rest, _ := strings.Cut(host, ".")
+// indexClientAuthPolicies is the offline selector for ACME validation. Runtime
+// construction compiles its own immutable table with loaded material and IDs.
+func indexClientAuthPolicies(l *resolved.Listener) (tlsNameIndex[*resolved.ClientAuth], error) {
+	var index tlsNameIndex[*resolved.ClientAuth]
 	for _, binding := range l.ClientAuthPolicies {
 		for _, pattern := range binding.Hosts {
-			if pattern == host {
-				return &binding.Policy
-			}
-			if rest != "" && pattern == "*."+rest {
-				wildcard = &binding.Policy
+			if err := index.add(pattern, &binding.Policy); err != nil {
+				return index, err
 			}
 		}
 	}
-	if wildcard != nil {
-		return wildcard
-	}
-	return l.ClientAuth
+	return index, nil
 }
 
 func clientAuthAuthority(name string) (string, bool) {
@@ -195,13 +189,13 @@ func validAuthorityPort(port string) bool {
 	return err == nil
 }
 
-func clientAuthAdmission(l *resolved.Listener, next http.Handler) http.Handler {
-	if len(l.ClientAuthPolicies) == 0 {
+func clientAuthAdmission(table *clientAuthTable, next http.Handler) http.Handler {
+	if table == nil || !table.scoped {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, valid := clientAuthAuthority(r.Host)
-		if !valid || r.TLS == nil || selectClientAuth(l, host) != selectClientAuth(l, r.TLS.ServerName) {
+		if !valid || r.TLS == nil || table.selectPolicy(host).id != table.selectPolicy(r.TLS.ServerName).id {
 			w.Header().Set("Cache-Control", "no-store")
 			http.Error(w, "client authentication policy differs from TLS SNI", http.StatusMisdirectedRequest)
 			return
