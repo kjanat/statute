@@ -3,6 +3,7 @@ package statute
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -124,6 +125,39 @@ func TestClientAuthTableValidatesEveryFileBeforeInterning(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "client_auth_policies[1]") {
 			t.Errorf("bad equivalent material %q: %v", invalid, err)
 		}
+	}
+}
+
+func TestClientAuthTableIgnoresUnsupportedPEMBlocks(t *testing.T) {
+	t.Parallel()
+	pki, ignored := makeClientAuthPKI(t), makeClientAuthPKI(t)
+	for _, tc := range []struct {
+		name  string
+		block pem.Block
+	}{
+		{"non-certificate type", pem.Block{Type: "PRIVATE KEY", Bytes: ignored.caDER}},
+		{"certificate with headers", pem.Block{Type: "CERTIFICATE", Headers: map[string]string{"Comment": "ignored"}, Bytes: ignored.caDER}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ignoredPEM := string(pem.EncodeToMemory(&tc.block))
+			writeFile(t, dir, "ignored.pem", ignoredPEM)
+			writeFile(t, dir, "mixed.pem", ignoredPEM+pemCert(pki.caDER)+ignoredPEM)
+			policy, err := compileClientAuth(&resolved.ClientAuth{Mode: resolved.ClientAuthRequireAndVerify, CAFiles: []string{dir + "/ignored.pem"}})
+			if err == nil || policy != nil || !strings.Contains(err.Error(), "no certificates found") {
+				t.Fatalf("ignored-only CA file: policy=%v err=%v", policy, err)
+			}
+			policy, err = compileClientAuth(&resolved.ClientAuth{Mode: resolved.ClientAuthRequireAndVerify, CAFiles: []string{dir + "/mixed.pem"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(policy.der, []string{string(pki.caDER)}) || !policy.clientCAs.Equal(pki.serverRoots) {
+				t.Fatal("ignored PEM block changed the trust pool or policy identity")
+			}
+			cfg := clientAuthServerConfig(t, pki, RequireAndVerifyClientCert, []string{dir + "/mixed.pem"})
+			assertTLSHandshake(t, cfg, pki, &pki.clientCert, true)
+			assertTLSHandshake(t, cfg, pki, &ignored.clientCert, false)
+		})
 	}
 }
 

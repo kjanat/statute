@@ -146,6 +146,32 @@ func TestScopedClientAuthACMEFallback(t *testing.T) {
 	}
 }
 
+func TestScopedClientAuthACMERejectsDuplicateResolvedClaims(t *testing.T) {
+	t.Parallel()
+	for _, hosts := range [][2]string{
+		{"one.example", "ONE.EXAMPLE.."},
+		{"*.example", "*.EXAMPLE."},
+		{"bücher.example", "xn--bcher-kva.example。"},
+	} {
+		t.Run(hosts[0], func(t *testing.T) {
+			l := &resolved.Listener{
+				Scheme: schemeHTTPS,
+				AutoTLSSources: []*resolved.AutoTLS{{
+					Domains: []string{"one.example"}, Challenge: resolved.ChallengeAuto,
+				}},
+				ClientAuthPolicies: []*resolved.ClientAuthPolicy{
+					{Hosts: []string{hosts[0]}, Policy: resolved.ClientAuth{Mode: resolved.ClientAuthRequest}},
+					{Hosts: []string{hosts[1]}, Policy: resolved.ClientAuth{Mode: resolved.ClientAuthRequest}},
+				},
+			}
+			err := validateClientAuthACMEHasPlainListener([]*resolved.Listener{l})
+			if err == nil || !strings.Contains(err.Error(), "claimed twice") || !strings.Contains(err.Error(), canonicalTLSName(hosts[0])) {
+				t.Fatalf("duplicate auth assignment lost during ACME validation: %v", err)
+			}
+		})
+	}
+}
+
 func TestScopedClientAuthAuthorityAdmission(t *testing.T) {
 	t.Parallel()
 	r := mustResolve(t, tlsRouterConfig(StaticTLS("c", "k"),
