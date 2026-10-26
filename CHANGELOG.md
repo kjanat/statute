@@ -6,9 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-26
+
 ### Added
 
 - Add `ClientAuthFor` to require client certificates for selected SNI hostnames while allowing direct access to other names on the same HTTPS listener. Apply the selected policy to TCP and HTTP/3, and reject HTTP requests selecting a different authentication policy from connection SNI. Permit connection reuse across equivalent policies with the same mode and loaded CA certificate set, independent of declaration grouping or file paths. Preserve listener-wide `ClientAuth` as the default for unmatched names.
+
+- Add Statute branding, browser icons, and a refreshed API reference site that rebuilds after successful release verification.
+
+### Changed
+
+- Refresh the opt-in HTML-rewriting research harness to patched LOL HTML v3.0.2 and Rust nightly-2026-10-26. Preserve the parser ownership patch and source-provenance checks.
+
+- Refresh pinned Go container images and CI tooling, including actionlint v2 and mise-action v5.2.3.
+
+Known limitation: the Docker timing concern documented in the [v0.8.1 release notes](https://github.com/kjanat/statute/releases/tag/v0.8.1) remains unresolved.
+
+## [0.8.3] - 2026-10-22
+
+### Changed
+
+- Refresh Go tooling dependencies, the Traefik compatibility oracle to v3.7.16, the observability test collector to v0.163.2, and CI tooling.
+
+### Security
+
+- Set the preferred Go toolchain to `go1.27.3` for its `crypto/x509` security fix. Retain the Go 1.27 language requirement; consuming applications must rebuild with Go 1.27.3 or newer.
+
+- Update quic-go to v0.64.1, including incremental HTTP/3 header-block allocation that limits allocation before frame data arrives.
+
+Known limitation: the Docker timing concern documented in the [v0.8.1 release notes](https://github.com/kjanat/statute/releases/tag/v0.8.1) remains unresolved.
 
 ## [0.8.2] - 2026-10-10
 
@@ -451,7 +477,9 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/kjanat/statute/compare/v0.8.3...v0.9.0
+[0.8.3]: https://github.com/kjanat/statute/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/kjanat/statute/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/kjanat/statute/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kjanat/statute/compare/v0.7.2...v0.8.0
