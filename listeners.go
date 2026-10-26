@@ -8,14 +8,15 @@ type Listener struct {
 	scheme   string // "http" or "https"
 	redirect string // non-empty means this listener redirects to the named scheme
 
-	autoTLS      []*AutoTLSConfig
-	staticTLS    []*StaticTLSConfig
-	tlsPolicy    []TLSPolicy  // slice so resolve can reject a second declaration
-	clientAuth   []ClientAuth // slice so resolve can reject a second declaration
-	enableHTTP2  bool
-	http3Addr    string
-	behindCF     bool
-	trustedProxy *TrustedProxyConfig
+	autoTLS            []*AutoTLSConfig
+	staticTLS          []*StaticTLSConfig
+	tlsPolicy          []TLSPolicy  // slice so resolve can reject a second declaration
+	clientAuth         []ClientAuth // slice so resolve can reject a second declaration
+	clientAuthPolicies []clientAuthPolicy
+	enableHTTP2        bool
+	http3Addr          string
+	behindCF           bool
+	trustedProxy       *TrustedProxyConfig
 }
 
 // HTTP starts an HTTP/1.1 listener declaration on the given address.

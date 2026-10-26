@@ -97,6 +97,13 @@ cd e2e && STATUTE_E2E_IMAGE=statute-e2e:$(git -C .. rev-parse --short HEAD) \
 
 ## Artifacts
 
+`TestRegression_ScopedClientMTLS` exercises public and client-authenticated SNI
+names sharing one TCP/QUIC listener over HTTP/1.1, HTTP/2, and HTTP/3. It verifies
+authenticated origin access, missing-certificate TLS rejection, direct access
+without a client certificate, and 421 responses for protected HTTP authorities
+sent over public-SNI connections. It runs in `make test-e2e-regression` alongside
+the listener-wide `TestRegression_ClientMTLS` scenario.
+
 Every run writes `e2e/artifacts/<run-id>/<scenario>/<topology>/`:
 
 - `compose.rendered.yml` — the fully resolved stack,

@@ -233,6 +233,7 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	} else {
 		handler = content
 	}
+	handler = clientAuthAdmission(l, handler)
 
 	// When AutoTLS is configured anywhere, the plain-HTTP listener must
 	// serve /.well-known/acme-challenge/* so HTTP-01 can complete.

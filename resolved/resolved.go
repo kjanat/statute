@@ -143,6 +143,10 @@ type Listener struct {
 	// Nil means the listener does not request a client certificate.
 	ClientAuth *ClientAuth
 
+	// ClientAuthPolicies select independent client-auth bindings by SNI.
+	// Exact names precede single-label wildcards; unmatched names use ClientAuth.
+	ClientAuthPolicies []*ClientAuthPolicy `json:",omitempty"`
+
 	// BehindCloudflare indicates the listener is fronted by Cloudflare. The
 	// runtime suppresses TLS-ALPN-01 challenges (HTTP-01 only) and trusts
 	// CF-Connecting-IP / True-Client-IP for client IP attribution.
@@ -201,10 +205,17 @@ const (
 	ClientAuthRequireAndVerify ClientAuthMode = "require-and-verify"
 )
 
-// ClientAuth is a resolved listener-wide client-certificate policy.
+// ClientAuth is a resolved client-certificate policy.
 type ClientAuth struct {
 	Mode    ClientAuthMode
 	CAFiles []string
+}
+
+// ClientAuthPolicy binds one client-auth policy to canonical SNI patterns.
+// All Hosts in a binding may share an HTTP connection; distinct bindings may not.
+type ClientAuthPolicy struct {
+	Hosts  []string
+	Policy ClientAuth
 }
 
 // AutoTLS is the resolved ACME configuration.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -43,7 +44,7 @@ func canonicalTLSNameStrict(name string) (string, error) {
 	if err != nil {
 		return prefix + strings.ToLower(n), err
 	}
-	return prefix + strings.ToLower(a), nil
+	return trimTLSName(prefix + strings.ToLower(a)), nil
 }
 
 // trimTLSName strips surrounding space and trailing dots until the value
@@ -75,10 +76,11 @@ type certGetter func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 // name is claimed twice, and a wildcard covers exactly one extra label, so
 // at most one pattern can match any host — selection is deterministic.
 type certRouter struct {
-	exact     map[string]certGetter // lowercased exact SNI name -> source
-	wildcards map[string]certGetter // lowercased "*.suffix" pattern -> source
-	fallback  certGetter            // hostless static source; nil when absent
-	clientCAs *x509.CertPool
+	exact         map[string]certGetter // lowercased exact SNI name -> source
+	wildcards     map[string]certGetter // lowercased "*.suffix" pattern -> source
+	fallback      certGetter            // hostless static source; nil when absent
+	clientCAs     *x509.CertPool
+	clientAuthCAs map[*resolved.ClientAuth]*x509.CertPool
 
 	// hasACMETLS records that an HTTP-01 ACME source is present, so the
 	// listener must advertise the acme-tls/1 ALPN protocol for TLS-ALPN-01
@@ -101,6 +103,9 @@ func (s *server) buildCertRouter(l *resolved.Listener) (*certRouter, error) {
 		wildcards: make(map[string]certGetter),
 		clientCAs: clientCAs,
 	}
+	if err := cr.loadScopedClientCAs(l); err != nil {
+		return nil, err
+	}
 	if err := cr.indexACMESources(s, l.AutoTLSSources); err != nil {
 		return nil, err
 	}
@@ -111,6 +116,26 @@ func (s *server) buildCertRouter(l *resolved.Listener) (*certRouter, error) {
 		return nil, errors.New("https listener has no TLS material")
 	}
 	return cr, nil
+}
+
+func (cr *certRouter) loadScopedClientCAs(l *resolved.Listener) error {
+	cr.clientAuthCAs = map[*resolved.ClientAuth]*x509.CertPool{l.ClientAuth: cr.clientCAs}
+	claimed := make(map[string]bool)
+	for i, binding := range l.ClientAuthPolicies {
+		for _, name := range binding.Hosts {
+			host := canonicalTLSName(name)
+			if claimed[host] {
+				return fmt.Errorf("client_auth_policies[%d]: hostname %q is claimed by two bindings", i, host)
+			}
+			claimed[host] = true
+		}
+		pool, err := buildClientCAPool(&binding.Policy)
+		if err != nil {
+			return fmt.Errorf("client_auth_policies[%d]: %w", i, err)
+		}
+		cr.clientAuthCAs[&binding.Policy] = pool
+	}
+	return nil
 }
 
 func buildClientCAPool(policy *resolved.ClientAuth) (*x509.CertPool, error) {
@@ -246,10 +271,32 @@ func certRouterTLSConfig(cr *certRouter, l *resolved.Listener) *tls.Config {
 		protos = append(protos, alpnACMETLS)
 	}
 	cfg.NextProtos = protos
+	if len(l.ClientAuthPolicies) != 0 {
+		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			return cr.clientAuthTLSConfig(cfg, l, hello.ServerName), nil
+		}
+	}
 	return cfg
 }
 
+func (cr *certRouter) clientAuthTLSConfig(base *tls.Config, l *resolved.Listener, name string) *tls.Config {
+	selected := selectClientAuth(l, name)
+	handshake := base.Clone()
+	handshake.GetConfigForClient = nil
+	applyClientAuth(handshake, selected, cr.clientAuthCAs[selected])
+	// HTTP/3 replaces the base ALPN before serving. Preserve that
+	// transport's protocols, including net/http's HTTP/2 setup.
+	if clientAuthRequiresCertificate(selected) {
+		handshake.NextProtos = slices.DeleteFunc(slices.Clone(handshake.NextProtos), func(p string) bool { return p == alpnACMETLS })
+	} else if cr.hasACMETLS && !l.BehindCloudflare && !slices.Contains(handshake.NextProtos, alpnHTTP3) && !slices.Contains(handshake.NextProtos, alpnACMETLS) {
+		handshake.NextProtos = append(slices.Clone(handshake.NextProtos), alpnACMETLS)
+	}
+	return handshake
+}
+
 func applyClientAuth(cfg *tls.Config, policy *resolved.ClientAuth, clientCAs *x509.CertPool) {
+	cfg.ClientAuth = tls.NoClientCert
+	cfg.ClientCAs = nil
 	if policy == nil {
 		return
 	}

@@ -261,6 +261,34 @@ func clientMTLSPlan() *report.Plan {
 	return plan
 }
 
+func TestRegression_ScopedClientMTLS(t *testing.T) {
+	t.Parallel()
+	r := harness.Start(t, "client-mtls-scoped", harness.MustTopology(t, "1s1c"))
+	ctx := context.Background()
+	r.AwaitReady(ctx)
+	plan := clientMTLSPlan()
+	plan.Name = "client-mtls-scoped"
+	for _, proto := range []string{"h1", "h2", "h3"} {
+		plan.Steps = append(plan.Steps,
+			report.Step{
+				Name: proto + "-public", URL: "https://statute-1:8443/echo", TargetServer: harness.Server1,
+				Proto: proto, Count: 2, RootsFile: "/certs/ca.crt", ServerName: "localhost",
+				Headers: map[string]string{"Host": "localhost"},
+				Expect:  report.Expect{Status: 200, BodyContains: `"origin":"origin-1"`},
+			},
+			report.Step{
+				Name: proto + "-cross-policy", URL: "https://statute-1:8443/echo", TargetServer: harness.Server1,
+				Proto: proto, Count: 2, RootsFile: "/certs/ca.crt", ServerName: "localhost",
+				Expect: report.Expect{Status: 421},
+			},
+		)
+	}
+	rep := r.ExecutePlan(ctx, harness.Client1, plan)
+	assertClientMTLSProtocols(t, rep)
+	assertMissingClientCertRejected(ctx, t, r)
+	assertVerifiedClientCertLogged(ctx, t, r)
+}
+
 func assertClientMTLSProtocols(t *testing.T, rep *report.Report) {
 	t.Helper()
 	for _, result := range rep.Results {

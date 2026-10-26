@@ -61,6 +61,7 @@ What's implemented:
 - HTTP/1.1 and HTTP/2 listeners
 - HTTP/3 (QUIC) via [quic-go](https://github.com/quic-go/quic-go), with `Alt-Svc` advertisement
 - TLS termination: static certs, AutoTLS via [autocert](https://pkg.go.dev/golang.org/x/crypto/acme/autocert) (HTTP-01 + TLS-ALPN-01), AutoTLS via custom DNS-01 manager with Cloudflare API
+- Downstream client-certificate authentication: listener-wide `ClientAuth` or SNI-scoped `ClientAuthFor`, shared by TCP and HTTP/3; [mixed protected and direct hostnames](docs/production.md#client-certificate-authentication-by-hostname) can use one listener
 - Upstream pools with round-robin, least-connections, IP-hash, and smooth weighted round-robin strategies
 - Backup tier failover when all primary backends are unhealthy
 - Active health checks with configurable thresholds

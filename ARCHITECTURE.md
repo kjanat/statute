@@ -919,17 +919,37 @@ exact match, then supported wildcard match, then hostless fallback. Once a sourc
 selected for an SNI name, an error from that source is not permission to silently
 fall through to another policy.
 
-Client-certificate authentication is listener-owned. One normalized `ClientAuth`
-policy covers every certificate source and both the TCP and QUIC TLS configs built
-for that listener. Route selection receives only connections admitted by the
-handshake, and client-certificate identity has no matcher. Resolve validates only
-shape and paths; construction loads the CA bundles before sockets open, and missing
-or malformed material aborts the listener. A verified peer's subject and SANs may
-enter the access log; certificates lacking a verified chain are omitted.
+Client-certificate authentication is listener-owned. The normalized `ClientAuth`
+is the listener-wide default; ordered `ClientAuthPolicies` bind independent policies
+to canonical SNI patterns through `ClientAuthFor`. Exact names precede single-label
+wildcards; unmatched names and no SNI retain the default. The selected policy
+replaces the default without combining CA pools and is independent of certificate
+source selection, including a hostless static certificate. Both TCP and QUIC select
+before client-certificate verification using private handshake configs that retain
+their transport's ALPN and listener TLS protocol policy.
+
+When scoped bindings exist, listener admission compares the binding selected by
+connection SNI with the binding selected by the original HTTP Host or authority.
+Different bindings, malformed authorities, and absent TLS state receive 421 before
+content routing, inside listener observability. One declaration's hosts share a
+binding; distinct declarations remain separate even with identical modes and CA
+paths. Unmatched names share the default binding. This prevents public-SNI bypass
+and cross-policy HTTP/2 or HTTP/3 connection reuse. Existing configurations with
+only listener-wide authentication do not acquire this admission restriction.
+
+Client-certificate identity has no route matcher. Resolve validates only shape and
+paths; construction loads all default and scoped CA bundles before sockets open,
+and missing or malformed material aborts construction. Runtime policy and loaded
+pools are immutable and introduce no workers or shutdown owner. A verified peer's
+subject and SANs may enter the access log; certificates lacking a verified chain
+are omitted.
 
 An ACME TLS-ALPN-01 validator presents no client certificate. A client-auth mode
-that requires one therefore suppresses the challenge ALPN and needs a plain HTTP
-listener when an automatic source is present, allowing autocert's HTTP-01 fallback.
+that requires one therefore suppresses the challenge ALPN for its SNI names and
+needs a plain HTTP listener when it covers an automatic source's domain, allowing
+autocert's HTTP-01 fallback. Effective policy is checked per automatic domain:
+unrelated scoped requirements do not constrain another source, and a nonrequiring
+scoped policy can override a requiring default. No challenge bypasses client auth.
 Pinned HTTP-01 and DNS-01 sources keep their existing challenge ownership.
 
 HTTP-01 companions for authenticated HTTPS should redirect ordinary HTTP content

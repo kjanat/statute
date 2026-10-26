@@ -15,6 +15,7 @@ const (
 	poolOrigin  = "origin"
 	poolOrigins = "origins"
 	healthPath  = "/health"
+	caCertFile  = "/certs/ca.crt"
 )
 
 func e2eDefaults() statute.Defaults {
@@ -79,7 +80,7 @@ func upstreamTLSConfig(string) statute.Config {
 					Unhealthy: 10,
 				},
 				Transport: statute.Transport{
-					RootCAFiles: []string{"/certs/ca.crt"},
+					RootCAFiles: []string{caCertFile},
 					ClientCertificate: statute.ClientCertificate{
 						CertFile: "/certs/statute.crt", KeyFile: "/certs/statute.key",
 					},
@@ -146,7 +147,7 @@ func clientMTLSConfig(string) statute.Config {
 				statute.HTTP3(":8443/udp"),
 				statute.ClientAuth{
 					Mode:    statute.RequireAndVerifyClientCert,
-					CAFiles: []string{"/certs/ca.crt"},
+					CAFiles: []string{caCertFile},
 				},
 			),
 		},
@@ -161,6 +162,20 @@ func clientMTLSConfig(string) statute.Config {
 		Observability: e2eObservability(),
 		Shutdown:      e2eShutdown(),
 	}
+}
+
+// scopedClientMTLSConfig shares one listener between authenticated node names
+// and the public localhost certificate name.
+func scopedClientMTLSConfig(node string) statute.Config {
+	cfg := clientMTLSConfig(node)
+	cfg.Listeners[0] = statute.HTTPS(":8443",
+		statute.StaticTLS("/certs/statute.crt", "/certs/statute.key"),
+		statute.HTTP2(), statute.HTTP3(":8443/udp"),
+		statute.ClientAuthFor([]string{"statute-1", "statute-2"}, statute.ClientAuth{
+			Mode: statute.RequireAndVerifyClientCert, CAFiles: []string{caCertFile},
+		}),
+	)
+	return cfg
 }
 
 // isolationConfig gives each node passive health only, fed exclusively
