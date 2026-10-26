@@ -22,7 +22,7 @@ jobs:
             run: git config --global user.name 'github-actions[bot]';
               git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
           - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # master
-          - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+          - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
             with: { bootstrap: true, bootstrap_args: --yes, bootstrap_skip: repos }
 
       - name: start a generation branch
