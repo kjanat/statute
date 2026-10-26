@@ -138,4 +138,4 @@ The recorded LOL HTML 3.0.1 batched Linux arm64 build was 563,685 bytes with SHA
 821a59adaacf94d28afe76e07b6a3012b05d64bd47cc1aacf35c8b81fec9dd18
 ```
 
-A fresh `--target-dir guest/target/rebuild` build on the same host produced identical bytes. These are historical artifact measurements, not identities for the current dependency build. Cross-host reproducibility has not been established. The workflow builds from the locked source and prints its own checksum. Artifact signing, reproducible release packaging, and automated notice generation remain open research work.
+A fresh `--target-dir guest/target/rebuild` build on the same host produced identical bytes. These measurements describe the recorded 3.0.1 artifact. Cross-host reproducibility has not been established. The workflow builds from the locked source and prints its own checksum. Artifact signing, reproducible release packaging, and automated notice generation remain open research work.
