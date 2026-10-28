@@ -38,6 +38,6 @@ jobs:
           SYNC_USERNAME: "${{ inputs.username || 'kjanat' }}"
         run: |
           . ./scripts/sync-go-images.ps1
-          $tags = $env:SYNC_TAGS.Trim() -split '[,\s]+' | Where-Object { $_ }
+          $tags = @($env:SYNC_TAGS.Trim() -split '[,\s]+' | Where-Object { $_ })
           $sources = $env:SYNC_SOURCE.Trim() -split '[,\s]+' | Where-Object { $_ }
           Sync-GoImage -Tags $tags -Source $sources -Destination $env:SYNC_DESTINATION -Username $env:SYNC_USERNAME
