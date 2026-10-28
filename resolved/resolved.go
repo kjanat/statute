@@ -18,10 +18,11 @@ import (
 
 // Config is the resolved top-level configuration.
 type Config struct {
-	Listeners []*Listener
-	Upstreams map[string]*Pool
-	Routes    []*Route
-	Docker    *Docker // nil unless Docker label discovery is enabled
+	RequestBuffers RequestBufferResources
+	Listeners      []*Listener
+	Upstreams      map[string]*Pool
+	Routes         []*Route
+	Docker         *Docker // nil unless Docker label discovery is enabled
 
 	// FallbackRoutes match in order after static and Docker routing miss.
 	// Upstream pointers share pools with Routes; Docker refusals take precedence.
@@ -37,6 +38,15 @@ type Config struct {
 	Defaults      Defaults
 	Observability Observability
 	Shutdown      Shutdown
+}
+
+// RequestBufferResources is the server-wide request buffering resource policy.
+type RequestBufferResources struct {
+	// MaxInFlight bounds simultaneously retained buffers, including late readers.
+	MaxInFlight       int
+	MemoryBudgetBytes int64
+	Storage           string
+	DiskBudgetBytes   int64
 }
 
 // Docker is the resolved Docker label-discovery provider configuration.
@@ -477,6 +487,10 @@ type Middleware struct {
 	// BodyLimit
 	BodyLimitBytes int64
 
+	// RequestBuffer route policy; aggregate resources belong to Config.
+	RequestBufferMaxBytes             int64
+	RequestBufferMemoryThresholdBytes int64
+
 	// RequestID
 	RequestIDHeader     string
 	RequestIDFromHeader string
@@ -549,6 +563,7 @@ const (
 	MWAddPrefix
 	MWReplacePath
 	MWRewritePath
+	MWRequestBuffer
 )
 
 // RateLimitKey mirrors the surface key.

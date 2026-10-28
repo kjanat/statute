@@ -22,6 +22,7 @@ import (
 // it.
 var scenarios = map[string]func(node string) statute.Config{
 	"mesh":                 meshConfig,
+	"request-buffer":       requestBufferConfig,
 	"routes":               routesConfig,
 	"upstream-tls":         upstreamTLSConfig,
 	"h3":                   h3Config,

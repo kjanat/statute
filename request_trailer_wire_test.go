@@ -91,6 +91,8 @@ func TestRequestTrailerHTTP3NativeUpstreams(t *testing.T) {
 				{"timeout_etag", []Middleware{Timeout("5s"), ETag()}},
 				{"body_limit", []Middleware{BodyLimit("4KiB")}},
 				{"retry_buffered", []Middleware{Retry(2).RequestBufferBudget("4KiB")}},
+				{"strict_buffer", []Middleware{RequestBuffer("4KiB")}},
+				{"strict_timeout_retry", []Middleware{Timeout("5s"), RequestBuffer("4KiB"), Retry(2)}},
 				{"retry_fallback", []Middleware{Retry(2).RequestBufferBudget("1B")}},
 			} {
 				t.Run(tc.name, func(t *testing.T) {

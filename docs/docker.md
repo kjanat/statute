@@ -515,6 +515,9 @@ matches nothing in Traefik either) or a container that opted out with
 not an opt-out: it cannot be read, so the routes are dropped and the
 envelope stands.
 
+See [request buffering](request-buffer.md) for strict upload admission through a
+named `RequestBuffer` policy and server-wide `Config.RequestBuffers` resources.
+
 ### Label-referenced middleware
 
 Traefik middleware _definitions_ don't exist here — labels never define

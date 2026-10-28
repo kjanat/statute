@@ -519,6 +519,32 @@ transports that return before closing request bodies. Close/Read overlap,
 GetBody replacement and duplicate Close prove final-owner retirement. Export,
 fallback and Docker generation tests prove route scope and configuration parity.
 
+### Strict request buffering
+
+`RequestBuffer` is route-owned admission policy: its maximum and memory threshold
+remain on each resolved middleware declaration. `Config.RequestBuffers` owns the
+normalized server memory budget, disk budget and operator-provisioned storage root.
+One server manager supplies every listener and routing tier, including current and
+retired Docker generations. Pools do not partition this capacity.
+
+Admission reserves bounded memory before reading and the maximum disk charge before
+spilling. It never queues or falls back to streaming. Oversize returns 413; resource
+or storage failures return 503 with no-store. Only complete EOF and trailer capture
+permit downstream invocation. Retry retains its own budgets, exclusions and fallback.
+
+A request lease owns memory, the unlinked spool descriptor, and a bounded producer
+slot. Timeout and native transports propagate ownership through their existing
+reader-lifetime chain; GetBody readers acquire independent leases. Final release
+closes storage and retires all charges. Generation replacement and shutdown cannot
+reclaim live readers. Shutdown stops admission and cancels unfinished reads after
+the normal drain; late readers retain charged storage. Construction and startup
+acquire no spool files or workers, preserving failed-start retryability.
+
+Cross-feature coverage includes unknown length, EOF trailers across HTTP/3 and native
+HTTP/1 and HTTP/2 origins, Retry re-entry, Timeout, cancellation, panic, concurrent
+capacity, routing generations, shutdown and normalized tooling. Operational
+reservation and storage semantics are documented in [request buffering](docs/request-buffer.md).
+
 ## Docker discovery
 
 Docker labels are external input. Statute keeps the trust boundary in code:

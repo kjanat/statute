@@ -63,6 +63,7 @@ func Lint(cfg Config) ([]Finding, error) {
 // lintRules is the registry. Each function inspects the resolved config and
 // returns zero or more findings.
 var lintRules = []func(*resolved.Config) []Finding{
+	ruleRequestBuffers,
 	ruleReadHeaderTimeout,
 	ruleHealthCheck,
 	ruleObservability,
