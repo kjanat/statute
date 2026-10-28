@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Add scheduled and manual Go image mirroring. Discover source tags automatically, including new versions and variants, with optional explicit tags and configurable sources, destination and username. Fall back between source registries during discovery, digest resolution and copying. Resolve manifests independently of the runner's platform, preserve all architectures and source digests, and pull the latest stable Skopeo image each run. See the [image mirror guide](docs/go-image-sync.md) for operation.
 
+### Fixed
+
+- Invalidate the previous Docker backend as soon as discovery observes an external stop. A new activation now waits for a fresh backend before reporting readiness, preventing a race that could return `503` after a successful readiness check. Regression tests cover TCP, HTTP and Docker health readiness with both ready and pending-idle workloads.
+
 ## [0.10.0] - 2026-10-28
 
 ### Added
