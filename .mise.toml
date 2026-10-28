@@ -35,7 +35,7 @@ depends = ["go"]
 version = "0.28.0"
 
 [tools."github:tombi-toml/tombi"]
-version = "1.8.10"
+version = "1.9.7"
 
 [tools."github:koalaman/shellcheck"]
 version = "latest"
