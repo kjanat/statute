@@ -116,8 +116,8 @@ func (c *retryRequestBufferChain) release() {
 	}
 }
 
-// requestBodyLease lets strict buffering share reader-lifetime propagation with
-// Retry without sharing its admission budget or streaming fallback semantics.
+// requestBodyLease keeps a RequestBuffer allocation available through the same
+// reader tracking used by Retry. RequestBuffer and Retry have separate budgets.
 type requestBodyLease interface {
 	retain()
 	release()

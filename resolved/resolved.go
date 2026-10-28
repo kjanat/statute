@@ -40,9 +40,9 @@ type Config struct {
 	Shutdown      Shutdown
 }
 
-// RequestBufferResources is the server-wide request buffering resource policy.
+// RequestBufferResources sets the total request buffering limits for one server.
 type RequestBufferResources struct {
-	// MaxInFlight bounds simultaneously retained buffers, including late readers.
+	// MaxInFlight limits open buffers, including readers still running after timeout.
 	MaxInFlight       int
 	MemoryBudgetBytes int64
 	Storage           string
@@ -487,7 +487,7 @@ type Middleware struct {
 	// BodyLimit
 	BodyLimitBytes int64
 
-	// RequestBuffer route policy; aggregate resources belong to Config.
+	// RequestBuffer limits for this route. Config holds the shared server budgets.
 	RequestBufferMaxBytes             int64
 	RequestBufferMemoryThresholdBytes int64
 

@@ -23,7 +23,7 @@ type requestBufferManager struct {
 	closed       bool
 	ctx          context.Context
 	cancel       context.CancelFunc
-	// removeSpool defaults to os.Remove; owned per manager for fault injection.
+	// Tests replace removeSpool to simulate file removal errors.
 	removeSpool func(string) error
 }
 
@@ -68,8 +68,7 @@ type (
 	}
 )
 
-// The context carries server resource ownership through every routing tier and
-// middleware clone. Compiled middleware and Docker generations own no budgets.
+// Every route and middleware request copy uses the same server manager.
 func (m *requestBufferManager) wrap(next http.Handler) http.Handler {
 	return preserveRequestTrailers(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := &requestBufferRequest{manager: m, deadline: http.NewResponseController(w).SetReadDeadline}
@@ -78,8 +77,8 @@ func (m *requestBufferManager) wrap(next http.Handler) http.Handler {
 	}))
 }
 
-// The response writer belongs to the ingress handler, not a late Timeout
-// producer. Serialize deadline calls with retirement before that handler returns.
+// Synchronize reads and deadline calls with the outer HTTP handler returning.
+// Its response writer can only be used while that handler is running.
 func (s *requestBufferRequest) beginRead() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,8 +149,8 @@ func (b *requestBodyBuffer) reader() io.ReadCloser {
 	return io.NopCloser(bytes.NewReader(b.data[:int(b.size)]))
 }
 
-// A GetBody reader has its own lease, including Read/Close overlap. The factory
-// cannot resurrect retired storage after the enclosing request has completed.
+// Each GetBody reader keeps the buffer reserved until Close and any active Read
+// finish. Once the buffer is released, GetBody returns an error.
 func (b *requestBodyBuffer) getBody() (io.ReadCloser, error) {
 	b.mu.Lock()
 	if b.refs == 0 {
@@ -165,12 +164,12 @@ func (b *requestBodyBuffer) getBody() (io.ReadCloser, error) {
 	return owner.wrap(b.reader()), nil
 }
 
-// Spool files are unlinked before publication. Their open descriptor owns the
-// bytes until the last lease ends, including after cancellation and shutdown.
-// Failure to create or unlink is an admission failure, never streaming fallback.
+// Remove the temporary filename immediately. The open file stays readable until
+// the last reader finishes, including after cancellation and shutdown. A failed
+// create or remove operation rejects the request.
 func (b *requestBodyBuffer) spill(maximum int64) error {
 	if !b.manager.reserveDisk(maximum) {
-		return errors.New("disk admission unavailable")
+		return errors.New("request buffer disk budget exhausted")
 	}
 	b.disk = maximum
 	file, err := os.CreateTemp(b.manager.cfg.Storage, "statute-request-*")
@@ -189,13 +188,13 @@ func (b *requestBodyBuffer) spill(maximum int64) error {
 
 func requestBufferHandler(policy resolved.Middleware, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state, _ := r.Context().Value(requestBufferContextKey{}).(*requestBufferRequest)
 		if r.ContentLength > policy.RequestBufferMaxBytes {
-			writeResponseLimitFailure(w, http.StatusRequestEntityTooLarge)
+			rejectRequestBuffer(w, r, state, http.StatusRequestEntityTooLarge)
 			return
 		}
-		state, _ := r.Context().Value(requestBufferContextKey{}).(*requestBufferRequest)
 		if state == nil {
-			writeResponseLimitFailure(w, http.StatusServiceUnavailable)
+			rejectRequestBuffer(w, r, state, http.StatusServiceUnavailable)
 			return
 		}
 		ctx, cancel := context.WithCancel(r.Context())
@@ -208,34 +207,53 @@ func requestBufferHandler(policy resolved.Middleware, next http.Handler) http.Ha
 		}
 		b := state.manager.acquire(limit + 1)
 		if b == nil {
-			writeResponseLimitFailure(w, http.StatusServiceUnavailable)
+			rejectRequestBuffer(w, r, state, http.StatusServiceUnavailable)
 			return
 		}
 		defer b.release()
 		if ctx.Err() != nil {
-			writeResponseLimitFailure(w, http.StatusServiceUnavailable)
+			rejectRequestBuffer(w, r, state, http.StatusServiceUnavailable)
 			return
 		}
-		// Capture transport trailers only after EOF, including unannounced HTTP/3
-		// trailers. Keep the original request and its body associated during reading.
+		// Read through the original request so trailers, including unannounced
+		// HTTP/3 trailers, are available on that request after EOF.
 		status := b.consume(ctx, state, r, policy.RequestBufferMaxBytes, limit)
 		if status == 0 && ctx.Err() != nil {
 			status = http.StatusServiceUnavailable
 		}
 		if status != 0 {
-			writeResponseLimitFailure(w, status)
+			rejectRequestBuffer(w, r, state, status)
 			return
 		}
-		forwarded := r.WithContext(withRequestBodyLease(snapshotRetryTrailerNames(ctx, r.Trailer), b))
-		forwarded.Body, forwarded.GetBody = b.reader(), b.getBody
-		forwarded.Trailer = r.Trailer.Clone()
-		forwarded.ContentLength = b.size
-		forwarded.TransferEncoding = nil
-		if len(forwarded.Trailer) != 0 {
-			forwarded.Body = &retryTrailerReadCloser{ReadCloser: forwarded.Body, trailers: forwarded.Trailer}
-		}
-		next.ServeHTTP(w, forwarded)
+		next.ServeHTTP(w, b.forward(r, ctx))
 	})
+}
+
+func rejectRequestBuffer(w http.ResponseWriter, r *http.Request, state *requestBufferRequest, status int) {
+	// HTTP/1 drains unread body bytes before sending a response. Stop that read
+	// before rejecting an unfinished upload.
+	if r.ProtoMajor == 1 && r.Body != nil && r.Body != http.NoBody {
+		if state != nil {
+			state.interruptRead()
+		} else {
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+		}
+	}
+	writeResponseLimitFailure(w, status)
+}
+
+func (b *requestBodyBuffer) forward(r *http.Request, ctx context.Context) *http.Request {
+	forwarded := r.WithContext(withRequestBodyLease(snapshotRetryTrailerNames(ctx, r.Trailer), b))
+	forwarded.Body, forwarded.GetBody = b.reader(), b.getBody
+	forwarded.Trailer = r.Trailer.Clone()
+	forwarded.ContentLength = b.size
+	forwarded.TransferEncoding = nil
+	if len(forwarded.Trailer) != 0 {
+		forwarded.Body = &retryTrailerReadCloser{ReadCloser: forwarded.Body, trailers: forwarded.Trailer}
+	} else if b.size == 0 {
+		forwarded.Body = http.NoBody
+	}
+	return forwarded
 }
 
 func (b *requestBodyBuffer) consume(ctx context.Context, state *requestBufferRequest, r *http.Request, maximum, threshold int64) int {
@@ -246,8 +264,8 @@ func (b *requestBodyBuffer) consume(ctx context.Context, state *requestBufferReq
 		return http.StatusServiceUnavailable
 	}
 	defer state.endRead()
-	// Close may drain unread HTTP/1 bytes. Interrupt incomplete consumption
-	// before closing, and keep cancellation effective throughout that cleanup.
+	// Close may wait for unread HTTP/1 bytes. Stop an incomplete upload before
+	// closing its body, and keep cancellation active until Close finishes.
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() { state.interruptRead(); close(done) })
 	complete := false

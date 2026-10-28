@@ -14,20 +14,20 @@ func TestRequestBufferDeadlineRetiresWithIngress(t *testing.T) {
 	var calls atomic.Int32
 	state := &requestBufferRequest{deadline: func(time.Time) error { calls.Add(1); return nil }}
 	if !state.beginRead() {
-		t.Fatal("live ingress rejected read")
+		t.Fatal("running handler rejected read")
 	}
 	state.finish()
 	if calls.Load() != 1 {
-		t.Fatal("unfinished read was not interrupted before retirement")
+		t.Fatal("unfinished read was not interrupted before the handler returned")
 	}
 	state.interruptRead()
 	if state.beginRead() || calls.Load() != 1 {
-		t.Fatal("retired ingress allowed response writer access")
+		t.Fatal("response writer was accessed after the handler returned")
 	}
 	state.endRead()
 	state.finish()
 	if calls.Load() != 1 {
-		t.Fatal("duplicate retirement touched writer")
+		t.Fatal("repeated cleanup accessed the writer")
 	}
 }
 
@@ -42,21 +42,24 @@ func TestRequestBufferIngressWaitsForDeadlineCall(t *testing.T) {
 	<-started
 	select {
 	case <-finished:
-		t.Error("ingress retired with a deadline call still active")
+		t.Error("handler returned with a deadline call still active")
 	default:
 	}
 	close(release)
 	<-callbackDone
 	<-finished
-	// A late callback must not invoke the retired writer again.
+	// A callback after the handler returns must leave its response writer alone.
 	state.interruptRead()
 }
 
 func TestRequestBufferLateProducerCannotReadIngress(t *testing.T) {
 	m := bufferTestManager(t, false, 6, 0)
-	state := &requestBufferRequest{manager: m, deadline: func(time.Time) error { t.Error("retired writer accessed"); return nil }}
+	state := &requestBufferRequest{manager: m, deadline: func(time.Time) error { t.Error("response writer accessed after handler return"); return nil }}
 	state.finish()
-	body := &requestBufferFaultBody{read: func([]byte) (int, error) { t.Error("late producer read ingress body"); return 0, io.EOF }}
+	body := &requestBufferFaultBody{read: func([]byte) (int, error) {
+		t.Error("timeout worker read the incoming body after handler return")
+		return 0, io.EOF
+	}}
 	req := httptest.NewRequest("POST", "/", body)
 	req = req.WithContext(context.WithValue(req.Context(), requestBufferContextKey{}, state))
 	policy, err := resolveMiddleware(RequestBuffer("5B"))

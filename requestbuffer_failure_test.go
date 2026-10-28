@@ -21,7 +21,7 @@ func TestRequestBufferRetiredFactoryCannotReopen(t *testing.T) {
 			assertBufferReleased(t, m)
 			reader, err := factory()
 			if reader != nil || !errors.Is(err, http.ErrBodyReadAfterClose) {
-				t.Fatalf("retired factory returned %v, %v", reader, err)
+				t.Fatalf("GetBody after buffer release returned %v, %v", reader, err)
 			}
 			assertBufferReleased(t, m)
 		})
@@ -34,7 +34,7 @@ func TestRequestBufferMissingManagerFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := requestBufferHandler(policy, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("missing resources invoked downstream") }))
-	body := &requestBufferFaultBody{read: func([]byte) (int, error) { t.Error("read before admission"); return 0, io.EOF }}
+	body := &requestBufferFaultBody{read: func([]byte) (int, error) { t.Error("body read before memory was reserved"); return 0, io.EOF }}
 	req := httptest.NewRequest("POST", "/", body)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -144,7 +144,7 @@ func TestRequestBufferSpoolWriteFailureRetiresCharge(t *testing.T) {
 	m := bufferTestManager(t, true, 3, 5)
 	b := m.acquire(3)
 	if b == nil {
-		t.Fatal("buffer not admitted")
+		t.Fatal("buffer allocation failed")
 	}
 	copy(b.data, "abc")
 	b.size = 3
@@ -156,7 +156,8 @@ func TestRequestBufferSpoolWriteFailureRetiresCharge(t *testing.T) {
 		b.release()
 		t.Fatal(err)
 	}
-	// A broken spool must fail closed and retain its charge until release.
+	// A file write error must reject the request and keep disk space reserved
+	// until the buffer is released.
 	if status := b.storeChunk([]byte("d"), 5, 2); status != 503 {
 		t.Errorf("status=%d", status)
 	}
@@ -164,7 +165,7 @@ func TestRequestBufferSpoolWriteFailureRetiresCharge(t *testing.T) {
 	disk := m.disk
 	m.mu.Unlock()
 	if disk != 5 {
-		t.Errorf("disk reservation retired early: %d", disk)
+		t.Errorf("disk reservation released early: %d", disk)
 	}
 	b.release()
 	assertBufferReleased(t, m)

@@ -39,7 +39,7 @@ func graphRequestBuffers(d *dotWriter, c *resolved.Config) {
 				continue
 			}
 			label := fmt.Sprintf("%s.middleware[%d]\\nRequestBuffer max=%d threshold=%d", path, i, mw.RequestBufferMaxBytes, mw.RequestBufferMemoryThresholdBytes)
-			d.printf("  RB%d [shape=box, label=%q];\n  RB%d -> RB [label=\"borrows\"];\n", index, label, index)
+			d.printf("  RB%d [shape=box, label=%q];\n  RB%d -> RB [label=\"uses shared limits\"];\n", index, label, index)
 			index++
 		}
 	})
@@ -60,7 +60,7 @@ func ruleRequestBuffers(c *resolved.Config) []Finding {
 			if needed <= resources.MemoryBudgetBytes && (resources.Storage == "" || mw.RequestBufferMaxBytes <= resources.DiskBudgetBytes) {
 				continue
 			}
-			out = append(out, Finding{Severity: SeverityWarning, Code: "RBF001", Path: fmt.Sprintf("%s.middleware[%d]", path, i), Message: fmt.Sprintf("RequestBuffer maximum=%d threshold=%d cannot be fully admitted by server request_buffers memory=%d disk=%d storage=%q; requests may receive 503 before reaching their route limit", mw.RequestBufferMaxBytes, mw.RequestBufferMemoryThresholdBytes, resources.MemoryBudgetBytes, resources.DiskBudgetBytes, resources.Storage)})
+			out = append(out, Finding{Severity: SeverityWarning, Code: "RBF001", Path: fmt.Sprintf("%s.middleware[%d]", path, i), Message: fmt.Sprintf("RequestBuffer maximum=%d threshold=%d requires more space than server request_buffers allows: memory=%d disk=%d storage=%q; requests may receive 503 before reaching their route limit", mw.RequestBufferMaxBytes, mw.RequestBufferMemoryThresholdBytes, resources.MemoryBudgetBytes, resources.DiskBudgetBytes, resources.Storage)})
 		}
 	})
 	return out

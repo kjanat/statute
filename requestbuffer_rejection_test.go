@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-// An unfinished chunked upload must not keep a rejected request in Body.Close's
-// implicit drain. No Timeout or listener read timeout should be necessary.
+// Reject an unfinished chunked upload promptly even with no configured timeout.
 func TestRequestBufferRejectsOpenChunkedUpload(t *testing.T) {
 	m := bufferTestManager(t, false, 6, 0)
 	handler := bufferTestHandler(t, m, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("oversized upload reached downstream") }), RequestBuffer("5B"))

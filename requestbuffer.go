@@ -9,11 +9,11 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-// RequestBufferResources bounds request buffering across one server, including
-// all listeners and live or retired Docker generations. The zero value permits
-// memory-only buffering with a 64 MiB budget. Disk spilling requires both an
-// existing operator-owned Storage directory and a positive DiskBudget.
-// At most 128 buffers may be live, including readers retained after Timeout.
+// RequestBufferResources limits request buffering across all listeners and routes
+// on one server. Readers from previous Docker configurations count toward the same
+// limits. The zero value allows memory-only buffering with a 64 MiB budget. Writing
+// to disk requires an existing Storage directory and a positive DiskBudget.
+// At most 128 buffers may be open, including readers still running after Timeout.
 type RequestBufferResources struct {
 	MemoryBudget string
 	Storage      string
@@ -24,14 +24,15 @@ type requestBufferMW struct{ maximum, threshold string }
 
 func (*requestBufferMW) statuteMiddleware() {}
 
-// RequestBuffer fully consumes a bounded request body before invoking the next
-// handler. Oversize returns 413; unavailable server resources return 503 with
-// no-store. It never falls back to streaming and does not enable retries.
+// RequestBuffer reads the complete request body before calling the next handler.
+// Bodies larger than maximum return 413. Insufficient memory, disk space or buffer
+// slots return 503 with Cache-Control: no-store, as do failed storage operations.
+// Rejected requests never reach the next handler.
 func RequestBuffer(maximum string) *requestBufferMW { return &requestBufferMW{maximum: maximum} }
 
-// MemoryThreshold sets when buffering spills to disk, if server disk storage is
-// configured. The default is min(256 KiB, maximum). Without disk storage the
-// whole body is admitted against the server memory budget.
+// MemoryThreshold sets the body size above which buffering writes to disk, when
+// disk storage is configured. The default is min(256 KiB, maximum). Memory-only
+// buffering reserves the full route maximum plus one byte from the server budget.
 func (m *requestBufferMW) MemoryThreshold(size string) *requestBufferMW { m.threshold = size; return m }
 
 func requestBufferSize(name, value string) (int64, error) {
@@ -39,9 +40,9 @@ func requestBufferSize(name, value string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", name, err)
 	}
-	// Leave room for an oversize sentinel and an int-sized allocation.
+	// The allocation must fit in an int, including one extra byte to detect oversize.
 	if n <= 0 || uint64(n) >= uint64(^uint(0)>>1) {
-		return 0, fmt.Errorf("%s: size must be positive and representable with an oversize sentinel", name)
+		return 0, fmt.Errorf("%s: size must be positive and fit in an int with one extra byte", name)
 	}
 	return n, nil
 }

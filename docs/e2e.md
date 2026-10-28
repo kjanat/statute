@@ -281,4 +281,4 @@ production hook. Its forwarding tests also check streamed event delivery.
 
 The `request-buffer` regression scenario checks accepted and rejected uploads over
 HTTP/1 and HTTP/2, disk spilling, fallback routes and strict resource failure. The
-separate origin journal must contain no request rejected by size or disk admission.
+separate origin journal must contain no request rejected for exceeding the size limit or disk budget.

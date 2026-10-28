@@ -521,36 +521,44 @@ fallback and Docker generation tests prove route scope and configuration parity.
 
 ### Strict request buffering
 
-`RequestBuffer` is route-owned admission policy: its maximum and memory threshold
-remain on each resolved middleware declaration. `Config.RequestBuffers` owns the
-normalized server memory budget, disk budget and operator-provisioned storage root.
-One server manager supplies every listener and routing tier, including current and
-retired Docker generations. Pools do not partition this capacity.
+`RequestBuffer` belongs to the route. Each resolved middleware declaration carries
+its body maximum and memory threshold. `Config.RequestBuffers` carries the server's
+memory budget, disk budget and storage directory. One manager enforces those limits
+across every listener, route and Docker configuration. Readers from a replaced
+Docker configuration continue to use that same manager. Routes that share an upstream pool use these
+server limits.
 
-Admission reserves bounded memory before reading and the maximum disk charge before
-spilling. It never queues or falls back to streaming. Oversize returns 413; resource
-or storage failures return 503 with no-store. Only complete EOF and trailer capture
-permit downstream invocation. Retry retains its own budgets, exclusions and fallback.
+The manager reserves memory before reading and the full route maximum from the
+disk budget before writing to disk. Requests that exceed their route maximum
+receive 413. Insufficient capacity or failed storage operations return 503 with
+`Cache-Control: no-store`. There is no queue or streaming fallback. The next handler
+runs only after EOF and trailer capture. Retry keeps its existing budgets,
+restrictions and fallback behavior.
 
-A request lease owns memory, the unlinked spool descriptor, and a bounded producer
-slot. Timeout and native transports propagate ownership through their existing
-reader-lifetime chain; GetBody readers acquire independent leases. Final release
-closes storage and retires all charges. Generation replacement and shutdown cannot
-reclaim live readers. Shutdown stops admission and cancels unfinished reads after
-the normal drain; late readers retain charged storage. Construction and startup
-acquire no spool files or workers, preserving failed-start retryability.
-Ingress owns the read-deadline capability. Deadline calls and capability retirement
-are serialized before the ingress handler returns; unfinished reads are interrupted
-while its response writer is still valid. Late Timeout producers cannot start new
-ingress reads or call a retired writer, while their existing storage leases remain
-independent of that capability. Rejection interrupts incomplete consumption before
-closing the incoming body, and cancellation remains active throughout Close so
-HTTP/1 draining cannot pin the shared reservation after admission has failed.
+Each buffer reserves memory, any disk space it needs, and one of 128 buffer slots.
+Timeout workers, native transports and GetBody readers keep these resources until
+their last reader finishes. Final release closes the file and returns the reserved
+capacity. Temporary filenames are removed immediately after creation. Replacing a
+Docker configuration or shutting down the server preserves open readers and their
+reservations. Shutdown rejects new buffers and cancels unfinished reads after the
+normal grace period. Construction and startup open no temporary files and start no
+buffering workers, so failed startup remains retryable.
 
-Cross-feature coverage includes unknown length, EOF trailers across HTTP/3 and native
-HTTP/1 and HTTP/2 origins, Retry re-entry, Timeout, cancellation, panic, concurrent
-capacity, routing generations, shutdown and normalized tooling. Operational
-reservation and storage semantics are documented in [request buffering](docs/request-buffer.md).
+The outer HTTP handler controls access to the read deadline. Deadline calls finish
+before that handler returns. Once it returns, timeout workers cannot start another
+incoming body read or use its response writer. Existing buffer readers remain
+usable. Rejection stops incomplete HTTP/1 uploads before writing the response or
+closing the incoming body, including requests rejected before buffering begins.
+Cancellation remains active until body cleanup finishes.
+
+An empty completed body with no trailers is forwarded as `http.NoBody`, so adding
+RequestBuffer before Cache preserves caching of empty HTTP/1 requests. Cache keeps
+its existing exclusions for request bodies, trailers and HTTP/3.
+
+Tests cover unknown lengths, trailers over HTTP/3 and native HTTP/1 and HTTP/2
+upstreams, Retry, Cache, Timeout, cancellation, panic, concurrent requests, Docker
+configuration changes, shutdown and configuration tooling. See
+[request buffering](docs/request-buffer.md) for configuration and operational details.
 
 ## Docker discovery
 

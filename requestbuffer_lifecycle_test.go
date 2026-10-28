@@ -37,7 +37,7 @@ func TestRequestBufferSharedAcrossRoutingGenerations(t *testing.T) {
 	for _, first := range []string{"/static", "/fallback", "/dynamic"} {
 		s.dynamic.Store(&dynamicTable{routes: s.compileRoutes(dynamicConfig.Routes)})
 		router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", first, strings.NewReader("abc")))
-		// A replacement borrows capacity still owned by the retired generation.
+		// Readers from the old configuration still count toward the shared budget.
 		s.dynamic.Store(&dynamicTable{routes: s.compileRoutes(dynamicConfig.Routes)})
 		for _, path := range []string{"/static", "/fallback", "/dynamic"} {
 			rec := httptest.NewRecorder()
@@ -100,7 +100,7 @@ func awaitBufferRetirement(t *testing.T, m *requestBufferManager) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("buffer did not retire")
+			t.Fatal("buffer was not released")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -145,7 +145,7 @@ func TestRequestBufferShutdownRetainsReader(t *testing.T) {
 	retained := <-readers
 	data, err := io.ReadAll(retained)
 	if err != nil || string(data) != "abc" {
-		t.Fatalf("retired read=%q error=%v", data, err)
+		t.Fatalf("read after shutdown=%q error=%v", data, err)
 	}
 	_ = retained.Close()
 	assertBufferReleased(t, srv.requestBuffers)

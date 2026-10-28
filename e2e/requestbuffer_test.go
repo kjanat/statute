@@ -11,8 +11,8 @@ import (
 	"statute.kjanat.dev/e2e/report"
 )
 
-// Strict admission must prevent even an initial origin request for rejected
-// bodies. The journal is collected from the separate origin process.
+// Rejected uploads must never reach the upstream. Check the request journal
+// collected from the separate upstream process.
 func TestRegression_RequestBuffer(t *testing.T) {
 	t.Parallel()
 	r := harness.Start(t, "request-buffer", harness.MustTopology(t, "1s1c"))

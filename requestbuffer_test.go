@@ -129,7 +129,7 @@ func TestRequestBufferAggregateAndRetiredReaders(t *testing.T) {
 	m.cancel()
 	data, err := io.ReadAll(retained)
 	if err != nil || string(data) != "12345" {
-		t.Fatalf("retired reader=%q %v", data, err)
+		t.Fatalf("reader after shutdown=%q %v", data, err)
 	}
 	_ = retained.Close()
 	_ = retained.Close()
@@ -158,7 +158,7 @@ func TestRequestBufferTimeoutKeepsLease(t *testing.T) {
 	active := m.active
 	m.mu.Unlock()
 	if active != 1 {
-		t.Fatal("late producer lost its lease")
+		t.Fatal("timeout worker lost its buffer reservation")
 	}
 	close(release)
 	<-finished
@@ -171,7 +171,7 @@ func TestRequestBufferTimeoutKeepsLease(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("late producer leaked lease")
+			t.Fatal("timeout worker left its buffer reserved")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -246,7 +246,7 @@ func TestRequestBufferFailureAndConcurrentBudget(t *testing.T) {
 		b.release()
 	}
 	if count != 2 {
-		t.Fatalf("admissions=%d", count)
+		t.Fatalf("allocated buffers=%d", count)
 	}
 	assertBufferReleased(t, m)
 	for _, kind := range []string{"cancel", "read", "storage"} {
