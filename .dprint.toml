@@ -11,11 +11,20 @@ plugins  = [
   "npm:@jakebailey/dprint-plugin-gofumpt@0.0.18",
   "npm:@dprint/typescript@0.96.1",
   "npm:@dprint/exec@0.7.3/plugin.json",
-  "https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm"
+  "https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
+  "https://plugins.dprint.dev/kjanat/pwsh-0.2.0.wasm",
 ]
 
 [markup]
 associations = ["!**/*.svg"]
+
+[pwsh]
+braceStyle          = "sameLine"
+useTabs             = true
+keywordCasing       = true
+spaceAroundOperator = true
+spaceAroundPipe     = true
+spaceAfterSeparator = true
 
 [yaml]
 printWidth = 160

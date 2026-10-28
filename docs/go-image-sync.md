@@ -10,6 +10,7 @@ Manual dispatch on `master` accepts `tags` (commas or whitespace), `source`,
 `destination` and `username`. Leaving `tags` empty discovers all source tags;
 supplying tags limits that run to your selection. The defaults match the issue's
 function: the ECR Go mirror, `ghcr.io/kjanat/golang` and `kjanat`.
+Tags are validated against Docker's tag syntax, without a Go version or variant filter.
 
 For local use with Docker, PowerShell and an authenticated `gh` CLI:
 
