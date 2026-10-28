@@ -3,7 +3,11 @@ use lol_html::{HtmlRewriter, MemorySettings, Settings, element};
 use std::cell::RefCell;
 
 mod matcher_probe;
+mod program;
 pub use matcher_probe::native_matcher_probe;
+#[cfg(not(target_arch = "wasm32"))]
+pub use program::native_events;
+pub use program::native_program;
 
 const INPUT_SIZE: usize = 65536;
 #[cfg(target_arch = "wasm32")]
@@ -99,6 +103,27 @@ pub extern "C" fn create(buffered: u32) -> u32 {
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 pub extern "C" fn create_matcher_probe(buffered: u32) -> u32 {
     create_with(buffered, matcher_probe::settings(), |_| {})
+}
+
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
+pub extern "C" fn program_abi() -> u32 {
+    1
+}
+
+// Private configurable-program entry point. Input is copied into owned settings
+// before the next feed can overwrite the shared input region.
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
+pub extern "C" fn create_program(length: u32, buffered: u32) -> u32 {
+    if length as usize > INPUT_SIZE {
+        return 6;
+    }
+    let bytes = unsafe {
+        std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize)
+    };
+    match program::settings(bytes, Vec::new()) {
+        Ok(settings) => create_with(buffered, settings, output as fn(&[u8])),
+        Err(_) => 6,
+    }
 }
 
 fn create_with(buffered: u32, settings: Settings<'static, 'static>, sink: fn(&[u8])) -> u32 {

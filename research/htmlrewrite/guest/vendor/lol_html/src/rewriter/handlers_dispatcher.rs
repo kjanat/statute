@@ -142,6 +142,7 @@ impl<H> HandlerVec<H> {
 }
 
 pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
+    pub(super) token_observer: Option<Box<dyn FnMut(u32, bool) + Send + 'h>>,
     matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'h>>,
     matcher_rule_offset: u32,
     matcher_identity: u64,
@@ -161,6 +162,7 @@ pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
 impl<H: HandlerTypes> Default for ContentHandlersDispatcher<'_, H> {
     fn default() -> Self {
         ContentHandlersDispatcher {
+            token_observer: None,
             matcher_observer: None,
             matcher_rule_offset: 0,
             matcher_identity: 0,
@@ -359,6 +361,16 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
         token: &mut Token<'_>,
         current_element_data: Option<&mut ElementDescriptor>,
     ) -> HandlerResult {
+        if let Some(observer) = &mut self.token_observer {
+            let (kind, last) = match token {
+                Token::StartTag(_) => (1, false),
+                Token::TextChunk(text) => (2, text.last_in_text_node()),
+                Token::Comment(_) => (3, false),
+                Token::EndTag(_) => (4, false),
+                Token::Doctype(_) => (0, false),
+            };
+            observer(kind, last);
+        }
         match token {
             Token::Doctype(doctype) => self.doctype_handlers.for_each_active(|h| h(doctype)),
             Token::StartTag(start_tag) => self.handle_start_tag(start_tag, current_element_data),
@@ -371,6 +383,9 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
     }
 
     pub fn handle_end(&mut self, document_end: &mut DocumentEnd<'_>) -> HandlerResult {
+        if let Some(observer) = &mut self.token_observer {
+            observer(5, false);
+        }
         self.end_handlers
             .do_for_each_active_and_remove_tail(|h| h(document_end))
     }

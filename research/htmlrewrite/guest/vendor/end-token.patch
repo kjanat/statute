@@ -1,8 +1,7 @@
 diff --git a/src/lib.rs b/src/lib.rs
-index f719076..0cb41cf 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -43,7 +43,7 @@ use cfg_if::cfg_if;
+@@ -43,7 +43,7 @@
  pub use self::rewriter::{
      AsciiCompatibleEncoding, BailOutHandler, CommentHandler, DoctypeHandler,
      DocumentContentHandlers, ElementContentHandlers, ElementHandler, EndHandler, EndTagHandler,
@@ -12,10 +11,9 @@ index f719076..0cb41cf 100644
  };
  pub use self::selectors_vm::Selector;
 diff --git a/src/rewriter/handlers_dispatcher.rs b/src/rewriter/handlers_dispatcher.rs
-index d0aa5a0..559155e 100644
 --- a/src/rewriter/handlers_dispatcher.rs
 +++ b/src/rewriter/handlers_dispatcher.rs
-@@ -128,9 +128,24 @@ impl<H> HandlerVec<H> {
+@@ -128,9 +128,25 @@
          debug_assert_eq!(self.user_count, 0);
          Ok(())
      }
@@ -33,6 +31,7 @@ index d0aa5a0..559155e 100644
  }
 
  pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
++    pub(super) token_observer: Option<Box<dyn FnMut(u32, bool) + Send + 'h>>,
 +    matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'h>>,
 +    matcher_rule_offset: u32,
 +    matcher_identity: u64,
@@ -40,10 +39,11 @@ index d0aa5a0..559155e 100644
      doctype_handlers: HandlerVec<H::DoctypeHandler<'h>>,
      comment_handlers: HandlerVec<H::CommentHandler<'h>>,
      text_handlers: HandlerVec<H::TextHandler<'h>>,
-@@ -146,6 +161,10 @@ pub(crate) struct ContentHandlersDispatcher<'h, H: HandlerTypes> {
+@@ -146,6 +162,11 @@
  impl<H: HandlerTypes> Default for ContentHandlersDispatcher<'_, H> {
      fn default() -> Self {
          ContentHandlersDispatcher {
++            token_observer: None,
 +            matcher_observer: None,
 +            matcher_rule_offset: 0,
 +            matcher_identity: 0,
@@ -51,7 +51,7 @@ index d0aa5a0..559155e 100644
              doctype_handlers: Default::default(),
              comment_handlers: Default::default(),
              text_handlers: Default::default(),
-@@ -160,6 +179,34 @@ impl<H: HandlerTypes> Default for ContentHandlersDispatcher<'_, H> {
+@@ -160,6 +181,34 @@
  }
 
  impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
@@ -86,7 +86,7 @@ index d0aa5a0..559155e 100644
      #[inline]
      pub fn add_document_content_handlers(&mut self, handlers: DocumentContentHandlers<'h, H>) {
          if let Some(handler) = handlers.doctype {
-@@ -206,6 +253,16 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+@@ -206,6 +255,16 @@
 
      #[inline]
      pub fn start_matching(&mut self, match_info: &MatchInfo) {
@@ -103,7 +103,7 @@ index d0aa5a0..559155e 100644
          let Some(locator) = self.locators.get(match_info.match_id as usize) else {
              debug_assert!(false);
              return;
-@@ -229,7 +286,15 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+@@ -229,7 +288,15 @@
      }
 
      #[inline]
@@ -120,7 +120,7 @@ index d0aa5a0..559155e 100644
          for match_id in elem_desc.matched_content_handlers.iter() {
              let Some(locator) = self.locators.get(match_id as usize) else {
                  debug_assert!(false);
-@@ -246,7 +311,11 @@ impl<'h, H: HandlerTypes> ContentHandlersDispatcher<'h, H> {
+@@ -246,7 +313,11 @@
          }
 
          if let Some(idx) = elem_desc.end_tag_handler_idx {
@@ -133,11 +133,37 @@ index d0aa5a0..559155e 100644
          }
 
          if elem_desc.remove_content {
+@@ -290,6 +361,16 @@
+         token: &mut Token<'_>,
+         current_element_data: Option<&mut ElementDescriptor>,
+     ) -> HandlerResult {
++        if let Some(observer) = &mut self.token_observer {
++            let (kind, last) = match token {
++                Token::StartTag(_) => (1, false),
++                Token::TextChunk(text) => (2, text.last_in_text_node()),
++                Token::Comment(_) => (3, false),
++                Token::EndTag(_) => (4, false),
++                Token::Doctype(_) => (0, false),
++            };
++            observer(kind, last);
++        }
+         match token {
+             Token::Doctype(doctype) => self.doctype_handlers.for_each_active(|h| h(doctype)),
+             Token::StartTag(start_tag) => self.handle_start_tag(start_tag, current_element_data),
+@@ -302,6 +383,9 @@
+     }
+
+     pub fn handle_end(&mut self, document_end: &mut DocumentEnd<'_>) -> HandlerResult {
++        if let Some(observer) = &mut self.token_observer {
++            observer(5, false);
++        }
+         self.end_handlers
+             .do_for_each_active_and_remove_tail(|h| h(document_end))
+     }
 diff --git a/src/rewriter/rewrite_controller.rs b/src/rewriter/rewrite_controller.rs
-index 00095e0..3f36eb5 100644
 --- a/src/rewriter/rewrite_controller.rs
 +++ b/src/rewriter/rewrite_controller.rs
-@@ -11,6 +11,7 @@ use crate::selectors_vm::{
+@@ -11,6 +11,7 @@
  use crate::transform_stream::{DispatcherError, StartTagHandlingResult, TransformController};
 
  pub(crate) struct ElementDescriptor {
@@ -145,7 +171,7 @@ index 00095e0..3f36eb5 100644
      pub matched_content_handlers: DenseHashSet,
      pub end_tag_handler_idx: Option<Locator>,
      pub remove_content: bool,
-@@ -25,6 +26,7 @@ impl ElementData for ElementDescriptor {
+@@ -25,6 +26,7 @@
      #[inline]
      fn new() -> Self {
          Self {
@@ -153,7 +179,7 @@ index 00095e0..3f36eb5 100644
              matched_content_handlers: DenseHashSet::new(),
              end_tag_handler_idx: None,
              remove_content: false,
-@@ -49,6 +51,10 @@ impl<'h, H: HandlerTypes> HtmlRewriteController<'h, H> {
+@@ -49,6 +51,11 @@
      ) -> Self {
          let mut selectors_ast = Ast::default();
          let mut dispatcher = ContentHandlersDispatcher::<H>::default();
@@ -161,10 +187,11 @@ index 00095e0..3f36eb5 100644
 +            settings.matcher_observer,
 +            u32::from(settings.adjust_charset_on_meta_tag),
 +        );
++        dispatcher.token_observer = settings.token_observer;
          let has_selectors =
              !settings.element_content_handlers.is_empty() || settings.adjust_charset_on_meta_tag;
 
-@@ -116,6 +122,8 @@ impl<H: HandlerTypes> HtmlRewriteController<'_, H> {
+@@ -116,6 +123,8 @@
 
                  aux_info_req(vm, aux_info, &mut match_handler)
                      .map_err(RewritingError::MemoryLimitExceeded)?;
@@ -173,7 +200,7 @@ index 00095e0..3f36eb5 100644
 
                  Ok(this.get_capture_flags())
              },
-@@ -139,12 +147,19 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
+@@ -139,12 +148,19 @@
          local_name: LocalName<'_>,
          ns: Namespace,
      ) -> StartTagHandlingResult<Self> {
@@ -194,7 +221,7 @@ index 00095e0..3f36eb5 100644
                      Err(VmError::InfoRequest(req)) => Self::respond_to_aux_info_request(req),
                      Err(VmError::MemoryLimitExceeded(e)) => Err(DispatcherError::RewritingError(
                          RewritingError::MemoryLimitExceeded(e),
-@@ -159,8 +174,9 @@ impl<H: HandlerTypes> TransformController for HtmlRewriteController<'_, H> {
+@@ -159,8 +175,9 @@
 
      fn handle_end_tag(&mut self, local_name: LocalName<'_>) -> TokenCaptureFlags {
          if let Some(ref mut vm) = self.selector_matching_vm {
@@ -207,13 +234,13 @@ index 00095e0..3f36eb5 100644
          }
 
 diff --git a/src/rewriter/settings.rs b/src/rewriter/settings.rs
-index 63ff8d9..1980a85 100644
 --- a/src/rewriter/settings.rs
 +++ b/src/rewriter/settings.rs
-@@ -5,6 +5,27 @@ use super::{AsciiCompatibleEncoding, RewritingError};
+@@ -4,6 +4,27 @@
+ use super::{AsciiCompatibleEncoding, RewritingError};
  use std::borrow::Cow;
  use std::error::Error;
-
++
 +/// Matcher bookkeeping for Statute's private callback adapter, not DOM events.
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub enum MatcherEvent {
@@ -234,30 +261,45 @@ index 63ff8d9..1980a85 100644
 +        explicit: bool,
 +    },
 +}
-+
+
  /// Trait used to parameterize the type of handlers used in the rewriter.
  ///
- /// This trait is meant to be an implementation detail for the [`Send`-compatible type aliases](crate::send).
-@@ -968,6 +989,7 @@ impl MemorySettings {
+@@ -968,6 +989,8 @@
  /// [`append_element_content_handler()`]: #method.append_element_content_handler
  /// [`append_document_content_handler()`]: #method.append_document_content_handler
  pub struct Settings<'handlers, 'selectors, H: HandlerTypes = LocalHandlerTypes> {
++    pub(crate) token_observer: Option<Box<dyn FnMut(u32, bool) + Send + 'handlers>>,
 +    pub(crate) matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'handlers>>,
      pub(crate) element_content_handlers: Vec<(
          Cow<'selectors, Selector>,
          ElementContentHandlers<'handlers, H>,
-@@ -1013,6 +1035,7 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H>
+@@ -1013,6 +1036,8 @@
      #[must_use]
      pub fn new_for_handler_types() -> Self {
          Settings {
++            token_observer: None,
 +            matcher_observer: None,
              element_content_handlers: vec![],
              document_content_handlers: vec![],
              bail_out_handlers: vec![],
-@@ -1025,6 +1048,21 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H>
+@@ -1023,6 +1048,33 @@
+             adjust_charset_on_meta_tag: false,
+             graceful_bail_out_on_content_handler_error: false,
          }
-     }
-
++    }
++
++    /// Private Statute token boundary hook. Kinds are start/text/comment/end/EOF
++    /// (1..=5); the flag identifies the final chunk of a text unit. Invoked once
++    /// before dispatch, independently of how many registered handlers match.
++    #[must_use]
++    pub fn with_token_observer(
++        mut self,
++        observer: impl FnMut(u32, bool) + Send + 'handlers,
++    ) -> Self {
++        self.token_observer = Some(Box::new(observer));
++        self
++    }
++
 +    /// Observes selector scope changes without manufacturing balanced end events.
 +    ///
 +    /// Retirement may visit an ancestor before its descendants. Remove identities,
@@ -271,16 +313,13 @@ index 63ff8d9..1980a85 100644
 +    ) -> Self {
 +        self.matcher_observer = Some(Box::new(observer));
 +        self
-+    }
-+
+     }
+
      /// Appends a `(selector, handlers)` tuple to the list of element content handlers.
-     ///
-     /// The handlers specify CSS selectors and rewriting handlers for elements and their inner
 diff --git a/src/selectors_vm/mod.rs b/src/selectors_vm/mod.rs
-index 64c8ff4..9e467ae 100644
 --- a/src/selectors_vm/mod.rs
 +++ b/src/selectors_vm/mod.rs
-@@ -185,6 +185,7 @@ where
+@@ -185,6 +185,7 @@
      }
 
      #[inline]
@@ -288,10 +327,12 @@ index 64c8ff4..9e467ae 100644
      pub fn exec_for_end_tag(
          &mut self,
          local_name: LocalName<'_>,
-@@ -194,6 +195,16 @@ where
+@@ -192,6 +193,16 @@
+     ) {
+         self.stack
              .pop_up_to(local_name, unmatched_element_data_handler);
-     }
-
++    }
++
 +    #[inline]
 +    pub fn exec_for_end_tag_with_identity(
 +        &mut self,
@@ -300,16 +341,13 @@ index 64c8ff4..9e467ae 100644
 +    ) {
 +        self.stack
 +            .pop_up_to_with_end_tag(local_name, unmatched_element_data_handler);
-+    }
-+
+     }
+
      #[inline]
-     pub fn current_element_data_mut(&mut self) -> Option<&mut E> {
-         self.stack.current_element_data_mut()
 diff --git a/src/selectors_vm/stack.rs b/src/selectors_vm/stack.rs
-index 82219e5..8d40751 100644
 --- a/src/selectors_vm/stack.rs
 +++ b/src/selectors_vm/stack.rs
-@@ -281,10 +281,19 @@ impl<E: ElementData> Stack<E> {
+@@ -281,10 +281,19 @@
          }
      }
 
@@ -329,7 +367,7 @@ index 82219e5..8d40751 100644
      ) {
          if !self.open_name_counts.contains_key(&local_name) {
              return;
-@@ -298,7 +307,7 @@ impl<E: ElementData> Stack<E> {
+@@ -298,7 +307,7 @@
                  c.pop_to(index);
              }
              self.active_hereditary_jumps.retain(|(_, d)| *d < index);
@@ -338,7 +376,7 @@ index 82219e5..8d40751 100644
                  if let RawEntryMut::Occupied(mut e) = self
                      .open_name_counts
                      .raw_entry_mut()
-@@ -309,7 +318,9 @@ impl<E: ElementData> Stack<E> {
+@@ -309,7 +318,9 @@
                          e.remove();
                      }
                  }

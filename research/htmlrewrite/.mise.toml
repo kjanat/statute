@@ -1,0 +1,15 @@
+[tools.rust]
+version    = "nightly-2026-10-28"
+profile    = "minimal"
+components = ["clippy", "rustfmt", "rust-std"]
+targets    = ["wasm32-unknown-unknown"]
+
+[tasks.build]
+run = "make build"
+
+[tasks.test]
+run = "make test"
+
+[tasks.test-race]
+depends = ["build"]
+run     = "go test -race -tags statute_htmlrewrite ./..."

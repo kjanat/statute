@@ -28,7 +28,9 @@ are byte-for-byte upstream. Keep this patch synchronized when changing the fork.
   content scopes and removal counters are still retired. Report selector matches
   and retirements to an optional parser-owned observer.
 - `src/rewriter/settings.rs` and `src/lib.rs`: expose that private matcher
-  observer. It reports element identity, registration index and content-scope
+  observer and a token-boundary observer. The latter runs once before token
+  handlers (including document EOF), with text-chunk completion information.
+  The matcher observer reports element identity, registration index and content-scope
   eligibility; retirement reports explicit versus implicit closure.
 
 The controller assigns identities before selector matching and stores matched
@@ -36,7 +38,8 @@ scope identities in the memory-accounted selector stack, including deferred
 attribute matching. Void and foreign self-closing matches never replace their
 parent's identity. The observer adds no second stack and no synthetic EOF events.
 It runs before content callbacks and must not re-enter the same parser. IDs are
-local to one parser; the future host ABI must add stream/invocation identities.
+local to one parser; the [private program ABI](../../../../docs/research-html-programs.md)
+adds stream/invocation identities and compares native/Wasm event frames.
 
 Original stack/VM entry points remain test-only wrappers for upstream unit tests.
 There is no name comparison against mutated tags and no second HTML stack.

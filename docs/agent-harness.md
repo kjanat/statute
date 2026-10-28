@@ -103,8 +103,8 @@ Renovate groups updates to these two files in one PR.
 CI runs formatting (`make fmt-check`) and linting (`make lint-code`) in independent
 jobs. `make lint` runs both locally. Typechecking
 has its own job; documentation links, Comment Cop tests and RFC checks run in
-`script tests and documentation`. Mise installs tools from `.mise.toml`, with Go
-and Rust selected from the applicable `go.mod` and `rust-toolchain.toml`. Changes
+`script tests and documentation`. Mise installs shared tools from `.mise.toml`
+and Rust from `research/htmlrewrite/.mise.toml`; Go versions come from `go.mod`. Changes
 to shared tools, dependencies or runtime code select both research workflows.
 Renovate uses `gomodTidyAll` to tidy local replacement consumers, including the
 Traefik oracle, after updating a module they depend on.

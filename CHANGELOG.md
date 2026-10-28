@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Add configurable programs and Go callback sessions to the HTML rewriting research engine, with native/Wasm comparisons, resource limits and cleanup tests. See #114 for HTTP and public API integration.
+
 ## [0.11.0] - 2026-10-28
 
 ### Added

@@ -989,6 +989,7 @@ impl MemorySettings {
 /// [`append_element_content_handler()`]: #method.append_element_content_handler
 /// [`append_document_content_handler()`]: #method.append_document_content_handler
 pub struct Settings<'handlers, 'selectors, H: HandlerTypes = LocalHandlerTypes> {
+    pub(crate) token_observer: Option<Box<dyn FnMut(u32, bool) + Send + 'handlers>>,
     pub(crate) matcher_observer: Option<Box<dyn FnMut(MatcherEvent) + Send + 'handlers>>,
     pub(crate) element_content_handlers: Vec<(
         Cow<'selectors, Selector>,
@@ -1035,6 +1036,7 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H> 
     #[must_use]
     pub fn new_for_handler_types() -> Self {
         Settings {
+            token_observer: None,
             matcher_observer: None,
             element_content_handlers: vec![],
             document_content_handlers: vec![],
@@ -1046,6 +1048,18 @@ impl<'handlers, 'selectors, H: HandlerTypes> Settings<'handlers, 'selectors, H> 
             adjust_charset_on_meta_tag: false,
             graceful_bail_out_on_content_handler_error: false,
         }
+    }
+
+    /// Private Statute token boundary hook. Kinds are start/text/comment/end/EOF
+    /// (1..=5); the flag identifies the final chunk of a text unit. Invoked once
+    /// before dispatch, independently of how many registered handlers match.
+    #[must_use]
+    pub fn with_token_observer(
+        mut self,
+        observer: impl FnMut(u32, bool) + Send + 'handlers,
+    ) -> Self {
+        self.token_observer = Some(Box::new(observer));
+        self
     }
 
     /// Observes selector scope changes without manufacturing balanced end events.

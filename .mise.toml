@@ -1,6 +1,11 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 #:tombi toml-version = "v1.1.0"
 
+monorepo_root = true
+
+[monorepo]
+config_roots = ["research/htmlrewrite"]
+
 [tools]
 node = "latest"
 npm  = "12"
@@ -37,8 +42,9 @@ version = "0.28.0"
 [tools."github:tombi-toml/tombi"]
 version = "1.9.7"
 
-[tools."github:koalaman/shellcheck"]
-version = "latest"
+[tools."github:kjanat/shellcheck-rs"]
+version    = "latest"
+rename_exe = "shellcheck"
 
 [settings]
 idiomatic_version_file_enable_tools = ["go", "node", "rust"]
