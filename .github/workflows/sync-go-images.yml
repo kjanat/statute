@@ -1,0 +1,20 @@
+name: sync Go images
+on:
+  schedule: [{ cron: "17 4 * * *" }]
+  workflow_dispatch: null
+permissions: { contents: read }
+concurrency: { group: sync-go-images, cancel-in-progress: false }
+jobs:
+  sync:
+    if: github.repository == 'kjanat/statute' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions: { contents: read, packages: write }
+    env:
+      SKOPEO_IMAGE: quay.io/skopeo/stable@sha256:16feeb1662ca2d221d3d5c4d2e972e3a47fcfc211b49b4b484a51ac35b594b11
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: sync all architectures and verify digests
+        run: node scripts/sync-go-images.mjs
+        env: { GH_TOKEN: "${{ github.token }}", GH_ACTOR: "${{ github.actor }}" }

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Synchronize the Go language and toolchain images declared in `go.mod` to `ghcr.io/kjanat/golang` daily and on manual dispatch. Preserve all architectures and source digests for the Alpine and Bookworm variants, and verify each published tag. See the [image mirror guide](docs/go-image-sync.md) for package access and operation.
+
 ## [0.10.0] - 2026-10-28
 
 ### Added

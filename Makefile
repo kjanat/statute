@@ -22,7 +22,7 @@ E2E_SOAK_TIMEOUT       ?= 120m
 COMMENT_COP_BASE       ?=
 
 .PHONY: all help comment-cop test test-race fmt-check lint lint-lifecycle audit-lifecycle cover cover-html bench fuzz build-examples apidiff check-cloudflare-cidrs generate-cloudflare-cidrs typecheck tidy clean e2e-image test-e2e test-e2e-regression test-e2e-soak e2e-clean
-.PHONY: vendor-rfcs check-rfcs test-rfcs test-comment-cop lint-code
+.PHONY: vendor-rfcs check-rfcs test-rfcs test-comment-cop test-go-image-sync lint-code
 
 help:
 	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -148,6 +148,9 @@ test-rfcs: ## Test RFC vendoring without network access
 
 test-comment-cop: ## Test review batching and comment scanning offline
 	node --test scripts/comment-cop.test.mjs
+
+test-go-image-sync: ## Test Go image mirroring without registry writes
+	node --test scripts/sync-go-images.test.mjs
 
 comment-cop: ## Flag added comment and Markdown prose in the working tree
 	node scripts/comment-cop.mjs $(COMMENT_COP_BASE)
