@@ -45,13 +45,20 @@ or unwritable storage directory causes requests that need disk storage to receiv
 
 Space is reserved before it is used:
 
-- In memory-only mode, each request reserves the route maximum plus one byte for
-  detecting an oversized body. Empty requests and requests of unknown length
-  reserve the same amount.
-- With disk storage enabled, each request reserves the memory threshold plus one
-  byte. When the body exceeds that threshold, it also reserves the full route
-  maximum from the disk budget. The memory remains reserved for copying body data
-  until the buffer is released.
+- Requests without a body reserve a buffer slot but no body memory. A known
+  positive `Content-Length` sizes the initial allocation, including one extra byte
+  to detect an oversized body. The length is a sizing hint: buffering still reads
+  through EOF and enforces the route maximum.
+- Unknown-length bodies start with at most 512 bytes. Initial allocations are
+  capped by the total memory budget and the route maximum plus one byte, or the
+  memory threshold plus one byte when disk storage is enabled. A nonempty reader
+  with a zero length is treated as unknown, so its bytes and trailers are read.
+- Memory grows as needed, up to that cap. Both the old and replacement allocation
+  count toward the budget during copying; exhausted growth capacity returns 503
+  before invoking the next handler. Allow headroom for growth when sizing budgets.
+- With disk storage enabled, crossing the threshold reserves the full route
+  maximum from the disk budget before writing. The allocated memory remains
+  reserved for copying until the last reader releases the buffer.
 - A server allows at most 128 buffers at once. Readers kept open after a timeout or
   handler return still count toward this limit. Each nested `RequestBuffer`
   declaration reserves a separate buffer.
@@ -64,8 +71,11 @@ Space is reserved before it is used:
 
 These budgets cover the bytes reserved by RequestBuffer. Account separately for
 other process memory, transport allocations, filesystem metadata and the kernel
-page cache. A route can require more space than the server budget permits, even
-when no other request is active. Lint reports that configuration as `RBF001`.
+page cache. A route maximum can require more space than the server budget permits, even
+when no other request is active. Lint reports that configuration as `RBF001`;
+smaller requests can still succeed. This warning compares the capacity needed
+for the maximum body with the budgets; it does not predict concurrent use or
+the additional capacity needed while growing a buffer.
 
 ## Middleware order and replay
 

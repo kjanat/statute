@@ -29,6 +29,7 @@ func TestRegression_RequestBuffer(t *testing.T) {
 			status     int
 		}{
 			{"/limited/echo?accepted", "12345678", 200},
+			{"/small/echo?accepted-small", "x", 200},
 			{"/limited/echo?rejected-size", "123456789", 413},
 			{"/unavailable/echo?rejected-budget", "123", 503},
 			{"/echo?accepted-fallback", "12345678", 200},
@@ -47,7 +48,7 @@ func TestRegression_RequestBuffer(t *testing.T) {
 			accepted++
 		}
 	}
-	if accepted != 4 {
-		t.Fatalf("accepted origin requests=%d want=4", accepted)
+	if accepted != 6 {
+		t.Fatalf("accepted origin requests=%d want=6", accepted)
 	}
 }

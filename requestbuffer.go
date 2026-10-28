@@ -32,7 +32,8 @@ func RequestBuffer(maximum string) *requestBufferMW { return &requestBufferMW{ma
 
 // MemoryThreshold sets the body size above which buffering writes to disk, when
 // disk storage is configured. The default is min(256 KiB, maximum). Memory-only
-// buffering reserves the full route maximum plus one byte from the server budget.
+// buffering grows as needed up to the route maximum plus one byte. Allocations
+// count against the server budget, including both buffers during growth.
 func (m *requestBufferMW) MemoryThreshold(size string) *requestBufferMW { m.threshold = size; return m }
 
 func requestBufferSize(name, value string) (int64, error) {

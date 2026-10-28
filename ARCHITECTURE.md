@@ -528,9 +528,15 @@ across every listener, route and Docker configuration. Readers from a replaced
 Docker configuration continue to use that same manager. Routes that share an upstream pool use these
 server limits.
 
-The manager reserves memory before reading and the full route maximum from the
-disk budget before writing to disk. Requests that exceed their route maximum
-receive 413. Insufficient capacity or failed storage operations return 503 with
+The manager reserves memory before reading. Bodyless requests reserve only a
+buffer slot; known positive lengths size the initial allocation, and unknown
+lengths start with at most 512 bytes. Initial capacity is capped by the server
+budget and the route maximum plus one byte (the memory threshold plus one byte
+with disk enabled). Length hints never replace EOF or maximum-size validation.
+Growth charges both allocations during copying, then retires the old charge;
+the replacement stays charged through final reader release. Disk spilling still
+reserves the full route maximum from the disk budget before writing to disk.
+Requests that exceed their route maximum receive 413. Insufficient capacity or failed storage operations return 503 with
 `Cache-Control: no-store`. There is no queue or streaming fallback. The next handler
 runs only after EOF and trailer capture. Retry keeps its existing budgets,
 restrictions and fallback behavior.
