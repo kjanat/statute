@@ -5,7 +5,7 @@ function Sync-GoImage {
 		[ValidatePattern('\A[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\z')]
 		[string[]] $Tags,
 
-		[string] $Source = 'public.ecr.aws/docker/library/golang',
+		[string[]] $Source = @('public.ecr.aws/docker/library/golang', 'docker.io/library/golang'),
 		[string] $Destination = 'ghcr.io/kjanat/golang',
 		[string] $Username = 'kjanat'
 	)
@@ -23,13 +23,20 @@ function Sync-GoImage {
 	}
 
 	if (!$Tags) {
-		$listing = docker run --rm $skopeo list-tags --retry-times 3 "docker://${Source}"
-		if ($LASTEXITCODE -ne 0) {
-			throw "Could not list tags for ${Source}."
+		foreach ($repository in $Source) {
+			$listing = docker run --rm $skopeo list-tags --retry-times 3 "docker://${repository}"
+			if ($LASTEXITCODE -ne 0) { continue }
+			try {
+				$Tags = ($listing | ConvertFrom-Json).Tags
+			}
+			catch {
+				Write-Warning "Invalid tag listing from ${repository}."
+				continue
+			}
+			if ($Tags) { break }
 		}
-		$Tags = ($listing | ConvertFrom-Json).Tags
 		if (!$Tags) {
-			throw "No tags found for ${Source}."
+			throw 'Could not discover tags from any source registry.'
 		}
 	}
 
@@ -42,27 +49,39 @@ function Sync-GoImage {
 		}
 
 		foreach ($tag in $Tags) {
-			Write-Host "`nResolving ${Source}:${tag}..."
-
-			$digest = docker run --rm $skopeo inspect `
-				--no-tags --retry-times 3 --format '{{.Digest}}' `
-				"docker://${Source}:${tag}"
-			if ($LASTEXITCODE -ne 0) {
-				throw "Could not resolve ${Source}:${tag}."
+			$digest = $null
+			$resolvedSource = $null
+			foreach ($repository in $Source) {
+				Write-Host "`nResolving ${repository}:${tag}..."
+				$resolved = docker run --rm --entrypoint /bin/sh $skopeo -c `
+					'skopeo inspect --raw --retry-times 3 "$1" > /tmp/manifest.json && skopeo manifest-digest /tmp/manifest.json' `
+					-- "docker://${repository}:${tag}"
+				if ($LASTEXITCODE -ne 0) { continue }
+				$resolved = "$resolved".Trim()
+				if ($resolved -notmatch '^sha256:[a-f0-9]{64}$') { continue }
+				$digest = $resolved
+				$resolvedSource = $repository
+				break
+			}
+			if (!$digest) {
+				throw "Could not resolve ${tag} from any source registry."
 			}
 
-			$digest = "$digest".Trim()
-			if ($digest -notmatch '^sha256:[a-f0-9]{64}$') {
-				throw "Unexpected digest: $digest"
+			$copied = $false
+			$copySources = @($resolvedSource) + @($Source | Where-Object { $_ -ne $resolvedSource })
+			foreach ($repository in $copySources) {
+				docker run --rm -v "${authDir}:/auth:ro" $skopeo copy `
+					--all --preserve-digests --retry-times 3 `
+					--dest-authfile /auth/auth.json `
+					"docker://${repository}@${digest}" `
+					"docker://${Destination}:${tag}"
+				if ($LASTEXITCODE -eq 0) {
+					$copied = $true
+					break
+				}
 			}
-
-			docker run --rm -v "${authDir}:/auth:ro" $skopeo copy `
-				--all --preserve-digests --retry-times 3 `
-				--dest-authfile /auth/auth.json `
-				"docker://${Source}@${digest}" `
-				"docker://${Destination}:${tag}"
-			if ($LASTEXITCODE -ne 0) {
-				throw "Copy failed for ${tag}."
+			if (!$copied) {
+				throw "Copy failed for ${tag} from every source registry."
 			}
 
 			$reference = "FROM ${Destination}:${tag}@${digest} AS builder"

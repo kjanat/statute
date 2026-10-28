@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Add scheduled and manual Go image mirroring using `Sync-GoImage`. Discover source tags automatically, including new versions and variants, with optional explicit tags and configurable source, destination and username. Preserve all architectures and source digests, and pull the latest stable Skopeo image each run. See the [image mirror guide](docs/go-image-sync.md) for operation.
+- Add scheduled and manual Go image mirroring. Discover source tags automatically, including new versions and variants, with optional explicit tags and configurable sources, destination and username. Fall back between source registries during discovery, digest resolution and copying. Resolve manifests independently of the runner's platform, preserve all architectures and source digests, and pull the latest stable Skopeo image each run. See the [image mirror guide](docs/go-image-sync.md) for operation.
 
 ## [0.10.0] - 2026-10-28
 
