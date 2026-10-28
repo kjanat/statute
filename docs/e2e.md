@@ -280,5 +280,6 @@ The observer is built into the lane image and has no Statute dependency or
 production hook. Its forwarding tests also check streamed event delivery.
 
 The `request-buffer` regression scenario checks accepted and rejected uploads over
-HTTP/1 and HTTP/2, disk spilling, fallback routes and strict resource failure. The
+HTTP/1 and HTTP/2, small uploads with a route maximum larger than the memory
+budget, disk spilling, fallback routes and strict resource failure. The
 separate origin journal must contain no request rejected for exceeding the size limit or disk budget.

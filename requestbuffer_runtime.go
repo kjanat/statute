@@ -13,7 +13,10 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-const requestBufferMaxInFlight = 128
+const (
+	requestBufferMaxInFlight        = 128
+	initialRequestBufferBytes int64 = 512
+)
 
 type requestBufferManager struct {
 	cfg          resolved.RequestBufferResources
@@ -205,7 +208,7 @@ func requestBufferHandler(policy resolved.Middleware, next http.Handler) http.Ha
 		if state.manager.cfg.Storage != "" {
 			limit = min(limit, policy.RequestBufferMemoryThresholdBytes)
 		}
-		b := state.manager.acquire(limit + 1)
+		b := state.manager.acquire(requestBufferInitialSize(r, limit, state.manager.cfg.MemoryBudgetBytes))
 		if b == nil {
 			rejectRequestBuffer(w, r, state, http.StatusServiceUnavailable)
 			return
@@ -227,6 +230,41 @@ func requestBufferHandler(policy resolved.Middleware, next http.Handler) http.Ha
 		}
 		next.ServeHTTP(w, b.forward(r, ctx))
 	})
+}
+
+// ContentLength sizes the initial allocation only; EOF still establishes the
+// complete body. A nonnil body with length zero can have unknown length.
+func requestBufferInitialSize(r *http.Request, limit, budget int64) int64 {
+	if r.Body == nil || r.Body == http.NoBody {
+		return 0
+	}
+	size := initialRequestBufferBytes
+	if r.ContentLength > 0 {
+		size = r.ContentLength + 1
+	}
+	return min(size, limit+1, budget)
+}
+
+// Growth happens before publishing readers. Charge both allocations while
+// copying, just as Retry does, and retain the replacement through final release.
+func (b *requestBodyBuffer) grow(limit int64) bool {
+	old := b.memory
+	size := old + min(old, limit-old)
+	b.manager.mu.Lock()
+	if size <= old || size > b.manager.cfg.MemoryBudgetBytes-b.manager.memory {
+		b.manager.mu.Unlock()
+		return false
+	}
+	b.manager.memory += size
+	b.manager.mu.Unlock()
+	data := make([]byte, int(size))
+	copy(data, b.data)
+	b.data = data
+	b.memory = size
+	b.manager.mu.Lock()
+	b.manager.memory -= old
+	b.manager.mu.Unlock()
+	return true
 }
 
 func rejectRequestBuffer(w http.ResponseWriter, r *http.Request, state *requestBufferRequest, status int) {
@@ -293,12 +331,22 @@ func (b *requestBodyBuffer) consume(ctx context.Context, state *requestBufferReq
 	}
 }
 
-func (b *requestBodyBuffer) readChunk(ctx context.Context, reader io.Reader, maximum, threshold int64, emptyReads *int) (bool, int) {
+func (b *requestBodyBuffer) readTarget(maximum, threshold int64) ([]byte, bool) {
+	if b.file == nil && b.size == int64(len(b.data)) && !b.grow(threshold+1) {
+		return nil, false
+	}
 	target := b.data
 	if b.file == nil {
 		target = target[int(b.size):]
 	}
-	target = target[:min(int64(len(target)), maximum-b.size+1)]
+	return target[:min(int64(len(target)), maximum-b.size+1)], true
+}
+
+func (b *requestBodyBuffer) readChunk(ctx context.Context, reader io.Reader, maximum, threshold int64, emptyReads *int) (bool, int) {
+	target, ok := b.readTarget(maximum, threshold)
+	if !ok {
+		return false, http.StatusServiceUnavailable
+	}
 	n, err := reader.Read(target)
 	if n == 0 && err == nil {
 		*emptyReads++

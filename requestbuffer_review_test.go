@@ -35,7 +35,8 @@ func requestBufferEarlyRejectionHandler(t *testing.T, kind string) (http.Handler
 	case "size":
 		status = 413
 	case "memory":
-		m.cfg.MemoryBudgetBytes = 5
+		held := m.acquire(6)
+		t.Cleanup(held.release)
 	case "slots":
 		m.cfg.MaxInFlight = 1
 		held := m.acquire(1)
