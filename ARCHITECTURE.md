@@ -817,6 +817,11 @@ provider-wide observation revision, checked atomically with mutation revisions
 and the table swap. A lifecycle transition after observation validation therefore
 cannot publish a generation derived from its predecessor state.
 
+Observing an external stop also invalidates the published backend for that
+binding before releasing the workload lock. Demand can start another activation,
+but readiness and routing must wait for a fresh Docker generation. A reachable
+address from before the stop cannot establish readiness for the new activation.
+
 Idle is measured from request completion. An in-flight HTTP request, an open
 WebSocket, and an open streaming response each hold the workload active, and the
 idle timer starts when the last of them finishes. A request arriving while the

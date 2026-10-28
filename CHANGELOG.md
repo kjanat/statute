@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Invalidate the previous Docker backend as soon as discovery observes an external stop. A new activation now waits for a fresh backend before reporting readiness, preventing a race that could return `503` after a successful readiness check. Regression tests cover TCP, HTTP and Docker health readiness with both ready and pending-idle workloads.
+
 ## [0.10.0] - 2026-10-28
 
 ### Added
