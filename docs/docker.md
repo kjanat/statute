@@ -558,6 +558,10 @@ can't collide with pools from native labels or static `Upstreams`.
 
 ## Migration from Traefik, in three steps
 
+Start with the [offline migration audit](traefik-migration.md) to inventory
+static configuration, file-provider objects and Compose labels, and generate a
+reviewable Go skeleton with explicit blocking gaps.
+
 1. Replace the Traefik container with your statute binary; declare the
    listeners/TLS you had as entrypoints and certificate resolvers, and add
    `Docker: statute.Docker().TraefikLabels().Network("<your proxy network>")`.

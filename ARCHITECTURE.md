@@ -30,6 +30,23 @@ excluded at its JSON boundary. Export and direct JSON encoding omit the credenti
 without mutating live state. Diagnostic snapshots are not credential backups and
 do not sanitize arbitrary user-supplied header values or URLs.
 
+## Offline migration tooling
+
+Traefik migration belongs to `internal/migrate` and `cmd/statute`. It inventories
+explicit inputs, emits compiled public Go configuration, and validates that
+candidate through Resolve, Lint, Export and GraphDOT. It never starts a provider
+or server, evaluates environment references, or loads referenced secret material.
+Every inventoried source field has a disposition; unknown fields remain blocking.
+Unresolved policy or semantics guard the whole generated program against serving,
+including when reviewable fragments were emitted. Provider-qualified references
+retain identity and order. Route middleware remains route-owned and Docker
+PoolPolicy remains exact-service-owned. The runtime and resolved schema do not
+acquire a Traefik input format or new matcher semantics.
+
+`cmd/statute` owns the command tree, argument validation and contextual help.
+Help performs no migration I/O. Input flags preserve literal, repeatable paths;
+the migration engine owns file inventory and artifact generation.
+
 ## Ownership model
 
 | Layer           | Owns                                                                                                                  | Must not absorb                                                             |

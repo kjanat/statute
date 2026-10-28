@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add a `statute` command with contextual help for `migrate traefik`, repeatable input flags and required output arguments. Help exits successfully without reading configuration or creating files.
+
 - Add scheduled and manual Go image mirroring. Discover source tags automatically, including new versions and variants, with optional explicit tags and configurable sources, destination and username. Fall back between source registries during discovery, digest resolution and copying. Resolve manifests independently of the runner's platform, preserve all architectures and source digests, and pull the latest stable Skopeo image each run. See the [image mirror guide](docs/go-image-sync.md) for operation.
 
 ### Fixed

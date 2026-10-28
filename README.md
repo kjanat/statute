@@ -78,6 +78,7 @@ What's implemented:
 - Cloudflare-aware mode: `BehindCloudflare()` flips ALPN to suppress TLS-ALPN-01 and trusts `CF-Connecting-IP`
 - Docker label discovery: containers register routes and pools via `statute.*` labels, with a `traefik.*` label compat mode for drop-in migration
 - `statute.Main` CLI wrapper with `-validate`, `-export`, `-graph`, and `-lint` flags
+- [Offline Traefik migration audit](docs/traefik-migration.md) with deterministic Go skeletons and JSON reports
 
 ## Install
 
