@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-28
+
+### Added
+
+- Add `RequestBuffer(maximum).MemoryThreshold(threshold)` to read complete uploads before calling the next handler. Set shared memory and disk budgets through `Config.RequestBuffers`. One server manager enforces those limits across listeners, static routes, fallback routes and Docker configurations, including readers still running from a previous configuration. The default allows 64 MiB of memory and 128 open buffers; writing to disk requires both an existing storage directory and a disk budget.
+
+- Reject uploads exceeding the route maximum with 413, and unavailable buffer capacity or failed storage operations with 503 and `Cache-Control: no-store`. Preserve completed trailers and replay readers through Retry, Timeout, native transports and shutdown. Support named Docker middleware and expose the route policy and server limits in export, graph and lint (`RBF001`). See the [request buffering guide](https://github.com/kjanat/statute/blob/v0.10.0/docs/request-buffer.md) for configuration, ordering and storage requirements.
+
+### Changed
+
+- Update Brotli to v1.2.7 and the e2e observability collector to v0.164.0. Refresh the example Go container digest, mise-action to v5.2.4 and Tombi to v1.9.7.
+
+- Update the opt-in HTML-rewriting research toolchain to Rust nightly-2026-10-28 and refresh its dependency lockfile.
+
+### Security
+
+- Update `golang.org/x/net` to v0.62.0 across the main module, HTML-rewriting research module and Traefik compatibility oracle for its HTML parsing and rendering security fixes.
+
+Known limitation: the Docker timing concern documented in the [v0.8.1 release notes](https://github.com/kjanat/statute/releases/tag/v0.8.1) remains unresolved. Successful reruns and nightly checks do not establish that its cause is fixed.
+
 ## [0.9.0] - 2026-10-26
 
 ### Added
@@ -477,7 +497,8 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kjanat/statute/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kjanat/statute/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/kjanat/statute/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/kjanat/statute/compare/v0.8.1...v0.8.2
