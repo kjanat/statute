@@ -19,10 +19,11 @@ import (
 
 // Config is the top-level surface configuration.
 type Config struct {
-	Listeners Listeners
-	Upstreams Upstreams
-	Routes    Routes
-	Docker    *DockerConfig
+	RequestBuffers RequestBufferResources
+	Listeners      Listeners
+	Upstreams      Upstreams
+	Routes         Routes
+	Docker         *DockerConfig
 
 	// FallbackRoutes match after static/Docker misses, with Routes' pool and middleware semantics.
 	// Docker refusals and matched errors never fall through.

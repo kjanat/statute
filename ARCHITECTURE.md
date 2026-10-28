@@ -519,6 +519,47 @@ transports that return before closing request bodies. Close/Read overlap,
 GetBody replacement and duplicate Close prove final-owner retirement. Export,
 fallback and Docker generation tests prove route scope and configuration parity.
 
+### Strict request buffering
+
+`RequestBuffer` belongs to the route. Each resolved middleware declaration carries
+its body maximum and memory threshold. `Config.RequestBuffers` carries the server's
+memory budget, disk budget and storage directory. One manager enforces those limits
+across every listener, route and Docker configuration. Readers from a replaced
+Docker configuration continue to use that same manager. Routes that share an upstream pool use these
+server limits.
+
+The manager reserves memory before reading and the full route maximum from the
+disk budget before writing to disk. Requests that exceed their route maximum
+receive 413. Insufficient capacity or failed storage operations return 503 with
+`Cache-Control: no-store`. There is no queue or streaming fallback. The next handler
+runs only after EOF and trailer capture. Retry keeps its existing budgets,
+restrictions and fallback behavior.
+
+Each buffer reserves memory, any disk space it needs, and one of 128 buffer slots.
+Timeout workers, native transports and GetBody readers keep these resources until
+their last reader finishes. Final release closes the file and returns the reserved
+capacity. Temporary filenames are removed immediately after creation. Replacing a
+Docker configuration or shutting down the server preserves open readers and their
+reservations. Shutdown rejects new buffers and cancels unfinished reads after the
+normal grace period. Construction and startup open no temporary files and start no
+buffering workers, so failed startup remains retryable.
+
+The outer HTTP handler controls access to the read deadline. Deadline calls finish
+before that handler returns. Once it returns, timeout workers cannot start another
+incoming body read or use its response writer. Existing buffer readers remain
+usable. Rejection stops incomplete HTTP/1 uploads before writing the response or
+closing the incoming body, including requests rejected before buffering begins.
+Cancellation remains active until body cleanup finishes.
+
+An empty completed body with no trailers is forwarded as `http.NoBody`, so adding
+RequestBuffer before Cache preserves caching of empty HTTP/1 requests. Cache keeps
+its existing exclusions for request bodies, trailers and HTTP/3.
+
+Tests cover unknown lengths, trailers over HTTP/3 and native HTTP/1 and HTTP/2
+upstreams, Retry, Cache, Timeout, cancellation, panic, concurrent requests, Docker
+configuration changes, shutdown and configuration tooling. See
+[request buffering](docs/request-buffer.md) for configuration and operational details.
+
 ## Docker discovery
 
 Docker labels are external input. Statute keeps the trust boundary in code:

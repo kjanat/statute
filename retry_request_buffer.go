@@ -77,6 +77,7 @@ func (b *retryRequestBuffer) release() {
 // inherited chain, including ancestors whose outer handler may already return.
 type retryRequestBufferChain struct {
 	buffer *retryRequestBuffer
+	lease  requestBodyLease
 	parent *retryRequestBufferChain
 }
 
@@ -95,12 +96,33 @@ func withRetryRequestBuffer(ctx context.Context, b *retryRequestBuffer) context.
 
 func (c *retryRequestBufferChain) retain() {
 	for node := c; node != nil; node = node.parent {
-		node.buffer.retain()
+		if node.buffer != nil {
+			node.buffer.retain()
+		}
+		if node.lease != nil {
+			node.lease.retain()
+		}
 	}
 }
 
 func (c *retryRequestBufferChain) release() {
 	for node := c; node != nil; node = node.parent {
-		node.buffer.release()
+		if node.buffer != nil {
+			node.buffer.release()
+		}
+		if node.lease != nil {
+			node.lease.release()
+		}
 	}
+}
+
+// requestBodyLease keeps a RequestBuffer allocation available through the same
+// reader tracking used by Retry. RequestBuffer and Retry have separate budgets.
+type requestBodyLease interface {
+	retain()
+	release()
+}
+
+func withRequestBodyLease(ctx context.Context, lease requestBodyLease) context.Context {
+	return context.WithValue(ctx, retryRequestBuffersKey{}, &retryRequestBufferChain{lease: lease, parent: retryRequestBuffers(ctx)})
 }

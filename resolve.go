@@ -31,11 +31,9 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 		Upstreams: make(map[string]*resolved.Pool, len(cfg.Upstreams)),
 	}
 
-	defaults, err := resolveDefaults(cfg.Defaults)
-	if err != nil {
-		return nil, fmt.Errorf("defaults: %w", err)
+	if err := resolveGlobalDefaults(cfg, out); err != nil {
+		return nil, err
 	}
-	out.Defaults = defaults
 
 	if err := resolveUpstreams(cfg.Upstreams, out.Upstreams); err != nil {
 		return nil, err
@@ -2029,4 +2027,14 @@ func resolveCIDRs(cidrs []string) ([]string, error) {
 		out = append(out, p.Masked().String())
 	}
 	return out, nil
+}
+
+func resolveGlobalDefaults(cfg Config, out *resolved.Config) error {
+	defaults, err := resolveDefaults(cfg.Defaults)
+	if err != nil {
+		return fmt.Errorf("defaults: %w", err)
+	}
+	out.Defaults = defaults
+	out.RequestBuffers, err = resolveRequestBufferResources(cfg.RequestBuffers)
+	return err
 }

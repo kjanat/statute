@@ -27,7 +27,8 @@ import (
 )
 
 type server struct {
-	cfg *resolved.Config
+	cfg            *resolved.Config
+	requestBuffers *requestBufferManager
 
 	listeners     []*http.Server // content + redirect listeners
 	metricsServer *http.Server
@@ -63,10 +64,11 @@ type server struct {
 
 func newServer(cfg *resolved.Config) (*server, error) {
 	s := &server{
-		cfg:        cfg,
-		pools:      make(map[string]*poolHandler, len(cfg.Upstreams)),
-		stats:      newStats(),
-		cloudflare: cloudflareSourceForListeners(cfg.Listeners),
+		cfg:            cfg,
+		requestBuffers: newRequestBufferManager(cfg.RequestBuffers),
+		pools:          make(map[string]*poolHandler, len(cfg.Upstreams)),
+		stats:          newStats(),
+		cloudflare:     cloudflareSourceForListeners(cfg.Listeners),
 	}
 
 	mgr, err := buildAutocertManager(cfg.Listeners)
@@ -768,6 +770,10 @@ func (s *server) Shutdown() error {
 	s.mu.Unlock()
 	var err error
 	if run != nil {
+		s.requestBuffers.stopAdmission()
+		stop := context.AfterFunc(ctx, s.requestBuffers.cancel)
+		defer stop()
+		defer s.requestBuffers.cancel()
 		err = run.shutdown(ctx)
 	}
 
@@ -971,11 +977,14 @@ func (s *server) fallbackHandler() http.Handler {
 // reach operator code that no longer knows it asked for a policy statute
 // could not supply. Envelopes cover every request such a router matched.
 func (s *server) buildRouter() http.Handler {
+	if s.requestBuffers == nil {
+		s.requestBuffers = newRequestBufferManager(s.cfg.RequestBuffers)
+	}
 	static := s.compileRoutes(s.cfg.Routes)
 	terminal := s.compileRoutes(s.cfg.FallbackRoutes)
 	fallback := s.fallbackHandler()
 
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return s.requestBuffers.wrap(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host := stripPort(req.Host)
 		if h := findHandler(static, host, req); h != nil {
 			h.ServeHTTP(w, req)
@@ -992,7 +1001,7 @@ func (s *server) buildRouter() http.Handler {
 			return
 		}
 		fallback.ServeHTTP(w, req)
-	})
+	}))
 }
 
 // compileRoutes builds independent route middleware chains over server-owned
@@ -1412,6 +1421,7 @@ var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, h
 	resolved.MWCompress:        buildCompress,
 	resolved.MWETag:            buildETag,
 	resolved.MWBodyLimit:       bodyLimitHandler,
+	resolved.MWRequestBuffer:   requestBufferHandler,
 	resolved.MWRequestID:       requestIDHandler,
 	resolved.MWSecurityHeaders: securityHeadersHandler,
 	resolved.MWCORS:            corsHandler,

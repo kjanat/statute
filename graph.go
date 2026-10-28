@@ -67,6 +67,7 @@ func graphResolved(r *resolved.Config, w io.Writer) error {
 	d := &dotWriter{w: w}
 	d.printf("digraph statute {\n")
 	d.printf("  rankdir=LR;\n  node [fontname=\"Helvetica\"];\n  edge [fontname=\"Helvetica\"];\n\n")
+	graphRequestBuffers(d, r)
 	graphListeners(d, r)
 	graphRoutes(d, r)
 	graphFallbackRoutes(d, r)

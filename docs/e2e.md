@@ -278,3 +278,7 @@ requests. After release, every client result must succeed and every request ID m
 appear exactly once at the origin, with exactly one recorded Docker start call.
 The observer is built into the lane image and has no Statute dependency or
 production hook. Its forwarding tests also check streamed event delivery.
+
+The `request-buffer` regression scenario checks accepted and rejected uploads over
+HTTP/1 and HTTP/2, disk spilling, fallback routes and strict resource failure. The
+separate origin journal must contain no request rejected for exceeding the size limit or disk budget.
