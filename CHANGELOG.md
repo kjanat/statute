@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Synchronize the Go language and toolchain images declared in `go.mod` to `ghcr.io/kjanat/golang` daily and on manual dispatch. Preserve all architectures and source digests for the Alpine and Bookworm variants, and verify each published tag. See the [image mirror guide](docs/go-image-sync.md) for package access and operation.
+- Add scheduled and manual Go image mirroring using `Sync-GoImage`. Discover source tags automatically, including new versions and variants, with optional explicit tags and configurable source, destination and username. Preserve all architectures and source digests, and pull the latest stable Skopeo image each run. See the [image mirror guide](docs/go-image-sync.md) for operation.
 
 ## [0.10.0] - 2026-10-28
 

@@ -1,34 +1,33 @@
 # Go image mirror
 
-The `sync Go images` workflow copies the official Go images from
-`public.ecr.aws/docker/library/golang` to `ghcr.io/kjanat/golang` every day at
-04:17 UTC. Maintainers can also run it manually on `master` through GitHub Actions.
-It only publishes from `kjanat/statute` on `master`.
+The `sync Go images` workflow runs the PowerShell `Sync-GoImage` function from
+[issue #225](https://github.com/kjanat/statute/issues/225) daily at 04:17 UTC.
+Scheduled runs discover all tags from `public.ecr.aws/docker/library/golang` and
+copy them to `ghcr.io/kjanat/golang`. New versions and variants are included
+automatically. Existing tags are refreshed from their current upstream digest.
 
-The language version and exact toolchain version in `go.mod` select the tags.
-For Go 1.27 with toolchain 1.27.3, those are `1.27-bookworm`, `1.27-alpine`,
-`1.27.3-bookworm` and `1.27.3-alpine`. Updating `go.mod` updates that selection;
-older mirror tags remain available but stop receiving scheduled updates.
+Manual dispatch on `master` accepts `tags` (commas or whitespace), `source`,
+`destination` and `username`. Leaving `tags` empty discovers all source tags;
+supplying tags limits that run to your selection. The defaults match the issue's
+function: the ECR Go mirror, `ghcr.io/kjanat/golang` and `kjanat`.
 
-Each run resolves all source tags before copying, then copies each captured
-digest with Skopeo's `--all --preserve-digests`. This retains every architecture
-and the original manifest digest, even if a source tag moves during the run.
-Skopeo reuses existing layers. Each destination tag is inspected afterwards;
-a digest mismatch or registry error fails the job. Verified `FROM` references
-appear in the job summary. Updates are per tag: if a later copy fails, earlier
-verified tags remain updated. Rerunning the workflow completes the remaining work.
+For local use with Docker, PowerShell and an authenticated `gh` CLI:
 
-The workflow uses its `GITHUB_TOKEN` with `packages: write`. The existing `golang`
-package must grant the `statute` repository write access under **Manage Actions
-access** in its package settings. Package visibility and access are managed there;
-the workflow does not change either. Credentials pass to Skopeo through standard
-input, are stored in a temporary authentication directory, and are removed when
-the script finishes. The hosted runner is discarded if the job is cancelled.
+```powershell
+. ./scripts/sync-go-images.ps1
+Sync-GoImage
+Sync-GoImage '1.27-bookworm', '1.27-alpine'
+Sync-GoImage '1.27.3-bookworm', '1.27.3-alpine' -Destination 'ghcr.io/kjanat/golang'
+```
 
-The workflow and script own only the image mirror. Dockerfile digest updates
-continue through Renovate, and Statute releases use the existing release workflow.
-The Skopeo container is itself selected by digest in the workflow.
+Each tag is resolved to a digest and copied with Skopeo's
+`--all --preserve-digests --retry-times 3`. Failures stop the run; completed tags
+remain copied. Successful copies print `FROM …@sha256:… AS builder`, also recorded
+in the Actions summary. Dockerfile pins remain managed separately through Renovate.
 
-Run `make test-go-image-sync`, `make typecheck` and `actionlint` to validate changes.
-Tests cover source-tag selection, moving source tags, preservation of all
-architectures, digest verification, registry failures and credential cleanup.
+The workflow publishes only from `kjanat/statute` on `master`. It supplies
+`GITHUB_TOKEN` to `gh` with `packages: write`; the destination GHCR package must
+grant this repository write access under **Manage Actions access**. Locally,
+`gh auth token --hostname github.com` uses your own authentication. Credentials
+reach Skopeo through stdin and a temporary auth file, removed when the function
+finishes. Each run pulls `quay.io/skopeo/stable:latest` before using it.

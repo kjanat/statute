@@ -121,7 +121,6 @@ jobs:
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
       - { name: documentation links, run: 'node scripts/wiki-sync.mjs docs "$(mktemp -d)"' }
       - { name: Comment Cop tests, run: make test-comment-cop }
-      - { name: Go image sync tests, run: make test-go-image-sync }
       - { name: RFC snapshot tooling, run: make test-rfcs check-rfcs }
   e2e:
     name: e2e regression
