@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-28
+
 ### Added
 
 - Add a `statute` command with contextual help for `migrate traefik`, repeatable input flags and required output arguments. Help exits successfully without reading configuration or creating files.
@@ -13,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Audit Traefik static files, file-provider configuration and Compose labels offline, with deterministic Go configuration and value-free field reports. Translate listener/TLS/ACME policy, middleware registrations, file pools and combined Docker pool policies. Preserve secret references with fail-closed startup bindings; distinguish deferred material validation from canonical resolution, lint, export and source-topology checks. Emit guarded candidates with concrete findings for incompatible redirect, prefix, buffering and retry behavior.
 
 - Add scheduled and manual Go image mirroring. Discover source tags automatically, including new versions and variants, with optional explicit tags and configurable sources, destination and username. Fall back between source registries during discovery, digest resolution and copying. Resolve manifests independently of the runner's platform, preserve all architectures and source digests, and pull the latest stable Skopeo image each run. See the [image mirror guide](docs/go-image-sync.md) for operation.
+
+### Changed
+
+- Allocate RequestBuffer memory on demand so small uploads do not reserve the full route maximum. Size initial allocations from known body lengths, start unknown-length bodies with at most 512 bytes, and charge both allocations during growth. Preserve strict body limits, shared server budgets, trailer replay and reader lifetimes. See the [request buffering guide](docs/request-buffer.md) for growth headroom requirements.
 
 ### Fixed
 
@@ -509,7 +515,8 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/kjanat/statute/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kjanat/statute/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kjanat/statute/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/kjanat/statute/compare/v0.8.2...v0.8.3
