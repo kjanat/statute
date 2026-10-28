@@ -539,6 +539,13 @@ closes storage and retires all charges. Generation replacement and shutdown cann
 reclaim live readers. Shutdown stops admission and cancels unfinished reads after
 the normal drain; late readers retain charged storage. Construction and startup
 acquire no spool files or workers, preserving failed-start retryability.
+Ingress owns the read-deadline capability. Deadline calls and capability retirement
+are serialized before the ingress handler returns; unfinished reads are interrupted
+while its response writer is still valid. Late Timeout producers cannot start new
+ingress reads or call a retired writer, while their existing storage leases remain
+independent of that capability. Rejection interrupts incomplete consumption before
+closing the incoming body, and cancellation remains active throughout Close so
+HTTP/1 draining cannot pin the shared reservation after admission has failed.
 
 Cross-feature coverage includes unknown length, EOF trailers across HTTP/3 and native
 HTTP/1 and HTTP/2 origins, Retry re-entry, Timeout, cancellation, panic, concurrent

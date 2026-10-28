@@ -23,6 +23,8 @@ type requestBufferManager struct {
 	closed       bool
 	ctx          context.Context
 	cancel       context.CancelFunc
+	// removeSpool defaults to os.Remove; owned per manager for fault injection.
+	removeSpool func(string) error
 }
 
 func newRequestBufferManager(cfg resolved.RequestBufferResources) *requestBufferManager {
@@ -30,7 +32,7 @@ func newRequestBufferManager(cfg resolved.RequestBufferResources) *requestBuffer
 		cfg.MaxInFlight = requestBufferMaxInFlight
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &requestBufferManager{cfg: cfg, ctx: ctx, cancel: cancel}
+	return &requestBufferManager{cfg: cfg, ctx: ctx, cancel: cancel, removeSpool: os.Remove}
 }
 
 func (m *requestBufferManager) stopAdmission() { m.mu.Lock(); m.closed = true; m.mu.Unlock() }
@@ -60,7 +62,9 @@ type (
 	requestBufferContextKey struct{}
 	requestBufferRequest    struct {
 		manager  *requestBufferManager
+		mu       sync.Mutex
 		deadline func(time.Time) error
+		reading  int
 	}
 )
 
@@ -69,8 +73,44 @@ type (
 func (m *requestBufferManager) wrap(next http.Handler) http.Handler {
 	return preserveRequestTrailers(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := &requestBufferRequest{manager: m, deadline: http.NewResponseController(w).SetReadDeadline}
+		defer state.finish()
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestBufferContextKey{}, state)))
 	}))
+}
+
+// The response writer belongs to the ingress handler, not a late Timeout
+// producer. Serialize deadline calls with retirement before that handler returns.
+func (s *requestBufferRequest) beginRead() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deadline == nil {
+		return false
+	}
+	s.reading++
+	return true
+}
+
+func (s *requestBufferRequest) endRead() {
+	s.mu.Lock()
+	s.reading--
+	s.mu.Unlock()
+}
+
+func (s *requestBufferRequest) interruptRead() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deadline != nil {
+		_ = s.deadline(time.Now())
+	}
+}
+
+func (s *requestBufferRequest) finish() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reading != 0 && s.deadline != nil {
+		_ = s.deadline(time.Now())
+	}
+	s.deadline = nil
 }
 
 type requestBodyBuffer struct {
@@ -137,9 +177,9 @@ func (b *requestBodyBuffer) spill(maximum int64) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(file.Name()); err != nil {
+	if err := b.manager.removeSpool(file.Name()); err != nil {
 		_ = file.Close()
-		_ = os.Remove(file.Name())
+		_ = b.manager.removeSpool(file.Name())
 		return err
 	}
 	b.file = file
@@ -202,13 +242,23 @@ func (b *requestBodyBuffer) consume(ctx context.Context, state *requestBufferReq
 	if r.Body == nil || r.Body == http.NoBody {
 		return 0
 	}
-	// Deadline interruption does not close the live reader concurrently with EOF
-	// trailer publication. Join the callback before leaving the buffering phase.
+	if !state.beginRead() {
+		return http.StatusServiceUnavailable
+	}
+	defer state.endRead()
+	// Close may drain unread HTTP/1 bytes. Interrupt incomplete consumption
+	// before closing, and keep cancellation effective throughout that cleanup.
 	done := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() { _ = state.deadline(time.Now()); close(done) })
+	stop := context.AfterFunc(ctx, func() { state.interruptRead(); close(done) })
+	complete := false
 	defer func() {
-		if !stop() {
-			<-done
+		defer func() {
+			if !stop() {
+				<-done
+			}
+		}()
+		if !complete {
+			state.interruptRead()
 		}
 		_ = r.Body.Close()
 	}()
@@ -219,6 +269,7 @@ func (b *requestBodyBuffer) consume(ctx context.Context, state *requestBufferReq
 		}
 		done, status := b.readChunk(ctx, r.Body, maximum, threshold, &emptyReads)
 		if done || status != 0 {
+			complete = done
 			return status
 		}
 	}

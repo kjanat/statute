@@ -88,6 +88,11 @@ reach their downstream handler through RequestBuffer. Use separate routes for
 those protocols. HTTP/2 and HTTP/3 bodies and trailers use the same admission rules.
 Cancellation interrupts the ingress read deadline where the transport supports it;
 custom readers must honor cancellation/deadlines or eventually finish their reads.
+Deadline access ends before the ingress handler returns, so late cancellation
+callbacks never access a response writer already retired by its transport.
+Rejected incomplete uploads are interrupted before their body is closed; an
+unfinished HTTP/1 chunked stream cannot delay rejection by keeping cleanup in
+an implicit drain. Cancellation remains effective until body cleanup completes.
 
 ## Lifetime and shutdown
 
