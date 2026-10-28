@@ -1,0 +1,43 @@
+name: sync Go images
+on:
+  schedule: [{ cron: "17 4 * * *" }]
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: "Optional tags, separated by commas or whitespace; empty discovers all source tags"
+        type: string
+      source:
+        description: "Source repositories in failover order, separated by commas or whitespace"
+        default: "public.ecr.aws/docker/library/golang, docker.io/library/golang"
+        type: string
+      destination:
+        description: "Destination image repository"
+        default: ghcr.io/kjanat/golang
+        type: string
+      username:
+        description: "GHCR username"
+        default: kjanat
+        type: string
+permissions: { contents: read }
+concurrency: { group: sync-go-images, cancel-in-progress: false }
+jobs:
+  sync:
+    if: github.repository == 'kjanat/statute' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: sync Go images
+        shell: pwsh
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          SYNC_TAGS: "${{ inputs.tags }}"
+          SYNC_SOURCE: "${{ inputs.source || 'public.ecr.aws/docker/library/golang, docker.io/library/golang' }}"
+          SYNC_DESTINATION: "${{ inputs.destination || 'ghcr.io/kjanat/golang' }}"
+          SYNC_USERNAME: "${{ inputs.username || 'kjanat' }}"
+        run: |
+          . ./scripts/sync-go-images.ps1
+          $tags = @($env:SYNC_TAGS.Trim() -split '[,\s]+' | Where-Object { $_ })
+          $sources = $env:SYNC_SOURCE.Trim() -split '[,\s]+' | Where-Object { $_ }
+          Sync-GoImage -Tags $tags -Source $sources -Destination $env:SYNC_DESTINATION -Username $env:SYNC_USERNAME
