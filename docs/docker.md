@@ -164,6 +164,9 @@ How it behaves:
   scheduler delay while they wake does not consume their idle window.
 - **External changes reconcile.** A container stopped outside statute
   becomes dormant and reactivates on the next request. A container started
+  by that request must establish readiness against a fresh Docker generation;
+  the backend published before the external stop is immediately invalidated.
+  A container started
   outside statute after a stopped observation enters the same readiness gate
   and idle policy; an unchanged running snapshot is not a repair signal. Docker
   snapshots captured before a local activation or stop transition are discarded;

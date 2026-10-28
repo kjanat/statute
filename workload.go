@@ -2001,11 +2001,13 @@ func (p *dockerProvider) observeRunningWorkloadLocked(w *workload, replaced bool
 func (p *dockerProvider) observeStoppedWorkloadLocked(w *workload) {
 	switch w.phase {
 	case workloadReady:
+		p.invalidateStoppedGeneration(w.service, w.binding.key, workloadStopSucceeded)
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()
 		p.recordWorkloadEvent(w.service, workloadExternalStopEvent)
 		log.Printf("statute: docker: workload %q: container stopped outside statute (container %q; dormant, routing demand may reactivate)", w.service, w.binding.containerID)
 	case workloadStopPending:
+		p.invalidateStoppedGeneration(w.service, w.binding.key, workloadStopSucceeded)
 		w.toLocked(workloadDormant)
 		w.stopIdleLocked()
 		p.recordWorkloadEvent(w.service, workloadExternalStopEvent)
