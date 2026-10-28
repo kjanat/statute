@@ -73,6 +73,7 @@ func (g *generator) classifyRouterPolicy(o *Object) {
 }
 
 func (g *generator) listener(o *Object) {
+	checkPathSanitization(o)
 	addr := o.text("address")
 	if !literal(addr) || addr == "" {
 		return
@@ -107,6 +108,20 @@ func (g *generator) listener(o *Object) {
 	g.r.Config.Listeners = append(g.r.Config.Listeners, l)
 	g.listeners = append(g.listeners, code)
 	o.Generated = true
+}
+
+func checkPathSanitization(o *Object) {
+	const path = "http.sanitizePath"
+	if enabled, ok := o.value(path).(bool); ok && !enabled {
+		o.mark(path, Exact, "explicitly disabled source path sanitization; native routing preserves dot segments and duplicate slashes")
+		return
+	}
+	const reason = "Traefik enables pre-routing path sanitization by default; native routing and upstream paths retain dot segments and duplicate slashes; choose an explicit migration policy"
+	if o.value(path) == nil {
+		o.note("$"+path, Manual, reason)
+	} else {
+		o.mark(path, Manual, reason)
+	}
 }
 
 func (g *generator) listenerRedirect(o *Object, addr string) bool {

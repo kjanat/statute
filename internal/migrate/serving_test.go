@@ -34,12 +34,11 @@ func TestGeneratedProgramServesRewrittenRequests(t *testing.T) {
       addPrefix: {prefix: /v1}
 `
 	in := basicInputs(t, body)
-	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: '"+address+"'}\n")}
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: '"+address+"', http: {sanitizePath: false}}\n")}
 	result := audit(t, in)
 	requireUnblocked(t, result)
 	binary := compileGenerated(t, result)
-	// The binding is intentionally absent for the first invocation. Validation
-	// must fail before the program can start a listener.
+	// A missing binding must fail validation before any listener starts.
 	// #nosec G204 -- Execute only the generated test binary.
 	missing := exec.CommandContext(t.Context(), binary, "-validate")
 	missing.Env = []string{"STATUTE_TEST_MIGRATION_TOKEN="}

@@ -63,7 +63,7 @@ tls:
       maxVersion: VersionTLS13
 `)
 	static := fixture(t, "static.yml", fmt.Sprintf(`entryPoints:
-  secure: {address: ':8443'}
+  secure: {address: ':8443', http: {sanitizePath: false}}
 providers:
   file: {filename: %q, watch: true}
   docker: {exposedByDefault: false, watch: true}
@@ -114,7 +114,7 @@ func TestAuthenticationFileBindingIsDeferred(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: [auth]", 1)
 	body += fmt.Sprintf("  middlewares:\n    auth:\n      basicAuth:\n        usersFile: %q\n", users)
 	in := basicInputs(t, body+"tls:\n  stores: {default: {defaultCertificate: {certFile: /cert.pem, keyFile: /key.pem}}}\n")
-	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: ':8443', http: {tls: {}}}\n")}
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: ':8443', http: {sanitizePath: false, tls: {}}}\n")}
 	r := audit(t, in)
 	requireUnblocked(t, r)
 	assertGeneratedParity(t, r)
@@ -132,7 +132,7 @@ func TestAuthenticationFileBindingIsDeferred(t *testing.T) {
 
 func TestListenerIsolationCannotBecomeSharedPolicy(t *testing.T) {
 	in := basicInputs(t, strings.Replace(simpleDynamic, "service: api", "service: api\n      entryPoints: [private]", 1))
-	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  public: {address: ':8080'}\n  private: {address: ':8081'}\n")}
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  public: {address: ':8080', http: {sanitizePath: false}}\n  private: {address: ':8081', http: {sanitizePath: false}}\n")}
 	r := audit(t, in)
 	if !r.Report.Blocking || !strings.Contains(string(r.Go), "migration incomplete") {
 		t.Fatal("listener restriction silently dropped")
@@ -174,6 +174,7 @@ func TestEntrypointMiddlewareAndSharedDefaults(t *testing.T) {
   web:
     address: ':8080'
     http:
+      sanitizePath: false
       middlewares: [edge@file]
       maxHeaderBytes: 8192
     transport:
@@ -213,7 +214,7 @@ func TestGuardedMiddlewareCandidatesCompile(t *testing.T) {
 
 func TestIncompleteFileProviderInventoryBlocks(t *testing.T) {
 	in := basicInputs(t, simpleDynamic)
-	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: ':8080'}\nproviders:\n  file: {directory: /not-supplied-to-audit}\n")}
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false}}\nproviders:\n  file: {directory: /not-supplied-to-audit}\n")}
 	r := audit(t, in)
 	if !r.Report.Blocking {
 		t.Fatal("unsupplied provider inputs accepted")
@@ -259,7 +260,7 @@ func TestACMEDirectoryCredentialsAreWithheld(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      tls: {certResolver: cloud}", 1)
 	in := basicInputs(t, body)
 	in.Static = []string{fixture(t, "static.yml", `entryPoints:
-  secure: {address: ':8443'}
+  secure: {address: ':8443', http: {sanitizePath: false}}
 certificatesResolvers:
   cloud:
     acme:

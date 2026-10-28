@@ -42,7 +42,11 @@ and `.toml` files. Compose labels support mapping and list syntax. Supply every
 file explicitly: the command does not follow provider paths, resolve Compose
 includes/overrides, inspect images for exposed ports, or query running containers.
 Includes, inheritance and Swarm settings require manual review. Duplicate
-provider-qualified definitions block acceptance rather than being merged.
+provider-qualified definitions block acceptance. Each identity must have one
+unambiguous definition.
+TLS stores and named TLS options are inventoried separately, so their definitions
+can live in different dynamic files. Each resource retains its source filename
+and field paths; duplicate definitions of the same store or option remain blocking.
 
 Output files must be new, distinct paths. They are created with mode `0600` and
 never overwrite existing files. Parsing/writing failures remove newly reserved
@@ -55,8 +59,8 @@ The human report goes to stdout. JSON schema version `1` includes source paths,
 provider-qualified identities, every inventoried field's classification,
 reference names, source router and distinct host counts, rules with unknown
 counts, generated route counts, unmatched objects, and canonical-tool checks.
-Compose inventory covers Traefik labels and mechanisms that could alter them,
-not unrelated application images, environment values, or labels.
+Compose inventory covers Traefik labels and mechanisms that could alter them.
+Unrelated application images, environment values and labels are excluded.
 
 | Classification | Meaning                                                                                                      |
 | -------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -67,11 +71,11 @@ not unrelated application images, environment values, or labels.
 | `out_of_scope` | The object is intentionally outside this HTTP tool, such as the Traefik dashboard.                           |
 
 An object's classification reflects its most restrictive field. `generated`
-means it contributed a fragment or retained Docker setting, not that every field
-passed. TLS paths, for example, can contribute an HTTPS candidate while coverage
+means it contributed a fragment or retained Docker setting. Check the field
+classifications separately for blocking gaps. TLS paths, for example, can contribute an HTTPS candidate while coverage
 remains blocking. `unmatched_objects` lists objects without a contribution.
 Disjunctions and host spelling expansion can produce several native routes from
-one router. Docker counts describe parsed labels, not live discovery.
+one router. Docker counts describe parsed labels; live discovery is outside the audit.
 
 | Exit status | Meaning                                                       |
 | ----------- | ------------------------------------------------------------- |
@@ -91,6 +95,11 @@ configuration and resolve every blocking finding before replacing the guard with
   A router restricted to only part of the native shared content-listener set is
   blocked. Common entrypoint middleware is prepended to file routes and registered
   as Docker `DefaultMiddleware`; different per-listener chains remain blocked.
+  Traefik enables `http.sanitizePath` by default, cleaning dot segments and repeated
+  slashes before routing and forwarding. Statute preserves those paths, so an
+  omitted or enabled setting produces a blocking finding. An explicit boolean
+  `sanitizePath: false` is supported. Review the routing and upstream impact before
+  changing this policy in the source configuration.
 - Named ACME resolvers generate `AutoTLS` sources using declared domains or literal
   `Host` matchers. HTTP-01 and Cloudflare DNS-01 are supported. Cloudflare uses a
   required `CF_DNS_API_TOKEN` environment binding. Source ACME JSON storage becomes
@@ -133,7 +142,11 @@ configuration and resolve every blocking finding before replacing the guard with
   values are withheld and require relocation. Auth files must contain bcrypt
   hashes; validation is deferred until the generated program loads them.
 - Header/path operations after other middleware remain blocked because Statute
-  hoists them before authentication, denial and retry paths. ReplacePath and
+  hoists them before authentication, denial and retry paths. Conflicting operations
+  on the same response header also block: Traefik applies nested response modifiers
+  from the inner middleware outward, while Statute applies operations in declaration
+  order. This check includes nested chains and entrypoint defaults for file and
+  Docker routes, and compares header names case-insensitively. ReplacePath and
   StripPrefix candidates identify missing Traefik metadata headers and matching
   differences. RequestBuffer, Retry and gzip/Brotli candidates identify concrete
   resource, response-buffering and negotiation differences. Incomplete middleware
@@ -167,13 +180,13 @@ must not be mistaken for environment variable names.
 
 The generated fragments pass through `Resolve`, `Lint`, `Export` and `GraphDOT`.
 Lint rule identifiers remain in the report; error severity blocks acceptance.
-Export and graph are discarded rather than embedding configuration values in the
+Export and graph output is discarded to keep configuration values out of the
 audit. Topology checks compare route order, host/path coverage, action/pool links,
 middleware counts and Docker registry/exact-service edges with the source plan.
 Checks with `deferred: true` used placeholders for environment/auth bindings or
 require runtime certificate material; they prove structural validity only.
-Missing bindings fail before startup. The human report also prints deferred state. These checks validate the candidate, not missing behavior or live Docker
-and certificate state. Regression tests compile generated Go, compare its export with the audited
+Missing bindings fail before startup. The human report also prints deferred state. These checks validate the candidate.
+Missing behavior and live Docker/certificate state require deployment validation. Regression tests compile generated Go, compare its export with the audited
 configuration, and launch a generated proxy to verify rewritten requests, header
 operations, unmatched paths and missing-binding refusal.
 

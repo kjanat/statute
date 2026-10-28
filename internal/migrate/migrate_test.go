@@ -26,7 +26,7 @@ func fixture(t *testing.T, name, body string) string {
 
 func basicInputs(t *testing.T, body string) Inputs {
 	t.Helper()
-	return Inputs{Static: []string{fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n")}, Dynamic: []string{fixture(t, "dynamic.yml", body)}}
+	return Inputs{Static: []string{fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n    http: {sanitizePath: false}\n")}, Dynamic: []string{fixture(t, "dynamic.yml", body)}}
 }
 
 const simpleDynamic = `http:
@@ -73,8 +73,7 @@ func assertGeneratedParity(t *testing.T, a *Result) {
 	if err := statute.Export(a.Config, &exported); err != nil {
 		t.Fatal(err)
 	}
-	// Compile and execute the generated configuration's canonical tooling, not
-	// a second handwritten approximation of its builders.
+	// Run canonical tooling on the generated Go to verify its emitted builders.
 	dir := t.TempDir()
 	source := filepath.Join(dir, "main.go")
 	test := filepath.Join(dir, "main_test.go")
@@ -258,6 +257,7 @@ func TestDockerCodeOwnedRegistrationAndPolicy(t *testing.T) {
 	static := `entryPoints:
   web:
     address: ':8080'
+    http: {sanitizePath: false}
 providers:
   docker:
     exposedByDefault: false
@@ -345,7 +345,7 @@ http:
         permanent: true
 `
 	in := basicInputs(t, body)
-	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  websecure:\n    address: ':8443'\n    http:\n      tls: {}\n")}
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  websecure:\n    address: ':8443'\n    http:\n      sanitizePath: false\n      tls: {}\n")}
 	r := audit(t, in)
 	if !r.Report.Blocking || !bytes.Contains(r.Go, []byte("statute.HTTPS(")) || !bytes.Contains(r.Go, []byte(".RedirectTo(")) || !bytes.Contains(r.Go, []byte("panic(")) {
 		t.Fatalf("guarded candidates missing: %s", r.Go)
@@ -417,7 +417,7 @@ func TestMiddlewareExpansionIsBounded(t *testing.T) {
 }
 
 func TestDockerMissingDependenciesAreBlocking(t *testing.T) {
-	static := fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\nproviders:\n  docker:\n    exposedByDefault: false\n")
+	static := fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n    http: {sanitizePath: false}\nproviders:\n  docker:\n    exposedByDefault: false\n")
 	compose := fixture(t, "compose.yml", "services:\n  app:\n    labels:\n      traefik.http.routers.app.rule: Host(`app.example`)\n      traefik.http.routers.app.service: missing\n")
 	r := audit(t, Inputs{Static: []string{static}, Compose: []string{compose}})
 	if !r.Report.Blocking || r.Report.GeneratedRoutes != 0 {

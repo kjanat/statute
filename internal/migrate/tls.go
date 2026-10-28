@@ -118,11 +118,11 @@ func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes [
 }
 
 func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []string, bool) {
-	object := g.objects["tls:tls@file"]
 	plain, provider, _ := strings.Cut(name, "@")
 	if provider != providerFile {
 		return nil, nil, false
 	}
+	object := g.objects["tls:options."+name]
 	if object == nil || object.value("options."+plain) == nil {
 		if plain != defaultName {
 			g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: "tls", Code: "missing-named-tls-policy", Blocking: true})

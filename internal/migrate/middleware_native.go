@@ -192,6 +192,7 @@ func (g *generator) checkMiddlewareOrder(o *Object, refs []string) {
 	for _, ref := range refs {
 		g.flattenMiddleware(qualified(ref, o.Provider), &expanded, map[string]bool{})
 	}
+	checkResponseHeaderOrder(o, expanded)
 	seenPolicy := false
 	for _, m := range expanded {
 		hoisted := m.value("headers") != nil || m.value("addPrefix") != nil
@@ -203,6 +204,29 @@ func (g *generator) checkMiddlewareOrder(o *Object, refs []string) {
 		}
 		if !hoisted {
 			seenPolicy = true
+		}
+	}
+}
+
+func checkResponseHeaderOrder(router *Object, expanded []*Object) {
+	const prefix = "headers.customresponseheaders."
+	values := map[string]string{}
+	for _, m := range expanded {
+		for _, f := range m.Fields {
+			path := strings.ToLower(f.Path)
+			if !strings.HasPrefix(path, prefix) {
+				continue
+			}
+			value, ok := m.value(f.Path).(string)
+			if !ok {
+				continue
+			}
+			name := strings.TrimPrefix(path, prefix)
+			if previous, exists := values[name]; exists && previous != value {
+				router.note("$response-header-order", Manual, "conflicting response-header operations run inner-to-outer in Traefik and in declaration order in Statute; review response-header precedence")
+				return
+			}
+			values[name] = value
 		}
 	}
 }

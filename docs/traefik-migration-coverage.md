@@ -13,8 +13,7 @@ provider identity and middleware declaration order survive normalization.
 One audit invocation owns input documents, the normalized inventory and artifact
 files. It does not acquire runtime resources. Referenced secret material is not
 read by the audit. Explicit generated environment/file bindings fail closed before
-startup; validation that depends on these inputs is reported as deferred rather
-than passed. Blocking source findings guard the entire generated program.
+startup. Validation that depends on these inputs is reported as deferred. Blocking source findings guard the entire generated program.
 
 | Acceptance area      | Required evidence                                                                                                                              |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -33,8 +32,8 @@ All interaction-matrix rows apply to the generated configuration. Retry and
 hoisting are checked at middleware assembly; shared pools and Docker registration
 retain route isolation; TLS coverage and selected policy are checked before
 listener generation. Process lifecycle is exercised by generated-program startup
-refusal and successful serving tests. Observability differences are explicit
-findings instead of inferred runtime changes.
+refusal and successful serving tests. Observability differences produce explicit
+findings and require a migration decision.
 
 Architectural decisions required: none. Non-equivalent runtime capabilities remain
 explicit findings as allowed by #241; this change does not add a second runtime

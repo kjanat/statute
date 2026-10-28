@@ -159,6 +159,10 @@ func inventory(r *Report, source, provider string, data map[string]any) {
 			inventoryStatic(r, source, key, v)
 			continue
 		}
+		if key == kindTLS {
+			inventoryTLS(r, source, v)
+			continue
+		}
 		if key != protocolHTTP {
 			addObject(r, source, provider, key, key, v)
 			continue
@@ -168,6 +172,26 @@ func inventory(r *Report, source, provider string, data map[string]any) {
 		}
 		for _, kind := range keys(asMap(v)) {
 			inventoryGroup(r, source, provider, kind, asMap(v)[kind])
+		}
+	}
+}
+
+func inventoryTLS(r *Report, source string, value any) {
+	section := asMap(value)
+	if len(section) == 0 {
+		addObject(r, source, providerFile, kindTLS, kindTLS, value)
+		return
+	}
+	for _, group := range keys(section) {
+		resources := asMap(section[group])
+		if (group != "stores" && group != "options") || len(resources) == 0 {
+			addObject(r, source, providerFile, kindTLS, group, map[string]any{group: section[group]})
+			continue
+		}
+		for _, name := range keys(resources) {
+			// Keep source-relative field paths while indexing each named resource.
+			data := map[string]any{group: map[string]any{name: resources[name]}}
+			addObject(r, source, providerFile, kindTLS, group+"."+name, data)
 		}
 	}
 }
@@ -260,8 +284,8 @@ func sourceReferences(o *Object, path string, v any) []string {
 	for _, m := range envReference.FindAllStringSubmatch(s, -1) {
 		refs = append(refs, "env:"+m[1])
 	}
-	// Embedded bare dollars can be password-hash components, not environment
-	// references. Never disclose them as purported variable names.
+	// Embedded bare dollars may belong to password hashes; exposing them as
+	// variable names could disclose credentials.
 	if m := wholeEnvReference.FindStringSubmatch(s); m != nil {
 		refs = append(refs, "env:"+m[1])
 	}

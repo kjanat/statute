@@ -10,8 +10,8 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-// Validate source-derived edges, not only totals: a permutation of routes or a
-// policy attached to the wrong shared pool must fail even with identical counts.
+// Check source-derived edges so route permutations and policies attached
+// to the wrong shared pool fail even when route and pool counts match.
 func (g *generator) checkSourceTopology(c *resolved.Config) {
 	routes, fallbacks := slices.Clone(c.Routes), slices.Clone(c.FallbackRoutes)
 	failed := false
