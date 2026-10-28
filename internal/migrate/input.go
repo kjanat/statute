@@ -33,12 +33,12 @@ var (
 // Audit reads only the supplied sources. It never expands environment variables,
 // reads referenced secret files, contacts Docker, or executes generated source.
 func Audit(inputs Inputs) (*Result, error) {
-	result := &Result{Report: Report{Version: 1, Objects: []*Object{}, Checks: []Check{}, Unmatched: []string{}}}
+	result := &Result{Report: Report{Version: 1, Objects: []*Object{}, Checks: []Check{}, Unmatched: []string{}}, inputs: inputs, documents: map[string]string{}}
 	count := 0
 	for _, group := range []struct {
 		kind  string
 		paths []string
-	}{{"static", inputs.Static}, {providerFile, inputs.Dynamic}, {providerDocker, inputs.Compose}} {
+	}{{providerStatic, inputs.Static}, {providerFile, inputs.Dynamic}, {providerDocker, inputs.Compose}} {
 		paths, err := expandPaths(group.paths, group.kind == providerFile)
 		if err != nil {
 			return nil, err
@@ -53,6 +53,11 @@ func Audit(inputs Inputs) (*Result, error) {
 				return nil, fmt.Errorf("input %q: %w", path, err)
 			}
 			inventory(&result.Report, path, group.kind, data)
+			absolute, err := filepath.Abs(path)
+			if err != nil {
+				return nil, errors.New("cannot normalize input path")
+			}
+			result.documents[absolute] = group.kind
 		}
 	}
 	if count == 0 {
@@ -150,7 +155,7 @@ func inventory(r *Report, source, provider string, data map[string]any) {
 	}
 	for _, key := range keys(data) {
 		v := data[key]
-		if provider == "static" {
+		if provider == providerStatic {
 			inventoryStatic(r, source, key, v)
 			continue
 		}
@@ -170,9 +175,9 @@ func inventory(r *Report, source, provider string, data map[string]any) {
 func inventoryStatic(r *Report, source, key string, v any) {
 	switch strings.ToLower(key) {
 	case kindEntrypoints, "certificatesresolvers", kindProviders:
-		inventoryGroup(r, source, "static", strings.ToLower(key), v)
+		inventoryGroup(r, source, providerStatic, strings.ToLower(key), v)
 	default:
-		addObject(r, source, "static", "setting", key, v)
+		addObject(r, source, providerStatic, "setting", key, v)
 	}
 }
 
@@ -269,7 +274,7 @@ func sourceReferences(o *Object, path string, v any) []string {
 
 func knownFileReference(o *Object, path string) bool {
 	if o.Kind == kindProviders && o.Name == providerFile {
-		return path == "filename" || path == "directory"
+		return path == "filename" || path == fieldDirectory
 	}
 	if o.Kind == "middlewares" {
 		return path == "basicAuth.usersFile" || path == "basicauth.usersfile"
@@ -303,12 +308,14 @@ func inventoryComposeService(r *Report, source, name string, service map[string]
 	labels, invalid := composeLabels(service["labels"])
 	objects, duplicate := labelObjects(labels)
 	invalid = invalid || duplicate
+	retainedLabels := traefikLabels(labels)
 	for _, id := range keys(objects) {
 		kind, obj, _ := strings.Cut(id, ":")
 		if kind == kindContainer {
 			obj = name
 		}
 		o := addObject(r, source+"#"+name, providerDocker, kind, obj, objects[id])
+		o.labels = retainedLabels
 		if invalid {
 			o.note("$labels", Unsupported, "ambiguous or malformed Compose labels")
 		}
@@ -357,7 +364,12 @@ func labelObjects(labels map[string]any) (map[string]map[string]any, bool) {
 		if !strings.HasPrefix(strings.ToLower(k), "traefik.") {
 			continue
 		}
-		parts := strings.Split(strings.ToLower(k), ".")
+		parts := strings.Split(k, ".")
+		for i := range parts {
+			if i != 3 {
+				parts[i] = strings.ToLower(parts[i])
+			}
+		}
 		kind, obj, field := kindContainer, "labels", strings.Join(parts[1:], ".")
 		if len(parts) >= 5 && parts[1] == protocolHTTP {
 			kind, obj, field = parts[2], parts[3], strings.Join(parts[4:], ".")
@@ -397,8 +409,8 @@ func scalar(v any) string {
 func integer(v any) (int, error) { return strconv.Atoi(scalar(v)) }
 
 func (o *Object) value(path string) any {
-	if v, ok := o.data[path]; ok && o.Provider == providerDocker {
-		return v
+	if o.Provider == providerDocker {
+		return o.data[strings.ToLower(path)]
 	}
 	var v any = o.data
 	for p := range strings.SplitSeq(path, ".") {
@@ -410,4 +422,14 @@ func (o *Object) value(path string) any {
 func (o *Object) text(path string) string { return stringValue(o.value(path)) }
 func literal(s string) bool {
 	return !strings.ContainsAny(s, "$\r\n\x00") && !strings.Contains(s, "{{")
+}
+
+func traefikLabels(labels map[string]any) map[string]string {
+	out := map[string]string{}
+	for key, value := range labels {
+		if strings.HasPrefix(strings.ToLower(key), "traefik.") {
+			out[key] = scalar(value)
+		}
+	}
+	return out
 }

@@ -30,9 +30,15 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	checkMiddlewareShape(o)
 	classifyMiddlewareDifferences(o)
 	var chain middleware
-	g.headerRemovals(o, &chain)
+	g.headers(o, &chain)
+	g.basicAuth(o, &chain)
+	g.nativeRewrite(o, &chain)
+	g.buffering(o, &chain)
+	g.retry(o, &chain)
+	g.compression(o, &chain)
 	g.ipAllowList(o, &chain)
 	g.expandChain(o, &chain)
+	g.retainMiddlewareCandidate(o, chain)
 	if o.ready() && len(chain.values) > 0 {
 		g.chains[id] = chain
 		return chain, true
@@ -130,33 +136,6 @@ func (g *generator) markMiddlewareUsed(id string) {
 func (g *generator) markMiddlewaresUsed(refs []string, provider string) {
 	for _, ref := range refs {
 		g.markMiddlewareUsed(qualified(ref, provider))
-	}
-}
-
-func (g *generator) headerRemovals(o *Object, chain *middleware) {
-	path := "headers.customResponseHeaders"
-	if o.Provider == providerDocker {
-		path = "headers.customresponseheaders"
-	}
-	for _, f := range o.Fields {
-		if !strings.HasPrefix(f.Path, path+".") {
-			continue
-		}
-		value, ok := o.value(f.Path).(string)
-		if !ok || value != "" {
-			continue
-		}
-		name := strings.TrimPrefix(f.Path, path+".")
-		if !literal(name) {
-			continue
-		}
-		if len(chain.values) >= 256 {
-			o.note("$size", Unsupported, "expanded middleware chain exceeds 256 operations")
-			return
-		}
-		chain.values = append(chain.values, statute.RemoveResponseHeader(name))
-		chain.code = append(chain.code, fmt.Sprintf("statute.RemoveResponseHeader(%q)", name))
-		o.mark(f.Path, Translated, "code-owned response-header removal; header values are never copied")
 	}
 }
 

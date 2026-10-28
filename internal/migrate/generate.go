@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"go/format"
 	"io"
-	"net"
 	"net/url"
 	"slices"
 	"strconv"
@@ -22,32 +21,49 @@ type middleware struct {
 }
 
 type generator struct {
-	r             *Result
-	listeners     []string
-	pools         map[string]string
-	routes        []string
-	fallbacks     []string
-	docker        string
-	objects       map[string]*Object
-	chains        map[string]middleware
-	visiting      map[string]bool
-	attempted     map[string]bool
-	transports    map[string]statute.Transport
-	transportCode map[string]string
-	hosts         map[string]bool
-	certFile      string
-	keyFile       string
+	r              *Result
+	listeners      []string
+	pools          map[string]string
+	routes         []string
+	fallbacks      []string
+	docker         string
+	objects        map[string]*Object
+	chains         map[string]middleware
+	visiting       map[string]bool
+	attempted      map[string]bool
+	transports     map[string]statute.Transport
+	transportCode  map[string]string
+	hosts          map[string]bool
+	certFile       string
+	keyFile        string
+	imports        map[string]bool
+	helpers        map[string]string
+	entrypoints    map[string]*Object
+	entryTLS       map[string]bool
+	routerEntries  map[*Object][]string
+	contentEntries []string
+	defaults       string
+	defaultEntries []string
 }
 
 func generate(r *Result) error {
 	g := &generator{r: r, pools: map[string]string{}, objects: map[string]*Object{}, chains: map[string]middleware{}, visiting: map[string]bool{}, attempted: map[string]bool{}, transports: map[string]statute.Transport{}, transportCode: map[string]string{}, hosts: map[string]bool{}}
+	g.imports = map[string]bool{}
+	g.helpers = map[string]string{}
+	g.entrypoints = map[string]*Object{}
+	g.entryTLS = map[string]bool{}
+	g.routerEntries = map[*Object][]string{}
 	r.Config.Upstreams = statute.Upstreams{}
 	g.indexObjects()
 	g.each(kindTLS, g.certificates)
+	g.planListeners()
+	g.defaultTransport()
+	g.defaults = g.listenerDefaults()
 	for _, o := range r.Report.Objects {
 		g.infrastructure(o)
 	}
 	g.each("middlewares", func(o *Object) { g.chain(o) })
+	g.entrypointMiddleware()
 	g.each("services", g.service)
 	g.each(kindContainer, g.container)
 	routers := g.orderedRouters()
@@ -60,6 +76,7 @@ func generate(r *Result) error {
 	}
 	r.Report.Hosts = len(g.hosts)
 	g.validate()
+	g.bindingChecks()
 	finish(&r.Report)
 	source, err := g.source()
 	if err != nil {
@@ -105,7 +122,7 @@ func (g *generator) infrastructure(o *Object) {
 			o.mark("", OutOfScope, "Traefik dashboard is outside Statute's scope")
 		}
 	case kindTLS, "certificatesresolvers":
-		o.note("$coverage", Manual, "review certificate coverage, SNI policy, challenge availability and storage; no TLS policy inferred")
+		// These objects are consumed by the listeners that select them.
 	}
 }
 
@@ -125,40 +142,10 @@ func (g *generator) orderedRouters() []*Object {
 	return routers
 }
 
-func (g *generator) listener(o *Object) {
-	addr := o.text("address")
-	if !literal(addr) || addr == "" {
-		return
-	}
-	addr, _ = strings.CutSuffix(addr, "/tcp")
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		return
-	}
-	o.mark("address", Translated, "explicit native HTTP listener; TLS and entrypoint policies require independent review")
-	// TLS source paths remain references; audit never opens certificate material.
-	if o.value("http.tls") != nil {
-		if g.certFile != "" {
-			g.r.Config.Listeners = append(g.r.Config.Listeners, statute.HTTPS(addr, statute.StaticTLS(g.certFile, g.keyFile), statute.HTTP2()))
-			g.listeners = append(g.listeners, fmt.Sprintf("statute.HTTPS(%q,statute.StaticTLS(%q,%q),statute.HTTP2())", addr, g.certFile, g.keyFile))
-			o.Generated = true
-		}
-		return
-	}
-	if !o.ready() {
-		return
-	}
-	g.r.Config.Listeners = append(g.r.Config.Listeners, statute.HTTP(addr))
-	g.listeners = append(g.listeners, fmt.Sprintf("statute.HTTP(%q)", addr))
-	o.Generated = true
-}
-
 func (g *generator) provider(o *Object) {
 	switch o.Name {
 	case providerFile:
-		for _, key := range []string{"filename", "directory", "watch"} {
-			o.mark(key, Translated, "input must be supplied explicitly with --dynamic; generated Go replaces file-provider reload")
-		}
-		o.note("$inputs", Manual, "confirm all file-provider inputs were supplied; runtime hot reload is replaced by compilation")
+		g.fileProvider(o)
 	case providerDocker:
 		g.dockerProvider(o)
 	default:
@@ -185,7 +172,11 @@ func (g *generator) dockerProvider(o *Object) {
 		o.note("$defaultRule", Manual, "Traefik implicit Host rules differ from Statute discovery; inventory every exposed container")
 	}
 	if o.value("watch") != nil {
-		o.mark("watch", Manual, "Statute discovery is event-driven; verify provider update semantics")
+		if scalar(o.value("watch")) == trueValue {
+			o.mark("watch", Translated, "event-driven Docker discovery")
+		} else {
+			o.mark("watch", Manual, "Statute Docker discovery cannot freeze an initial snapshot")
+		}
 	}
 	g.r.Config.Docker = d
 	g.docker = code
@@ -216,33 +207,6 @@ func dockerNetwork(o *Object, d *statute.DockerConfig) string {
 	return fmt.Sprintf(".Network(%q)", v)
 }
 
-func (g *generator) transport(o *Object) {
-	t := statute.Transport{}
-	var parts []string
-	for _, f := range []struct {
-		key, field string
-		dst        *string
-	}{{"serverName", "ServerName", &t.ServerName}, {"forwardingTimeouts.dialTimeout", "DialTimeout", &t.DialTimeout}, {"forwardingTimeouts.responseHeaderTimeout", "ResponseHeaderTimeout", &t.ResponseHeaderTimeout}, {"forwardingTimeouts.idleConnTimeout", "IdleConnTimeout", &t.IdleConnTimeout}} {
-		v := o.text(f.key)
-		if v == "" || !literal(v) {
-			continue
-		}
-		*f.dst = v
-		parts = append(parts, fmt.Sprintf("%s:%q", f.field, v))
-		o.mark(f.key, Translated, "native pool transport policy, shared by proxy and health traffic")
-	}
-	if v := o.value("insecureSkipVerify"); v != nil {
-		b, err := strconv.ParseBool(scalar(v))
-		if err == nil && !b {
-			o.mark("insecureSkipVerify", Exact, "TLS verification remains enabled")
-		}
-	}
-	if o.ready() {
-		g.transports[o.Name+"@"+o.Provider] = t
-		g.transportCode[o.Name+"@"+o.Provider] = "statute.Transport{" + strings.Join(parts, ",") + "}"
-	}
-}
-
 func (g *generator) service(o *Object) {
 	if o.Provider == providerDocker {
 		g.dockerService(o)
@@ -251,13 +215,14 @@ func (g *generator) service(o *Object) {
 	if o.Provider != providerFile {
 		return
 	}
-	pool := statute.Pool{}
+	pool := statute.Pool{Transport: g.transports["default@internal"]}
 	backends, ok := serviceBackends(o, &pool)
 	if !ok {
 		return
 	}
 	parts := []string{"Backends:[]statute.Backend{" + strings.Join(backends, ",") + "}"}
 	parts = append(parts, serviceHost(o, &pool)...)
+	parts = append(parts, serviceHealth(o, &pool)...)
 	if name := o.text("loadBalancer.serversTransport"); name != "" {
 		o.reference("loadBalancer.serversTransport", "transport", name)
 		id := qualified(name, o.Provider)
@@ -267,9 +232,11 @@ func (g *generator) service(o *Object) {
 			return
 		}
 		pool.Transport = t
-		parts = append(parts, "Transport:"+g.transportCode[id])
+
 		o.mark("loadBalancer.serversTransport", Translated, "provider-qualified code-owned pool transport")
 	}
+	serviceFlush(o, &pool.Transport)
+	parts = append(parts, "Transport:"+transportLiteral(pool.Transport))
 	if !o.ready() {
 		return
 	}
@@ -337,10 +304,10 @@ func serviceHost(o *Object, pool *statute.Pool) []string {
 }
 
 func (g *generator) dockerService(o *Object) {
-	for _, key := range []string{"loadbalancer.server.port", "loadbalancer.server.scheme", "loadbalancer.healthcheck.path", "loadbalancer.healthcheck.interval", "loadbalancer.healthcheck.timeout"} {
+	for _, key := range []string{"loadbalancer.server.port", "loadbalancer.server.scheme"} {
 		classifyDockerServiceField(o, key)
 	}
-	g.dockerHostPolicy(o)
+	g.dockerPoolPolicy(o)
 	if o.ready() {
 		o.Generated = true
 	}
@@ -377,34 +344,6 @@ func validPort(value string) bool {
 func positiveDuration(value string) bool {
 	d, err := time.ParseDuration(value)
 	return err == nil && d > 0
-}
-
-func (g *generator) dockerHostPolicy(o *Object) {
-	v := o.value("loadbalancer.passhostheader")
-	if v == nil {
-		return
-	}
-	b, err := strconv.ParseBool(scalar(v))
-	if err != nil {
-		return
-	}
-	if g.r.Config.Docker == nil {
-		o.note("$provider", Manual, "explicit Docker provider configuration is required")
-		return
-	}
-	if o.value("loadbalancer.healthcheck.path") != nil {
-		o.note("$policy", Manual, "combine Host and health policy explicitly before registering PoolPolicy")
-		return
-	}
-	p := statute.PoolPolicy{}
-	host := "statute.ClientHost"
-	if !b {
-		p.UpstreamHost = statute.TargetHost
-		host = "statute.TargetHost"
-	}
-	g.r.Config.Docker.PoolPolicy(o.Name+"@traefik", p)
-	g.docker += fmt.Sprintf(".PoolPolicy(%q,statute.PoolPolicy{UpstreamHost:%s})", o.Name+"@traefik", host)
-	o.mark("loadbalancer.passhostheader", Translated, "exact discovered-service PoolPolicy; labels do not own transport or Host policy")
 }
 
 func (g *generator) container(o *Object) {
@@ -446,8 +385,8 @@ func (g *generator) router(o *Object) {
 	if !ok {
 		return
 	}
-	classifyRouterPolicy(o)
-	refs, valid := middlewareRefs(o)
+	g.classifyRouterPolicy(o)
+	refs, valid := g.middlewareRefs(o)
 	if !valid {
 		o.note("$middlewares", Manual, "malformed middleware references")
 		return
@@ -503,21 +442,10 @@ func (g *generator) parseRouter(o *Object) ([]docker.Matcher, bool) {
 	return ms, true
 }
 
-func classifyRouterPolicy(o *Object) {
-	if o.value("priority") != nil {
-		if _, err := integer(o.value("priority")); err == nil {
-			o.mark("priority", Translated, "file routes sorted by explicit priority or rule length; Docker precedence requires separate review")
-		}
-	}
-	for _, key := range []string{"entryPoints", kindEntrypoints, kindTLS} {
-		if o.value(key) != nil {
-			o.mark(key, Manual, "verify listener reachability and certificate coverage; native routes are shared by content listeners")
-		}
-	}
-}
-
 func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 	var chain middleware
+	g.checkDefaultMiddleware(o, refs)
+	g.checkMiddlewareOrder(o, refs)
 	for _, ref := range refs {
 		if !literal(ref) {
 			o.note("$middleware", Manual, "unresolved middleware reference; interpolation is not evaluated")
@@ -615,26 +543,6 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 		g.routes = append(g.routes, code)
 	}
 	g.r.Report.GeneratedRoutes += max(1, len(hosts))
-}
-
-func (g *generator) certificates(o *Object) {
-	items, ok := o.value("certificates").([]any)
-	if !ok || len(items) != 1 {
-		return
-	}
-	m := asMap(items[0])
-	cert, key := stringValue(m["certFile"]), stringValue(m["keyFile"])
-	if cert == "" || key == "" || !literal(cert) || !literal(key) {
-		return
-	}
-	if g.certFile != "" {
-		o.note("$certificates", Manual, "multiple certificate sets require explicit SNI source selection")
-		return
-	}
-	g.certFile, g.keyFile = cert, key
-	o.mark("certificates[0].certFile", Translated, "certificate file reference retained without reading material")
-	o.mark("certificates[0].keyFile", Translated, "private-key file reference retained without reading material")
-	o.Generated = true
 }
 
 func (g *generator) redirect(o *Object, refs []string) (string, int, bool) {
@@ -785,29 +693,35 @@ func matchersMayOverlap(m, n docker.Matcher) bool {
 func (g *generator) validate() {
 	resolved, err := statute.Resolve(g.r.Config)
 	if err != nil {
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{"resolve", "invalid-generated-config", true})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{toolResolve, "invalid-generated-config", true, false})
+		for _, tool := range []string{toolLint, toolExport, toolGraph, toolTopology} {
+			g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: tool, Code: "not-run-invalid-generated-config", Blocking: true})
+		}
 		return
 	}
-	g.r.Report.Checks = append(g.r.Report.Checks, Check{"resolve", "ok", false})
+	g.r.Report.Checks = append(g.r.Report.Checks, Check{toolResolve, "ok", false, false})
 	findings, err := statute.Lint(g.r.Config)
 	if err != nil {
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{"lint", "failed", true})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{toolLint, "failed", true, false})
 	}
 	for _, f := range findings {
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{"lint", f.Code, f.Severity == statute.SeverityError})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{toolLint, f.Code, f.Severity == statute.SeverityError, false})
 	}
 	for _, check := range []struct {
 		name string
 		fn   func(statute.Config, io.Writer) error
-	}{{"export", statute.Export}, {"graph", statute.GraphDOT}} {
+	}{{toolExport, statute.Export}, {toolGraph, statute.GraphDOT}} {
 		code := "ok"
 		failed := check.fn(g.r.Config, io.Discard) != nil
 		if failed {
 			code = "failed"
 		}
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{check.name, code, failed})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{check.name, code, failed, false})
 	}
 	g.checkTopology(len(resolved.Routes)+len(resolved.FallbackRoutes), len(resolved.Upstreams))
+	g.checkSourceTopology(resolved)
+	g.checkDockerTopology(resolved)
+	g.checkDockerExtraction(resolved)
 }
 
 func (g *generator) checkTopology(routes, pools int) {
@@ -829,12 +743,28 @@ func (g *generator) checkTopology(routes, pools int) {
 	if failed {
 		code = "generated-topology-mismatch"
 	}
-	g.r.Report.Checks = append(g.r.Report.Checks, Check{"topology", code, failed})
+	g.r.Report.Checks = append(g.r.Report.Checks, Check{toolTopology, code, failed, false})
 }
 
 func (g *generator) source() ([]byte, error) {
 	var b strings.Builder
-	b.WriteString("// Generated migration skeleton. Review the accompanying audit before deployment.\npackage main\n\nimport statute \"statute.kjanat.dev\"\n\nfunc configuration() statute.Config {\nreturn statute.Config{\n")
+	b.WriteString("// Generated migration configuration. Review the accompanying audit before deployment.\npackage main\n\nimport statute \"statute.kjanat.dev\"\n")
+	for _, name := range keys(g.imports) {
+		fmt.Fprintf(&b, "import %q\n", name)
+	}
+	for _, name := range keys(g.helpers) {
+		b.WriteString(g.helpers[name])
+		b.WriteString("\n")
+	}
+	for _, o := range g.r.Report.Objects {
+		for _, f := range o.Fields {
+			if blocked(f.Classification) {
+				fmt.Fprintf(&b, "// TODO %q %q: %s\n", o.identity(), f.Path, f.Reason)
+			}
+		}
+	}
+	b.WriteString("\nfunc configuration() statute.Config {\nreturn statute.Config{\n")
+	b.WriteString("Defaults:" + g.defaults + ",\n")
 	b.WriteString("Listeners:statute.Listeners{" + strings.Join(g.listeners, ",") + "},\nUpstreams:statute.Upstreams{\n")
 	for _, name := range keys(g.pools) {
 		fmt.Fprintf(&b, "%q:%s,\n", name, g.pools[name])

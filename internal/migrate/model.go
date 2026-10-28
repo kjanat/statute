@@ -40,6 +40,7 @@ type Object struct {
 	Generated      bool           `json:"generated"`
 	Fields         []Field        `json:"fields"`
 	data           map[string]any
+	labels         map[string]string
 }
 
 // Check is a bounded diagnostic from the canonical configuration tools.
@@ -47,6 +48,7 @@ type Check struct {
 	Tool     string `json:"tool"`
 	Code     string `json:"code"`
 	Blocking bool   `json:"blocking"`
+	Deferred bool   `json:"deferred,omitempty"`
 }
 
 // Report is a versioned, deterministic audit; source values are excluded.
@@ -64,9 +66,11 @@ type Report struct {
 
 // Result contains the review artifacts and the exact configuration being checked.
 type Result struct {
-	Report Report
-	Go     []byte
-	Config statute.Config
+	Report    Report
+	Go        []byte
+	Config    statute.Config
+	inputs    Inputs
+	documents map[string]string
 }
 
 // WriteHuman prints every classified field and explicitly lists omissions.
@@ -80,7 +84,7 @@ func (r Report) WriteHuman(w io.Writer) error {
 		}
 	}
 	for _, c := range r.Checks {
-		fmt.Fprintf(&b, "check %s: %s (blocking=%t)\n", c.Tool, c.Code, c.Blocking)
+		fmt.Fprintf(&b, "check %s: %s (blocking=%t, deferred=%t)\n", c.Tool, c.Code, c.Blocking, c.Deferred)
 	}
 	for _, u := range r.Unmatched {
 		fmt.Fprintf(&b, "unmatched: %q\n", u)
@@ -92,7 +96,12 @@ func (r Report) WriteHuman(w io.Writer) error {
 func (o *Object) mark(prefix string, c Classification, reason string) {
 	for i := range o.Fields {
 		f := &o.Fields[i]
-		if prefix == "" || f.Path == prefix || strings.HasPrefix(f.Path, prefix+".") || strings.HasPrefix(f.Path, prefix+"[") {
+		path := f.Path
+		if o.Provider == providerDocker {
+			path = strings.ToLower(path)
+			prefix = strings.ToLower(prefix)
+		}
+		if prefix == "" || path == prefix || strings.HasPrefix(path, prefix+".") || strings.HasPrefix(path, prefix+"[") {
 			f.Classification, f.Reason = c, reason
 		}
 	}
@@ -108,7 +117,12 @@ func (o *Object) reference(path, kind, name string) {
 	}
 	for i := range o.Fields {
 		f := &o.Fields[i]
-		if f.Path == path || strings.HasPrefix(f.Path, path+"[") {
+		fieldPath := f.Path
+		if o.Provider == providerDocker {
+			fieldPath = strings.ToLower(fieldPath)
+			path = strings.ToLower(path)
+		}
+		if fieldPath == path || strings.HasPrefix(fieldPath, path+"[") {
 			f.References = append(f.References, kind+":"+qualified(name, o.Provider))
 			slices.Sort(f.References)
 			f.References = slices.Compact(f.References)
@@ -187,4 +201,22 @@ const (
 const (
 	protocolHTTPS = "https"
 	kindContainer = "container"
+)
+
+const (
+	fieldDirectory  = "directory"
+	defaultName     = "default"
+	falseValue      = "false"
+	removeOperation = "Remove"
+)
+
+const (
+	toolBindings   = "bindings"
+	toolResolve    = "resolve"
+	toolExport     = "export"
+	toolTopology   = "topology"
+	providerStatic = "static"
+	toolGraph      = "graph"
+	toolLint       = "lint"
+	trueValue      = "true"
 )

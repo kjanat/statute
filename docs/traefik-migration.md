@@ -84,41 +84,68 @@ Blocking findings cause generated `main` to panic before invoking Statute.
 configuration and resolve every blocking finding before replacing the guard with
 `statute.Main(configuration())`.
 
-## Initial translation coverage
+## Translation coverage
 
-- Explicit plaintext addresses become HTTP listeners. A single certificate/key
-  pair can produce an HTTPS candidate for a TLS-enabled entrypoint. SNI coverage,
-  TLS policy, resolver selection, challenge availability and storage remain manual.
-- Ordinary HTTP/HTTPS file-provider services become named pools. Host forwarding
-  and supported named transport fields become pool-owned policy. Credential-bearing
-  URLs, queries, base-path rewriting and unrecognized service fields block acceptance.
-- The existing Traefik parser inventories `Host`, `Path`, `PathPrefix`, conjunctions
-  and disjunctions. Native routes represent exact paths, catch-all paths and finite
-  Traefik host spellings, including trailing-dot variants. Literal paths ending in
-  `/*` are refused because native wildcard matching would broaden them.
-- `PathPrefix('/api')` includes `/api-secret`; native `Match('/api/*')` is
-  segment-aware. Non-root file-provider prefixes require manual work. Docker labels
-  retain their existing byte-prefix implementation.
-- File routes follow explicit priority or rule length. Equal-priority overlaps,
-  overlapping file/Docker routes, and Docker specificity-versus-priority differences
-  block acceptance. Catch-all candidates become fallback routes; moving a
-  higher-priority catch-all to fallback is reported as a behavior change.
-- Explicit Docker settings produce `Docker().TraefikLabels()`. Middleware
-  registrations use the exact label reference names; Host policy uses exact-service
-  `PoolPolicy` keys. Implicit services, missing ports and missing explicit container
-  opt-in require review. Compose cannot prove the live topology.
-- IP allow lists without IP strategies, response-header removals and supported
-  middleware chains become compiled policy. References stay provider-qualified and
-  ordered. Routers sharing a pool retain distinct middleware. Missing/cyclic chains
-  block acceptance; expansion is bounded to 64 levels and 256 operations per chain.
-- Simple redirect-scheme declarations produce guarded redirect-action candidates;
-  forwarded-scheme trust and listener reachability remain manual.
-- Auth, nonempty header values, buffering, retry, compression and path rewrites
-  require review. Statute hoists header/path rewrites and has explicit buffering
-  budgets and streaming behavior; similar middleware names do not establish parity.
-- Entrypoint restrictions and router TLS settings block acceptance because native
-  content listeners share a route table. Unsupported matchers, plugins, TCP/UDP
-  traffic and external providers never silently become HTTP routes.
+- Static addresses become explicit HTTP or HTTPS listeners. The tool resolves
+  router entrypoint membership and default entrypoints before generating listeners.
+  A router restricted to only part of the native shared content-listener set is
+  blocked. Common entrypoint middleware is prepended to file routes and registered
+  as Docker `DefaultMiddleware`; different per-listener chains remain blocked.
+- Named ACME resolvers generate `AutoTLS` sources using declared domains or literal
+  `Host` matchers. HTTP-01 and Cloudflare DNS-01 are supported. Cloudflare uses a
+  required `CF_DNS_API_TOKEN` environment binding. Source ACME JSON storage becomes
+  a new sibling `.statute` directory: this starts new native account/certificate
+  state and does not import Traefik's account keys. Review issuance and CA limits
+  before deploying. Other challenge providers and TLS-ALPN-only requirements remain
+  explicit gaps.
+- Default certificate file references become `StaticTLS`. A single certificate
+  from a source certificate list produces a guarded candidate because its SAN
+  mapping and fallback selection cannot be determined without reading material.
+  Named TLS version/cipher policies and client authentication become listener
+  options when all routers on that listener select the same policy. Distinct
+  per-SNI protocol policies cannot be collapsed into one listener-wide policy.
+- File-provider load balancers become named pools. Backend URLs, Host forwarding,
+  named/default transports, timeouts, idle connection limits, root CA files,
+  client certificate files and response flushing are translated. Proxy and probe
+  traffic share the selected transport. Credential-bearing URLs, base-path
+  rewriting and unknown service fields remain blocking.
+- Health checks preserve source intervals, timeouts and one-success/one-failure
+  transition thresholds. Explicit `followRedirects: false`, accepted status and
+  probe Host are supported. Traefik's default cross-origin redirect following
+  differs from native same-origin probes and requires a decision.
+- Docker services receive one exact-service `PoolPolicy` containing Host, health
+  and transport together. Middleware registrations retain the exact label
+  reference. Retained Compose labels are checked with the existing Docker parser
+  using a synthetic address; this validates label interpretation without contacting
+  a daemon or claiming knowledge of the live network.
+- `Host`, `Path`, `PathPrefix`, conjunctions and disjunctions use the shared
+  Traefik parser. Native routes represent exact paths, catch-all paths and finite
+  Traefik host spellings, including trailing-dot variants. File-provider byte
+  prefixes and literal paths ending in `/*` are refused because native segment
+  matching would change their coverage. Docker retains its byte-prefix matcher.
+- File routes follow source priority. Equal-priority overlaps, overlapping
+  file/Docker routes and Docker numeric-priority differences remain explicit
+  findings. Catch-all candidates become fallback routes only with a precedence
+  check. Unmatched traffic retains the native terminal 404.
+- IP allow lists, ordered chains, request/response header operations, BasicAuth
+  file or environment bindings and canonical `AddPrefix` prefixes become compiled
+  route policy. Header values are bound through environment variables; inline
+  values are withheld and require relocation. Auth files must contain bcrypt
+  hashes; validation is deferred until the generated program loads them.
+- Header/path operations after other middleware remain blocked because Statute
+  hoists them before authentication, denial and retry paths. ReplacePath and
+  StripPrefix candidates identify missing Traefik metadata headers and matching
+  differences. RequestBuffer, Retry and gzip/Brotli candidates identify concrete
+  resource, response-buffering and negotiation differences. Incomplete middleware
+  candidates are emitted as separate review functions and never registered.
+- Redirect middleware and entrypoint redirects produce guarded native candidates.
+  Traefik uses method-dependent 301/308 or 302/307 statuses, while native redirect
+  listeners always return 301. Non-default target ports and custom redirect
+  precedence are separately reported; these differences are not silently accepted.
+- Shared incoming timeout/header limits become explicit `Defaults`. Different
+  per-entrypoint limits remain blocked. File-provider paths are accepted when the
+  exact file or complete directory was explicitly supplied; hot reload is replaced
+  by regeneration and compilation.
 
 Unrecognized fields default to `manual`; they are not discarded to make validation
 pass. See [Docker compatibility](docker.md#traefik-compatibility-traefiklabels) for
@@ -129,8 +156,9 @@ the runtime label subset and its refusal behavior.
 Reports omit source values. Environment names such as `env:AUTH_TOKEN` and known
 file references are retained without evaluation; `${TOKEN:-inline-default}` never
 copies its default into either artifact. Certificate/key paths can appear in Go
-as references. Auth data, arbitrary header values and credential-bearing URLs
-require manual binding. Parser and canonical-tool diagnostics never echo source
+as references. Inline auth data and header values require explicit relocation into the generated
+bindings. Whole-value `$NAME` and `${NAME}` references are preserved as required
+runtime lookups. Credential-bearing backend URLs remain blocked. Parser and canonical-tool diagnostics never echo source
 snippets or arbitrary error strings.
 
 Reference reporting recognizes `${NAME...}` and whole-value `$NAME`. Embedded
@@ -140,9 +168,14 @@ must not be mistaken for environment variable names.
 The generated fragments pass through `Resolve`, `Lint`, `Export` and `GraphDOT`.
 Lint rule identifiers remain in the report; error severity blocks acceptance.
 Export and graph are discarded rather than embedding configuration values in the
-audit. These checks validate the candidate, not missing behavior or live Docker
-and certificate state. Regression tests also compile generated Go and compare its
-export with the audited configuration.
+audit. Topology checks compare route order, host/path coverage, action/pool links,
+middleware counts and Docker registry/exact-service edges with the source plan.
+Checks with `deferred: true` used placeholders for environment/auth bindings or
+require runtime certificate material; they prove structural validity only.
+Missing bindings fail before startup. The human report also prints deferred state. These checks validate the candidate, not missing behavior or live Docker
+and certificate state. Regression tests compile generated Go, compare its export with the audited
+configuration, and launch a generated proxy to verify rewritten requests, header
+operations, unmatched paths and missing-binding refusal.
 
 After completing a skeleton, compile it and run `-validate`, `-lint`, `-export`
 and `-graph`. Compare source objects and host coverage with the completed topology,
