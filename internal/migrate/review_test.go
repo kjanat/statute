@@ -18,7 +18,7 @@ func TestResponseHeaderPrecedenceBlocksConflictingChains(t *testing.T) {
       chain: {middlewares: [remove, set]}
 `
 		r := audit(t, basicInputs(t, body))
-		if !r.Report.Blocking || !strings.Contains(findings(r), "$response-header-order") || !strings.Contains(string(r.Go), "panic(") {
+		if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "$response-header-order") || !strings.Contains(string(r.Go), "panic(") {
 			t.Fatalf("conflicting response chain accepted: %s", refs)
 		}
 	}
@@ -56,7 +56,7 @@ providers:
 `)}
 		}
 		r := audit(t, in)
-		if !r.Report.Blocking || !strings.Contains(findings(r), "$response-header-order") {
+		if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "$response-header-order") {
 			t.Fatalf("%s router lost entrypoint response policy precedence", provider)
 		}
 	}
@@ -75,7 +75,7 @@ func TestIndependentHeaderOperationsRemainTranslatable(t *testing.T) {
         customRequestHeaders: {X-Input: '${SECOND_HEADER}'}
 `
 	r := audit(t, basicInputs(t, body))
-	requireUnblocked(t, r)
+	requireForwardedHeaderGap(t, r)
 	t.Setenv("FIRST_HEADER", "migration-binding")
 	t.Setenv("SECOND_HEADER", "migration-binding")
 	assertGeneratedParity(t, r)
@@ -91,10 +91,10 @@ func TestEntrypointPathSanitizationRequiresExplicitDecision(t *testing.T) {
 			in := Inputs{Static: []string{fixture(t, "static.yml", static)}, Dynamic: []string{fixture(t, "dynamic.yml", simpleDynamic)}}
 			r := audit(t, in)
 			if setting == "false" {
-				requireUnblocked(t, r)
+				requireForwardedHeaderGap(t, r)
 				return
 			}
-			if !r.Report.Blocking || !strings.Contains(findings(r), "sanitizePath") || !strings.Contains(string(r.Go), "panic(") {
+			if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "sanitizePath") || !strings.Contains(string(r.Go), "panic(") {
 				t.Fatal("path sanitization difference permits serving")
 			}
 		})
@@ -109,7 +109,7 @@ func TestTLSResourcesAcrossFilesRetainIdentityAndProvenance(t *testing.T) {
 	policy := fixture(t, "policy.yml", "tls:\n  options:\n    selected: {minVersion: VersionTLS13}\n")
 	in.Dynamic = []string{routes, store, policy}
 	r := audit(t, in)
-	requireUnblocked(t, r)
+	requireForwardedHeaderGap(t, r)
 	if string(combined.Go) != string(r.Go) {
 		t.Fatal("splitting TLS resources across files changed generated configuration")
 	}
@@ -135,7 +135,7 @@ func TestDuplicateTLSResourcesRemainBlocking(t *testing.T) {
 		in := tlsPolicyInputs(t, "minVersion: VersionTLS13")
 		in.Dynamic = append(in.Dynamic, fixture(t, "duplicate.yml", fmt.Sprintf("tls:\n  %s\n", resource)))
 		r := audit(t, in)
-		if !r.Report.Blocking || !strings.Contains(findings(r), "$identity") {
+		if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "$identity") {
 			t.Fatal("duplicate TLS resource accepted")
 		}
 	}

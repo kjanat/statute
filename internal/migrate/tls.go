@@ -95,6 +95,7 @@ func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes [
 		if name == "" {
 			name = defaultName
 		}
+		checkTLSHostCoverage(o, name)
 		names[qualified(name, providerFile)] = true
 	})
 	if len(names) > 1 {
@@ -115,6 +116,16 @@ func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes [
 		}
 	}
 	return opts, codes
+}
+
+func checkTLSHostCoverage(router *Object, name string) {
+	if qualified(name, providerFile) == "default@file" {
+		return
+	}
+	hosts, err := parseRuleHosts(router)
+	if err != nil || len(hosts) == 0 {
+		router.note("$tls-host", Manual, "Traefik selects the default TLS policy for hostless rules; a named policy cannot become a listener-wide TLS or client-auth requirement without reviewing SNI coverage")
+	}
 }
 
 func routerTLSSource(router, entrypoint *Object) (*Object, string) {

@@ -14,12 +14,12 @@ import (
 	"time"
 )
 
-func TestGeneratedProgramServesRewrittenRequests(t *testing.T) {
+func TestGuardedCandidateServesRewrittenRequests(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", "backend")
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		// #nosec G705 -- Test fixture returns text/plain, never HTML; echo proves the generated proxy request target.
-		_, _ = io.WriteString(w, r.URL.RequestURI()+"|"+r.Header.Get("X-Migration-Token"))
+		_, _ = io.WriteString(w, r.URL.RequestURI()+"|"+r.Header.Get("X-Migration-Token")+"|"+r.Header.Get("X-Real-IP"))
 	}))
 	defer backend.Close()
 	address := testListenAddress(t)
@@ -36,8 +36,8 @@ func TestGeneratedProgramServesRewrittenRequests(t *testing.T) {
 	in := basicInputs(t, body)
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: '"+address+"', http: {sanitizePath: false}}\n")}
 	result := audit(t, in)
-	requireUnblocked(t, result)
-	binary := compileGenerated(t, result)
+	requireForwardedHeaderGap(t, result)
+	binary := compileTestCandidate(t, result)
 	// A missing binding must fail validation before any listener starts.
 	// #nosec G204 -- Execute only the generated test binary.
 	missing := exec.CommandContext(t.Context(), binary, "-validate")
@@ -73,10 +73,24 @@ func TestGeneratedProgramServesRewrittenRequests(t *testing.T) {
 	if response.StatusCode != 200 {
 		t.Fatalf("status: %d", response.StatusCode)
 	}
-	if string(data) != "/v1/health?x=1|bound-token" || response.Header.Get("Server") != "" {
+	if string(data) != "/v1/health?x=1|bound-token|198.51.100.123" || response.Header.Get("Server") != "" {
 		t.Fatalf("generated route behavior: status=%d body=%q server=%q", response.StatusCode, data, response.Header.Get("Server"))
 	}
 	assertUnmatched(t, client, address)
+}
+
+func compileTestCandidate(t *testing.T, r *Result) string {
+	t.Helper()
+	guarded := compileGenerated(t, r)
+	// #nosec G204 -- Execute only the generated fixture to prove its startup guard.
+	cmd := exec.CommandContext(t.Context(), guarded)
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "migration incomplete") {
+		t.Fatalf("generated guard did not refuse startup: %v\n%s", err, out)
+	}
+	// A test-only entrypoint exercises the candidate after proving the emitted guard.
+	candidate := *r
+	candidate.Go = []byte(strings.Replace(string(r.Go), "func main()", "func auditedMain()", 1) + "\nfunc main() { statute.Main(configuration()) }\n")
+	return compileGenerated(t, &candidate)
 }
 
 func compileGenerated(t *testing.T, r *Result) string {
@@ -104,6 +118,7 @@ func waitGeneratedResponse(t *testing.T, client *http.Client, url string) *http.
 			t.Fatal(err)
 		}
 		req.Host = "api.example"
+		req.Header.Set("X-Real-IP", "198.51.100.123")
 		response, err := client.Do(req)
 		if err == nil {
 			return response

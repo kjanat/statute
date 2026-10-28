@@ -58,7 +58,7 @@ func TestDeterministicGenerationAndCanonicalParity(t *testing.T) {
 	if !bytes.Equal(a.Go, b.Go) || !bytes.Equal(ja, jb) {
 		t.Fatal("nondeterministic artifacts")
 	}
-	if a.Report.Blocking {
+	if hasOtherBlockingGaps(a) {
 		t.Fatalf("unexpected blockers: %s", ja)
 	}
 	if a.Report.Routes != 1 || a.Report.Hosts != 1 || a.Report.GeneratedRoutes != 2 {
@@ -123,7 +123,7 @@ func TestUnsupportedMatchersAndLiteralWildcardNeverBroaden(t *testing.T) {
 		t.Run(rule, func(t *testing.T) {
 			body := strings.Replace(simpleDynamic, "Host(`api.example`) && Path(`/health`)", strconv.Quote(rule), 1)
 			r := audit(t, basicInputs(t, body))
-			if !r.Report.Blocking || len(r.Config.Routes) > 0 || !bytes.Contains(r.Go, []byte("panic(")) {
+			if !hasOtherBlockingGaps(r) || len(r.Config.Routes) > 0 || !bytes.Contains(r.Go, []byte("panic(")) {
 				t.Fatal("unsafe rule generated a serving program")
 			}
 		})
@@ -162,7 +162,7 @@ func TestEveryUnknownFieldIsBlockingAndValueFree(t *testing.T) {
 	if !bytes.Contains(b, []byte("env:TOKEN")) || !bytes.Contains(b, []byte("file:/run/secrets/auth")) {
 		t.Fatal("references were lost")
 	}
-	if !r.Report.Blocking || len(r.Report.Unmatched) < 4 {
+	if !hasOtherBlockingGaps(r) || len(r.Report.Unmatched) < 4 {
 		t.Fatal("unknown source objects were omitted")
 	}
 }
@@ -196,7 +196,7 @@ func TestProviderReferencesAndSharedPoolIsolation(t *testing.T) {
         sourceRange: [192.0.2.0/24]
 `
 	r := audit(t, basicInputs(t, body))
-	if r.Report.Blocking {
+	if hasOtherBlockingGaps(r) {
 		t.Fatalf("unexpected blockers: %+v", r.Report)
 	}
 	resolved, err := statute.Resolve(r.Config)
@@ -213,7 +213,7 @@ func TestProviderReferencesAndSharedPoolIsolation(t *testing.T) {
 		}
 	}
 	bad := audit(t, basicInputs(t, strings.Replace(body, "allow@file", "allow@docker", 1)))
-	if !bad.Report.Blocking {
+	if !hasOtherBlockingGaps(bad) {
 		t.Fatal("provider-qualified missing policy accepted")
 	}
 	resolvedBad, err := statute.Resolve(bad.Config)
@@ -231,7 +231,7 @@ func TestChainsRejectMissingAndCyclicReferences(t *testing.T) {
 	for _, ref := range []string{"missing", "a"} {
 		body := simpleDynamic + "  middlewares:\n    a:\n      chain:\n        middlewares: [" + ref + "]\n"
 		r := audit(t, basicInputs(t, body))
-		if !r.Report.Blocking {
+		if !hasOtherBlockingGaps(r) {
 			t.Fatal("invalid chain accepted")
 		}
 	}
@@ -274,7 +274,7 @@ providers:
       - traefik.http.middlewares.allow.ipallowlist.sourcerange=192.0.2.0/24
 `
 	r := audit(t, Inputs{Static: []string{fixture(t, "static.yml", static)}, Compose: []string{fixture(t, "compose.yml", compose)}})
-	if r.Report.Blocking {
+	if hasOtherBlockingGaps(r) {
 		b, _ := json.Marshal(r.Report)
 		t.Fatalf("blocked: %s", b)
 	}
@@ -288,13 +288,13 @@ func TestPrecedenceAndDuplicateIdentitiesBlockServing(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "      service: api", "      service: api\n      priority: 42", 1)
 	body = strings.Replace(body, "  services:", "    other:\n      rule: Path(`/health`)\n      service: api\n      priority: 42\n  services:", 1)
 	r := audit(t, basicInputs(t, body))
-	if !r.Report.Blocking {
+	if !hasOtherBlockingGaps(r) {
 		t.Fatal("equal-priority overlap accepted")
 	}
 	in := basicInputs(t, simpleDynamic)
 	in.Dynamic = append(in.Dynamic, in.Dynamic[0])
 	r = audit(t, in)
-	if !r.Report.Blocking {
+	if !hasOtherBlockingGaps(r) {
 		t.Fatal("duplicate provider identity accepted")
 	}
 }
@@ -302,7 +302,7 @@ func TestPrecedenceAndDuplicateIdentitiesBlockServing(t *testing.T) {
 func TestFallbackIsGeneratedOnlyWithVisiblePriorityReview(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "Host(`api.example`) && Path(`/health`)", "PathPrefix(`/`)", 1)
 	r := audit(t, basicInputs(t, body))
-	if len(r.Config.FallbackRoutes) != 1 || r.Report.Blocking {
+	if len(r.Config.FallbackRoutes) != 1 || hasOtherBlockingGaps(r) {
 		t.Fatalf("fallback missing: %+v", r.Report)
 	}
 	assertGeneratedParity(t, r)
@@ -312,7 +312,7 @@ func TestNamedTransportAndHostPolicyGeneratedParity(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "      loadBalancer:", "      loadBalancer:\n        passHostHeader: false\n        serversTransport: origin@file", 1)
 	body += "  serversTransports:\n    origin:\n      serverName: origin.example\n      forwardingTimeouts:\n        responseHeaderTimeout: 5s\n    unused:\n      serverName: unused.example\n"
 	r := audit(t, basicInputs(t, body))
-	if r.Report.Blocking {
+	if hasOtherBlockingGaps(r) {
 		t.Fatal("supported transport blocked")
 	}
 	pool := r.Config.Upstreams["api@file"]
@@ -347,7 +347,7 @@ http:
 	in := basicInputs(t, body)
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  websecure:\n    address: ':8443'\n    http:\n      sanitizePath: false\n      tls: {}\n")}
 	r := audit(t, in)
-	if !r.Report.Blocking || !bytes.Contains(r.Go, []byte("statute.HTTPS(")) || !bytes.Contains(r.Go, []byte(".RedirectTo(")) || !bytes.Contains(r.Go, []byte("panic(")) {
+	if !hasOtherBlockingGaps(r) || !bytes.Contains(r.Go, []byte("statute.HTTPS(")) || !bytes.Contains(r.Go, []byte(".RedirectTo(")) || !bytes.Contains(r.Go, []byte("panic(")) {
 		t.Fatalf("guarded candidates missing: %s", r.Go)
 	}
 	assertGeneratedParity(t, r)
@@ -356,7 +356,7 @@ http:
 func TestDottedUnknownFieldCannotHideBehindRecognizedField(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "      loadBalancer:", "      loadBalancer.servers: [{url: 'http://hidden.invalid:9000'}]\n      loadBalancer:", 1)
 	r := audit(t, basicInputs(t, body))
-	if !r.Report.Blocking || len(r.Config.Upstreams) != 0 {
+	if !hasOtherBlockingGaps(r) || len(r.Config.Upstreams) != 0 {
 		t.Fatal("unknown dotted field hidden by a recognized nested path")
 	}
 }
@@ -373,7 +373,7 @@ func TestUnresolvedReferenceDoesNotExposeDefault(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "      service: api", "      service: api\n      middlewares: ['${POLICY:-TOP_SECRET_DEFAULT}']", 1)
 	r := audit(t, basicInputs(t, body))
 	b, _ := json.Marshal(r.Report)
-	if !r.Report.Blocking || bytes.Contains(b, []byte("TOP_SECRET")) || bytes.Contains(r.Go, []byte("TOP_SECRET")) {
+	if !hasOtherBlockingGaps(r) || bytes.Contains(b, []byte("TOP_SECRET")) || bytes.Contains(r.Go, []byte("TOP_SECRET")) {
 		t.Fatal("unresolved reference leaked its default")
 	}
 }
@@ -394,7 +394,7 @@ func TestUnusedMiddlewareIsAnUnmatchedSourceObject(t *testing.T) {
 func TestMultipleMiddlewareTypesCannotBecomeAnInventedChain(t *testing.T) {
 	body := simpleDynamic + "  middlewares:\n    ambiguous:\n      ipAllowList:\n        sourceRange: [192.0.2.0/24]\n      headers:\n        customResponseHeaders:\n          X-Powered-By: ''\n"
 	r := audit(t, basicInputs(t, body))
-	if !r.Report.Blocking {
+	if !hasOtherBlockingGaps(r) {
 		t.Fatal("multiple middleware types silently combined")
 	}
 }
@@ -406,7 +406,7 @@ func TestMiddlewareExpansionIsBounded(t *testing.T) {
 		fmt.Fprintf(&b, "    m%d:\n      chain:\n        middlewares: [m%d, m%d]\n", i, i-1, i-1)
 	}
 	r := audit(t, basicInputs(t, b.String()))
-	if !r.Report.Blocking {
+	if !hasOtherBlockingGaps(r) {
 		t.Fatal("exponential chain expansion accepted")
 	}
 	for _, o := range r.Report.Objects {
@@ -420,7 +420,7 @@ func TestDockerMissingDependenciesAreBlocking(t *testing.T) {
 	static := fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n    http: {sanitizePath: false}\nproviders:\n  docker:\n    exposedByDefault: false\n")
 	compose := fixture(t, "compose.yml", "services:\n  app:\n    labels:\n      traefik.http.routers.app.rule: Host(`app.example`)\n      traefik.http.routers.app.service: missing\n")
 	r := audit(t, Inputs{Static: []string{static}, Compose: []string{compose}})
-	if !r.Report.Blocking || r.Report.GeneratedRoutes != 0 {
+	if !hasOtherBlockingGaps(r) || r.Report.GeneratedRoutes != 0 {
 		t.Fatal("missing Docker dependency accepted")
 	}
 }

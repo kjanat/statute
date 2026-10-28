@@ -74,6 +74,7 @@ func (g *generator) classifyRouterPolicy(o *Object) {
 
 func (g *generator) listener(o *Object) {
 	checkPathSanitization(o)
+	o.note("$forwarded-headers", Manual, "Traefik sanitizes untrusted forwarded headers by default and derives X-Real-IP from the connection peer; native listeners do not reproduce this header policy; review client identity and trusted proxy handling before serving")
 	addr := o.text("address")
 	if !literal(addr) || addr == "" {
 		return

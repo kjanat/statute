@@ -77,6 +77,7 @@ func generate(r *Result) error {
 	r.Report.Hosts = len(g.hosts)
 	g.validate()
 	g.bindingChecks()
+	g.each("services", checkDegradedHealthPolicy)
 	finish(&r.Report)
 	source, err := g.source()
 	if err != nil {

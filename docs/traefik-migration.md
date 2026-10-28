@@ -5,6 +5,12 @@ plus a JSON audit. It does not start a proxy, contact Docker, acquire certificat
 interpolate environment variables, or perform a cutover. Traefik files do not
 become a Statute runtime input format.
 
+Generated listeners currently require manual review of forwarded-header handling.
+Traefik sanitizes untrusted proxy headers and derives `X-Real-IP` from the peer;
+native listeners do not provide equivalent behavior. This produces a blocking
+finding even when the source omits `forwardedHeaders`. Review and implement the
+required ingress policy before enabling the generated candidate.
+
 From a checkout:
 
 ```sh
@@ -115,6 +121,9 @@ configuration and resolve every blocking finding before replacing the guard with
   Named TLS version/cipher policies and client authentication become listener
   options when all routers on that listener select the same policy. Distinct
   per-SNI protocol policies cannot be collapsed into one listener-wide policy.
+  Named options on a rule without literal Host coverage are blocked: Traefik uses
+  its default TLS policy for hostless rules, while a native listener-wide option
+  would change version or client-authentication requirements.
   A router inherits the complete entrypoint TLS object only when its own TLS object
   is absent. Explicit router TLS, including an empty object, prevents inheritance
   of entrypoint options, certificate resolvers and certificate domains.
@@ -132,6 +141,11 @@ configuration and resolve every blocking finding before replacing the guard with
   Probe paths must preserve their URL meaning as native literal paths. Query
   strings, fragments, percent escapes, authority changes and dot-segment resolution
   produce blocking findings because Traefik resolves these as relative URLs.
+  Health-check candidates always report the all-unhealthy behavior difference:
+  Traefik stops forwarding and returns 503, while Statute's degraded mode continues
+  trying primary backends. This requires a migration decision for file and Docker
+  services, including single-backend services. Probe settings remain in the guarded
+  candidate for review.
 - Docker services receive one exact-service `PoolPolicy` containing Host, health
   and transport together. Middleware registrations retain the exact label
   reference. Retained Compose labels are checked with the existing Docker parser

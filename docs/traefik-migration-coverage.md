@@ -26,7 +26,7 @@ startup. Validation that depends on these inputs is reported as deferred. Blocki
 | Security             | No inline credentials in either artifact; missing/invalid bindings and missing named policies cannot serve                                     |
 | Canonical validation | Generated Go compiles; resolved routes, actions, pools, middleware and listener links agree with the source translation plan                   |
 | Offline operation    | No Docker, ACME, DNS, environment lookup or secret-file access while auditing                                                                  |
-| Completion           | A mixed supported deployment generates without blocking gaps; counterexamples block for a specific documented reason                           |
+| Completion           | A mixed deployment generates a reviewable candidate with documented semantic gaps; every gap guards startup                                    |
 
 All interaction-matrix rows apply to the generated configuration. Retry and
 hoisting are checked at middleware assembly; shared pools and Docker registration
@@ -34,6 +34,13 @@ retain route isolation; TLS coverage and selected policy are checked before
 listener generation. Process lifecycle is exercised by generated-program startup
 refusal and successful serving tests. Observability differences produce explicit
 findings and require a migration decision.
+
+Forwarded-header handling currently blocks every generated listener, including
+inputs that rely on Traefik defaults. Tests compare the complete expected gap set
+and reject additional translation failures. Health candidates
+also report the all-unhealthy exclusion difference. Serving tests first prove
+that the emitted program refuses startup, then use an explicit test-only entrypoint
+to exercise candidate routing and expose the untrusted `X-Real-IP` behavior.
 
 Architectural decisions required: none. Non-equivalent runtime capabilities remain
 explicit findings as allowed by #241; this change does not add a second runtime

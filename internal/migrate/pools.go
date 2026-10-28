@@ -120,6 +120,13 @@ func healthPathPreserved(path string) bool {
 	return base.ResolveReference(u).Path == path
 }
 
+func checkDegradedHealthPolicy(o *Object) {
+	path := o.text("loadBalancer.healthCheck.path")
+	if path != "" && literal(path) && healthPathPreserved(path) {
+		o.note("$health-degraded", Manual, "Traefik returns 503 when every backend is unhealthy; native degraded mode continues forwarding to primary backends; review all-unhealthy exclusion before enabling probes")
+	}
+}
+
 func healthBehavior(o *Object, h *statute.HealthCheck) {
 	const base = "loadBalancer.healthCheck"
 	if n, err := integer(o.value(base + ".status")); err == nil && n >= 100 && n <= 599 {
