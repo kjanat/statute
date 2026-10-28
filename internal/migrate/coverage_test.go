@@ -71,6 +71,7 @@ certificatesResolvers:
   cloud:
     acme:
       email: ops@example.com
+      keyType: EC256
       storage: /var/lib/traefik/acme.json
       dnsChallenge: {provider: cloudflare}
 `, dynamic))

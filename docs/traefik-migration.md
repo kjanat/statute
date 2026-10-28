@@ -106,22 +106,32 @@ configuration and resolve every blocking finding before replacing the guard with
   a new sibling `.statute` directory: this starts new native account/certificate
   state and does not import Traefik's account keys. Review issuance and CA limits
   before deploying. Other challenge providers and TLS-ALPN-only requirements remain
-  explicit gaps.
+  explicit gaps. Native pinned ACME sources issue ECDSA P-256 certificates, requiring
+  an explicit source `keyType: EC256`. An omitted key type defaults to RSA4096 in
+  Traefik and blocks migration until certificate algorithm compatibility is reviewed.
 - Default certificate file references become `StaticTLS`. A single certificate
   from a source certificate list produces a guarded candidate because its SAN
   mapping and fallback selection cannot be determined without reading material.
   Named TLS version/cipher policies and client authentication become listener
   options when all routers on that listener select the same policy. Distinct
   per-SNI protocol policies cannot be collapsed into one listener-wide policy.
+  A router inherits the complete entrypoint TLS object only when its own TLS object
+  is absent. Explicit router TLS, including an empty object, prevents inheritance
+  of entrypoint options, certificate resolvers and certificate domains.
 - File-provider load balancers become named pools. Backend URLs, Host forwarding,
   named/default transports, timeouts, idle connection limits, root CA files,
   client certificate files and response flushing are translated. Proxy and probe
   traffic share the selected transport. Credential-bearing URLs, base-path
   rewriting and unknown service fields remain blocking.
+  Explicit `default@internal` transport references use the audited static transport
+  defaults for both file services and Docker service policies.
 - Health checks preserve source intervals, timeouts and one-success/one-failure
   transition thresholds. Explicit `followRedirects: false`, accepted status and
   probe Host are supported. Traefik's default cross-origin redirect following
   differs from native same-origin probes and requires a decision.
+  Probe paths must preserve their URL meaning as native literal paths. Query
+  strings, fragments, percent escapes, authority changes and dot-segment resolution
+  produce blocking findings because Traefik resolves these as relative URLs.
 - Docker services receive one exact-service `PoolPolicy` containing Host, health
   and transport together. Middleware registrations retain the exact label
   reference. Retained Compose labels are checked with the existing Docker parser

@@ -58,6 +58,8 @@ func (g *generator) acme(name string, domains []string) (statute.ListenerOption,
 	code += g.acmeChallenge(o, a)
 	if o.text("acme.keyType") == "EC256" {
 		o.mark("acme.keyType", Translated, "pinned native ACME sources issue ECDSA P-256 keys")
+	} else {
+		o.note("$acme.keyType", Manual, "Traefik defaults to RSA4096 certificate keys; native pinned ACME sources issue ECDSA P-256; select EC256 explicitly or review certificate algorithm compatibility")
 	}
 	o.Generated = true
 	return a, code
@@ -88,10 +90,8 @@ func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes [
 		if !slices.Contains(g.routerEntries[o], ep.Name) {
 			return
 		}
-		name := o.text("tls.options")
-		if name == "" {
-			name = ep.text("http.tls.options")
-		}
+		owner, base := routerTLSSource(o, ep)
+		name := owner.text(base + ".options")
 		if name == "" {
 			name = defaultName
 		}
@@ -106,15 +106,22 @@ func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes [
 		if ok {
 			opts = append(opts, native...)
 			codes = append(codes, code...)
-			ep.mark("http.tls.options", Translated, "selected policy applied at listener scope")
 			g.each("routers", func(o *Object) {
 				if slices.Contains(g.routerEntries[o], ep.Name) {
-					o.mark("tls.options", Translated, "selected policy matches every router on the listener")
+					owner, base := routerTLSSource(o, ep)
+					owner.mark(base+".options", Translated, "selected policy matches every router on the listener")
 				}
 			})
 		}
 	}
 	return opts, codes
+}
+
+func routerTLSSource(router, entrypoint *Object) (*Object, string) {
+	if routerHasTLS(router) {
+		return router, kindTLS
+	}
+	return entrypoint, "http.tls"
 }
 
 func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []string, bool) {

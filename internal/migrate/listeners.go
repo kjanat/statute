@@ -160,14 +160,12 @@ func (g *generator) listenerTLS(ep *Object) ([]statute.ListenerOption, []string)
 		if !slices.Contains(g.routerEntries[o], ep.Name) {
 			return
 		}
-		resolver := o.text("tls.certResolver")
-		if resolver == "" {
-			resolver = ep.text("http.tls.certResolver")
-		}
+		owner, base := routerTLSSource(o, ep)
+		resolver := owner.text(base + ".certResolver")
 		if resolver != "" {
 			domains[resolver] = append(domains[resolver], g.tlsDomains(o, ep)...)
-			o.mark("tls.certResolver", Translated, "named ACME resolver selected by this router")
-			o.reference("tls.certResolver", "certificatesresolvers", qualified(resolver, providerStatic))
+			owner.mark(base+".certResolver", Translated, "named ACME resolver selected by this router")
+			owner.reference(base+".certResolver", "certificatesresolvers", qualified(resolver, providerStatic))
 		}
 	})
 	for _, name := range keys(domains) {
@@ -180,7 +178,6 @@ func (g *generator) listenerTLS(ep *Object) ([]statute.ListenerOption, []string)
 		}
 	}
 	if len(opts) > 0 {
-		ep.mark("http.tls.certResolver", Translated, "default resolver expanded for attached routers")
 		if m, ok := ep.value("http.tls").(map[string]any); ok && len(m) == 0 {
 			ep.mark("http.tls", Translated, "default TLS enabled for attached routers")
 		}
@@ -190,10 +187,8 @@ func (g *generator) listenerTLS(ep *Object) ([]statute.ListenerOption, []string)
 }
 
 func (g *generator) tlsDomains(o, ep *Object) []string {
-	owner, path := o, "tls.domains"
-	if o.value(path) == nil {
-		owner, path = ep, "http.tls.domains"
-	}
+	owner, base := routerTLSSource(o, ep)
+	path := base + ".domains"
 	if values, ok := owner.value(path).([]any); ok {
 		out, ok := certificateDomains(values)
 		if !ok {

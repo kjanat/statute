@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -90,6 +91,10 @@ func serviceHealth(o *Object, pool *statute.Pool) []string {
 	if path == "" || !literal(path) {
 		return nil
 	}
+	if !healthPathPreserved(path) {
+		o.note("$health-path", Manual, "Traefik resolves the probe path as a relative URL; native probes use a literal URL path, so queries, fragments, escapes, authority changes and dot-segment resolution require review")
+		return nil
+	}
 	h := statute.HealthCheck{Path: path, Interval: "30s", Timeout: "5s", Healthy: 1, Unhealthy: 1}
 	o.mark(base+".path", Translated, "pool probe path with source transition thresholds and timeout defaults")
 	for _, f := range []struct {
@@ -104,6 +109,15 @@ func serviceHealth(o *Object, pool *statute.Pool) []string {
 	healthBehavior(o, &h)
 	pool.HealthCheck = h
 	return []string{"HealthCheck:" + healthLiteral(h)}
+}
+
+func healthPathPreserved(path string) bool {
+	u, err := url.Parse(path)
+	if err != nil || u.IsAbs() || u.Host != "" || strings.ContainsAny(path, "%?#") {
+		return false
+	}
+	base := &url.URL{Scheme: protocolHTTP, Host: "migration.invalid", Path: "/"}
+	return base.ResolveReference(u).Path == path
 }
 
 func healthBehavior(o *Object, h *statute.HealthCheck) {
@@ -154,7 +168,9 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 		}
 		p.Transport = t
 		o.mark("loadBalancer.serversTransport", Translated, "exact-service compiled transport policy")
-		g.objects["serversTransports:"+id].Generated = true
+		if transport := g.objects["serversTransports:"+id]; transport != nil {
+			transport.Generated = true
+		}
 	}
 	serviceFlush(o, &p.Transport)
 	parts = append(parts, "Transport:"+transportLiteral(p.Transport))
