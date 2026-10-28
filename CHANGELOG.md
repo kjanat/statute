@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add a `statute` command with contextual help for `migrate traefik`, repeatable input flags and required output arguments. Help exits successfully without reading configuration or creating files.
+
+- Audit Traefik static files, file-provider configuration and Compose labels offline, with deterministic Go configuration and value-free field reports. Translate listener/TLS/ACME policy, middleware registrations, file pools and combined Docker pool policies. Preserve secret references with fail-closed startup bindings; distinguish deferred material validation from canonical resolution, lint, export and source-topology checks. Emit guarded candidates with concrete findings for incompatible redirect, prefix, buffering and retry behavior.
+
 - Add scheduled and manual Go image mirroring. Discover source tags automatically, including new versions and variants, with optional explicit tags and configurable sources, destination and username. Fall back between source registries during discovery, digest resolution and copying. Resolve manifests independently of the runner's platform, preserve all architectures and source digests, and pull the latest stable Skopeo image each run. See the [image mirror guide](docs/go-image-sync.md) for operation.
 
 ### Fixed
