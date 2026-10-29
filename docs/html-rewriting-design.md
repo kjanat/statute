@@ -14,9 +14,9 @@ private engine, then integrate the proven engine into Statute. Another optimizer
 comparison is not a prerequisite. Keep cancellation enabled, fresh instances,
 and the existing optimizer baseline.
 
-The current guest has two hard-coded selectors; its only Go callback emits
-output. The HTTP experiment wraps a transport. Production needs both a
-configurable guest and an action-independent response-writer adapter.
+The [private engine](research-html-programs.md) accepts configurable programs and
+Go callbacks. Existing HTTP tests and benchmarks use the original fixed policy.
+The next stage adds a response-writer adapter for all route actions.
 
 The [HTTP evidence](research-html-http.md), [load measurements](research-html-load.md),
 and [Binaryen comparison](research-html-binaryen.md) justify this next step. They
@@ -129,8 +129,8 @@ observer for matched element IDs and actual stack retirement, including implicit
 closure. `matcher_context.rs` and `TestMatcherContextNativeWasm` exercise that
 hook without inferring a stack from end callbacks. It preserves one invocation
 per registered content handler even when several matching scopes are active.
-Configurable programs, copied event snapshots, invocation identities and the
-bounded Go callback ABI remain stage 1 implementation work.
+The [program API](research-html-programs.md) uses this hook and a token observer
+to identify callback events. Route and server integration follow in the next stages.
 
 The ABI carries a stream ID (unique within the run), rule/handler ID, event kind,
 token ID and monotonically increasing invocation ID. Element-start events also

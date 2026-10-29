@@ -55,6 +55,7 @@ impl<'h, H: HandlerTypes> HtmlRewriteController<'h, H> {
             settings.matcher_observer,
             u32::from(settings.adjust_charset_on_meta_tag),
         );
+        dispatcher.token_observer = settings.token_observer;
         let has_selectors =
             !settings.element_content_handlers.is_empty() || settings.adjust_charset_on_meta_tag;
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -43,7 +44,8 @@ func newEngine(ctx context.Context) (*engine, error) {
 // Alternate configuration is used only for controlled research comparisons.
 func newEngineConfigured(ctx context.Context, config wazero.RuntimeConfig) (*engine, error) {
 	runtime := wazero.NewRuntimeWithConfig(ctx, config)
-	_, err := runtime.NewHostModuleBuilder("sink").NewFunctionBuilder().
+	host := runtime.NewHostModuleBuilder("sink")
+	host.NewFunctionBuilder().
 		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, module api.Module, stack []uint64) {
 			pointer, length := api.DecodeU32(stack[0]), api.DecodeU32(stack[1])
 			sink := ctx.Value(sinkKey{}).(*outputSink)
@@ -66,7 +68,10 @@ func newEngineConfigured(ctx context.Context, config wazero.RuntimeConfig) (*eng
 				// The Rust sink is infallible; wazero turns this panic into a call error.
 				panic(sink.err)
 			}
-		}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, nil).Export("emit").Instantiate(ctx)
+		}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, nil).Export("emit")
+	_, err := host.NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(programExchange),
+		[]api.ValueType{api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32},
+		[]api.ValueType{api.ValueTypeI32}).Export("exchange").Instantiate(ctx)
 	if err != nil {
 		_ = runtime.Close(context.Background())
 		return nil, fmt.Errorf("instantiate output sink: %w", err)
@@ -75,6 +80,10 @@ func newEngineConfigured(ctx context.Context, config wazero.RuntimeConfig) (*eng
 	if err != nil {
 		_ = runtime.Close(context.Background())
 		return nil, fmt.Errorf("compile rewriter: %w", err)
+	}
+	if err := validateGuest(compiled); err != nil {
+		_ = runtime.Close(context.Background())
+		return nil, err
 	}
 	return &engine{runtime: runtime, compiled: compiled}, nil
 }
@@ -96,6 +105,10 @@ func (e *engine) newStream(ctx context.Context, writer io.Writer, limit int) (*s
 }
 
 func (e *engine) newStreamMode(ctx context.Context, writer io.Writer, limit int, buffered bool) (*stream, error) {
+	return e.newConfiguredStream(ctx, writer, limit, buffered, nil)
+}
+
+func (e *engine) newConfiguredStream(ctx context.Context, writer io.Writer, limit int, buffered bool, program []byte) (*stream, error) {
 	if writer == nil || limit < 0 {
 		return nil, errors.New("invalid output sink")
 	}
@@ -105,6 +118,11 @@ func (e *engine) newStreamMode(ctx context.Context, writer io.Writer, limit int,
 	if err != nil {
 		return nil, fmt.Errorf("instantiate rewriter: %w", err)
 	}
+	if err := checkGuestVersion(ctx, module); err != nil {
+		_ = module.Close(context.Background())
+		return nil, err
+	}
+
 	s := &stream{module: module, ctx: ctx, sink: sink, functions: make(map[string]api.Function, 3)}
 	// Function handles carry call state, so reuse stays within one stream.
 	for _, name := range []string{"create", "write", "finish"} {
@@ -119,15 +137,24 @@ func (e *engine) newStreamMode(ctx context.Context, writer io.Writer, limit int,
 	if buffered {
 		mode = 1
 	}
-	if err := s.invoke("create", mode); err != nil {
-		return nil, err
-	}
 	pointer, err := module.ExportedFunction("input_pointer").Call(ctx)
 	if err != nil {
 		_ = s.close()
 		return nil, err
 	}
 	s.input = uint32(pointer[0])
+	if program != nil {
+		if !module.Memory().Write(s.input, program) {
+			_ = s.close()
+			return nil, errors.New("program memory unavailable")
+		}
+		s.functions["create_program"] = module.ExportedFunction("create_program")
+		if err := s.invoke("create_program", uint64(len(program)), mode); err != nil {
+			return nil, err
+		}
+	} else if err := s.invoke("create", mode); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -178,4 +205,58 @@ func (s *stream) finish() error {
 func (s *stream) close() error {
 	s.done = true
 	return s.module.Close(context.Background())
+}
+
+func validateGuest(compiled wazero.CompiledModule) error {
+	if len(compiled.ExportedMemories()) != 1 || compiled.ExportedMemories()["memory"] == nil {
+		return errors.New("guest memory export is incompatible")
+	}
+	if len(compiled.ImportedMemories()) != 0 || len(compiled.ImportedFunctions()) != 2 {
+		return errors.New("guest capability set is incompatible")
+	}
+	expected := map[string]int{"emit": 2, "exchange": 4}
+	seen := map[string]bool{}
+	for _, fn := range compiled.ImportedFunctions() {
+		module, name, ok := fn.Import()
+		count, known := expected[name]
+		if !ok || module != "sink" || !known || seen[name] || len(fn.ParamTypes()) != count {
+			return errors.New("guest import is incompatible")
+		}
+		for _, param := range fn.ParamTypes() {
+			if param != api.ValueTypeI32 {
+				return errors.New("guest import parameter is incompatible")
+			}
+		}
+		results := []api.ValueType(nil)
+		if name == "exchange" {
+			results = []api.ValueType{api.ValueTypeI32}
+		}
+		if !slices.Equal(fn.ResultTypes(), results) {
+			return errors.New("guest import result is incompatible")
+		}
+		seen[name] = true
+	}
+	for name, count := range map[string]int{"program_abi": 0, "create": 1, "create_program": 2, "input_pointer": 0, "write": 1, "finish": 0} {
+		fn := compiled.ExportedFunctions()[name]
+		if fn == nil || len(fn.ParamTypes()) != count || !slices.Equal(fn.ResultTypes(), []api.ValueType{api.ValueTypeI32}) {
+			return fmt.Errorf("guest export %s is incompatible", name)
+		}
+		for _, param := range fn.ParamTypes() {
+			if param != api.ValueTypeI32 {
+				return fmt.Errorf("guest export %s parameter is incompatible", name)
+			}
+		}
+	}
+	return nil
+}
+
+func checkGuestVersion(ctx context.Context, module api.Module) error {
+	version, err := module.ExportedFunction("program_abi").Call(ctx)
+	if err != nil {
+		return fmt.Errorf("read guest ABI: %w", errors.Join(err, ctx.Err()))
+	}
+	if len(version) != 1 || version[0] != uint64(programABI) {
+		return errors.New("guest protocol version is incompatible")
+	}
+	return nil
 }

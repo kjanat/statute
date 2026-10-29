@@ -42,6 +42,15 @@ type Step struct {
 	Count          int    `json:"count"`
 	Concurrency    int    `json:"concurrency"`
 	Expect         Expect `json:"expect"`
+	// Wait polls URL until its predicates match, then permits the next step.
+	// A failed wait stops the plan. Count and Concurrency must be zero or one.
+	Wait *WaitStep `json:"wait,omitempty"`
+}
+
+// WaitStep uses the same predicates as the client's wait command.
+type WaitStep struct {
+	Timeout string   `json:"timeout,omitempty"` // defaults to 30s
+	Spec    WaitSpec `json:"spec"`
 }
 
 // Expect is the per-request success predicate. Zero values are not
@@ -68,6 +77,8 @@ type Result struct {
 	Latency   time.Duration `json:"latency_ns"`
 	OK        bool          `json:"ok"`
 	Err       string        `json:"err,omitempty"`
+	// Body records the final matching response of a wait step, bounded to 1 MiB.
+	Body string `json:"body,omitempty"`
 }
 
 // Report is one client's complete outcome for one plan.

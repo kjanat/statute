@@ -1,55 +1,45 @@
-# HTML rewrite feasibility harness
+# HTML rewriting research
 
-This is the first engine experiment for [issue #114](https://github.com/kjanat/statute/issues/114). It adds no Statute middleware or public API. See the [research report](../../docs/research-html-rewriting.md) for results and remaining work.
+`research/htmlrewrite` runs LOL HTML in WebAssembly through wazero. It tests
+streamed HTML changes and Go callbacks for [#114](https://github.com/kjanat/statute/issues/114).
 
-The engine is opt-in with `-tags statute_htmlrewrite`. Without that tag, the
-package builds without the generated Wasm file, excludes wazero from its compiled
-dependencies and linked binary, and rejects engine construction with an error
-that names the required build tag. The Makefile's engine tests and benchmarks
-set the tag explicitly. `make test-disabled` needs neither Rust nor the artifact.
+Enable execution with `-tags statute_htmlrewrite`. Builds without this tag return
+an unavailable error and link neither wazero nor the guest artifact.
+`make test-disabled` checks this without Rust or a generated Wasm file.
 
-The private `htmlrewrite_research` tag only enables the Docker integration seam;
-it does not enable the engine. Docker/rewrite tests use both tags. The independent
-`cancelprobe` test package continues to exercise wazero directly.
+`htmlrewrite_research` enables Docker integration tests; use both tags for those
+tests. `make test` exercises all four tag combinations and checks linked binaries,
+including builds with the guest file removed.
 
-`make test` checks all four feature/hook combinations. Its binary checks verify
-that disabled executables contain neither wazero symbols nor the guest bytes,
-and that enabled executables contain both. Disabled builds also run with an
-overlay removing the guest artifact. An enabled build with that overlay must fail.
+[Programs and callbacks](../../docs/research-html-programs.md) describes configuring
+HTML transformations and testing Go callbacks.
 
-This gates the existing research engine. Production rewriting and its public
-configuration API remain tracked in #114; normal Statute builds already exclude
-this separate research module.
+[Implementation plan](../../docs/html-rewriting-design.md) covers the HTTP adapter,
+route configuration and release qualification.
 
-The [production design proposal](../../docs/html-rewriting-design.md) defines
-the next implementation sequence and the decisions needed before public integration.
+[Binaryen measurements](../../docs/research-html-binaryen.md) compare six optimizer
+variants. Run `binaryen.mjs` to repeat them on amd64 or arm64.
 
-The [Binaryen comparison](../../docs/research-html-binaryen.md) runs six optimizer
-variants through correctness, real-parser cancellation, rotated benchmarks and
-paced HTTP/memory measurements. `binaryen.mjs` preserves commands and artifact
-identities for reproduction on amd64 and arm64.
-
-The [HTTP load report](../../docs/research-html-load.md) documents the larger-page,
-slow-client and buffered-ETag measurement contract. `make http-load` runs one
-Linux load cell with a separate Statute process; `make memory` accepts
-`LOAD_COUNT` and `LOAD_SHAPE` for larger engine-only retention probes.
+[HTTP load measurements](../../docs/research-html-load.md) cover larger pages,
+slow clients and buffered ETags. `make http-load` runs Statute as a separate
+process. `make memory` measures the engine with `LOAD_COUNT` and `LOAD_SHAPE`.
 
 ## Run
 
 Install mise, then run:
 
 ```sh
-cd research/htmlrewrite
-mise install
-mise exec -- make test
-mise exec -- make fuzz
-mise exec -- make bench
-mise exec -- make bench-native
+mise install --monorepo
+mise run //research/htmlrewrite:test
+mise run //research/htmlrewrite:test-race
+mise -C research/htmlrewrite exec -- make fuzz
+mise -C research/htmlrewrite exec -- make bench
+mise -C research/htmlrewrite exec -- make bench-native
 ```
 
-`rust-toolchain.toml` selects `nightly-2026-10-04` (Rust 1.101.0-nightly, commit `db8f076d2619ce2585b0380dda06e8da25a40da4`), rustfmt, clippy, and the `wasm32-unknown-unknown` target. `make build` builds both the Wasm guest and native output oracle with the committed Cargo lockfile. It copies the guest to `artifact/rewriter.wasm` for Go embedding. The test target uses `CGO_ENABLED=0`; parity tests and HTTP load setup launch the native oracle for expected output. Rewriting itself starts no subprocesses.
+`make build` writes the Go-embedded guest to `artifact/rewriter.wasm` and builds the native executable used for output comparisons. Tests use `CGO_ENABLED=0`.
 
-The October 2 benchmark and memory samples used Rust 1.97.1. Those historical results retain their original toolchain attribution; they are not measurements of the current nightly artifact.
+The October 2 benchmark and memory samples used Rust 1.97.1.
 
 The generated Wasm and Cargo target directory are ignored. This research build needs Rust; ordinary Statute builds do not. Neither root `go test ./...` nor root `make fuzz` includes this separate module. The dedicated research workflow runs it on Linux amd64 and arm64; amd64 also runs the Go race detector. `make bench-smoke` exercises every benchmark with minimal iterations in CI.
 
@@ -97,15 +87,13 @@ boundaries below remain unchanged; the HTTP adapter is not a production API.
 - **Cross-feature interactions:** concurrent streams share compiled code and retain independent mutable parser state. HTTP compression, cache, Retry, routing, health, Docker, and Statute startup/shutdown are untouched and untested by this experiment.
 - **Acceptance:** transformation before EOF; direct/batched/native parity; malformed/UTF-8 input; independent concurrent instances; failure isolation; output/parser/linear-memory bounds; batch boundaries; EOF flushing; synchronous backpressure; cancellation during a host callback; shutdown; bounded chunk fuzzing.
 
-Production API, HTTP failure semantics, and callback design remain decisions for #114. This experiment does not settle them.
+The [design](../../docs/html-rewriting-design.md) covers the next steps: the HTTP adapter, public middleware and release qualification.
 
-## Research ABI
+## Guest calls
 
-The guest exports `create(buffered)`, `input_pointer()`, `write(length)`, and `finish()`. Status zero means success; nonzero is terminal to the Go owner. Go writes at most 64 KiB into a fixed guest-owned input region per call. `sink.emit(pointer, length)` is the sole import; the typed host callback checks its memory range and remaining output budget, copies the bytes, and writes synchronously. The host caches function handles within their owning stream; callers must serialize calls and must not re-enter the stream from its writer.
+The guest exports `create(buffered)`, `input_pointer()`, `write(length)`, and `finish()`. Status zero means success; nonzero is terminal to the Go owner. Go writes at most 64 KiB into a fixed guest-owned input region per call. `sink.emit(pointer, length)` emits output; the typed host callback checks its memory range and remaining output budget, copies the bytes, and writes synchronously. The host caches function handles within their owning stream; callers must serialize calls and must not re-enter the stream from its writer.
 
 `create(1)` enables a fixed 16-KiB guest output batch, flushed whenever full and after every successful `write` and `finish`. `create(0)` retains direct output for comparison; other values fail. Buffering changes callback granularity and how much prefix can escape before an error, but preserves successful output bytes. On failure, the host closes the instance and discards any pending batch. No buffered suffix is flushed after failure, and batching never waits for the next input call to flush bytes already emitted by the parser.
-
-The fixed Rust policy changes `a.rewrite`'s `href`, appends `<em>inserted</em>` inside it, and removes `.remove` subtrees. There are no Go element handles, configurable selectors, or arbitrary Go callbacks. Selecting those is deliberately outside this small ABI experiment.
 
 LOL HTML's parser budget is 1 MiB and wazero's per-instance linear-memory ceiling is 32 MiB. The writer has a separate byte budget. These are not a total process-memory bound: compiled code, Go allocations, output storage, and simultaneous instances add to it. There is no concurrency admission limit yet. The host explicitly selects wazero's compiler engine, with its default WebAssembly Core 2 features. Unsupported hosts fail; there is no interpreter fallback.
 
@@ -113,14 +101,14 @@ Context cancellation is enabled for guest execution. Tests cover cancellation be
 
 ## Dependencies and artifact provenance
 
-| Component | Pin                                                                                                                       | License                                                       |
-| --------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| LOL HTML  | `3.0.2` with the [local matcher ownership patch](guest/vendor/README.md); upstream archive checksum in `guest/Cargo.lock` | BSD-3-Clause                                                  |
-| Rust      | `nightly-2026-10-03`, `wasm32-unknown-unknown`, release/LTO/panic-abort                                                   | MIT OR Apache-2.0; bundled components have additional notices |
-| wazero    | `github.com/tetratelabs/wazero v1.12.0`; `go.sum`                                                                         | Apache-2.0                                                    |
-| Harness   | this repository revision                                                                                                  | MIT                                                           |
+| Component | Pin                                                                                                                                 | License                                                       |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| LOL HTML  | [Cargo.toml](guest/Cargo.toml) and [Cargo.lock](guest/Cargo.lock), with the [local matcher ownership patch](guest/vendor/README.md) | BSD-3-Clause                                                  |
+| Rust      | [.mise.toml](.mise.toml); release/LTO/panic-abort settings in [Cargo.toml](guest/Cargo.toml)                                        | MIT OR Apache-2.0; bundled components have additional notices |
+| wazero    | [go.mod](go.mod) and [go.sum](go.sum)                                                                                               | Apache-2.0                                                    |
+| Harness   | this repository revision                                                                                                            | MIT                                                           |
 
-Source references: [LOL HTML 3.0.2](https://docs.rs/crate/lol_html/3.0.2/source/), [wazero v1.12.0](https://github.com/wazero/wazero/tree/v1.12.0), [Rust licenses](https://github.com/rust-lang/rust/blob/0abfedbc7cd4e725f126913880c95800394f7c37/COPYRIGHT).
+[Vendor provenance](guest/vendor/README.md) includes the LOL HTML archive checksum and local patch.
 
 Inspect the complete locked Rust license inventory with:
 

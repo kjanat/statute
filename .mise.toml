@@ -1,6 +1,11 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 #:tombi toml-version = "v1.1.0"
 
+monorepo_root = true
+
+[monorepo]
+config_roots = ["research/htmlrewrite"]
+
 [tools]
 node = "latest"
 npm  = "12"
@@ -12,7 +17,7 @@ version = "7.0.2"
 prerelease          = true
 version             = "master"
 minimum_release_age = "0s"
-depends             = ["github:koalaman/shellcheck"]
+depends             = ["github:kjanat/shellcheck-rs"]
 lazy                = true
 lazy_bins           = ["actionlint"]
 
@@ -37,8 +42,10 @@ version = "0.28.0"
 [tools."github:tombi-toml/tombi"]
 version = "1.9.7"
 
-[tools."github:koalaman/shellcheck"]
-version = "latest"
+[tools."github:kjanat/shellcheck-rs"]
+matching_regex = '^rshellcheck-.*-(aarch64|armv7|i686|x86_64)-.*\.(tar\.gz|zip)$'
+version        = "latest"
+rename_exe     = "shellcheck"
 
 [settings]
 idiomatic_version_file_enable_tools = ["go", "node", "rust"]

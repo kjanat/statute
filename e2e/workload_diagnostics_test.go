@@ -6,9 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"statute.kjanat.dev/e2e/harness"
 	"statute.kjanat.dev/e2e/report"
@@ -62,11 +62,33 @@ func awaitWorkloadReport(ctx context.Context, t *testing.T, r *harness.Run, cont
 	var snapshot workloadDiagnosticsReport
 	snapshotURL := fmt.Sprintf("http://statute-1:%d/debug/workloads", harness.PortMetrics)
 	spec.RejectContains = append(spec.RejectContains, container)
-	body := awaitClient(ctx, r, snapshotURL, 30*time.Second, spec)
+	blob, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := workloadClient(ctx, r, "wait", "-url", snapshotURL, "-timeout", "30s", "-spec", string(blob))
 	if err := json.Unmarshal([]byte(body), &snapshot); err != nil {
 		t.Fatalf("invalid workload snapshot: %v\n%s", err, body)
 	}
 	return snapshot
+}
+
+// workloadClient avoids Compose startup between checks of a short idle window.
+func workloadClient(ctx context.Context, r *harness.Run, args ...string) string {
+	r.T.Helper()
+	id := mustCreateContainer(ctx, r, harness.ContainerSpec{
+		Image: os.Getenv("STATUTE_E2E_IMAGE"), Network: r.Compose.Project + "_mesh",
+		Entrypoint: []string{"/client"}, Cmd: args,
+	}, true)
+	defer func() { requireEngine(r.T, r.Engine.Remove(ctx, id)) }()
+	code, err := r.Engine.Wait(ctx, id)
+	requireEngine(r.T, err)
+	out, err := r.Engine.Logs(ctx, id)
+	requireEngine(r.T, err)
+	if code != 0 {
+		r.T.Fatalf("workload client %v exited %d: %s", args, code, out)
+	}
+	return out
 }
 
 func workloadOwnerSpec(t *testing.T, service, phase string) report.WaitSpec {
@@ -93,16 +115,76 @@ type workloadCheckpoint struct {
 func awaitWorkloadCheckpoint(ctx context.Context, t *testing.T, r *harness.Run, container string, want workloadCheckpoint) {
 	t.Helper()
 	want.service = r.Compose.Project + "-wl"
-	spec := workloadOwnerSpec(t, want.service, want.phase)
-	spec.JSON = append(spec.JSON,
-		jsonEqual(t, "/services/0/activation_attempts", want.activations),
-		jsonEqual(t, "/services/0/idle_stops", want.idleStops),
-		jsonEqual(t, "/services/0/external_starts", want.externalStarts),
-		jsonEqual(t, "/services/0/external_stops", want.externalStops),
-	)
+	spec := workloadCheckpointSpec(t, want)
 	snapshot := awaitWorkloadReport(ctx, t, r, container, spec)
 	if !want.matches(snapshot) {
 		t.Fatalf("checkpoint %+v: got %+v", want, snapshot)
+	}
+}
+
+func workloadCheckpointSpec(t *testing.T, want workloadCheckpoint) report.WaitSpec {
+	t.Helper()
+	spec := workloadOwnerSpec(t, want.service, want.phase)
+	spec.JSON = append(spec.JSON,
+		jsonEqual(t, "/services/0/idle_stops", want.idleStops),
+		jsonEqual(t, "/services/0/external_stops", want.externalStops),
+	)
+	if want.externalStarts == 0 {
+		spec.JSON = append(spec.JSON,
+			jsonEqual(t, "/services/0/activation_attempts", want.activations),
+			jsonEqual(t, "/services/0/external_starts", 0),
+		)
+	} else {
+		spec.JSON = append(spec.JSON,
+			jsonMinimum("/services/0/activation_attempts", fmt.Sprint(want.activations)),
+			jsonMinimum("/services/0/external_starts", fmt.Sprint(want.externalStarts)),
+		)
+	}
+	return spec
+}
+
+func adoptWorkload(ctx context.Context, t *testing.T, r *harness.Run, container, id, host string, want workloadCheckpoint) {
+	t.Helper()
+	want.service = r.Compose.Project + "-wl"
+	spec := workloadCheckpointSpec(t, want)
+	spec.RejectContains = append(spec.RejectContains, container)
+	plan := &report.Plan{Name: fmt.Sprintf("adopt-%d", want.externalStarts), Steps: []report.Step{
+		{
+			Name: "adoption", URL: fmt.Sprintf("http://statute-1:%d/debug/workloads", harness.PortMetrics),
+			TargetServer: "statute-1", Proto: "h1", Wait: &report.WaitStep{Timeout: "30s", Spec: spec},
+		},
+		{
+			Name: "serve", URL: fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP),
+			TargetServer: "statute-1", Proto: "h1", Count: 1,
+			Expect: report.Expect{Status: 200, BodyContains: `"origin":"origin-wl"`},
+		},
+	}}
+	client := r.Topology.Clients[0]
+	path := r.WritePlan(client, plan)
+	name := client + "-" + plan.Name + "-report.json"
+	// Start the idle window after the client is running.
+	out, err := r.Compose.Output(ctx, "run", "--detach", "--no-deps", client, "run", "-plan", path, "-out", "/reports/"+name)
+	requireEngine(t, err)
+	actor := strings.TrimSpace(out)
+	defer func() { requireEngine(t, r.Engine.Remove(ctx, actor)) }()
+	requireEngine(t, r.Engine.Start(ctx, id))
+	code, err := r.Engine.Wait(ctx, actor)
+	requireEngine(t, err)
+	logs, err := r.Engine.Logs(ctx, actor)
+	requireEngine(t, err)
+	if code != 0 {
+		t.Fatalf("adoption client exited %d: %s", code, logs)
+	}
+	rep := r.ReadReport(name)
+	if len(rep.Failures) != 0 || len(rep.Results) != 2 || !rep.Results[0].OK || !rep.Results[1].OK {
+		t.Fatalf("adoption plan: %+v", rep)
+	}
+	var snapshot workloadDiagnosticsReport
+	if err := json.Unmarshal([]byte(rep.Results[0].Body), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !want.matches(snapshot) {
+		t.Fatalf("adoption checkpoint %+v: got %+v", want, snapshot)
 	}
 }
 
@@ -111,8 +193,15 @@ func (want workloadCheckpoint) matches(report workloadDiagnosticsReport) bool {
 		return false
 	}
 	s := report.Services[0]
-	return s.ActivationAttempts == want.activations && s.IdleStops == want.idleStops &&
-		s.ExternalStarts == want.externalStarts && s.ExternalStops == want.externalStops
+	if s.IdleStops != want.idleStops || s.ExternalStops != want.externalStops ||
+		s.ActivationAttempts < want.activations || s.ExternalStarts < want.externalStarts {
+		return false
+	}
+	if want.externalStarts == 0 {
+		return s.ActivationAttempts == want.activations && s.ExternalStarts == 0
+	}
+	// Stale adoption increments both counters. Their difference counts demand.
+	return s.ActivationAttempts-want.activations == s.ExternalStarts-want.externalStarts
 }
 
 func (r workloadDiagnosticsReport) hasCurrentOwner(service, phase string) bool {

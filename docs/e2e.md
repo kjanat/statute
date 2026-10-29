@@ -207,6 +207,13 @@ server ownership; those require their own live-process serving/cleanup controls.
    fast; `TestRegression_*` runs nightly and on demand; `TestSoak_*`
    is the scheduled stress tier.
 
+A plan step with `wait` polls its URL using the client's existing status, body,
+and JSON predicates. Set `wait.timeout` to a positive duration (default `30s`)
+and put the predicates in `wait.spec`. A successful wait records its final body
+in the result and immediately advances to the next step. A failed wait stops the
+plan. Wait steps use GET; use ordinary steps for request counts, headers,
+bodies, and concurrency.
+
 The `upstream-tls` regression uses the lane PKI in both directions: Statute
 verifies the origin certificate, while `origin-1` requires Statute's client
 certificate. Its request journal must contain both proxied traffic and an active
@@ -258,12 +265,18 @@ so CI can never silently drop declared coverage.
   idle shutdown, demand activation after an external stop, and adoption after
   an external start against the real daemon. It first creates a stopped container
   and waits for dormant discovery, then starts it externally. Private diagnostics
-  must confirm adoption and readiness before any content request. Exact phase and
+  must confirm adoption and readiness before any content request. Phase and
   counter checkpoints separate every subsequent lifecycle action, including stop
-  settlement before demand or another external start. Content requests are single
-  deliberate serving assertions: polling a routed URL would itself activate a
-  dormant workload and race observe-only adoption. Docker inspection additionally
-  proves idle shutdown; the final JSON/Prometheus counter checks remain intact. The
+  settlement before demand or another external start. Demand activations and stop
+  counts are exact. Extra observe-only attempts from stale running listings must
+  increase both activation and external-start counters equally. Diagnostic and
+  serving clients use the shared Engine client to avoid Compose startup between
+  checks of the short idle window. For external adoption, a client plan starts
+  before the container, waits for readiness, and fetches content in the same
+  process. Content requests are single serving assertions:
+  polling a routed URL would itself activate a dormant workload and race
+  observe-only adoption. Docker inspection additionally proves idle shutdown;
+  the final JSON/Prometheus counter checks remain intact. The
   listing/subscription race and ambiguous-stop interleavings use deterministic
   in-process provider tests.
 

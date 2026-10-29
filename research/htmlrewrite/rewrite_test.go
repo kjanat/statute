@@ -319,14 +319,18 @@ func TestConcurrentIsolation(t *testing.T) {
 func TestCapabilities(t *testing.T) {
 	e := testEngine(t)
 	imports := e.compiled.ImportedFunctions()
-	if len(imports) != 1 {
-		t.Fatalf("unexpected imports: %v", imports)
+	if len(imports) != 2 || len(e.compiled.ImportedMemories()) != 0 {
+		t.Fatalf("unexpected guest capabilities: %v", imports)
 	}
-	module, name, ok := imports[0].Import()
-	if !ok || module != "sink" || name != "emit" || len(e.compiled.ImportedMemories()) != 0 {
-		t.Fatalf("unexpected capabilities: %s.%s", module, name)
+	seen := map[string]bool{}
+	for _, fn := range imports {
+		module, name, ok := fn.Import()
+		if !ok || module != "sink" || (name != "emit" && name != "exchange") || seen[name] {
+			t.Fatalf("unexpected capability %s.%s", module, name)
+		}
+		seen[name] = true
 	}
-	t.Logf("Wasm artifact: %d bytes; sole import: %s.%s", len(guest), module, name)
+	t.Logf("Wasm artifact: %d bytes; only sink.emit and sink.exchange imports", len(guest))
 }
 
 func BenchmarkRewrite(b *testing.B) {

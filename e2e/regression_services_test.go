@@ -208,7 +208,7 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	}, false)
 
 	serves := func() {
-		out := mustClientGet(ctx, r, fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
+		out := workloadClient(ctx, r, "get", "-url", fmt.Sprintf("http://%s:%d/echo", host, harness.PortHTTP))
 		if !strings.Contains(out, `"origin":"origin-wl"`) {
 			t.Fatalf("workload response: %s", out)
 		}
@@ -225,9 +225,7 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	if running() {
 		t.Fatal("created workload started without demand")
 	}
-	requireEngine(t, r.Engine.Start(ctx, id))
-	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 1, externalStarts: 1})
-	serves()
+	adoptWorkload(ctx, t, r, name, id, host, workloadCheckpoint{phase: "ready", activations: 1, externalStarts: 1})
 	assertForeignDockerHost(ctx, r)
 
 	// The idle policy applies to the adopted container.
@@ -258,9 +256,7 @@ func TestRegression_DockerOnDemandWorkload(t *testing.T) {
 	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "dormant", activations: 3, idleStops: 2, externalStarts: 1, externalStops: 1})
 
 	// External start must be discovered without a request or periodic poll.
-	requireEngine(t, r.Engine.Start(ctx, id))
-	awaitWorkloadCheckpoint(ctx, t, r, name, workloadCheckpoint{phase: "ready", activations: 4, idleStops: 2, externalStarts: 2, externalStops: 1})
-	serves()
+	adoptWorkload(ctx, t, r, name, id, host, workloadCheckpoint{phase: "ready", activations: 4, idleStops: 2, externalStarts: 2, externalStops: 1})
 
 	// Adoption also keeps Statute's idle policy: an external start is not
 	// authority to keep the container running indefinitely.
