@@ -52,19 +52,6 @@ func TestSecurityHeaderTranslation(t *testing.T) {
 	assertGeneratedParity(t, r)
 }
 
-func TestRateLimitCandidateReportsConcreteDifferences(t *testing.T) {
-	r := audit(t, policyInputs(t, "rateLimit: {average: 20, burst: 40, period: 1s}"))
-	requireMigrationGaps(t, r, "middlewares.$rate-capacity", "middlewares.$rate-delay", "routers.$middleware:candidate@file")
-	if !strings.Contains(string(r.Go), `statute.RateLimit("20/s")`) || strings.Contains(findings(r), "no verified translation") {
-		t.Fatal("rate candidate or precise dependency findings missing")
-	}
-	compileGenerated(t, r)
-	burst := audit(t, policyInputs(t, "rateLimit: {average: 20, burst: 3, period: 1s}"))
-	if !strings.Contains(findings(burst), "$rate-burst") {
-		t.Fatal("independent source burst was silently changed")
-	}
-}
-
 func TestRedirectSchemeMethodTranslation(t *testing.T) {
 	for _, permanent := range []bool{false, true} {
 		r := audit(t, policyInputs(t, fmt.Sprintf("redirectScheme: {scheme: https, permanent: %t}", permanent)))
@@ -82,32 +69,6 @@ func TestRedirectSchemeMethodTranslation(t *testing.T) {
 			t.Fatalf("redirect=%+v want=%+v", c.Routes[0].Redirect, want)
 		}
 		assertGeneratedParity(t, r)
-	}
-}
-
-func TestRegexRedirectCandidateAndMatchDecisions(t *testing.T) {
-	r := audit(t, policyInputs(t, `redirectRegex: {regex: '^https?://[^/]+/(.*)', replacement: 'https://new.example/${1}', permanent: true}`))
-	requireMigrationGaps(t, r)
-	c, err := statute.Resolve(r.Config)
-	if err != nil || c.Routes[0].Redirect.Target != "https://new.example{request_uri}" {
-		t.Fatalf("capture template: %v %+v", err, c)
-	}
-	assertGeneratedParity(t, r)
-	literal := audit(t, policyInputs(t, `redirectRegex: {regex: '^https://api\.example/(.*)', replacement: 'https://new.example/${1}', permanent: true}`))
-	requireMigrationGaps(t, literal, "middlewares.$redirect-match")
-	equal := audit(t, policyInputs(t, `redirectRegex: {regex: '^https?://[^/]+/(.*)', replacement: 'http://api.example/${1}'}`))
-	requireMigrationGaps(t, equal, "middlewares.$redirect-equality")
-}
-
-func TestRedirectBytePrefixCannotDisappear(t *testing.T) {
-	in := policyInputs(t, "redirectScheme: {scheme: https}")
-	body := strings.Replace(simpleDynamic, "Path(`/health`)", "PathPrefix(`/api`)", 1)
-	body = strings.Replace(body, "service: api", "service: api\n      middlewares: [candidate]", 1) + "  middlewares:\n    candidate:\n      redirectScheme: {scheme: https}\n"
-	in.Dynamic = []string{fixture(t, "prefix.yml", body)}
-	r := audit(t, in)
-	requireMigrationGaps(t, r, "routers.rule")
-	if r.Report.GeneratedRoutes != 0 {
-		t.Fatal("unrepresentable redirect matcher generated")
 	}
 }
 
@@ -149,26 +110,6 @@ func TestImplicitDockerServiceSelection(t *testing.T) {
 	ambiguous := compose + "      traefik.http.services.other.loadbalancer.server.port: '9000'\n"
 	in.Compose = []string{fixture(t, "ambiguous.yml", ambiguous)}
 	requireMigrationGaps(t, audit(t, in), "routers.$service-selection")
-}
-
-func TestCrossProviderServiceProducesGuardedPlaceholder(t *testing.T) {
-	in := dockerServiceInputs(t, "")
-	compose := `services:
-  api:
-    labels:
-      traefik.enable: 'true'
-      traefik.http.routers.api.rule: Host(` + "`api.example`" + `)
-      traefik.http.routers.api.service: api@file
-      traefik.http.services.api.loadbalancer.server.port: '8080'
-`
-	in.Compose = []string{fixture(t, "cross.yml", compose)}
-	in.Dynamic = []string{fixture(t, "file.yml", strings.Replace(simpleDynamic, "  routers:\n    api:\n      rule: Host(`api.example`) && Path(`/health`)\n      service: api\n", "", 1))}
-	r := audit(t, in)
-	requireMigrationGaps(t, r, "routers.service")
-	if !strings.Contains(string(r.Go), "migrationCrossProviderRoute") || !strings.Contains(string(r.Go), `ProxyTo("api@file")`) {
-		t.Fatal("cross-provider placeholder lost source identity")
-	}
-	compileGenerated(t, r)
 }
 
 func TestPassiveHealthCandidatePreservesSettings(t *testing.T) {

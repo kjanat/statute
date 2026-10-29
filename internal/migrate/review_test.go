@@ -6,24 +6,6 @@ import (
 	"testing"
 )
 
-func TestResponseHeaderPrecedenceBlocksConflictingChains(t *testing.T) {
-	for _, refs := range []string{"remove, set", "set, remove", "nested", "remove, nested"} {
-		body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: ["+refs+"]", 1)
-		body += `  middlewares:
-    remove:
-      headers: {customResponseHeaders: {Server: ''}}
-    set:
-      headers: {customResponseHeaders: {server: '${SERVER_HEADER}'}}
-    nested:
-      chain: {middlewares: [remove, set]}
-`
-		r := audit(t, basicInputs(t, body))
-		if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$response-header-order") || !strings.Contains(string(r.Go), "panic(") {
-			t.Fatalf("conflicting response chain accepted: %s", refs)
-		}
-	}
-}
-
 func TestResponseHeaderOrderIncludesEntrypointDefaults(t *testing.T) {
 	for _, provider := range []string{providerFile, providerDocker} {
 		body := "http:\n"

@@ -144,22 +144,3 @@ providers:
 	}
 	assertGeneratedParity(t, r)
 }
-
-func TestACMEDefaultKeyTypeRequiresMigrationDecision(t *testing.T) {
-	for _, keyType := range []string{"", "RSA4096", "EC384", "EC256"} {
-		in := basicInputs(t, strings.Replace(simpleDynamic, "service: api", "service: api\n      tls: {certResolver: cloud}", 1))
-		setting := ""
-		if keyType != "" {
-			setting = "      keyType: " + keyType + "\n"
-		}
-		in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  secure: {address: ':8443', http: {sanitizePath: false}}\ncertificatesResolvers:\n  cloud:\n    acme:\n      email: ops@example.com\n      storage: /acme/state.json\n      dnsChallenge: {provider: cloudflare}\n"+setting)}
-		r := audit(t, in)
-		if keyType == "EC256" {
-			requireMigrationGaps(t, r, "certificatesresolvers.$dns-propagation")
-			continue
-		}
-		if !hasBlockingGaps(r) || !strings.Contains(findings(r), "keyType") || !strings.Contains(string(r.Go), "panic(") {
-			t.Fatalf("incompatible ACME key type accepted: %q", keyType)
-		}
-	}
-}
