@@ -79,12 +79,18 @@ func executePlan(plan *report.Plan) *report.Report {
 			rep.Failures = append(rep.Failures, fmt.Sprintf("%s->%s", step.Name, step.TargetServer))
 		}
 		rep.Results = append(rep.Results, results...)
+		if !succeeded && step.Wait != nil {
+			break
+		}
 	}
 	rep.Finished = time.Now()
 	return rep
 }
 
 func executeStep(plan *report.Plan, step *report.Step) []report.Result {
+	if step.Wait != nil {
+		return []report.Result{executeWaitStep(step)}
+	}
 	count := max(step.Count, 1)
 	workers := min(max(step.Concurrency, 1), count)
 	client, closeClient, err := clientFor(step)

@@ -24,6 +24,15 @@ func TestRegression_WorkloadCheckpoint(t *testing.T) {
 		{"active waiters", func(r *workloadDiagnosticsReport) { r.Services[0].Owners[0].ActivationWaiters = 1 }, false},
 		{"activation failed", func(r *workloadDiagnosticsReport) { r.Services[0].ActivationFailures = 1 }, false},
 		{"extra activation", func(r *workloadDiagnosticsReport) { r.Services[0].ActivationAttempts++ }, false},
+		{"stale adoption", func(r *workloadDiagnosticsReport) {
+			r.Services[0].ActivationAttempts++
+			r.Services[0].ExternalStarts++
+		}, true},
+		{"unpaired adoption", func(r *workloadDiagnosticsReport) { r.Services[0].ExternalStarts++ }, false},
+		{"adoption cannot replace demand", func(r *workloadDiagnosticsReport) {
+			r.Services[0].ActivationAttempts++
+			r.Services[0].ExternalStarts += 2
+		}, false},
 		{"missing idle settlement", func(r *workloadDiagnosticsReport) { r.Services[0].IdleStops-- }, false},
 		{"unobserved external stop", func(r *workloadDiagnosticsReport) { r.Services[0].ExternalStops = 0 }, false},
 		{"orphan mutation", func(r *workloadDiagnosticsReport) { r.OrphanedMutations = []json.RawMessage{json.RawMessage(`{}`)} }, false},
@@ -41,6 +50,25 @@ func TestRegression_WorkloadCheckpoint(t *testing.T) {
 				t.Fatalf("matches = %v, want %v: %+v", got, tc.accept, report)
 			}
 		})
+	}
+}
+
+func TestRegression_WorkloadStaleAdoptionCheckpoint(t *testing.T) {
+	t.Parallel()
+	// CI observed a stale running listing after idle shutdown. Readiness
+	// corrected it to dormant; both attempt counters include that adoption.
+	r := workloadDiagnosticsReport{Services: []workloadServiceReport{{
+		Service: "wl", ActivationAttempts: 2, IdleStops: 1, ExternalStarts: 2,
+		Owners: []workloadOwnerReport{{Current: true, Phase: "dormant", Incarnation: 1}},
+	}}}
+	want := workloadCheckpoint{service: "wl", phase: "dormant", activations: 1, idleStops: 1, externalStarts: 1}
+	if !want.matches(r) {
+		t.Fatalf("stale adoption rejected after idle shutdown: %+v", r)
+	}
+	// A paired increase before the first external start is still unexpected.
+	r.Services[0].IdleStops = 0
+	if (workloadCheckpoint{service: "wl", phase: "dormant"}).matches(r) {
+		t.Fatal("accepted adoption before the first external start")
 	}
 }
 
