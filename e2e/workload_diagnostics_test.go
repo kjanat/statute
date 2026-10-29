@@ -162,8 +162,7 @@ func adoptWorkload(ctx context.Context, t *testing.T, r *harness.Run, container,
 	client := r.Topology.Clients[0]
 	path := r.WritePlan(client, plan)
 	name := client + "-" + plan.Name + "-report.json"
-	// Start the waiting client before the external start, so its launch
-	// cannot consume the adopted workload's idle window.
+	// Start the idle window after the client is running.
 	out, err := r.Compose.Output(ctx, "run", "--detach", "--no-deps", client, "run", "-plan", path, "-out", "/reports/"+name)
 	requireEngine(t, err)
 	actor := strings.TrimSpace(out)
@@ -201,9 +200,7 @@ func (want workloadCheckpoint) matches(report workloadDiagnosticsReport) bool {
 	if want.externalStarts == 0 {
 		return s.ActivationAttempts == want.activations && s.ExternalStarts == 0
 	}
-	// A stale running listing can initiate adoption before readiness finds
-	// the container stopped. It adds one to both attempt counters, so the
-	// number of demand activations must still match exactly.
+	// Stale adoption increments both counters. Their difference counts demand.
 	return s.ActivationAttempts-want.activations == s.ExternalStarts-want.externalStarts
 }
 
