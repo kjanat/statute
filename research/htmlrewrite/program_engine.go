@@ -353,8 +353,9 @@ func programExchange(ctx context.Context, module api.Module, stack []uint64) {
 	if c.capture {
 		c.events = append(c.events, append([]byte(nil), bytes...))
 	}
-	m := &mutations{active: true, event: event, limits: c.program.limits, bytes: 48}
-	invocationCtx := context.WithValue(c.ctx, invocationContextKey{}, invocationScope{id: event.id, fail: c.fail})
+	scope := &invocationScope{fail: c.fail}
+	m := &mutations{active: true, event: event, scope: scope, limits: c.program.limits, bytes: 48}
+	invocationCtx := context.WithValue(c.ctx, invocationContextKey{}, scope)
 	err = applicationCall(func() error { return c.session.handle(invocationCtx, event, m) })
 	commands, mutationErr := m.finish()
 	c.fail(errors.Join(err, mutationErr, c.ctx.Err()))

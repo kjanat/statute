@@ -459,18 +459,12 @@ pub(crate) fn settings(bytes: &[u8], _replies: Vec<Vec<u8>>) -> Result<Settings<
                 }
             }
         });
+    let mut end_rules = Vec::new();
     for (id, rule) in rules.into_iter().enumerate() {
         let id = id as u32;
         let shared = Arc::clone(&state);
         if rule.kind == 5 {
-            settings = settings.append_document_content_handler(
-                DocumentContentHandlers::default().end(move |end: &mut DocumentEnd<'_>| {
-                    for c in commands(&shared, id, &rule, Event::new(5))? {
-                        end.append(&c.content, c.content_type());
-                    }
-                    Ok(())
-                }),
-            );
+            end_rules.push((id, rule));
             continue;
         }
         let selector = Cow::Owned(rule.selector.parse::<lol_html::Selector>()?);
@@ -537,6 +531,19 @@ pub(crate) fn settings(bytes: &[u8], _replies: Vec<Vec<u8>>) -> Result<Settings<
             });
         }
         settings = settings.append_element_content_handler((selector, handlers));
+    }
+    if !end_rules.is_empty() {
+        let shared = Arc::clone(&state);
+        settings = settings.append_document_content_handler(
+            DocumentContentHandlers::default().end(move |end: &mut DocumentEnd<'_>| {
+                for (id, rule) in end_rules {
+                    for c in commands(&shared, id, &rule, Event::new(5))? {
+                        end.append(&c.content, c.content_type());
+                    }
+                }
+                Ok(())
+            }),
+        );
     }
     Ok(settings)
 }

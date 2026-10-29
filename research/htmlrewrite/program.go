@@ -103,6 +103,7 @@ type mutations struct {
 	mu       sync.Mutex
 	active   bool
 	event    eventSnapshot
+	scope    *invocationScope
 	limits   programLimits
 	commands []command
 	bytes    int
@@ -141,7 +142,6 @@ func validateCommand(kind eventKind, canContent bool, c command) error {
 type (
 	invocationContextKey struct{}
 	invocationScope      struct {
-		id   invocationIdentity
 		fail func(error)
 	}
 )
@@ -149,11 +149,12 @@ type (
 func (m *mutations) add(ctx context.Context, c command) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var scope invocationScope
+	var scope *invocationScope
 	var ok bool
 	if ctx != nil {
-		scope, ok = ctx.Value(invocationContextKey{}).(invocationScope)
+		scope, ok = ctx.Value(invocationContextKey{}).(*invocationScope)
 	}
+	ok = ok && scope != nil
 	if !m.active {
 		err := errors.New("mutation invocation has ended")
 		if ok {
@@ -161,7 +162,7 @@ func (m *mutations) add(ctx context.Context, c command) error {
 		}
 		return err
 	}
-	if !ok || scope.id != m.event.id {
+	if !ok || scope != m.scope {
 		err := errors.New("mutation belongs to another invocation")
 		if ok {
 			scope.fail(err)

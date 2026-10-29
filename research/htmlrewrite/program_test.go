@@ -795,3 +795,97 @@ func TestProgramABICheckReportsCancellation(t *testing.T) {
 		t.Fatalf("cancellation reported as an ABI mismatch: %v", err)
 	}
 }
+
+func TestProgramDocumentEndRegistrationOrder(t *testing.T) {
+	for _, chunk := range []int{1, 7, 4096} {
+		t.Run(fmt.Sprint(chunk), func(t *testing.T) {
+			r := testRun(t, 1)
+			var order []uint32
+			p := testProgram(t, programDefinition{
+				rules: []programRule{
+					{event: documentEndEvent, commands: []command{{op: appendContent, content: "A"}}},
+					{event: documentEndEvent, callback: true},
+					{event: documentEndEvent, commands: []command{{op: appendContent, content: "C"}}},
+					{event: documentEndEvent, callback: true},
+				},
+				newSession: func(context.Context, requestMetadata) (callbackSession, error) {
+					return &testSession{onHandle: func(ctx context.Context, e eventSnapshot, m *mutations) error {
+						order = append(order, e.id.rule)
+						return m.add(ctx, command{op: appendContent, content: fmt.Sprint(len(order))})
+					}}, nil
+				},
+			})
+			var out bytes.Buffer
+			s, err := r.start(context.Background(), p, requestMetadata{}, &out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.child.capture = true
+			if err := feedProgram(s, "<p>x</p>", chunk); err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != "<p>x</p>A1C2" || !reflect.DeepEqual(order, []uint32{1, 3}) {
+				t.Errorf("EOF output=%q callbacks=%v; want <p>x</p>A1C2 and [1 3]", out.String(), order)
+			}
+			native, err := nativeProgram(t, "<p>x</p>", chunk, p.wire, s.child.replies, s.child.events)
+			if err != nil || !bytes.Equal(native, out.Bytes()) {
+				t.Fatalf("native=%q wasm=%q err=%v", native, out.String(), err)
+			}
+		})
+	}
+}
+
+func TestProgramForeignBuilderAcrossRuns(t *testing.T) {
+	aRun, bRun := testRun(t, 1), testRun(t, 1)
+	type offer struct {
+		builder *mutations
+		id      invocationIdentity
+	}
+	builders := make(chan offer, 1)
+	release, done := make(chan struct{}), make(chan error, 1)
+	var aID, bID invocationIdentity
+	p := testProgram(t, programDefinition{
+		rules: []programRule{{selector: "a", event: elementEvent, callback: true}},
+		newSession: func(_ context.Context, metadata requestMetadata) (callbackSession, error) {
+			return &testSession{onHandle: func(ctx context.Context, e eventSnapshot, m *mutations) error {
+				if metadata.url == "first" {
+					builders <- offer{m, e.id}
+					<-release
+					return nil
+				}
+				foreign := <-builders
+				aID, bID = foreign.id, e.id
+				_ = foreign.builder.add(ctx, command{op: setAttribute, name: "leak", content: "foreign"})
+				return nil
+			}}, nil
+		},
+	})
+	var first bytes.Buffer
+	a, err := aRun.start(context.Background(), p, requestMetadata{url: "first"}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { done <- feedProgram(a, "<a></a>", 4096) }()
+	b, err := bRun.start(context.Background(), p, requestMetadata{url: "second"}, io.Discard)
+	if err != nil {
+		close(release)
+		<-done
+		t.Fatal(err)
+	}
+	if err := feedProgram(b, "<a></a>", 4096); err == nil {
+		t.Error("builder accepted another run's context")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("foreign attempt failed the first run: %v", err)
+	}
+	if aID != bID {
+		t.Fatalf("test did not collide wire identities: %v != %v", aID, bID)
+	}
+	if first.String() != `<a></a>` {
+		t.Errorf("foreign mutation escaped: %q", first.String())
+	}
+	if aRun.active() != 0 || bRun.active() != 0 {
+		t.Fatal("run did not release its stream")
+	}
+}
