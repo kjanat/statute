@@ -23,7 +23,8 @@ import (
 // The server swaps whole generations atomically. Workload routes additionally
 // validate their handler-carried policy revision after a readiness wait.
 type dynamicTable struct {
-	routes []compiledRoute
+	routes          []compiledRoute
+	serviceHandlers map[string]http.Handler
 	// rejections retain parsed predicates before refusal-envelope widening.
 	rejections []compiledRoute
 	// quarantines retain container provenance between valid routes and tombstones.
@@ -659,6 +660,7 @@ func (p *dockerProvider) extractOptions() docker.ExtractOptions {
 		Network:          p.cfg.Network,
 		ExposedByDefault: p.cfg.ExposedByDefault,
 		TraefikLabels:    p.cfg.TraefikLabels,
+		BoundServices:    p.boundServices(),
 	}
 }
 
@@ -702,6 +704,7 @@ func (p *dockerProvider) workloadCandidateTopology(containers []docker.Container
 func (p *dockerProvider) buildTable(services []docker.Service, tombstones, rejected []docker.Matcher, quarantines []docker.RouteClaim, prev *dynamicTable) (*dynamicTable, []*runningPool) {
 	next := &dynamicTable{
 		rejections:        compileRefusals(rejected),
+		serviceHandlers:   map[string]http.Handler{},
 		pools:             make(map[string]*runningPool, len(services)),
 		fingerprints:      make(map[string]string, len(services)),
 		workloadBindings:  make(map[string]workloadBindingKey, len(p.cfg.Workloads)),
@@ -744,6 +747,9 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones, rejec
 
 // addService compiles one ordinary merged service into the next generation.
 func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTable) []docker.Matcher {
+	if svc.BoundService != "" {
+		return p.addBoundService(svc, next)
+	}
 	pool, warn := servicePool(svc)
 	if warn != "" {
 		p.warn([]string{warn})
@@ -784,6 +790,12 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	if gated != nil {
 		base = &workloadGate{p: p, w: gated, binding: binding, revision: revision}
 	}
+	serviceBase := base
+	if gated != nil {
+		serviceBase = &workloadRevisionGate{p: p, service: svc.Name, binding: binding, revision: revision, next: serviceBase}
+		serviceBase = &workloadRequestScope{p: p, w: gated, next: serviceBase}
+	}
+	next.serviceHandlers[svc.Name] = serviceBase
 	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, next)
 	return tombs
 }
@@ -795,10 +807,11 @@ func compileQuarantineRoutes(claims []docker.RouteClaim) []compiledRoute {
 	for _, claim := range claims {
 		m := claim.Matcher
 		out = append(out, compiledRoute{
-			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
-			handler: workloadMutationQuarantine{},
-			service: claim.Service,
-			matcher: m,
+			route:        &resolved.Route{Pattern: m.Path, Host: m.Host},
+			handler:      workloadMutationQuarantine{},
+			service:      claim.Service,
+			matcher:      m,
+			peerPrefixes: mustParsePrefixes(m.PeerIPCIDRs),
 		})
 	}
 	return out
@@ -806,7 +819,15 @@ func compileQuarantineRoutes(claims []docker.RouteClaim) []compiledRoute {
 
 func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, next *dynamicTable) {
 	for _, rc := range chains {
-		handler := wrapRouteMiddleware(rc.mws, researchDockerRoute(name, rc.m.Host, rc.m.Path, base), true)
+		if p.srv != nil && p.srv.cfg != nil {
+			rc.m.PriorityOrder = p.srv.cfg.PrioritizeRoutes
+		}
+		if !p.cfg.RouterConstraints {
+			rc.m.ListenerNames = nil
+		} else if len(rc.m.ListenerNames) == 0 {
+			rc.m.ListenerNames = append([]string(nil), p.cfg.DefaultListeners...)
+		}
+		handler := wrapRouteMiddleware(rc.mws, researchDockerRoute(name, rc.m.Host, rc.m.Path, base), rp != nil)
 		if gated != nil {
 			handler = &workloadRevisionGate{
 				p: p, service: name, binding: binding, revision: revision, next: handler,
@@ -815,14 +836,16 @@ func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, cha
 		}
 		next.routes = append(next.routes, compiledRoute{
 			route: &resolved.Route{
-				Pattern:    rc.m.Path,
-				Host:       rc.m.Host,
-				Upstream:   rp,
-				Middleware: rc.mws,
+				Pattern:     rc.m.Path,
+				Host:        rc.m.Host,
+				Upstream:    rp,
+				Middleware:  rc.mws,
+				PeerIPCIDRs: append([]string(nil), rc.m.PeerIPCIDRs...),
 			},
-			handler: handler,
-			service: name,
-			matcher: rc.m,
+			handler:      handler,
+			service:      name,
+			matcher:      rc.m,
+			peerPrefixes: mustParsePrefixes(rc.m.PeerIPCIDRs),
 		})
 	}
 }
@@ -910,6 +933,7 @@ func preparePoolPolicy(pool *Pool, policies map[string]resolved.PoolPolicy, serv
 // backend set, strategy, and routes are deliberately absent from PoolPolicy and
 // therefore remain Docker-owned.
 func applyPoolPolicy(pool *resolved.Pool, policy resolved.PoolPolicy) {
+	pool.RejectUnhealthy = policy.RejectUnhealthy
 	pool.HealthCheck = policy.HealthCheck
 	pool.PassiveHealthCheck = policy.PassiveHealthCheck
 	pool.Transport = policy.Transport
@@ -944,9 +968,10 @@ func compileRefusals(matchers []docker.Matcher) []compiledRoute {
 		m.Middlewares = nil
 		m.Hints = docker.MiddlewareHints{}
 		out = append(out, compiledRoute{
-			route:   &resolved.Route{Pattern: m.Path, Host: m.Host},
-			handler: tombstoneHandler,
-			matcher: m,
+			route:        &resolved.Route{Pattern: m.Path, Host: m.Host},
+			handler:      tombstoneHandler,
+			matcher:      m,
+			peerPrefixes: mustParsePrefixes(m.PeerIPCIDRs),
 		})
 	}
 	return out
@@ -1086,16 +1111,7 @@ func (p *dockerProvider) routeMiddleware(svc *docker.Service, m docker.Matcher, 
 		out = append(out, chain...)
 	}
 	out = append(out, hints...)
-	if err := validateMiddlewareRepresentation(out); err != nil {
-		return nil, fmt.Sprintf("service %q: %v, dropping route %s%s", svc.Name, err, m.Host, m.Path)
-	}
-	if err := validateCachePolicyOrder(out); err != nil {
-		return nil, fmt.Sprintf("service %q: %v, dropping route %s%s", svc.Name, err, m.Host, m.Path)
-	}
-	if err := validateRequestIDOwnership(out); err != nil {
-		return nil, fmt.Sprintf("service %q: %v, dropping route %s%s", svc.Name, err, m.Host, m.Path)
-	}
-	if err := validateBasicAuthCredentials(out); err != nil {
+	if err := validateResolvedMiddlewares(out); err != nil {
 		return nil, fmt.Sprintf("service %q: %v, dropping route %s%s", svc.Name, err, m.Host, m.Path)
 	}
 	return out, ""
@@ -1142,6 +1158,9 @@ func sortDynamicRoutes(routes []compiledRoute) {
 
 func dynamicRoutePrecedes(aRoute, bRoute compiledRoute) bool {
 	a, b := aRoute.matcher, bRoute.matcher
+	if a.PriorityOrder && b.PriorityOrder && a.Priority != b.Priority {
+		return a.Priority > b.Priority
+	}
 	if order := compareDynamicSpecificity(a, b); order != 0 {
 		return order > 0
 	}
@@ -1189,7 +1208,7 @@ func dynamicHostSpecificity(m docker.Matcher) int {
 }
 
 func sameDynamicTraffic(a, b docker.Matcher) bool {
-	return a.Host == b.Host && a.HostKind == b.HostKind && a.Path == b.Path && a.PathKind == b.PathKind
+	return a.Host == b.Host && a.HostKind == b.HostKind && a.Path == b.Path && a.PathKind == b.PathKind && slices.Equal(a.PeerIPCIDRs, b.PeerIPCIDRs) && slices.Equal(a.ListenerNames, b.ListenerNames)
 }
 
 // dynamicPatternSpecificity returns the precedence dimensions for one

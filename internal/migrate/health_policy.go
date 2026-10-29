@@ -28,19 +28,12 @@ func servicePassiveHealth(o *Object, pool *statute.Pool) []string {
 			return nil
 		}
 	}
-	pool.PassiveHealthCheck = statute.PassiveHealthCheck{FailureWindow: window, MaxFailures: maximum}
+	pool.PassiveHealthCheck = statute.PassiveHealthCheck{FailureWindow: window, MaxFailures: maximum, ResetOnSuccess: true, HoldDown: window}
 	if value, ok := o.value(base).(map[string]any); ok && len(value) == 0 {
 		o.mark(base, Translated, "native passive-health candidate with source defaults")
 	}
 	o.mark(base+".failureWindow", Translated, "pool-owned passive-health window")
 	o.mark(base+".maxFailedAttempts", Translated, "pool-owned passive-health threshold")
-	return []string{fmt.Sprintf("PassiveHealthCheck:statute.PassiveHealthCheck{FailureWindow:%q,MaxFailures:%d}", window, maximum)}
-}
-
-func checkPassiveHealthBehavior(o *Object) {
-	const base = "loadBalancer.passiveHealthCheck"
-	if o.value(base) == nil && !hasFieldPrefix(o, base+".") {
-		return
-	}
-	o.note("$health-passive", Manual, "source clears failure history after success and holds exclusion for a full window; native failures age individually without success reset and all-demoted pools use degraded forwarding")
+	pool.RejectUnhealthy = true
+	return []string{fmt.Sprintf("PassiveHealthCheck:statute.PassiveHealthCheck{FailureWindow:%q,MaxFailures:%d,ResetOnSuccess:true,HoldDown:%q}", window, maximum, window)}
 }

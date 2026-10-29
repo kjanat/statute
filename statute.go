@@ -19,11 +19,13 @@ import (
 
 // Config is the top-level surface configuration.
 type Config struct {
-	RequestBuffers RequestBufferResources
-	Listeners      Listeners
-	Upstreams      Upstreams
-	Routes         Routes
-	Docker         *DockerConfig
+	// PrioritizeRoutes compares explicit route priorities across static and Docker routes.
+	PrioritizeRoutes bool
+	RequestBuffers   RequestBufferResources
+	Listeners        Listeners
+	Upstreams        Upstreams
+	Routes           Routes
+	Docker           *DockerConfig
 
 	// FallbackRoutes match after static/Docker misses, with Routes' pool and middleware semantics.
 	// Docker refusals and matched errors never fall through.

@@ -18,7 +18,10 @@ import (
 )
 
 // Inputs are explicit files or dynamic directories. No provider paths are followed.
-type Inputs struct{ Static, Dynamic, Compose []string }
+type Inputs struct {
+	Static, Dynamic, Compose []string
+	PathMappings             map[string]string
+}
 
 const (
 	protocolTCP         = "tcp"
@@ -56,6 +59,9 @@ func Audit(inputs Inputs) (*Result, error) {
 			data, err := readDocument(path)
 			if err != nil {
 				return nil, fmt.Errorf("input %q: %w", path, err)
+			}
+			if group.kind == providerDocker {
+				result.inventoryMounts(path, data)
 			}
 			inventory(&result.Report, path, group.kind, data)
 			absolute, err := filepath.Abs(path)

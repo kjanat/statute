@@ -29,11 +29,8 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	defer delete(g.visiting, id)
 	checkMiddlewareShape(o)
 	classifyMiddlewareDifferences(o)
-	if g.prepareRedirectDefinition(o) {
-		g.routeChains[id] = middleware{redirect: o}
-		return middleware{}, false
-	}
 	var chain middleware
+	g.redirectMiddleware(o, &chain)
 	g.securityHeaders(o, &chain)
 	g.headers(o, &chain)
 	g.rateLimit(o, &chain)
@@ -45,10 +42,9 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	g.ipAllowList(o, &chain)
 	g.expandChain(o, &chain)
 	classifyEmptyHeaders(o, chain)
-	if chain.redirect != nil {
-		chain.incomplete = chain.incomplete || !o.readyWithBindings()
-		g.routeChains[id] = chain
-		return middleware{}, false
+	if len(chain.values) > 0 && o.value("chain.middlewares") == nil {
+		chain.values = []statute.Middleware{statute.InOrder(chain.values...)}
+		chain.code = []string{"statute.InOrder(" + strings.Join(chain.code, ",") + ")"}
 	}
 	if nativeMiddlewareReady(o, chain) {
 		g.chains[id] = chain
@@ -165,13 +161,13 @@ func (g *generator) ipAllowList(o *Object, chain *middleware) {
 			return
 		}
 	}
-	chain.values = append(chain.values, statute.AllowIPs(cidrs...))
-	chain.code = append(chain.code, "statute.AllowIPs("+quoted(cidrs)+")")
-	o.mark(path, Translated, "route-owned client-IP allow list; listener trusted-proxy policy remains explicit")
-	g.classifyClientIPPolicy(o)
-	if o.value("ipAllowList.ipStrategy") != nil || hasFieldPrefix(o, "ipAllowList.ipStrategy.") {
-		o.mark("ipAllowList.ipStrategy", Manual, "source X-Forwarded-For depth or exclusion selection differs from native verified-client identity")
+	selection, code, ok := sourceIPSelection(o, "ipAllowList.ipStrategy")
+	if !ok {
+		return
 	}
+	chain.values = append(chain.values, statute.AllowIPs(cidrs...).SelectIP(selection))
+	chain.code = append(chain.code, "statute.AllowIPs("+quoted(cidrs)+").SelectIP("+code+")")
+	o.mark(path, Translated, "route-owned client-IP allow list; listener trusted-proxy policy remains explicit")
 }
 
 func (g *generator) expandChain(o *Object, chain *middleware) {
@@ -188,21 +184,18 @@ func (g *generator) expandChain(o *Object, chain *middleware) {
 			continue
 		}
 		child, valid := g.chain(dep)
-		if action, found := g.routeChains[qualified(ref, o.Provider)]; found {
-			child, valid = action, true
-		}
 		if !valid {
 			o.mark(path, Exact, "provider-qualified chain dependencies are reported separately")
 			o.note("$middleware:"+qualified(ref, o.Provider), Manual, "chain blocked by referenced middleware; see its field findings")
 			ok = false
-			chain.incomplete = true
 			continue
 		}
 		if len(chain.values)+len(child.values) > 256 {
 			o.note("$size", Unsupported, "expanded middleware chain exceeds 256 operations")
 			return
 		}
-		appendMiddlewarePlan(chain, child)
+		chain.values = append(chain.values, child.values...)
+		chain.code = append(chain.code, child.code...)
 	}
 	if ok {
 		o.mark(path, Translated, "provider-qualified middleware chain expanded in declaration order")
@@ -213,8 +206,6 @@ func classifyMiddlewareDifferences(o *Object) {
 	for _, f := range o.Fields {
 		family, _, _ := strings.Cut(strings.ToLower(f.Path), ".")
 		switch family {
-		case "redirectregex", "redirectscheme":
-			o.mark(f.Path, Manual, "conditional redirect requires a representable native route action with matching capture and method policy")
 		case "buffering":
 			o.mark(f.Path, Manual, "buffering affects request admission, response buffering and streaming; explicitly select Statute RequestBuffer resources and route policy")
 		case "retry":

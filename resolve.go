@@ -28,7 +28,8 @@ import (
 // network, the filesystem, or process state.
 func Resolve(cfg Config) (*resolved.Config, error) {
 	out := &resolved.Config{
-		Upstreams: make(map[string]*resolved.Pool, len(cfg.Upstreams)),
+		Upstreams:        make(map[string]*resolved.Pool, len(cfg.Upstreams)),
+		PrioritizeRoutes: cfg.PrioritizeRoutes,
 	}
 
 	if err := resolveGlobalDefaults(cfg, out); err != nil {
@@ -67,6 +68,12 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 	}
 	out.Shutdown = sh
 
+	if err := validateServiceBindings(out); err != nil {
+		return nil, err
+	}
+	if err := validateListenerNames(out); err != nil {
+		return nil, err
+	}
 	if err := validateResolved(out); err != nil {
 		return nil, err
 	}
@@ -305,7 +312,7 @@ func resolveDefaults(d Defaults) (resolved.Defaults, error) {
 }
 
 func resolvePool(name string, p Pool) (*resolved.Pool, error) {
-	if len(p.Backends) == 0 {
+	if len(p.Backends) == 0 && !p.AllowEmpty {
 		return nil, errors.New("pool has no backends")
 	}
 	return resolveDormantPool(name, p)
@@ -316,8 +323,10 @@ func resolvePool(name string, p Pool) (*resolved.Pool, error) {
 // container has no address yet.
 func resolveDormantPool(name string, p Pool) (*resolved.Pool, error) {
 	rp := &resolved.Pool{
-		Name:     name,
-		Strategy: resolved.Strategy(p.Strategy),
+		Name:            name,
+		AllowEmpty:      p.AllowEmpty,
+		RejectUnhealthy: p.RejectUnhealthy,
+		Strategy:        resolved.Strategy(p.Strategy),
 	}
 	for i, b := range p.Backends {
 		if strings.TrimSpace(b.Address) == "" {
@@ -342,6 +351,7 @@ func resolveDormantPool(name string, p Pool) (*resolved.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("passive_health_check: %w", err)
 	}
+	phc.RecoverByProbe = phc.ResetOnSuccess && hc.Enabled
 	rp.PassiveHealthCheck = phc
 	tr, err := resolveTransport(p.Transport)
 	if err != nil {
@@ -426,14 +436,18 @@ func resolveHealthCheck(h HealthCheck) (resolved.HealthCheck, error) {
 		unhealthy = 3
 	}
 	return resolved.HealthCheck{
-		Enabled:   true,
-		Path:      h.Path,
-		Interval:  interval,
-		Timeout:   timeout,
-		Healthy:   healthy,
-		Unhealthy: unhealthy,
-		Host:      h.Host,
-		Statuses:  append([]int(nil), h.Statuses...),
+		Enabled:     true,
+		Path:        h.Path,
+		Interval:    interval,
+		Timeout:     timeout,
+		Healthy:     healthy,
+		Unhealthy:   unhealthy,
+		Host:        h.Host,
+		Statuses:    append([]int(nil), h.Statuses...),
+		Redirects:   h.Redirects,
+		ResolvePath: h.ResolvePath,
+		Method:      h.Method,
+		Headers:     maps.Clone(h.Headers),
 	}, nil
 }
 
@@ -448,6 +462,24 @@ func validateProbePolicy(h HealthCheck) error {
 		}
 		if err := validateConfiguredHost(h.Host); err != nil {
 			return fmt.Errorf("host: %w", err)
+		}
+	}
+	switch h.Redirects {
+	case "", "none", "same_origin", "any_origin":
+	default:
+		return errors.New("redirects: invalid policy")
+	}
+	if h.Method != "" && !httpguts.ValidHeaderFieldName(h.Method) {
+		return errors.New("method: invalid HTTP token")
+	}
+	if h.ResolvePath {
+		if _, err := url.Parse(h.Path); err != nil {
+			return errors.New("path: invalid URL reference")
+		}
+	}
+	for name, value := range h.Headers {
+		if !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value) {
+			return errors.New("headers: invalid field")
 		}
 	}
 	for i, code := range h.Statuses {
@@ -479,7 +511,15 @@ func resolvePassiveHealthCheck(p PassiveHealthCheck) (resolved.PassiveHealthChec
 	if window == 0 {
 		return resolved.PassiveHealthCheck{}, errors.New("failure_window: duration is zero")
 	}
+	hold := time.Duration(0)
+	if p.HoldDown != "" {
+		hold, err = parse.Duration(p.HoldDown)
+		if err != nil || hold <= 0 {
+			return resolved.PassiveHealthCheck{}, errors.New("hold_down: duration must be positive")
+		}
+	}
 	return resolved.PassiveHealthCheck{
+		ResetOnSuccess: p.ResetOnSuccess, HoldDown: hold,
 		Enabled:       true,
 		FailureWindow: window,
 		MaxFailures:   p.MaxFailures,
@@ -582,6 +622,9 @@ func resolveDocker(d *DockerConfig) (*resolved.Docker, error) {
 		Network:           d.network,
 		ExposedByDefault:  d.exposedByDefault,
 		TraefikLabels:     d.traefikLabels,
+		RouterConstraints: d.routerConstraints,
+		DefaultListeners:  append([]string(nil), d.defaultListeners...),
+		ServiceBindings:   resolveServiceBindings(d.serviceBindings),
 		Refresh:           refresh,
 		Storage:           storage,
 		Middleware:        registry,
@@ -693,6 +736,7 @@ func resolveDockerPoolPolicy(d *DockerConfig) (map[string]resolved.PoolPolicy, e
 		if err != nil {
 			return nil, fmt.Errorf("pool policy %q: passive_health_check: %w", name, err)
 		}
+		phc.RecoverByProbe = phc.ResetOnSuccess && hc.Enabled
 		transport, err := resolveTransport(policy.Transport)
 		if err != nil {
 			return nil, fmt.Errorf("pool policy %q: transport: %w", name, err)
@@ -705,6 +749,7 @@ func resolveDockerPoolPolicy(d *DockerConfig) (map[string]resolved.PoolPolicy, e
 			out = make(map[string]resolved.PoolPolicy, len(d.poolPolicy))
 		}
 		out[name] = resolved.PoolPolicy{
+			RejectUnhealthy:    policy.RejectUnhealthy,
 			HealthCheck:        hc,
 			PassiveHealthCheck: phc,
 			Transport:          transport,
@@ -724,6 +769,7 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 	}
 	rl := &resolved.Listener{
 		Addr:             l.addr,
+		Name:             l.name,
 		Scheme:           l.scheme,
 		Redirect:         l.redirect,
 		EnableHTTP2:      l.enableHTTP2,
@@ -896,6 +942,7 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 		Email:     a.email,
 		Storage:   a.storage,
 		Directory: directory,
+		KeyType:   a.keyType,
 	}
 	switch {
 	case a.dns01 != nil:
@@ -907,6 +954,17 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 		at.Challenge = resolved.ChallengeDNS01
 	case a.explicitHTTP01:
 		at.Challenge = resolved.ChallengeHTTP01
+	}
+	if at.KeyType == "" {
+		at.KeyType = "EC256"
+	}
+	switch at.KeyType {
+	case "EC256", "EC384", "RSA2048", "RSA3072", "RSA4096", "RSA8192":
+	default:
+		return nil, errors.New("auto_tls: unsupported leaf key type")
+	}
+	if at.Challenge == resolved.ChallengeAuto && at.KeyType != "EC256" {
+		return nil, errors.New("auto_tls: custom leaf key requires HTTP01 or DNS01")
 	}
 	return at, nil
 }
@@ -976,7 +1034,11 @@ func resolveDNSPropagation(p *DNSPropagation) (*resolved.DNSPropagation, error) 
 	if err != nil {
 		return nil, err
 	}
-	timeout, interval, err := resolveDNSPropagationPolling(p, len(resolvers) > 0)
+	discovery, err := resolveDNSPropagationResolvers(p.DiscoveryResolvers)
+	if err != nil {
+		return nil, err
+	}
+	timeout, interval, err := resolveDNSPropagationPolling(p, len(resolvers) > 0 || p.Authoritative || p.RequireAllRecursive)
 	if err != nil {
 		return nil, err
 	}
@@ -986,10 +1048,11 @@ func resolveDNSPropagation(p *DNSPropagation) (*resolved.DNSPropagation, error) 
 	// already expresses. Checked after the polling validation so a
 	// timeout or interval without resolvers gets its own message, not a
 	// claim that the policy is empty.
-	if delay == 0 && len(resolvers) == 0 {
+	if delay == 0 && len(resolvers) == 0 && !p.Authoritative && !p.RequireAllRecursive && !p.DisableChecks {
 		return nil, errors.New("dns_propagation: the policy waits for nothing; set a positive delay, resolvers, or drop the option")
 	}
 	return &resolved.DNSPropagation{
+		Authoritative: p.Authoritative, RequireAllRecursive: p.RequireAllRecursive, DiscoveryResolvers: discovery, DisableChecks: p.DisableChecks,
 		Delay:     delay,
 		Timeout:   timeout,
 		Interval:  interval,
@@ -1232,8 +1295,21 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 	}
 	rr := &resolved.Route{
 		Pattern:   r.pattern,
+		PathMatch: r.pathMatch,
+		Priority:  r.priority,
+		Listeners: append([]string(nil), r.listeners...),
 		Host:      r.host,
 		StaticDir: r.staticDir,
+	}
+	if r.peerIPsSet {
+		if len(r.peerIPs) == 0 {
+			return nil, errors.New("peer_ips: at least one CIDR required")
+		}
+		canon, err := resolveCIDRs(r.peerIPs)
+		if err != nil {
+			return nil, fmt.Errorf("peer_ips: %w", err)
+		}
+		rr.PeerIPCIDRs = canon
 	}
 	if r.clientIPsSet {
 		// An explicitly empty matcher would silently match every client —
@@ -1265,12 +1341,14 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 // its handler into rr.Handler and marks rr.HandlerRoute.
 func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.Route) error {
 	redirected := redirectDeclared(r)
-	declared := countDeclared(r.upstream != "", r.staticDir != "", redirected, r.handlerSet)
+	declared := countDeclared(r.upstream != "", r.discoveredUpstream != "", r.staticDir != "", redirected, r.handlerSet)
 	switch {
 	case declared > 1:
 		return errors.New("route declares more than one of ProxyTo, Serve, RedirectTo, and Handle; pick one")
 	case declared == 0:
 		return errors.New("route has none of ProxyTo, Serve, RedirectTo, or Handle")
+	case r.discoveredUpstream != "":
+		rr.DiscoveredUpstream = r.discoveredUpstream
 	case r.upstream != "":
 		pool, ok := pools[r.upstream]
 		if !ok {
@@ -1286,6 +1364,11 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 	case r.handlerSet:
 		if isNilHandler(r.handler) {
 			return errors.New("handle: handler is nil")
+		}
+		if validator, ok := r.handler.(interface{ validateHandler() error }); ok {
+			if err := validator.validateHandler(); err != nil {
+				return err
+			}
 		}
 		rr.Handler = r.handler
 		rr.HandlerRoute = true
@@ -1357,16 +1440,7 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 		}
 		out = append(out, rmw)
 	}
-	if err := validateMiddlewareRepresentation(out); err != nil {
-		return nil, err
-	}
-	if err := validateCachePolicyOrder(out); err != nil {
-		return nil, err
-	}
-	if err := validateRequestIDOwnership(out); err != nil {
-		return nil, err
-	}
-	if err := validateBasicAuthCredentials(out); err != nil {
+	if err := validateResolvedMiddlewares(out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1498,23 +1572,48 @@ func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 // resolveRateLimitMW parses the rate string into requests/second and
 // carries the rate-limit key.
 func resolveRateLimitMW(m *rateLimitMW) (resolved.Middleware, error) {
-	if m.maxBuckets < 0 {
-		return resolved.Middleware{}, errors.New("rate_limit: max buckets must be >= 0")
+	if m.maxBuckets < 0 || m.burst < 0 {
+		return resolved.Middleware{}, errors.New("rate_limit: bucket count and burst must be nonnegative")
 	}
-	maxBuckets := m.maxBuckets
-	if maxBuckets == 0 {
-		maxBuckets = defaultRateLimitMaxBuckets
+	maximum := m.maxBuckets
+	if maximum == 0 {
+		maximum = defaultRateLimitMaxBuckets
 	}
-	rate, err := parse.Rate(m.rate)
+	value, err := parse.Rate(m.rate)
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("rate_limit: %w", err)
 	}
-	return resolved.Middleware{
-		Type:                resolved.MWRateLimit,
-		RateLimitPerSecond:  rate,
-		RateLimitKey:        resolved.RateLimitKey(m.key),
-		RateLimitMaxBuckets: maxBuckets,
-	}, nil
+	out := resolved.Middleware{Type: resolved.MWRateLimit, RateLimitPerSecond: value, RateLimitKey: resolved.RateLimitKey(m.key), RateLimitMaxBuckets: maximum, RateLimitBurst: m.burst, RateLimitReservations: m.reserve, RateLimitEvictIdle: m.evictIdle}
+	if m.key < ClientIP || m.key > RequestHeader {
+		return out, errors.New("rate_limit: invalid key")
+	}
+	if m.reserve {
+		out.RateLimitMaxDelay, err = time.ParseDuration(m.maxDelay)
+		if err != nil || out.RateLimitMaxDelay < 0 {
+			return out, errors.New("rate_limit: invalid reservation delay")
+		}
+	}
+	if m.idleTTL != "" {
+		out.RateLimitIdleTTL, err = time.ParseDuration(m.idleTTL)
+		if err != nil || out.RateLimitIdleTTL <= 0 {
+			return out, errors.New("rate_limit: idle expiry must be positive")
+		}
+	}
+	if m.evictIdle && out.RateLimitIdleTTL == 0 {
+		return out, errors.New("rate_limit: eviction requires idle expiry")
+	}
+	if m.key == RequestHeader {
+		out.RateLimitRequestHeader, err = parse.HeaderName(m.header)
+		if err != nil {
+			return out, fmt.Errorf("rate_limit header: %w", err)
+		}
+	}
+	selection, err := resolveIPSelection(m.selection)
+	if err != nil {
+		return out, err
+	}
+	out.IPSelection = selection
+	return out, nil
 }
 
 // resolveRetryMW validates that max attempts is >= 1 and copies the
@@ -1773,7 +1872,11 @@ func resolveAllowIPsMW(m *allowIPsMW) (resolved.Middleware, error) {
 	if err != nil {
 		return resolved.Middleware{}, fmt.Errorf("allow_ips: %w", err)
 	}
-	return resolved.Middleware{Type: resolved.MWAllowIPs, IPCIDRs: canon}, nil
+	selection, err := resolveIPSelection(m.selection)
+	if err != nil {
+		return resolved.Middleware{}, err
+	}
+	return resolved.Middleware{Type: resolved.MWAllowIPs, IPCIDRs: canon, IPSelection: selection}, nil
 }
 
 // resolveDenyIPsMW canonicalises the deny-list CIDRs.
@@ -1852,9 +1955,17 @@ func resolveObservability(o Observability) (resolved.Observability, error) {
 			if err != nil {
 				return resolved.Observability{}, err
 			}
+			if al.bufferSize < 0 {
+				return resolved.Observability{}, errors.New("access_log: buffer size must be nonnegative")
+			}
+			format := al.format
+			if format == "" {
+				format = accessLogFormatJSON
+			}
 			out.AccessLog = resolved.AccessLog{
+				FilePath: al.dest.filePath, BufferSize: al.bufferSize,
 				Enabled:    true,
-				Format:     accessLogFormatJSON,
+				Format:     format,
 				Writer:     al.dest.Writer(),
 				Name:       al.dest.Name(),
 				SampleRate: al.sampleRate,

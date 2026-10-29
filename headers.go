@@ -195,10 +195,14 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 			applyHeaderOp(r.Header, op.op, op.name, op.value)
 		}
 		if len(forwardedOps) > 0 {
-			r = r.WithContext(context.WithValue(r.Context(), forwardedOpsKey{}, forwardedOps))
+			existing, _ := r.Context().Value(forwardedOpsKey{}).([]headerOp)
+			combined := append(slices.Clone(existing), forwardedOps...)
+			r = r.WithContext(context.WithValue(r.Context(), forwardedOpsKey{}, combined))
 		}
 		if len(selectedResponseOps) > 0 {
-			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, selectedResponseOps))
+			existing, _ := r.Context().Value(responseHeaderOpsKey{}).([]headerOp)
+			combined := append(slices.Clone(selectedResponseOps), existing...)
+			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, combined))
 			responseWriter = &headerResponseWriter{ResponseWriter: w, ops: selectedResponseOps}
 			w = responseWriter
 		}

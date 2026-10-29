@@ -141,6 +141,7 @@ func normalizeEnvelope(ms []Matcher) []Matcher {
 			m.Path = "/*"
 			m.PathKind = PathAny
 		}
+		m.PeerIPCIDRs = nil
 		m.Middlewares = nil
 		m.Hints = MiddlewareHints{}
 		out = append(out, m)

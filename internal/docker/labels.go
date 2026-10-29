@@ -23,8 +23,9 @@ const (
 // pool. The provider merges Services with the same name across containers
 // into one pool.
 type Service struct {
-	Name   string
-	Routes []Matcher
+	BoundService string
+	Name         string
+	Routes       []Matcher
 	// Backend is this container's address, "ip:port" or "https://ip:port".
 	// It is empty for a dormant contribution: a stopped container has no
 	// network IP, so its address exists only once it runs.
@@ -59,6 +60,7 @@ type Backend struct {
 
 // ExtractOptions steer label extraction.
 type ExtractOptions struct {
+	BoundServices map[string]bool
 	// Network is the preferred docker network to take container IPs from.
 	Network string
 	// ExposedByDefault registers containers that carry no enable label.
@@ -646,6 +648,8 @@ type traefikRouter struct {
 	rule        string
 	service     string
 	middlewares string
+	entrypoints string
+	priority    string
 }
 
 // traefikService accumulates traefik.http.services.<name>.loadbalancer.*.
@@ -699,7 +703,7 @@ func extractTraefik(c Container, opts ExtractOptions, rejected *[]Matcher) ([]Se
 	var tombs []Matcher
 	for _, rn := range routerNames {
 		r := routers[rn]
-		svc, env, w := bindTraefikRouter(c, r, services, serviceNames, ip, rejected)
+		svc, env, w := bindTraefikRouter(c, r, services, serviceNames, ip, rejected, opts.BoundServices)
 		warns = append(warns, w...)
 		tombs = append(tombs, env...)
 		if svc == nil {
@@ -779,7 +783,11 @@ func traefikRouterLabel(c Container, routers map[string]*traefikRouter, k, v str
 		r.rule = v
 	case "service":
 		r.service = v
-	case "entrypoints", "entryPoints", "tls", "tls.certresolver", "tls.certResolver", "priority":
+	case "priority":
+		r.priority = v
+	case "entrypoints", "entryPoints":
+		r.entrypoints = v
+	case "tls", "tls.certresolver", "tls.certResolver":
 		// Entrypoints and TLS are listener-level concerns in statute;
 		// harmless to ignore.
 	case "middlewares":
@@ -841,7 +849,7 @@ func traefikServiceName(c Container, r *traefikRouter, serviceNames []string) (s
 // bindTraefikRouter resolves one router into a Service carrying its
 // matchers and this container's backend. When the router cannot be bound it
 // returns the refusal envelope covering the traffic its rule claimed.
-func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string, rejected *[]Matcher) (*Service, []Matcher, []string) {
+func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string, rejected *[]Matcher, bound map[string]bool) (*Service, []Matcher, []string) {
 	var warns []string
 	var parsed []Matcher
 	refuse := func(env []Matcher) (*Service, []Matcher, []string) {
@@ -859,8 +867,26 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, dropping its routes", c.Name, r.name, err))
 		return refuse(RuleEnvelope(r.rule))
 	}
+	priority := len(r.rule)
+	if r.priority != "" {
+		n, err := strconv.Atoi(r.priority)
+		if err != nil {
+			return refuse(EnvelopeOf(matchers))
+		}
+		if n != 0 {
+			priority = n
+		}
+	}
+	for i := range matchers {
+		matchers[i].Priority = priority
+		for name := range strings.SplitSeq(r.entrypoints, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				matchers[i].ListenerNames = append(matchers[i].ListenerNames, name)
+			}
+		}
+	}
 	parsed = matchers
-	if ip == "" && c.Running {
+	if ip == "" && c.Running && !bound[r.service] {
 		return refuse(EnvelopeOf(matchers))
 	}
 	stampMiddlewares(matchers, r.middlewares)
@@ -871,6 +897,9 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 	}
 	if svcName == "" {
 		return refuse(EnvelopeOf(matchers))
+	}
+	if bound[svcName] {
+		return &Service{Name: svcName + "@traefik", BoundService: svcName, Routes: matchers, Container: c.Name, ContainerID: c.ID, Running: c.Running, Contributors: 1}, nil, warns
 	}
 	ts := services[svcName]
 	if ts == nil {

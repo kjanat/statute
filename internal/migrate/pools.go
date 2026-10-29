@@ -91,11 +91,7 @@ func serviceHealth(o *Object, pool *statute.Pool) []string {
 	if path == "" || !literal(path) {
 		return nil
 	}
-	if !healthPathPreserved(path) {
-		o.note("$health-path", Manual, "Traefik resolves the probe path as a relative URL; native probes use a literal URL path, so queries, fragments, escapes, authority changes and dot-segment resolution require review")
-		return nil
-	}
-	h := statute.HealthCheck{Path: path, Interval: "30s", Timeout: "5s", Healthy: 1, Unhealthy: 1}
+	h := statute.HealthCheck{Path: path, Interval: "30s", Timeout: "5s", Healthy: 1, Unhealthy: 1, ResolvePath: true, Redirects: "any_origin"}
 	o.mark(base+".path", Translated, "pool probe path with source transition thresholds and timeout defaults")
 	for _, f := range []struct {
 		key string
@@ -108,6 +104,7 @@ func serviceHealth(o *Object, pool *statute.Pool) []string {
 	}
 	healthBehavior(o, &h)
 	pool.HealthCheck = h
+	pool.RejectUnhealthy = true
 	return []string{"HealthCheck:" + healthLiteral(h)}
 }
 
@@ -120,33 +117,38 @@ func healthPathPreserved(path string) bool {
 	return base.ResolveReference(u).Path == path
 }
 
-func checkDegradedHealthPolicy(o *Object) {
-	path := o.text("loadBalancer.healthCheck.path")
-	if path != "" && literal(path) && healthPathPreserved(path) {
-		o.note("$health-degraded", Manual, "Traefik returns 503 when every backend is unhealthy; native degraded mode continues forwarding to primary backends; review all-unhealthy exclusion before enabling probes")
-	}
-}
-
 func healthBehavior(o *Object, h *statute.HealthCheck) {
 	const base = "loadBalancer.healthCheck"
 	if n, err := integer(o.value(base + ".status")); err == nil && n >= 100 && n <= 599 {
 		h.Statuses = []int{n}
 		o.mark(base+".status", Translated, "explicit accepted probe status")
 	}
-	for key, want := range map[string]string{"method": "GET", "mode": protocolHTTP} {
-		if o.text(base+"."+key) == want {
-			o.mark(base+"."+key, Exact, "native HTTP GET probe")
-		}
+	if method := o.text(base + ".method"); method != "" && literal(method) {
+		h.Method = method
+		o.mark(base+".method", Translated, "explicit probe method")
 	}
-	if scalar(o.value(base+".followRedirects")) == falseValue {
-		if len(h.Statuses) == 0 {
-			for n := 200; n < 400; n++ {
-				h.Statuses = append(h.Statuses, n)
+	if mode := o.text(base + ".mode"); mode == protocolHTTP {
+		o.mark(base+".mode", Exact, "HTTP probe")
+	}
+	follow, ok := sourceBoolValue(o.value(base+".followRedirects"), true)
+	if !ok {
+		o.mark(base+".followRedirects", Manual, "invalid redirect switch")
+		return
+	}
+	if !follow {
+		h.Redirects = "none"
+	}
+	o.mark(base+".followRedirects", Translated, "explicit probe redirect policy")
+	if values, ok := o.value(base + ".headers").(map[string]any); ok {
+		h.Headers = map[string]string{}
+		for name, value := range values {
+			text, ok := value.(string)
+			if !ok || !literal(name) || !literal(text) {
+				continue
 			}
+			h.Headers[name] = text
+			o.mark(base+".headers."+name, Translated, "probe request header")
 		}
-		o.mark(base+".followRedirects", Translated, "explicit statuses disable probe redirects")
-	} else {
-		o.note("$health-redirects", Manual, "Traefik follows cross-origin health redirects; Statute restricts default probes to same origin and disables redirects with Host/status overrides; set followRedirects=false for equivalent probing")
 	}
 }
 
@@ -155,7 +157,11 @@ func healthLiteral(h statute.HealthCheck) string {
 	for i, n := range h.Statuses {
 		statuses[i] = strconv.Itoa(n)
 	}
-	return fmt.Sprintf("statute.HealthCheck{Path:%q,Interval:%q,Timeout:%q,Healthy:%d,Unhealthy:%d,Host:%q,Statuses:[]int{%s}}", h.Path, h.Interval, h.Timeout, h.Healthy, h.Unhealthy, h.Host, strings.Join(statuses, ","))
+	var headers []string
+	for _, name := range keys(h.Headers) {
+		headers = append(headers, fmt.Sprintf("%q:%q", name, h.Headers[name]))
+	}
+	return fmt.Sprintf("statute.HealthCheck{Path:%q,Interval:%q,Timeout:%q,Healthy:%d,Unhealthy:%d,Host:%q,Statuses:[]int{%s},ResolvePath:%t,Redirects:%q,Method:%q,Headers:map[string]string{%s}}", h.Path, h.Interval, h.Timeout, h.Healthy, h.Unhealthy, h.Host, strings.Join(statuses, ","), h.ResolvePath, h.Redirects, h.Method, strings.Join(headers, ","))
 }
 
 func (g *generator) dockerPoolPolicy(o *Object) {
@@ -167,6 +173,7 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 	parts := serviceHost(o, &p)
 	parts = append(parts, serviceHealth(o, &p)...)
 	parts = append(parts, servicePassiveHealth(o, &p)...)
+	parts = append(parts, fmt.Sprintf("RejectUnhealthy:%t", p.RejectUnhealthy))
 	if name := o.text("loadBalancer.serversTransport"); name != "" {
 		id := qualified(name, providerDocker)
 		t, ok := g.transports[id]
@@ -185,7 +192,7 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 	if !o.ready() {
 		return
 	}
-	policy := statute.PoolPolicy{Transport: p.Transport, HealthCheck: p.HealthCheck, PassiveHealthCheck: p.PassiveHealthCheck, UpstreamHost: p.UpstreamHost}
+	policy := statute.PoolPolicy{RejectUnhealthy: p.RejectUnhealthy, Transport: p.Transport, HealthCheck: p.HealthCheck, PassiveHealthCheck: p.PassiveHealthCheck, UpstreamHost: p.UpstreamHost}
 	g.r.Config.Docker.PoolPolicy(o.Name+"@traefik", policy)
 	g.docker += fmt.Sprintf(".PoolPolicy(%q,statute.PoolPolicy{%s})", o.Name+"@traefik", strings.Join(parts, ","))
 }

@@ -1,18 +1,12 @@
 package migrate
 
 import (
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
-
-	"statute.kjanat.dev/internal/docker"
 )
 
 func unsupportedRuleReason(rule string) string {
-	if strings.Contains(rule, "ClientIP(") {
-		return "ClientIP needs compiled ClientIPs route policy; the shared rule parser cannot translate this matcher or choose its proxy-trust semantics"
-	}
 	for _, name := range []string{"HostRegexp", "QueryRegexp", "Query", "HeaderRegexp", "Header", "Method"} {
 		if strings.Contains(rule, name+"(") {
 			return name + " matcher has no equivalent native route declaration"
@@ -43,36 +37,6 @@ func (g *generator) inferDockerService(o *Object) bool {
 	o.data["service"] = candidate.Name
 	o.note("$service-selection", Translated, "selected the container's sole declared service")
 	return true
-}
-
-func (g *generator) crossProviderRoute(o *Object) {
-	ms, err := docker.ParseRule(o.text("rule"))
-	if err != nil || !nativePaths(ms) {
-		return
-	}
-	name := fmt.Sprintf("migrationCrossProviderRoute%d", len(g.helpers))
-	refs, _ := g.middlewareRefs(o)
-	var middleware []string
-	for _, ref := range refs {
-		chain, ok := g.chains[qualified(ref, o.Provider)]
-		if !ok {
-			g.helpers[name] = fmt.Sprintf("func %s() statute.Routes {panic(%q)}", name, "resolve cross-provider route middleware before selecting a compiled route")
-			return
-		}
-		middleware = append(middleware, chain.code...)
-	}
-	var routes []string
-	for _, m := range ms {
-		code := fmt.Sprintf("statute.Match(%q).ProxyTo(%q)", m.Path, o.text("service"))
-		if hosts := hostSpellings(m.Host); len(hosts) > 0 {
-			code += ".Hosts(" + quoted(hosts) + ")"
-		}
-		if len(middleware) > 0 {
-			code += ".With(" + strings.Join(middleware, ",") + ")"
-		}
-		routes = append(routes, code)
-	}
-	g.helpers[name] = fmt.Sprintf("// %s requires explicit route order and middleware; see the audit.\nfunc %s() statute.Routes {return statute.Routes{%s}}", name, name, strings.Join(routes, ","))
 }
 
 // Only explicit Compose target ports are evidence; image metadata is never queried.

@@ -166,23 +166,48 @@ func (g *generator) rateLimit(o *Object, chain *middleware) {
 	if !ok {
 		return
 	}
+	burst := 1
+	if value := o.value("rateLimit.burst"); value != nil {
+		var err error
+		burst, err = integer(value)
+		if err != nil {
+			o.mark("rateLimit.burst", Manual, "burst must be an integer")
+			return
+		}
+	}
+	burst = max(1, burst)
+	delay := 500 * time.Millisecond
+	if rate >= 1 {
+		delay = time.Second / (time.Duration(rate) * 2)
+	}
+	ttl := 2 * time.Second
+	if rate < 1 {
+		ttl = time.Duration(1+int(1/rate)) * time.Second
+	}
 	value := strconv.FormatFloat(rate, 'g', -1, 64) + "/s"
-	limiter := statute.RateLimit(value)
-	code := fmt.Sprintf("statute.RateLimit(%q)", value)
+	limiter := statute.RateLimit(value).Burst(burst).Reserve(delay.String()).ExpireIdle(ttl.String()).EvictOldest()
+	code := fmt.Sprintf("statute.RateLimit(%q).Burst(%d).Reserve(%q).ExpireIdle(%q).EvictOldest()", value, burst, delay.String(), ttl.String())
 	if scalar(o.value("rateLimit.sourceCriterion.requestHost")) == trueValue {
 		limiter.Per(statute.HostHeader)
 		code += ".Per(statute.HostHeader)"
-		o.mark("rateLimit.sourceCriterion.requestHost", Translated, "rate buckets use the request Host")
+		o.mark("rateLimit.sourceCriterion.requestHost", Translated, "request Host bucket key")
+	} else if header := o.text("rateLimit.sourceCriterion.requestHeaderName"); header != "" && literal(header) {
+		limiter.FromHeader(header)
+		code += fmt.Sprintf(".FromHeader(%q)", header)
+		o.mark("rateLimit.sourceCriterion.requestHeaderName", Translated, "request header bucket key")
 	} else {
-		g.classifyClientIPPolicy(o)
+		selection, selectionCode, ok := sourceIPSelection(o, "rateLimit.sourceCriterion.ipStrategy")
+		if !ok {
+			return
+		}
+		limiter.SelectIP(selection)
+		code += ".SelectIP(" + selectionCode + ")"
 	}
 	chain.values = append(chain.values, limiter)
 	chain.code = append(chain.code, code)
-	o.mark("rateLimit.average", Translated, "native token refill rate")
-	o.mark("rateLimit.period", Translated, "explicit refill period")
-	classifyRateBurst(o, rate)
-	o.note("$rate-delay", Manual, "native token exhaustion returns 429 immediately; source permits short delayed reservations before rejecting; choose request admission timing")
-	o.note("$rate-capacity", Manual, "native limiter bounds client buckets and returns 503 for a new key at capacity; select client-resource admission policy explicitly")
+	for _, key := range []string{"average", "period", "burst"} {
+		o.mark("rateLimit."+key, Translated, "token refill, burst, delayed reservation and bounded idle eviction")
+	}
 	classifyRateCriterion(o)
 }
 
@@ -210,19 +235,6 @@ func sourceRateLimit(o *Object) (float64, bool) {
 		return 0, false
 	}
 	return rate, true
-}
-
-func classifyRateBurst(o *Object, rate float64) {
-	var err error
-	burst := 1
-	if o.value("rateLimit.burst") != nil {
-		burst, err = integer(o.value("rateLimit.burst"))
-	}
-	burst = max(burst, 1)
-	if err != nil || float64(burst) != math.Max(1, 2*rate) {
-		o.note("$rate-burst", Manual, "native burst capacity is max(1, twice requests per second); source burst needs an explicit policy choice")
-	}
-	o.mark("rateLimit.burst", Translated, "source burst compared with native capacity")
 }
 
 func classifyRateCriterion(o *Object) {

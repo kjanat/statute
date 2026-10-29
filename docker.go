@@ -1,6 +1,8 @@
 package statute
 
 import (
+	"net/http"
+
 	"statute.kjanat.dev/resolved"
 )
 
@@ -54,6 +56,9 @@ import (
 // transport, Host, and health policy to one exact discovered-service identity;
 // labels cannot define or widen that policy.
 type DockerConfig struct {
+	defaultListeners  []string
+	serviceBindings   map[string]ServiceBinding
+	routerConstraints bool
 	endpoint          string
 	network           string
 	exposedByDefault  bool
@@ -120,6 +125,40 @@ func (d *DockerConfig) Storage(path string) *DockerConfig {
 	d.storage = path
 	return d
 }
+
+// ServiceBinding connects a discovered service reference to code-owned behavior.
+type ServiceBinding struct {
+	Upstream string
+	Handler  http.Handler
+}
+
+// BindUpstream lets Docker routers select a declared static upstream by name.
+func (d *DockerConfig) BindUpstream(reference, pool string) *DockerConfig {
+	if d.serviceBindings == nil {
+		d.serviceBindings = map[string]ServiceBinding{}
+	}
+	d.serviceBindings[reference] = ServiceBinding{Upstream: pool}
+	return d
+}
+
+// BindHandler lets Docker routers select an application handler by name.
+func (d *DockerConfig) BindHandler(reference string, handler http.Handler) *DockerConfig {
+	if d.serviceBindings == nil {
+		d.serviceBindings = map[string]ServiceBinding{}
+	}
+	d.serviceBindings[reference] = ServiceBinding{Handler: handler}
+	return d
+}
+
+// DefaultListeners selects listener names for routers without entrypoint labels.
+func (d *DockerConfig) DefaultListeners(names ...string) *DockerConfig {
+	d.defaultListeners = append([]string(nil), names...)
+	return d
+}
+
+// RouterConstraints enforces entrypoint names from Docker router labels.
+// Name the corresponding listeners with Listener.Name.
+func (d *DockerConfig) RouterConstraints() *DockerConfig { d.routerConstraints = true; return d }
 
 // Middleware registers a named, code-owned middleware chain that container
 // labels may reference — a traefik.http.routers.<r>.middlewares entry

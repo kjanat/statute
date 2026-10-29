@@ -1,12 +1,13 @@
 package migrate
 
 import (
-	"net/url"
-	"regexp/syntax"
+	"fmt"
+	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
-	"statute.kjanat.dev/internal/docker"
+	statute "statute.kjanat.dev"
 )
 
 const (
@@ -15,39 +16,79 @@ const (
 	fieldPermanent       = "permanent"
 )
 
-func redirectCandidate(m *Object) (string, int, int, string) {
-	family := redirectFamilyScheme
-	if m.value(redirectFamilyRegex) != nil || hasFieldPrefix(m, "redirectRegex.") {
-		family = redirectFamilyRegex
-	}
-	status, other, ok := sourceRedirectStatuses(m, family)
-	if !ok {
-		return "", 0, 0, "redirect status or permanence is invalid or unresolved"
-	}
-	var target, reason string
-	if family == redirectFamilyRegex {
-		target, reason = regexRedirectTarget(m.text("redirectRegex.regex"), m.text("redirectRegex.replacement"))
-	} else {
-		target, reason = schemeRedirectTarget(m)
-	}
-	return target, status, other, reason
-}
+var migrationNoop = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 
-func schemeRedirectTarget(m *Object) (string, string) {
-	scheme := m.text("redirectScheme.scheme")
-	if scheme != protocolHTTP && scheme != protocolHTTPS {
-		return "", "redirect target scheme must be literal HTTP or HTTPS"
+func (g *generator) redirectMiddleware(o *Object, chain *middleware) {
+	family := ""
+	for _, name := range []string{redirectFamilyScheme, redirectFamilyRegex} {
+		if o.value(name) != nil || hasFieldPrefix(o, name+".") {
+			family = name
+		}
 	}
-	port := m.text("redirectScheme.port")
-	if port != "" && !validPort(port) {
-		return "", "redirect target port must be a literal valid port"
+	if family == "" {
+		return
 	}
-	target := scheme + "://{host}"
-	standardPort := (scheme == protocolHTTP && port == "80") || (scheme == protocolHTTPS && port == "443")
-	if port != "" && !standardPort {
-		target += ":" + port
+	status, other, ok := sourceRedirectStatuses(o, family)
+	if !ok {
+		o.mark(family, Manual, "invalid redirect status or permanence")
+		return
 	}
-	return target + "{request_uri}", ""
+	var mw statute.Middleware
+	var code string
+	if family == redirectFamilyScheme {
+		scheme, port := o.text(family+".scheme"), o.text(family+".port")
+		if scheme != protocolHTTP && scheme != protocolHTTPS {
+			o.mark(family, Manual, "redirect scheme must be http or https")
+			return
+		}
+		if port != "" && !validPort(port) {
+			o.mark(family, Manual, "invalid redirect port")
+			return
+		}
+		value := statute.RedirectScheme(scheme)
+		code = fmt.Sprintf("statute.RedirectScheme(%q)", scheme)
+		if port != "" {
+			value.Port(port)
+			code += fmt.Sprintf(".Port(%q)", port)
+		}
+		if status == 301 && other == 308 {
+			value.Permanent()
+			code += ".Permanent()"
+		} else if status == other {
+			value.Status(status)
+			code += fmt.Sprintf(".Status(%d)", status)
+		}
+		mw = value
+	} else {
+		pattern, replacement := o.text(family+".regex"), o.text(family+".replacement")
+		if strings.ContainsAny(pattern+replacement, "\r\n\x00") || strings.Contains(pattern, "${") || strings.Contains(pattern+replacement, "{{") {
+			o.mark(family, Manual, "redirect contains unresolved interpolation or invalid control characters")
+			return
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			o.mark(family, Manual, "invalid redirect regular expression")
+			return
+		}
+		value := statute.RedirectRegex(pattern, replacement)
+		code = fmt.Sprintf("statute.RedirectRegex(%q,%q)", pattern, replacement)
+		if status == 301 && other == 308 {
+			value.Permanent()
+			code += ".Permanent()"
+		} else if status == other {
+			value.Status(status)
+			code += fmt.Sprintf(".Status(%d)", status)
+		}
+		mw = value
+	}
+	chain.values = append(chain.values, mw)
+	chain.code = append(chain.code, code)
+	fields := []string{"regex", "replacement", fieldPermanent, "statusCode"}
+	if family == redirectFamilyScheme {
+		fields = []string{"scheme", "port", fieldPermanent, "forcePermanentRedirect"}
+	}
+	for _, field := range fields {
+		o.mark(family+"."+field, Translated, "conditional redirect middleware with source captures, fallthrough and method statuses")
+	}
 }
 
 func sourceBoolValue(value any, fallback bool) (bool, bool) {
@@ -91,172 +132,5 @@ func validSourceRedirectStatus(status int) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func regexRedirectTarget(pattern, replacement string) (string, string) {
-	if !literal(strings.TrimSuffix(pattern, "$")) {
-		return "", "redirect regexp and replacement require literal input"
-	}
-	withoutSlash, all, reason := redirectCaptureShape(pattern)
-	if reason != "" {
-		return "", reason
-	}
-	target, reason := redirectReplacementTarget(replacement, withoutSlash)
-	if reason != "" {
-		return "", reason
-	}
-	if all {
-		return target, ""
-	}
-	return target, "regexp compares raw Host case and port and falls through on non-match; native Host routing ignores case and strips ports"
-}
-
-func redirectCaptureShape(pattern string) (bool, bool, string) {
-	switch strings.TrimSuffix(pattern, "$") {
-	case `^https?://[^/]+/(.*)`:
-		return true, true, ""
-	case `^https?://[^/]+(.*)`:
-		return false, true, ""
-	}
-	prefix, ok := redirectLiteralPrefix(pattern)
-	if !ok {
-		return false, false, "regexp matching or capture substitution cannot be represented by a native redirect template"
-	}
-	u, err := url.Parse(prefix)
-	if err != nil || !redirectAuthorityPrefix(u) {
-		return false, false, "regexp literal prefix changes path or authority matching beyond native redirect templates"
-	}
-	return u.Path == "/", false, ""
-}
-
-func redirectAuthorityPrefix(u *url.URL) bool {
-	return u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/")
-}
-
-func redirectReplacementTarget(replacement string, withoutSlash bool) (string, string) {
-	prefix, ok := strings.CutSuffix(replacement, "${1}")
-	if !ok {
-		prefix, ok = strings.CutSuffix(replacement, "$1")
-	}
-	if !ok {
-		return "", "redirect replacement must end in the complete request-URI capture"
-	}
-	if strings.Contains(prefix, "$") || strings.ContainsAny(prefix, "{}\r\n") {
-		return "", "redirect replacement contains additional captures or template syntax"
-	}
-	if withoutSlash {
-		var found bool
-		prefix, found = strings.CutSuffix(prefix, "/")
-		if !found {
-			return "", "capture excludes the leading slash and replacement does not restore it"
-		}
-	}
-	return prefix + "{request_uri}", ""
-}
-
-func redirectLiteralPrefix(pattern string) (string, bool) {
-	re, err := syntax.Parse(pattern, syntax.Perl)
-	if err != nil || re.Op != syntax.OpConcat || len(re.Sub) < 3 {
-		return "", false
-	}
-	parts := re.Sub
-	if parts[0].Op != syntax.OpBeginText || parts[1].Op != syntax.OpLiteral {
-		return "", false
-	}
-	if len(parts) == 4 && parts[3].Op == syntax.OpEndText {
-		parts = parts[:3]
-	}
-	if len(parts) != 3 || !redirectRequestURICapture(parts[2]) {
-		return "", false
-	}
-	return string(parts[1].Rune), true
-}
-
-func redirectRequestURICapture(re *syntax.Regexp) bool {
-	if re.Op != syntax.OpCapture || len(re.Sub) != 1 {
-		return false
-	}
-	star := re.Sub[0]
-	if star.Op != syntax.OpStar || len(star.Sub) != 1 {
-		return false
-	}
-	op := star.Sub[0].Op
-	return op == syntax.OpAnyChar || op == syntax.OpAnyCharNotNL
-}
-
-func (g *generator) checkRedirectEquality(router, middleware *Object, target string) {
-	prefix, _, _ := strings.Cut(target, "{request_uri}")
-	u, err := url.Parse(prefix)
-	if err != nil || u.Host == "" {
-		return
-	}
-	matchers, err := docker.ParseRule(router.text("rule"))
-	if err != nil {
-		return
-	}
-	for _, matcher := range matchers {
-		if matcher.Host == "" || strings.EqualFold(strings.TrimSuffix(matcher.Host, "."), strings.TrimSuffix(u.Hostname(), ".")) {
-			middleware.note("$redirect-equality", Manual, "source continues to the backend when replacement equals the request URL; unconditional native redirects need a distinct target authority")
-			return
-		}
-	}
-}
-
-func (g *generator) tryRedirect(o *Object, matchers []docker.Matcher, refs []string) bool {
-	if o.Provider != providerFile {
-		return false
-	}
-	target, status, other, ok := g.redirect(o, refs)
-	if !ok {
-		return false
-	}
-	chain, _ := g.sourceMiddlewarePlan(refs, o.Provider)
-	g.checkMiddlewareOrder(o, refs)
-	if !o.ready() {
-		return true
-	}
-	g.redirectRoutes(o, matchers, target, status, other, chain)
-	if o.Generated {
-		g.markMiddlewaresUsed(refs, o.Provider)
-	}
-	return true
-}
-
-func (g *generator) classifyRedirectCandidate(router, m *Object, target, reason string) {
-	if m.value(redirectFamilyScheme) != nil || hasFieldPrefix(m, "redirectScheme.") {
-		classifyRedirectFields(m, redirectFamilyScheme)
-		g.checkRedirectSchemeScope(router, m, m.text("redirectScheme.scheme"))
-		return
-	}
-	classifyRedirectFields(m, redirectFamilyRegex)
-	if reason != "" {
-		m.note("$redirect-match", Manual, reason)
-		return
-	}
-	g.checkRedirectEquality(router, m, target)
-}
-
-func (g *generator) checkRedirectSchemeScope(router, middleware *Object, target string) {
-	for _, name := range g.routerEntries[router] {
-		ep := g.entrypoints[name]
-		if ep == nil {
-			continue
-		}
-		g.checkRedirectEntrypoint(ep, middleware, target)
-	}
-}
-
-func (g *generator) checkRedirectEntrypoint(ep, owner *Object, target string) {
-	scheme := protocolHTTP
-	if g.entryTLS[ep.Name] || ep.value("http.tls") != nil {
-		scheme = protocolHTTPS
-	}
-	if scheme == target {
-		owner.note("$redirect-condition", Manual, "source skips redirects when the request already has the target scheme; native redirects are unconditional")
-	}
-	cidrs, ok := ingressProxyRanges(ep)
-	if !ok || len(cidrs) > 0 {
-		owner.note("$redirect-trust", Manual, "trusted forwarded schemes can bypass the source redirect; select explicit listener/route policy")
 	}
 }

@@ -119,6 +119,26 @@ func (s *dns01Solver) awaitPropagation(ctx context.Context, recordName, value st
 			return err
 		}
 	}
+	if s.prop.DisableChecks {
+		return nil
+	}
+	if s.prop.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.prop.Timeout)
+		defer cancel()
+	}
+	if s.prop.Authoritative {
+		if err := s.pollAuthoritative(ctx, recordName, value); err != nil {
+			return err
+		}
+	}
+	if s.prop.RequireAllRecursive && len(s.prop.Resolvers) == 0 {
+		clone := *s
+		policy := *s.prop
+		policy.Resolvers = s.recursiveServers()
+		clone.prop = &policy
+		return clone.pollResolvers(ctx, recordName, value)
+	}
 	if len(s.prop.Resolvers) == 0 {
 		return nil
 	}

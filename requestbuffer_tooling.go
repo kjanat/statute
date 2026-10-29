@@ -34,7 +34,7 @@ func graphRequestBuffers(d *dotWriter, c *resolved.Config) {
 	d.printf("  RB [shape=box, label=%q];\n", label)
 	index := 0
 	requestBufferChains(c, func(path string, chain []resolved.Middleware) {
-		for i, mw := range chain {
+		for i, mw := range middlewareLeaves(chain) {
 			if mw.Type != resolved.MWRequestBuffer {
 				continue
 			}
@@ -49,7 +49,7 @@ func ruleRequestBuffers(c *resolved.Config) []Finding {
 	var out []Finding
 	resources := c.RequestBuffers
 	requestBufferChains(c, func(path string, chain []resolved.Middleware) {
-		for i, mw := range chain {
+		for i, mw := range middlewareLeaves(chain) {
 			if mw.Type != resolved.MWRequestBuffer {
 				continue
 			}

@@ -7,7 +7,10 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-type allowIPsMW struct{ cidrs []string }
+type allowIPsMW struct {
+	cidrs     []string
+	selection *IPSelection
+}
 
 func (*allowIPsMW) statuteMiddleware() {}
 
@@ -47,7 +50,8 @@ func DenyIPs(cidrs ...string) *denyIPsMW {
 func allowIPsHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	prefixes := mustParsePrefixes(m.IPCIDRs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !ipInList(r, prefixes) {
+		value, err := netip.ParseAddr(selectedRequestIP(m.IPSelection, r))
+		if err != nil || !addrInPrefixes(value, prefixes) {
 			http.Error(w, "403 Forbidden", http.StatusForbidden)
 			return
 		}

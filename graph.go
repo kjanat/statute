@@ -195,6 +195,12 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 	d.printf("  // listeners\n")
 	for i, l := range r.Listeners {
 		label := fmt.Sprintf("%s %s", strings.ToUpper(l.Scheme), l.Addr)
+		if l.Name != "" {
+			label += "\\nname=" + l.Name
+		}
+		for _, binding := range l.TLSPolicies {
+			label += fmt.Sprintf("\\nTLS for %v: min=%s max=%s strict-SNI=%t", binding.Hosts, binding.Policy.MinVersion, binding.Policy.MaxVersion, binding.Policy.StrictSNI)
+		}
 		if l.Redirect != "" {
 			label = fmt.Sprintf("%s -> %s (redirect)", strings.ToUpper(l.Scheme), l.Redirect)
 		}
@@ -256,13 +262,44 @@ func graphListenerRedirectStatus(l *resolved.Listener) string {
 
 func graphRoutePolicy(route *resolved.Route) string {
 	var label string
+	if len(route.Listeners) > 0 {
+		label += fmt.Sprintf("\\nlisteners=%v", route.Listeners)
+	}
+	if route.Priority != 0 {
+		label += fmt.Sprintf("\\npriority=%d", route.Priority)
+	}
+	if route.PathMatch != "" {
+		label += "\\npath-match=" + route.PathMatch
+	}
+	if route.DiscoveredUpstream != "" {
+		label += "\\ndiscovered-upstream=" + route.DiscoveredUpstream
+	}
+	if len(route.PeerIPCIDRs) > 0 {
+		label += fmt.Sprintf("\\npeer=%v", route.PeerIPCIDRs)
+	}
 	if r := route.Redirect; r != nil {
 		label = fmt.Sprintf("\\nredirect %d -> %s", r.Status, r.Target)
 		if r.NonGETStatus != 0 {
 			label += fmt.Sprintf(" (non-GET %d)", r.NonGETStatus)
 		}
 	}
-	for _, m := range route.Middleware {
+	for _, m := range middlewareLeaves(route.Middleware) {
+		switch m.Type {
+		case resolved.MWEncodeResponse:
+			if m.Encoding != nil {
+				label += fmt.Sprintf("\\nencodings=%v min=%d include=%v exclude=%v", m.Encoding.Encodings, m.Encoding.MinimumBytes, m.Encoding.IncludedTypes, m.Encoding.ExcludedTypes)
+			}
+		case resolved.MWBufferBodies:
+			if m.BodyBuffers != nil {
+				label += fmt.Sprintf("\\nbody-buffers request=%d/%d response=%d/%d", m.BodyBuffers.MemoryRequestBytes, m.BodyBuffers.MaxRequestBytes, m.BodyBuffers.MemoryResponseBytes, m.BodyBuffers.MaxResponseBytes)
+			}
+		case resolved.MWReplaceEscapedPath, resolved.MWRewriteEscapedPath, resolved.MWStripBytePrefixes, resolved.MWPrefixPath:
+			label += fmt.Sprintf("\\nrequest-path op=%d original-header=%t", m.Type, m.PathRecordOriginal)
+		case resolved.MWRedirectRegex:
+			label += fmt.Sprintf("\\nredirect regexp %s -> %s (%d/non-GET %d)", m.RedirectPattern, m.RedirectReplacement, m.RedirectStatus, m.RedirectNonGETStatus)
+		case resolved.MWRedirectScheme:
+			label += fmt.Sprintf("\\nredirect scheme %s port=%s (%d/non-GET %d)", m.RedirectScheme, m.RedirectPort, m.RedirectStatus, m.RedirectNonGETStatus)
+		}
 		if m.HeaderHTTPSOnly {
 			label += "\\nHTTPS header: " + m.HeaderName
 		}

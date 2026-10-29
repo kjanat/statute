@@ -95,6 +95,10 @@ const (
 // One policy governs the whole listener — every TLS source on it, and the
 // HTTP/3 listener that shares its certificates.
 type TLSPolicy struct {
+	// Identity distinguishes independently named policies for authority admission.
+	Identity string
+	// StrictSNI requires a nonempty SNI covered by the selected certificate.
+	StrictSNI bool
 	// MinVersion is the lowest version the listener will negotiate. Zero
 	// leaves the default of TLS 1.2.
 	MinVersion TLSVersion
@@ -202,7 +206,7 @@ func tlsVersionID(name string) (uint16, bool) {
 // rl.TLSPolicy nil, which the runtime reads as "statute's defaults".
 func resolveTLSPolicy(l *Listener, rl *resolved.Listener) error {
 	if len(l.tlsPolicy) == 0 {
-		return nil
+		return resolveScopedTLSPolicies(l, rl)
 	}
 	if l.scheme != schemeHTTPS {
 		return errors.New("tls_policy: only an HTTPS listener has a downstream TLS policy")
@@ -225,11 +229,13 @@ func resolveTLSPolicy(l *Listener, rl *resolved.Listener) error {
 		return err
 	}
 	rl.TLSPolicy = &resolved.TLSPolicy{
+		StrictSNI:    p.StrictSNI,
+		Identity:     p.Identity,
 		MinVersion:   tlsVersionName(p.MinVersion),
 		MaxVersion:   tlsVersionName(p.MaxVersion),
 		CipherSuites: suites,
 	}
-	return nil
+	return resolveScopedTLSPolicies(l, rl)
 }
 
 // validateTLSPolicyVersions rejects versions outside the supported set and
@@ -328,14 +334,25 @@ func validateTLSPolicyRequiredSuite(p TLSPolicy) error {
 // Static sources are never judged — resolve does not read the files, and
 // an RSA key pair serves an RSA-only policy fine.
 func validateTLSPolicyCertCompat(p TLSPolicy, rl *resolved.Listener) error {
-	if p.MaxVersion != TLS12 || len(p.CipherSuites) == 0 || tlsPolicyHasECDSASuite(p.CipherSuites) {
+	if p.MaxVersion != TLS12 || len(p.CipherSuites) == 0 {
 		return nil
 	}
-	for _, a := range rl.AutoTLSSources {
-		if a.Challenge == resolved.ChallengeAuto {
+	ecdsaAllowed, rsaAllowed := false, false
+	for _, suite := range p.CipherSuites {
+		if slices.Contains(tls12ECDSACipherSuites, suite) {
+			ecdsaAllowed = true
+		} else {
+			rsaAllowed = true
+		}
+	}
+	for _, source := range rl.AutoTLSSources {
+		if source.Challenge == resolved.ChallengeAuto {
 			continue
 		}
-		return fmt.Errorf("tls_policy: %s is pinned to %s and the in-tree ACME manager always generates ECDSA P-256 certificate keys, but max_version 1.2 with an RSA-only cipher_suites list cannot authenticate an ECDSA certificate, and the SNI router never falls back past the source that matched the name; add an ECDHE-ECDSA suite or lift max_version", strings.Join(a.Domains, ", "), acmeChallengeLabel(a))
+		rsaKey := strings.HasPrefix(source.KeyType, "RSA")
+		if rsaKey && !rsaAllowed || !rsaKey && !ecdsaAllowed {
+			return fmt.Errorf("tls_policy: cipher suites cannot authenticate %s certificate keys for %s", source.KeyType, strings.Join(source.Domains, ","))
+		}
 	}
 	return nil
 }

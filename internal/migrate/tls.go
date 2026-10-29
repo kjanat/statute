@@ -57,15 +57,17 @@ func (g *generator) acme(name string, domains []string) (statute.ListenerOption,
 	}
 	code += g.acmeChallenge(o, a)
 	code += g.acmePropagation(o, a)
-	if o.text("acme.keyType") == "EC256" {
-		o.mark("acme.keyType", Translated, "pinned native ACME sources issue ECDSA P-256 keys")
-	} else {
-		reason := "source certificate key algorithm differs from native ECDSA P-256; select EC256 or explicitly choose certificate provisioning"
-		if o.value("acme.keyType") != nil {
-			o.mark("acme.keyType", Manual, reason)
-		} else {
-			o.note("$acme.keyType", Manual, "source defaults to RSA4096; "+reason)
-		}
+	kind := o.text("acme.keyType")
+	if kind == "" {
+		kind = "RSA4096"
+	}
+	switch kind {
+	case "EC256", "EC384", "RSA2048", "RSA3072", "RSA4096", "RSA8192":
+		a.KeyType(kind)
+		code += fmt.Sprintf(".KeyType(%q)", kind)
+		o.mark("acme.keyType", Translated, "explicit certificate key type")
+	default:
+		o.mark("acme.keyType", Unsupported, "unsupported certificate key type")
 	}
 	o.Generated = true
 	return a, code
@@ -91,7 +93,14 @@ func (g *generator) acmeChallenge(o *Object, a *statute.AutoTLSConfig) string {
 }
 
 func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes []string) ([]statute.ListenerOption, []string) {
-	names := map[string]bool{}
+	defaults, defaultCode, ok := g.selectedTLSPolicy("default@file")
+	if ok {
+		opts = append(opts, defaults...)
+		codes = append(codes, defaultCode...)
+	}
+	selected := map[string]string{}
+	owners := map[string][]*Object{}
+	conflicts := map[string]bool{}
 	g.each("routers", func(o *Object) {
 		if !slices.Contains(g.routerEntries[o], ep.Name) {
 			return
@@ -101,37 +110,70 @@ func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes [
 		if name == "" {
 			name = defaultName
 		}
-		checkTLSHostCoverage(o, name)
-		names[qualified(name, providerFile)] = true
+		name = qualified(name, providerFile)
+		hosts, err := parseRuleHosts(o)
+		if err != nil {
+			return
+		}
+		for _, host := range hosts {
+			owners[host] = append(owners[host], o)
+			if old, exists := selected[host]; exists && old != name {
+				selected[host] = "default@file"
+				conflicts[host] = true
+			} else {
+				selected[host] = name
+			}
+		}
+		owner.mark(base+".options", Translated, "TLS policy selected by SNI; conflicting hostname assignments use the default")
 	})
-	if len(names) > 1 {
-		ep.note("$tls-options", Manual, "routers select different SNI TLS policies; native protocol/cipher policy is listener-wide")
-		return opts, codes
+	strict := false
+	if core := g.objects["setting:core@static"]; core != nil {
+		strict, _ = sourceBoolValue(core.value("strictTLSOptions"), false)
 	}
-	for name := range names {
-		native, code, ok := g.selectedTLSPolicy(name)
-		if ok {
-			opts = append(opts, native...)
-			codes = append(codes, code...)
-			g.each("routers", func(o *Object) {
-				if slices.Contains(g.routerEntries[o], ep.Name) {
-					owner, base := routerTLSSource(o, ep)
-					owner.mark(base+".options", Translated, "selected policy matches every router on the listener")
+	if strict {
+		for host := range conflicts {
+			for _, router := range owners[host] {
+				entries := slices.Clone(g.routerEntries[router])
+				entries = slices.DeleteFunc(entries, func(name string) bool { return name == ep.Name })
+				g.routerEntries[router] = entries
+				if len(entries) == 0 {
+					g.disabledRouters[router] = true
 				}
-			})
+				router.note("$tls-conflict", Translated, "source disables this router on an entrypoint with conflicting TLS policies")
+			}
+		}
+	}
+	grouped := map[string][]string{}
+	for _, host := range keys(selected) {
+		name := selected[host]
+		if name != "default@file" {
+			grouped[name] = append(grouped[name], host)
+		}
+	}
+	for _, name := range keys(grouped) {
+		values, code, ok := g.selectedTLSPolicy(name)
+		if !ok {
+			continue
+		}
+		hosts := grouped[name]
+		hasAuth := false
+		for i, value := range values {
+			switch value := value.(type) {
+			case statute.TLSPolicy:
+				opts = append(opts, statute.TLSPolicyFor(hosts, value))
+				codes = append(codes, "statute.TLSPolicyFor([]string{"+quoted(hosts)+"},"+code[i]+")")
+			case statute.ClientAuth:
+				hasAuth = true
+				opts = append(opts, statute.ClientAuthFor(hosts, value))
+				codes = append(codes, "statute.ClientAuthFor([]string{"+quoted(hosts)+"},"+code[i]+")")
+			}
+		}
+		if !hasAuth {
+			opts = append(opts, statute.ClientAuthFor(hosts, statute.ClientAuth{Mode: statute.NoClientCert}))
+			codes = append(codes, "statute.ClientAuthFor([]string{"+quoted(hosts)+"},statute.ClientAuth{Mode:statute.NoClientCert})")
 		}
 	}
 	return opts, codes
-}
-
-func checkTLSHostCoverage(router *Object, name string) {
-	if qualified(name, providerFile) == "default@file" {
-		return
-	}
-	hosts, err := parseRuleHosts(router)
-	if err != nil || len(hosts) == 0 {
-		router.note("$tls-host", Manual, "Traefik selects the default TLS policy for hostless rules; a named policy cannot become a listener-wide TLS or client-auth requirement without reviewing SNI coverage")
-	}
 }
 
 func routerTLSSource(router, entrypoint *Object) (*Object, string) {
@@ -155,7 +197,8 @@ func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []
 	}
 	base := "options." + plain
 	markEmptyTLSPolicy(object, base)
-	p := statute.TLSPolicy{}
+	p := statute.TLSPolicy{Identity: name}
+	p.StrictSNI, _ = sourceBoolValue(object.value(base+".sniStrict"), false)
 	for _, f := range []struct {
 		key string
 		dst *statute.TLSVersion
@@ -173,13 +216,13 @@ func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []
 	suites, code := tlsSuites(object, base)
 	p.CipherSuites = suites
 	opts := []statute.ListenerOption{p}
-	codes := []string{fmt.Sprintf("statute.TLSPolicy{MinVersion:statute.TLSVersion(%d),MaxVersion:statute.TLSVersion(%d),CipherSuites:[]statute.CipherSuite{%s}}", p.MinVersion, p.MaxVersion, code)}
+	codes := []string{fmt.Sprintf("statute.TLSPolicy{MinVersion:statute.TLSVersion(%d),MaxVersion:statute.TLSVersion(%d),CipherSuites:[]statute.CipherSuite{%s},StrictSNI:%t,Identity:%q}", p.MinVersion, p.MaxVersion, code, p.StrictSNI, name)}
 	opts, codes = clientAuthentication(object, base, opts, codes)
 	if scalar(object.value(base+".sniStrict")) == falseValue {
 		object.mark(base+".sniStrict", Exact, "unknown SNI may use the fallback certificate")
 	}
 	if scalar(object.value(base+".sniStrict")) == trueValue {
-		object.mark(base+".sniStrict", Manual, "source rejects unknown SNI; native fallback certificates still accept it, so choose an explicit listener SNI policy")
+		object.mark(base+".sniStrict", Translated, "certificate must cover a nonempty SNI")
 	}
 	object.Generated = true
 	return opts, codes, true
@@ -274,4 +317,12 @@ func acmeAccountValue(key, value string) bool {
 	}
 	u, err := url.Parse(value)
 	return err == nil && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.Host != "" && (u.Scheme == protocolHTTP || u.Scheme == protocolHTTPS)
+}
+
+func (g *generator) unusedTLSPolicies() {
+	g.each(kindTLS, func(o *Object) {
+		if !o.Generated && strings.HasPrefix(o.Name, "options.") {
+			o.mark("", OutOfScope, "TLS profile is not selected by any supplied HTTP router or listener")
+		}
+	})
 }

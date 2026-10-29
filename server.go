@@ -29,6 +29,7 @@ import (
 type server struct {
 	cfg            *resolved.Config
 	requestBuffers *requestBufferManager
+	accessLogs     *accessLogSink
 
 	listeners     []*http.Server // content + redirect listeners
 	metricsServer *http.Server
@@ -69,6 +70,14 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		pools:          make(map[string]*poolHandler, len(cfg.Upstreams)),
 		stats:          newStats(),
 		cloudflare:     cloudflareSourceForListeners(cfg.Listeners),
+	}
+
+	if logging := cfg.Observability.AccessLog; logging.Enabled && (logging.FilePath != "" || logging.BufferSize > 0) {
+		copy := *cfg
+		s.accessLogs = &accessLogSink{path: logging.FilePath, size: logging.BufferSize, fallback: logging.Writer}
+		copy.Observability.AccessLog.Writer = s.accessLogs
+		cfg = &copy
+		s.cfg = cfg
 	}
 
 	mgr, err := buildAutocertManager(cfg.Listeners)
@@ -249,6 +258,9 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	} else {
 		handler = content
 	}
+	if state := s.listenerTLS[l.Addr]; state != nil {
+		handler = tlsPolicyAdmission(state.policies, handler)
+	}
 	handler = clientAuthAdmission(auth, handler)
 
 	// When AutoTLS is configured anywhere, the plain-HTTP listener must
@@ -290,7 +302,7 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	} else if len(l.TrustedProxies) > 0 {
 		handler = trustedProxyMiddleware(l, handler)
 	}
-	return preserveRequestTrailers(handler)
+	return preserveRequestTrailers(processState(&s.ready, namedListener(l.Name, handler)))
 }
 
 // warmACMEManagers eagerly issues missing certificates for one warm-up
@@ -524,6 +536,7 @@ func (b *boundListeners) count() int {
 // startAttempt is the sole owner of every resource acquired by one Start
 // call until commit transfers those typed handles into serverRun.
 type startAttempt struct {
+	accessLogs *accessLogRun
 	pools      []*runningPool
 	acme       []*acmeRun
 	docker     *dockerRun
@@ -546,7 +559,7 @@ func (a *startAttempt) rollback() error {
 	for _, pool := range a.pools {
 		pool.shutdown()
 	}
-	return err
+	return errors.Join(err, a.accessLogs.stop())
 }
 
 // serveHealthEarly binds and serves the health endpoint before the fallible prerequisite phase, ready still false, so supervisors observe live=200/ready=503 throughout startup.
@@ -573,6 +586,7 @@ func (a *startAttempt) commit() *serverRun {
 	}
 	a.finished = true
 	return &serverRun{
+		accessLogs: a.accessLogs,
 		pools:      a.pools,
 		acme:       a.acme,
 		docker:     a.docker,
@@ -584,6 +598,7 @@ func (a *startAttempt) commit() *serverRun {
 // serverRun owns exactly the resources transferred by the successful Start.
 // Shutdown never rediscovers ownership from configured server fields.
 type serverRun struct {
+	accessLogs *accessLogRun
 	pools      []*runningPool
 	acme       []*acmeRun
 	docker     *dockerRun
@@ -640,6 +655,14 @@ func (s *server) Start() (err error) {
 // DNS-01 warm-up (which needs no local listener), and the Docker
 // provider's initial sync. Each is recorded in rb as it comes up.
 func (s *server) startPrerequisites(attempt *startAttempt) error {
+	if s.accessLogs != nil {
+		run, err := s.accessLogs.start()
+		if err != nil {
+			return fmt.Errorf("access log: %w", err)
+		}
+		attempt.accessLogs = run
+	}
+
 	if s.cloudflare != nil {
 		attempt.cloudflare = s.cloudflare.start()
 	}
@@ -814,7 +837,7 @@ func (r *serverRun) shutdown(ctx context.Context) error {
 	if h := r.listeners.health; h != nil {
 		err = errors.Join(err, h.shutdown(ctx))
 	}
-	return err
+	return errors.Join(err, r.accessLogs.stop())
 }
 
 func findListener(ls []*resolved.Listener, addr string) (*resolved.Listener, bool) {
@@ -850,6 +873,7 @@ type compiledRoute struct {
 	// clientPrefixes is the parsed form of the route's ClientIPCIDRs; empty
 	// means the route matches any client.
 	clientPrefixes []netip.Prefix
+	peerPrefixes   []netip.Prefix
 }
 
 // findHandler returns the first route matching host, path, and — for routes
@@ -871,8 +895,14 @@ func findCompiledRoute(routes []compiledRoute, host string, req *http.Request) *
 	var clientResolved, clientOK bool
 	for i := range routes {
 		c := &routes[i]
-		if !routeMatchesRequest(*c, host, req.URL.Path) {
+		if !listenerMatches(c.matcher.ListenerNames, req) || !routeMatchesRequest(*c, host, req.URL.Path) {
 			continue
+		}
+		if len(c.peerPrefixes) > 0 {
+			peer, err := netip.ParseAddrPort(req.RemoteAddr)
+			if err != nil || !addrInPrefixes(peer.Addr().WithZone(""), c.peerPrefixes) {
+				continue
+			}
 		}
 		if len(c.clientPrefixes) > 0 {
 			if !clientResolved {
@@ -987,6 +1017,19 @@ func (s *server) buildRouter() http.Handler {
 
 	return s.requestBuffers.wrap(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host := stripPort(req.Host)
+		if s.cfg.PrioritizeRoutes {
+			chosen := bestPriorityRoute(static, host, req)
+			if table := s.dynamic.Load(); table != nil {
+				candidate := priorityDynamicRoute(table, host, req)
+				if candidate != nil && (chosen == nil || candidate.matcher.Priority > chosen.matcher.Priority) {
+					chosen = candidate
+				}
+			}
+			if chosen != nil {
+				chosen.handler.ServeHTTP(w, req)
+				return
+			}
+		}
 		if h := findHandler(static, host, req); h != nil {
 			h.ServeHTTP(w, req)
 			return
@@ -1012,6 +1055,8 @@ func (s *server) compileRoutes(routes []*resolved.Route) []compiledRoute {
 	for _, r := range routes {
 		var base http.Handler
 		switch {
+		case r.DiscoveredUpstream != "":
+			base = s.discoveredUpstream(r.DiscoveredUpstream)
 		case r.Upstream != nil:
 			base = s.pools[r.Upstream.Name]
 		case r.StaticDir != "":
@@ -1022,12 +1067,13 @@ func (s *server) compileRoutes(routes []*resolved.Route) []compiledRoute {
 		case r.Handler != nil:
 			base = r.Handler
 		}
-		h := wrapRouteMiddleware(r.Middleware, base, r.Upstream != nil)
+		h := wrapRouteMiddleware(r.Middleware, base, r.Upstream != nil || r.DiscoveredUpstream != "")
 		compiled = append(compiled, compiledRoute{
 			route:          r,
 			handler:        h,
-			matcher:        docker.CompileNative(r.Host, r.Pattern),
+			matcher:        compileRouteMatcher(r, s.cfg.PrioritizeRoutes),
 			clientPrefixes: mustParsePrefixes(r.ClientIPCIDRs),
+			peerPrefixes:   mustParsePrefixes(r.PeerIPCIDRs),
 		})
 	}
 
@@ -1334,6 +1380,9 @@ func (ph *poolHandler) candidates() []*backendState {
 	if c := available(ph.backup, run); len(c) > 0 {
 		return c
 	}
+	if ph.pool.RejectUnhealthy {
+		return nil
+	}
 	return ph.primary
 }
 
@@ -1365,6 +1414,9 @@ func (ph *poolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(withPassiveRun(ctx, run))
 	}
 	bs.rp.ServeHTTP(w, withUpgradeHeaders(r, w))
+	if attempt, _ := r.Context().Value(passiveAttemptKey{}).(*passiveAttempt); attempt != nil && !attempt.failed.Load() && r.Context().Err() == nil && !localUpgradeFailure(r) {
+		passiveRunFromContext(r.Context()).success(bs)
+	}
 }
 
 func usableUpstreamHost(host string) bool {
@@ -1393,9 +1445,10 @@ func wrapRouteMiddleware(mws []resolved.Middleware, base http.Handler, nativePro
 	}
 	// RequestID can introduce credentials inside a buffered/cloned request,
 	// beyond an outer Cache's view. Such a route cannot use shared entries.
-	cacheBypass := routeWritesCacheCredentials(mws) || routeWritesCacheAge(mws)
+	leaves := middlewareLeaves(mws)
+	cacheBypass := routeWritesCacheCredentials(leaves) || routeWritesCacheAge(leaves)
 	h := base
-	cacheEnabled := false
+	cacheEnabled := slices.ContainsFunc(leaves, func(m resolved.Middleware) bool { return m.Type == resolved.MWCache && m.CacheTTL > 0 })
 	for _, mw := range slices.Backward(mws) {
 		if cacheBypass && mw.Type == resolved.MWCache {
 			continue
@@ -1403,7 +1456,13 @@ func wrapRouteMiddleware(mws []resolved.Middleware, base http.Handler, nativePro
 		if mw.Type == resolved.MWCache && mw.CacheTTL > 0 {
 			cacheEnabled = true
 		}
-		h = applyMiddleware(mw, h)
+		if mw.Type == resolved.MWOnListeners {
+			h = conditionalListenerMiddleware(mw, h, cacheBypass)
+		} else if mw.Type == resolved.MWInOrder {
+			h = orderedMiddlewareHandler(mw, h, cacheBypass)
+		} else {
+			h = applyMiddleware(mw, h)
+		}
 	}
 	h = withHeaderMiddleware(mws, withPathRewrite(mws, h))
 	if nativeProxy && cacheEnabled {
@@ -1431,20 +1490,28 @@ func routeWritesCacheAge(mws []resolved.Middleware) bool {
 // (timeout, compress, etag) are bridged by small adapters below. An unknown
 // type falls through applyMiddleware to a pass-through.
 var middlewareBuilders = map[resolved.MiddlewareType]func(resolved.Middleware, http.Handler) http.Handler{
-	resolved.MWTimeout:         buildTimeout,
-	resolved.MWRateLimit:       rateLimitHandler,
-	resolved.MWRetry:           retryHandler,
-	resolved.MWCache:           cacheHandler,
-	resolved.MWCompress:        buildCompress,
-	resolved.MWETag:            buildETag,
-	resolved.MWBodyLimit:       bodyLimitHandler,
-	resolved.MWRequestBuffer:   requestBufferHandler,
-	resolved.MWRequestID:       requestIDHandler,
-	resolved.MWSecurityHeaders: securityHeadersHandler,
-	resolved.MWCORS:            corsHandler,
-	resolved.MWBasicAuth:       basicAuthHandler,
-	resolved.MWAllowIPs:        allowIPsHandler,
-	resolved.MWDenyIPs:         denyIPsHandler,
+	resolved.MWTimeout:            buildTimeout,
+	resolved.MWRateLimit:          rateLimitHandler,
+	resolved.MWRetry:              retryHandler,
+	resolved.MWCache:              cacheHandler,
+	resolved.MWCompress:           buildCompress,
+	resolved.MWETag:               buildETag,
+	resolved.MWBodyLimit:          bodyLimitHandler,
+	resolved.MWRequestBuffer:      requestBufferHandler,
+	resolved.MWRequestID:          requestIDHandler,
+	resolved.MWSecurityHeaders:    securityHeadersHandler,
+	resolved.MWCORS:               corsHandler,
+	resolved.MWBasicAuth:          basicAuthHandler,
+	resolved.MWAllowIPs:           allowIPsHandler,
+	resolved.MWDenyIPs:            denyIPsHandler,
+	resolved.MWRedirectRegex:      redirectMiddlewareHandler,
+	resolved.MWRedirectScheme:     redirectMiddlewareHandler,
+	resolved.MWReplaceEscapedPath: requestPathHandler,
+	resolved.MWRewriteEscapedPath: requestPathHandler,
+	resolved.MWStripBytePrefixes:  requestPathHandler,
+	resolved.MWPrefixPath:         requestPathHandler,
+	resolved.MWEncodeResponse:     encodeResponseHandler,
+	resolved.MWBufferBodies:       bufferBodiesHandler,
 	// The header operations and the path rewrites are deliberately absent:
 	// withHeaderMiddleware and withPathRewrite hoist them out of the chain so
 	// a retry cannot apply them per attempt. They fall through

@@ -22,6 +22,7 @@ type passiveRun struct {
 
 	mu       sync.Mutex
 	failures map[*backendState][]time.Time
+	holds    map[*backendState]time.Time
 }
 
 func newPassiveRun(cfg resolved.PassiveHealthCheck, now func() time.Time) *passiveRun {
@@ -29,6 +30,7 @@ func newPassiveRun(cfg resolved.PassiveHealthCheck, now func() time.Time) *passi
 		cfg:      cfg,
 		now:      now,
 		failures: make(map[*backendState][]time.Time),
+		holds:    make(map[*backendState]time.Time),
 	}
 	r.active.Store(true)
 	return r
@@ -76,6 +78,13 @@ func (r *passiveRun) record(b *backendState) {
 		kept = kept[len(kept)-r.cfg.MaxFailures:]
 	}
 	r.failures[b] = kept
+	if len(kept) >= r.cfg.MaxFailures {
+		if r.cfg.RecoverByProbe {
+			b.markHealthy(false)
+		} else if r.cfg.HoldDown > 0 && !now.Before(r.holds[b]) {
+			r.holds[b] = now.Add(r.cfg.HoldDown)
+		}
+	}
 }
 
 // demoted reports whether b has accumulated MaxFailures failures inside the
@@ -86,7 +95,18 @@ func (r *passiveRun) demoted(b *backendState) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	kept := pruneWindow(r.failures[b], r.now().Add(-r.cfg.FailureWindow))
+	if r.cfg.RecoverByProbe {
+		return false
+	}
+	now := r.now()
+	if r.cfg.HoldDown > 0 {
+		if now.Before(r.holds[b]) {
+			return true
+		}
+		delete(r.holds, b)
+		return false
+	}
+	kept := pruneWindow(r.failures[b], now.Add(-r.cfg.FailureWindow))
 	r.failures[b] = kept
 	return len(kept) >= r.cfg.MaxFailures
 }
@@ -114,4 +134,15 @@ func withPassiveRun(ctx context.Context, run *passiveRun) context.Context {
 func passiveRunFromContext(ctx context.Context) *passiveRun {
 	run, _ := ctx.Value(passiveRunContextKey{}).(*passiveRun)
 	return run
+}
+
+func (r *passiveRun) success(b *backendState) {
+	if r == nil || !r.cfg.ResetOnSuccess || !r.active.Load() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active.Load() {
+		delete(r.failures, b)
+	}
 }

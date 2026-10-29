@@ -71,11 +71,12 @@ type Report struct {
 
 // Result contains the review artifacts and the exact configuration being checked.
 type Result struct {
-	Report    Report
-	Go        []byte
-	Config    statute.Config
-	inputs    Inputs
-	documents map[string]string
+	Report       Report
+	Go           []byte
+	Config       statute.Config
+	inputs       Inputs
+	documents    map[string]string
+	pathMappings map[string][]string
 }
 
 // WriteHuman prints every classified field and explicitly lists omissions.

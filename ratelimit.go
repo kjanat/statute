@@ -3,10 +3,14 @@ package statute
 import (
 	"container/heap"
 	"crypto/sha256"
+	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"statute.kjanat.dev/resolved"
 )
@@ -19,10 +23,47 @@ func rateLimitHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		return next
 	}
 	buckets := newBucketStore(m.RateLimitPerSecond, m.RateLimitMaxBuckets)
+	if m.RateLimitBurst > 0 {
+		buckets.capacity = float64(m.RateLimitBurst)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := clientIP(r)
-		if m.RateLimitKey == resolved.KeyHostHeader {
+		key := selectedRequestIP(m.IPSelection, r)
+		switch m.RateLimitKey {
+		case resolved.KeyHostHeader:
 			key = r.Host
+		case resolved.KeyPeerIP:
+			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+				key = host
+			} else {
+				key = r.RemoteAddr
+			}
+		case resolved.KeyRequestHeader:
+			key = r.Header.Get(m.RateLimitRequestHeader)
+		}
+		if m.RateLimitReservations {
+			delay, ok := buckets.reserve(key, time.Now(), m)
+			if !ok {
+				w.Header().Set("Cache-Control", "no-store")
+				http.Error(w, "rate limit capacity unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if delay > m.RateLimitMaxDelay {
+				w.Header().Set("Retry-After", fmt.Sprintf("%.0f", math.Ceil(delay.Seconds())))
+				w.Header().Set("X-Retry-In", delay.String())
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(http.StatusText(http.StatusTooManyRequests)))
+				return
+			}
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-r.Context().Done():
+				http.Error(w, "context canceled", http.StatusInternalServerError)
+				return
+			case <-timer.C:
+			}
+			next.ServeHTTP(w, r)
+			return
 		}
 		switch buckets.allow(key, time.Now()) {
 		case http.StatusTooManyRequests:
@@ -53,6 +94,7 @@ type bucket struct {
 	tokens       float64
 	last, fullAt time.Time
 	index        int
+	limiter      *rate.Limiter
 }
 
 func newBucketStore(rate float64, limit int) *bucketStore {
@@ -90,6 +132,42 @@ func (s *bucketStore) allow(key string, now time.Time) int {
 	b.fullAt = s.deadline(b)
 	heap.Fix(&s.expiry, b.index)
 	return status
+}
+
+func (s *bucketStore) reserve(key string, now time.Time, cfg resolved.Middleware) (time.Duration, bool) {
+	digest := sha256.Sum256([]byte(key))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := s.buckets[digest]
+	if b != nil && cfg.RateLimitIdleTTL > 0 && b.fullAt.Unix() <= now.Unix() {
+		heap.Remove(&s.expiry, b.index)
+		delete(s.buckets, digest)
+		b = nil
+	}
+	if b == nil {
+		if len(s.buckets) >= s.limit {
+			if !cfg.RateLimitEvictIdle {
+				return 0, false
+			}
+			oldest := heap.Pop(&s.expiry).(*bucket)
+			delete(s.buckets, oldest.key)
+		}
+		capacity := int(min(s.capacity, float64(math.MaxInt)))
+		b = &bucket{key: digest, limiter: rate.NewLimiter(rate.Limit(s.rate), capacity)}
+		s.buckets[digest] = b
+		heap.Push(&s.expiry, b)
+	}
+	b.fullAt = now.Add(cfg.RateLimitIdleTTL)
+	heap.Fix(&s.expiry, b.index)
+	reservation := b.limiter.ReserveN(now, 1)
+	if !reservation.OK() {
+		return time.Duration(math.MaxInt64), true
+	}
+	delay := reservation.DelayFrom(now)
+	if delay > cfg.RateLimitMaxDelay {
+		reservation.CancelAt(now)
+	}
+	return delay, true
 }
 
 func (s *bucketStore) refill(b *bucket, now time.Time) {
