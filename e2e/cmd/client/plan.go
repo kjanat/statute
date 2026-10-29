@@ -166,6 +166,7 @@ func doRequest(client *http.Client, plan *report.Plan, step *report.Step, i int)
 		}
 		req.Header.Set(k, v)
 	}
+	applyPlanTrailers(req, step)
 	start := time.Now()
 	resp, err := client.Do(req)
 	res.Latency = time.Since(start)
@@ -212,4 +213,17 @@ func parseOriginID(body []byte) string {
 		return ""
 	}
 	return echo.Origin
+}
+
+func applyPlanTrailers(req *http.Request, step *report.Step) {
+	if len(step.Trailers) > 0 {
+		if req.Body == http.NoBody {
+			req.Body = io.NopCloser(strings.NewReader(step.Body))
+		}
+		req.Trailer = make(http.Header, len(step.Trailers))
+		for name, value := range step.Trailers {
+			req.Trailer.Set(name, value)
+		}
+		req.ContentLength = -1
+	}
 }

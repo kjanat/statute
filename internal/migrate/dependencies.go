@@ -10,7 +10,10 @@ import (
 )
 
 func unsupportedRuleReason(rule string) string {
-	for _, name := range []string{"HostRegexp", "QueryRegexp", "Query", "HeaderRegexp", "Header", "Method", "ClientIP"} {
+	if strings.Contains(rule, "ClientIP(") {
+		return "ClientIP needs compiled ClientIPs route policy; the shared rule parser cannot translate this matcher or choose its proxy-trust semantics"
+	}
+	for _, name := range []string{"HostRegexp", "QueryRegexp", "Query", "HeaderRegexp", "Header", "Method"} {
 		if strings.Contains(rule, name+"(") {
 			return name + " matcher has no equivalent native route declaration"
 		}

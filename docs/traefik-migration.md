@@ -80,8 +80,9 @@ An object's classification reflects its most restrictive field. `generated`
 means it contributed a fragment or retained Docker setting. Check the field
 classifications separately for blocking gaps. TLS paths, for example, can contribute an HTTPS candidate while coverage
 remains blocking. `unmatched_objects` lists objects without a contribution.
-Disjunctions and host spelling expansion can produce several native routes from
-one router. Docker counts describe parsed labels; live discovery is outside the audit.
+Generated route counts describe candidates, including host spelling expansion
+and disjunctions. They do not count accepted source routers or prove readiness
+to serve. A generated candidate can still have blocking findings. Docker counts describe parsed labels; live discovery is outside the audit.
 
 | Exit status | Meaning                                                       |
 | ----------- | ------------------------------------------------------------- |
@@ -176,7 +177,10 @@ configuration and resolve every blocking finding before replacing the guard with
 - IP allow lists, ordered chains, request/response header operations, BasicAuth
   file or environment bindings and canonical `AddPrefix` prefixes become compiled
   route policy. Header values are bound through environment variables; inline
-  values are withheld and require relocation. Rate limits generate route-owned
+  values are withheld and require relocation. Complete header and authentication
+  chains stay attached to candidate routes with mandatory environment bindings.
+  The report names each binding and keeps startup blocked until relocation is
+  reviewed. Unsupported operations still prevent route assembly. Rate limits generate route-owned
   candidates, with explicit findings for independent burst capacity, bounded
   client-key admission, delayed source reservations and unsupported key selection. Auth files must contain bcrypt
   hashes; validation is deferred until the generated program loads them.
@@ -188,16 +192,19 @@ configuration and resolve every blocking finding before replacing the guard with
   Docker routes, and compares header names case-insensitively. ReplacePath and
   StripPrefix candidates identify missing Traefik metadata headers and matching
   differences. RequestBuffer, Retry and gzip/Brotli candidates identify concrete
-  resource, response-buffering and negotiation differences. Incomplete middleware
-  candidates are emitted as separate review functions and never registered.
+  resource, response-buffering and negotiation differences. Candidates with behavioral differences are emitted as separate review helpers.
 - Redirect schemes and supported full-URI regex captures generate native redirects
-  with Traefik's GET/non-GET status split, including HEAD. Queries and captures
+  with Traefik's GET/non-GET status split, including HEAD. A terminal redirect
+  composes with preceding header/auth policy, including nested chains. Middleware
+  after a redirect requires an explicit fallthrough decision. Queries and captures
   remain part of `{request_uri}`. Standard ports are omitted from scheme targets;
   explicit ports are preserved. Literal-authority regexes produce guarded
   candidates because raw Host case/port matching and non-match fallthrough differ
   from native host routing. An equal replacement URL also needs a decision because
   Traefik continues to the backend. Entrypoint redirect precedence is checked
-  separately from its target and method statuses.
+  separately from its target and method statuses. Trusted forwarded schemes can
+  suppress a source redirect; those entrypoint candidates stay guarded to prevent
+  same-URL loops behind TLS proxies.
 
 - Shared incoming timeout/header limits become explicit `Defaults`. Different
   per-entrypoint limits remain blocked. File-provider paths are accepted when the

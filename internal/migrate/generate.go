@@ -16,8 +16,11 @@ import (
 )
 
 type middleware struct {
-	values []statute.Middleware
-	code   []string
+	values       []statute.Middleware
+	code         []string
+	redirect     *Object
+	continuation bool
+	incomplete   bool
 }
 
 type generator struct {
@@ -29,6 +32,7 @@ type generator struct {
 	docker         string
 	objects        map[string]*Object
 	chains         map[string]middleware
+	routeChains    map[string]middleware
 	visiting       map[string]bool
 	attempted      map[string]bool
 	transports     map[string]statute.Transport
@@ -50,6 +54,7 @@ func generate(r *Result) error {
 	g := &generator{r: r, pools: map[string]string{}, objects: map[string]*Object{}, chains: map[string]middleware{}, visiting: map[string]bool{}, attempted: map[string]bool{}, transports: map[string]statute.Transport{}, transportCode: map[string]string{}, hosts: map[string]bool{}}
 	g.imports = map[string]bool{}
 	g.helpers = map[string]string{}
+	g.routeChains = map[string]middleware{}
 	g.entrypoints = map[string]*Object{}
 	g.entryTLS = map[string]bool{}
 	g.routerEntries = map[*Object][]string{}
@@ -256,6 +261,7 @@ func (g *generator) service(o *Object) {
 func serviceBackends(o *Object, pool *statute.Pool) ([]string, bool) {
 	servers, ok := o.value("loadBalancer.servers").([]any)
 	if !ok || len(servers) == 0 {
+		o.mark("loadBalancer.servers", Manual, "native upstream pools require an explicit nonempty backend list")
 		return nil, false
 	}
 	var backends []string
@@ -407,6 +413,7 @@ func (g *generator) router(o *Object) {
 	name := qualified(o.text("service"), o.Provider)
 	o.reference("service", "service", o.text("service"))
 	if _, ok := g.pools[name]; !ok {
+		o.mark("service", Exact, "provider-qualified service reference inventoried; unresolved service is reported separately")
 		o.note("$service", Manual, "service reference is missing, unsupported or blocked")
 		return
 	}
@@ -553,13 +560,15 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 }
 
 func (g *generator) redirect(o *Object, refs []string) (string, int, int, bool) {
-	if len(refs) != 1 {
+	plan, complete := g.sourceMiddlewarePlan(refs, o.Provider)
+	if !complete || plan.redirect == nil {
 		return "", 0, 0, false
 	}
-	m := g.objects["middlewares:"+qualified(refs[0], o.Provider)]
-	if m == nil {
+	if plan.continuation {
+		o.note("$redirect-order", Manual, "middleware after a source redirect runs on fallthrough; native redirect actions have no continuation")
 		return "", 0, 0, false
 	}
+	m := plan.redirect
 	target, status, other, reason := redirectCandidate(m)
 	if target == "" {
 		for _, family := range []string{redirectFamilyScheme, redirectFamilyRegex} {
@@ -570,14 +579,15 @@ func (g *generator) redirect(o *Object, refs []string) (string, int, int, bool) 
 		return "", 0, 0, false
 	}
 	g.classifyRedirectCandidate(o, m, target, reason)
-	o.reference("middlewares", "middleware", refs[0])
+	for _, ref := range refs {
+		o.reference("middlewares", "middleware", ref)
+	}
 	o.mark("middlewares", Translated, "native redirect route action")
 	o.mark("service", Exact, "redirect candidate does not use its backend")
-	m.Generated = true
 	return target, status, other, true
 }
 
-func (g *generator) redirectRoutes(o *Object, ms []docker.Matcher, target string, status, other int) {
+func (g *generator) redirectRoutes(o *Object, ms []docker.Matcher, target string, status, other int, chain middleware) {
 	for _, m := range ms {
 		if m.PathKind == docker.PathByte || (m.PathKind == docker.PathExact && strings.HasSuffix(m.Path, "/*")) {
 			o.mark("rule", Manual, "native redirect paths cannot reproduce the source byte-prefix or literal-wildcard matcher")
@@ -585,8 +595,11 @@ func (g *generator) redirectRoutes(o *Object, ms []docker.Matcher, target string
 		}
 	}
 	for _, m := range ms {
-		r := statute.Match(m.Path).RedirectTo(target, status).RedirectNonGET(other)
+		r := statute.Match(m.Path).RedirectTo(target, status).RedirectNonGET(other).With(chain.values...)
 		code := fmt.Sprintf("statute.Match(%q).RedirectTo(%q,%d).RedirectNonGET(%d)", m.Path, target, status, other)
+		if len(chain.code) > 0 {
+			code += ".With(" + strings.Join(chain.code, ",") + ")"
+		}
 		if hosts := hostSpellings(m.Host); len(hosts) > 0 {
 			r.Hosts(hosts...)
 			code += ".Hosts(" + quoted(hosts) + ")"

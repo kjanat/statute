@@ -796,14 +796,17 @@ HTTPS accepts the same options through `HTTPS(...)` or `.With(...)`.
 `ForwardedHeaders` removes managed forwarded headers and underscore aliases from
 untrusted peers, then derives peer, scheme, host and port values. Trusted proxies
 may supply forwarded values through the existing client-identity policy. Proxying
-appends the direct peer to the verified chain. Route header operations still apply
-after listener sanitation.
+appends the direct peer to the sanitized ingress chain, then applies route
+forwarded-header operations once. Route additions do not become an extra proxy hop
+before the peer.
 
 `NormalizePath` decodes unreserved escapes and uppercases other percent escapes.
 `SanitizePath` cleans dot segments and repeated slashes. Both run before static,
 Docker and fallback route matching; query text is unchanged. Route rewrites and
 Retry receive that normalized path. Access logs preserve the original path and
-observe sanitized headers. Rejections count toward listener metrics.
+observe sanitized headers. Rejections count toward listener metrics. Request
+trailers remain live through path normalization and replay through Retry and
+RequestBuffer after body EOF.
 
 `HeaderAliasesKeep`, `HeaderAliasesDelete` and `HeaderAliasesReject` control names
 containing characters outside ASCII letters, digits and hyphens. Rejection returns

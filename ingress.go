@@ -15,6 +15,10 @@ import (
 
 type ingressForwardedKey struct{}
 
+type ingressForwardedValues struct {
+	host, proto, chain string
+}
+
 var ingressForwardedHeaders = map[string]bool{
 	headerXForwardedProto: true, headerXForwardedFor: true, headerXForwardedHost: true,
 	headerXForwardedPort: true, "X-Forwarded-Server": true, "X-Forwarded-Uri": true,
@@ -34,7 +38,11 @@ func ingressHandler(policy *resolved.IngressPolicy, next http.Handler) http.Hand
 		}
 		if policy.ForwardedHeaders {
 			ingressForwarded(r, hostname)
-			r = r.WithContext(context.WithValue(r.Context(), ingressForwardedKey{}, true))
+			values := ingressForwardedValues{
+				host: r.Header.Get(headerXForwardedHost), proto: r.Header.Get(headerXForwardedProto),
+				chain: strings.Join(r.Header.Values(headerXForwardedFor), ", "),
+			}
+			r = r.WithContext(context.WithValue(r.Context(), ingressForwardedKey{}, values))
 		}
 		if policy.NormalizePath || policy.SanitizePath {
 			var err error
@@ -169,16 +177,14 @@ func ingressConnectionHeaders(r *http.Request) {
 }
 
 func applyIngressForwarded(in *http.Request, out http.Header) {
-	if enabled, _ := in.Context().Value(ingressForwardedKey{}).(bool); !enabled {
+	values, enabled := in.Context().Value(ingressForwardedKey{}).(ingressForwardedValues)
+	if !enabled {
 		return
 	}
-	for _, name := range []string{headerXForwardedHost, headerXForwardedProto} {
-		if value := in.Header.Get(name); value != "" {
-			out.Set(name, value)
-		}
-	}
-	if values := in.Header.Values(headerXForwardedFor); len(values) > 0 {
-		chain := strings.Join(values, ", ")
+	out.Set(headerXForwardedHost, values.host)
+	out.Set(headerXForwardedProto, values.proto)
+	if values.chain != "" {
+		chain := values.chain
 		if host, _, err := net.SplitHostPort(in.RemoteAddr); err == nil {
 			chain += ", " + host
 		}
@@ -194,6 +200,7 @@ func setMissingIngressHeader(h http.Header, name, value string) {
 
 func ingressPath(r *http.Request, p *resolved.IngressPolicy) (*http.Request, error) {
 	out := r.Clone(r.Context())
+	out.Trailer = r.Trailer
 	changed := p.SanitizePath
 	if p.NormalizePath && out.URL.RawPath != "" {
 		raw, err := normalizeIngressEscapes(out.URL.RawPath)

@@ -29,6 +29,10 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	defer delete(g.visiting, id)
 	checkMiddlewareShape(o)
 	classifyMiddlewareDifferences(o)
+	if g.prepareRedirectDefinition(o) {
+		g.routeChains[id] = middleware{redirect: o}
+		return middleware{}, false
+	}
 	var chain middleware
 	g.securityHeaders(o, &chain)
 	g.headers(o, &chain)
@@ -41,11 +45,16 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	g.ipAllowList(o, &chain)
 	g.expandChain(o, &chain)
 	classifyEmptyHeaders(o, chain)
-	g.retainMiddlewareCandidate(o, chain)
+	if chain.redirect != nil {
+		chain.incomplete = chain.incomplete || !o.readyWithBindings()
+		g.routeChains[id] = chain
+		return middleware{}, false
+	}
 	if nativeMiddlewareReady(o, chain) {
 		g.chains[id] = chain
 		return chain, true
 	}
+	g.retainMiddlewareCandidate(o, chain)
 	return middleware{}, false
 }
 
@@ -179,18 +188,21 @@ func (g *generator) expandChain(o *Object, chain *middleware) {
 			continue
 		}
 		child, valid := g.chain(dep)
+		if action, found := g.routeChains[qualified(ref, o.Provider)]; found {
+			child, valid = action, true
+		}
 		if !valid {
 			o.mark(path, Exact, "provider-qualified chain dependencies are reported separately")
 			o.note("$middleware:"+qualified(ref, o.Provider), Manual, "chain blocked by referenced middleware; see its field findings")
 			ok = false
+			chain.incomplete = true
 			continue
 		}
 		if len(chain.values)+len(child.values) > 256 {
 			o.note("$size", Unsupported, "expanded middleware chain exceeds 256 operations")
 			return
 		}
-		chain.values = append(chain.values, child.values...)
-		chain.code = append(chain.code, child.code...)
+		appendMiddlewarePlan(chain, child)
 	}
 	if ok {
 		o.mark(path, Translated, "provider-qualified middleware chain expanded in declaration order")
@@ -231,5 +243,5 @@ func classifyEmptyHeaders(o *Object, chain middleware) {
 }
 
 func nativeMiddlewareReady(o *Object, chain middleware) bool {
-	return o.ready() && (len(chain.values) > 0 || o.value("headers.stsSeconds") != nil || o.value("chain.middlewares") != nil)
+	return o.readyWithBindings() && (len(chain.values) > 0 || o.value("headers.stsSeconds") != nil || o.value("chain.middlewares") != nil)
 }

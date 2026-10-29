@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Translate Traefik ingress policy, security headers and method-specific redirects. Compose complete middleware chains with mandatory bindings on guarded route candidates, infer unambiguous Docker services, and report concrete routing, TLS, DNS and health differences.
+
 - Add configurable programs and Go callback sessions to the HTML rewriting research engine, with native/Wasm comparisons, resource limits and cleanup tests. See #114 for HTTP and public API integration.
 
 ## [0.11.0] - 2026-10-28

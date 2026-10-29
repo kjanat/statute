@@ -143,6 +143,7 @@ func (g *generator) listenerRedirect(o *Object, addr string) bool {
 		status, other = 302, 307
 	}
 	l, code := g.listenerIngress(o, statute.HTTP(addr).RedirectTo(scheme).RedirectStatus(status).RedirectNonGET(other), fmt.Sprintf("statute.HTTP(%q).RedirectTo(%q).RedirectStatus(%d).RedirectNonGET(%d)", addr, scheme, status, other))
+	g.checkRedirectEntrypoint(o, o, scheme)
 	g.r.Config.Listeners = append(g.r.Config.Listeners, l)
 	g.listeners = append(g.listeners, code)
 	o.Generated = true

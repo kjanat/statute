@@ -27,10 +27,11 @@ type Step struct {
 	URL          string `json:"url"`
 	TargetServer string `json:"target_server"`
 	// Proto selects the client transport: "h1", "h2", or "h3".
-	Proto   string            `json:"proto"`
-	Method  string            `json:"method,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"`
+	Proto    string            `json:"proto"`
+	Method   string            `json:"method,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Body     string            `json:"body,omitempty"`
+	Trailers map[string]string `json:"trailers,omitempty"`
 	// RootsFile is a PEM bundle the TLS transports trust; empty means
 	// system roots. ServerName overrides SNI when the URL host is not
 	// the certificate name. ClientCertFile and ClientKeyFile are an

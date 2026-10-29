@@ -35,3 +35,31 @@ func TestRegression_IngressBeforeRoutingAndPolicy(t *testing.T) {
 		t.Fatalf("origin received unsanitized request: %+v", entries[0])
 	}
 }
+
+func TestRegression_IngressTrailersAndForwardedOperations(t *testing.T) {
+	t.Parallel()
+	r := harness.Start(t, "ingress", harness.MustTopology(t, "1s1c"))
+	ctx := context.Background()
+	r.AwaitReady(ctx)
+	r.ExecutePlan(ctx, harness.Client1, &report.Plan{Name: "ingress-replay", Steps: []report.Step{
+		{
+			Name: "forwarded", URL: "http://statute-1:8080/forwarded", TargetServer: harness.Server1, Proto: "h1", Count: 1,
+			Headers: map[string]string{"X-Forwarded-For": "203.0.113.5"}, Expect: report.Expect{Status: 200},
+		},
+		{
+			Name: "trailers-retry", URL: "http://statute-1:8080/unused/../upload/%66ail?key=ingress&n=1&trailer=X-Final&trailerValue=complete", TargetServer: harness.Server1, Proto: "h1", Count: 1,
+			Method: "PUT", Body: "pt", Trailers: map[string]string{"X-Final": "complete"}, Expect: report.Expect{Status: 200, BodyContains: `"path":"/fail"`},
+		},
+	}})
+	entries := originJournal(ctx, r, "origin-1", "http")
+	if len(entries) != 3 {
+		t.Fatalf("origin requests=%d, want one forwarded request and two upload attempts", len(entries))
+	}
+	chain := entries[0].Forwarded
+	if strings.Count(chain, "198.51.100.7") != 1 || strings.Contains(chain, "203.0.113.5") || !strings.HasSuffix(chain, ", 198.51.100.7") {
+		t.Fatalf("forwarded chain=%q", chain)
+	}
+	if entries[1].Path != "/fail" || entries[2].Path != "/fail" {
+		t.Fatalf("retry paths=%q,%q", entries[1].Path, entries[2].Path)
+	}
+}

@@ -192,6 +192,7 @@ func sourceRateLimit(o *Object) (float64, bool) {
 		o.mark("rateLimit", Manual, "rate limiting requires a positive literal average; disabled limits need no middleware")
 		return 0, false
 	}
+	o.mark("rateLimit.average", Translated, "literal refill average; candidate also requires a valid period")
 	period := time.Second
 	if o.value("rateLimit.period") != nil {
 		period, err = time.ParseDuration(o.text("rateLimit.period"))

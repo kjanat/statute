@@ -40,7 +40,11 @@ func (g *generator) sensitiveValue(o *Object, path, value string) (string, strin
 	if name == "" {
 		sum := sha256.Sum256([]byte(o.identity() + ":" + path))
 		name = fmt.Sprintf("STATUTE_MIGRATION_%X", sum[:6])
-		o.mark(path, Manual, "inline value withheld; move it into the generated environment binding before deployment")
+		o.mark(path, Manual, "inline value withheld; set required environment binding "+name+" before deployment")
+		if o.bindingFields == nil {
+			o.bindingFields = map[string]bool{}
+		}
+		o.bindingFields[strings.ToLower(path)] = true
 	} else {
 		o.mark(path, Translated, "explicit environment reference retained; required binding checked before startup")
 	}

@@ -108,7 +108,12 @@ func (g *generator) bindingChecks() {
 func (g *generator) checkRoutePolicy(c *resolved.Config, o *Object, r *resolved.Route) bool {
 	refs, _ := g.middlewareRefs(o)
 	if redirect := g.expectedRedirect(o, refs); redirect != nil {
-		return !reflect.DeepEqual(r.Redirect, redirect)
+		chain, _ := g.sourceMiddlewarePlan(refs, o.Provider)
+		plan := g.r.Config
+		plan.Routes = statute.Routes{statute.Match("/*").RedirectTo(redirect.Target, redirect.Status).RedirectNonGET(redirect.NonGETStatus).With(chain.values...)}
+		plan.FallbackRoutes = nil
+		expected, err := statute.Resolve(plan)
+		return err != nil || !reflect.DeepEqual(r.Redirect, redirect) || !reflect.DeepEqual(r.Middleware, expected.Routes[0].Middleware)
 	}
 	if r.Redirect != nil {
 		return true
@@ -129,14 +134,11 @@ func (g *generator) checkRoutePolicy(c *resolved.Config, o *Object, r *resolved.
 }
 
 func (g *generator) expectedRedirect(o *Object, refs []string) *resolved.Redirect {
-	if len(refs) != 1 {
+	plan, complete := g.sourceMiddlewarePlan(refs, o.Provider)
+	if !complete || plan.redirect == nil || plan.continuation {
 		return nil
 	}
-	mw := g.objects["middlewares:"+qualified(refs[0], o.Provider)]
-	if mw == nil {
-		return nil
-	}
-	target, status, other, _ := redirectCandidate(mw)
+	target, status, other, _ := redirectCandidate(plan.redirect)
 	if target == "" {
 		return nil
 	}

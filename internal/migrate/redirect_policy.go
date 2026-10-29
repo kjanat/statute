@@ -211,21 +211,25 @@ func (g *generator) tryRedirect(o *Object, matchers []docker.Matcher, refs []str
 	if !ok {
 		return false
 	}
-	g.redirectRoutes(o, matchers, target, status, other)
+	chain, _ := g.sourceMiddlewarePlan(refs, o.Provider)
+	g.checkMiddlewareOrder(o, refs)
+	if !o.ready() {
+		return true
+	}
+	g.redirectRoutes(o, matchers, target, status, other, chain)
+	if o.Generated {
+		g.markMiddlewaresUsed(refs, o.Provider)
+	}
 	return true
 }
 
 func (g *generator) classifyRedirectCandidate(router, m *Object, target, reason string) {
 	if m.value(redirectFamilyScheme) != nil || hasFieldPrefix(m, "redirectScheme.") {
-		for _, key := range []string{"scheme", "port", fieldPermanent, "forcePermanentRedirect"} {
-			m.mark("redirectScheme."+key, Translated, "native redirect action with explicit method statuses")
-		}
+		classifyRedirectFields(m, redirectFamilyScheme)
 		g.checkRedirectSchemeScope(router, m, m.text("redirectScheme.scheme"))
 		return
 	}
-	for _, key := range []string{"regex", "replacement", fieldPermanent, "statusCode"} {
-		m.mark("redirectRegex."+key, Translated, "native redirect template from the raw-URL capture")
-	}
+	classifyRedirectFields(m, redirectFamilyRegex)
 	if reason != "" {
 		m.note("$redirect-match", Manual, reason)
 		return
@@ -239,16 +243,20 @@ func (g *generator) checkRedirectSchemeScope(router, middleware *Object, target 
 		if ep == nil {
 			continue
 		}
-		scheme := protocolHTTP
-		if g.entryTLS[name] || ep.value("http.tls") != nil {
-			scheme = protocolHTTPS
-		}
-		if scheme == target {
-			middleware.note("$redirect-condition", Manual, "source skips redirects when the request already has the target scheme; native redirect routes are unconditional")
-		}
-		cidrs, ok := ingressProxyRanges(ep)
-		if !ok || len(cidrs) > 0 {
-			middleware.note("$redirect-trust", Manual, "trusted forwarded schemes can bypass the source redirect; select explicit listener/route policy")
-		}
+		g.checkRedirectEntrypoint(ep, middleware, target)
+	}
+}
+
+func (g *generator) checkRedirectEntrypoint(ep, owner *Object, target string) {
+	scheme := protocolHTTP
+	if g.entryTLS[ep.Name] || ep.value("http.tls") != nil {
+		scheme = protocolHTTPS
+	}
+	if scheme == target {
+		owner.note("$redirect-condition", Manual, "source skips redirects when the request already has the target scheme; native redirects are unconditional")
+	}
+	cidrs, ok := ingressProxyRanges(ep)
+	if !ok || len(cidrs) > 0 {
+		owner.note("$redirect-trust", Manual, "trusted forwarded schemes can bypass the source redirect; select explicit listener/route policy")
 	}
 }

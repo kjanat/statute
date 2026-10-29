@@ -43,6 +43,7 @@ type Object struct {
 	labels         map[string]string
 	containerName  string
 	exposedPorts   []int
+	bindingFields  map[string]bool
 }
 
 // Check is a bounded diagnostic from the canonical configuration tools.
@@ -162,6 +163,15 @@ func blocked(c Classification) bool { return c == Manual || c == Unsupported }
 func (o *Object) ready() bool {
 	for _, f := range o.Fields {
 		if blocked(f.Classification) {
+			return false
+		}
+	}
+	return true
+}
+
+func (o *Object) readyWithBindings() bool {
+	for _, f := range o.Fields {
+		if blocked(f.Classification) && (f.Classification != Manual || !o.bindingFields[strings.ToLower(f.Path)]) {
 			return false
 		}
 	}

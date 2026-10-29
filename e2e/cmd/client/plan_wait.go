@@ -28,10 +28,14 @@ func executeWaitStep(step *report.Step) report.Result {
 
 func validateWaitStep(step *report.Step) error {
 	if step.Count < 0 || step.Count > 1 || step.Concurrency < 0 || step.Concurrency > 1 ||
-		(step.Method != "" && step.Method != http.MethodGet) || len(step.Headers) != 0 || step.Body != "" || step.Expect != (report.Expect{}) {
+		(step.Method != "" && step.Method != http.MethodGet) || waitStepHasRequestOptions(step) {
 		return errors.New("wait step requires one GET and predicates in wait.spec")
 	}
 	return nil
+}
+
+func waitStepHasRequestOptions(step *report.Step) bool {
+	return len(step.Headers) != 0 || len(step.Trailers) != 0 || step.Body != "" || step.Expect != (report.Expect{})
 }
 
 func waitStep(step *report.Step) ([]byte, int, error) {
