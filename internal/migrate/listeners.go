@@ -221,13 +221,16 @@ func (g *generator) checkRouterProtocols(o *Object, entries []string) {
 
 func (g *generator) checkRedirectTarget(o *Object, base, scheme string) {
 	to := o.text(base + ".to")
+	address := to
 	if ep := g.entrypoints[to]; ep != nil {
-		_, port, err := net.SplitHostPort(ep.text("address"))
-		if err != nil || (scheme == protocolHTTPS && port != "443") || (scheme == protocolHTTP && port != "80") {
-			o.note("$redirect-port", Manual, "native listener redirects do not retain a non-default target port")
-		}
+		address = ep.text("address")
 	} else if to != ":443" && to != ":80" {
 		o.note("$redirect-target", Manual, "redirect target is not a supplied entrypoint or standard port")
+		return
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil || (scheme == protocolHTTPS && port != "443") || (scheme == protocolHTTP && port != "80") {
+		o.note("$redirect-port", Manual, "native listener redirects do not retain a non-default target port")
 	}
 }
 

@@ -78,3 +78,33 @@ func TestRedirectContinuationAndMissingPolicyCannotDisappear(t *testing.T) {
 		}
 	}
 }
+
+func TestEntrypointRedirectPortMustMatchTargetScheme(t *testing.T) {
+	for _, tc := range []struct {
+		port, scheme string
+		gap          string
+	}{
+		{":80", "http", ""},
+		{":443", "https", ""},
+		{":80", "https", "$redirect-port"},
+		{":443", "http", "$redirect-port"},
+		{":8443", "https", "$redirect-target"},
+	} {
+		t.Run(tc.port+"/"+tc.scheme, func(t *testing.T) {
+			in := basicInputs(t, simpleDynamic)
+			in.Static = []string{fixture(t, "static.yml", fmt.Sprintf(`entryPoints:
+  web: {address: ':8080', http: {redirections: {entryPoint: {to: %q, scheme: %s}}}}
+  content: {address: ':8081'}
+`, tc.port, tc.scheme))}
+			r := audit(t, in)
+			var gaps []string
+			if tc.gap != "" {
+				gaps = append(gaps, "entrypoints."+tc.gap)
+			}
+			if tc.scheme == "http" {
+				gaps = append(gaps, "entrypoints.$redirect-condition")
+			}
+			requireMigrationGaps(t, r, gaps...)
+		})
+	}
+}
