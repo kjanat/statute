@@ -22,6 +22,33 @@ var redirectStatuses = map[int]bool{
 
 var redirectScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 
+func redirectDeclared(r *Route) bool {
+	return r.redirectTo != "" || r.redirectStatus != 0 || r.redirectNonGETStatus != 0
+}
+
+func resolveListenerRedirect(l *Listener, out *resolved.Listener) error {
+	for _, status := range []int{l.redirectStatus, l.redirectNonGETStatus} {
+		if status != 0 && (l.redirect == "" || !redirectStatuses[status]) {
+			return fmt.Errorf("redirect status requires a redirect listener and a valid redirect status")
+		}
+	}
+	out.RedirectStatus = l.redirectStatus
+	out.RedirectNonGETStatus = l.redirectNonGETStatus
+	return nil
+}
+
+func resolveRouteRedirect(r *Route) (*resolved.Redirect, error) {
+	rd, err := resolveRedirect(r.redirectTo, r.redirectStatus)
+	if err != nil {
+		return nil, err
+	}
+	if r.redirectNonGETStatus != 0 && !redirectStatuses[r.redirectNonGETStatus] {
+		return nil, fmt.Errorf("redirect non-GET status is not a valid redirect status")
+	}
+	rd.NonGETStatus = r.redirectNonGETStatus
+	return rd, nil
+}
+
 // The whitelisted template vocabulary. redirectPlaceholderNames is the
 // order error messages list it in.
 const (
@@ -186,7 +213,11 @@ func redirectRouteHandler(rd *resolved.Redirect) http.Handler {
 			// resolution keeps scheme-shaped query values on the current origin.
 			loc = "./" + loc
 		}
-		http.Redirect(w, r, loc, rd.Status)
+		status := rd.Status
+		if r.Method != http.MethodGet && rd.NonGETStatus != 0 {
+			status = rd.NonGETStatus
+		}
+		http.Redirect(w, r, loc, status)
 	})
 }
 

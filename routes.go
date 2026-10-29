@@ -4,20 +4,21 @@ import "net/http"
 
 // Route is a surface route declaration. Construct via Match.
 type Route struct {
-	pattern        string
-	host           string
-	hostSet        bool
-	hosts          []string
-	hostsSet       bool
-	clientIPs      []string
-	clientIPsSet   bool
-	upstream       string
-	staticDir      string
-	redirectTo     string
-	redirectStatus int
-	handler        http.Handler
-	handlerSet     bool
-	middleware     []Middleware
+	pattern              string
+	host                 string
+	hostSet              bool
+	hosts                []string
+	hostsSet             bool
+	clientIPs            []string
+	clientIPsSet         bool
+	upstream             string
+	staticDir            string
+	redirectTo           string
+	redirectStatus       int
+	redirectNonGETStatus int
+	handler              http.Handler
+	handlerSet           bool
+	middleware           []Middleware
 }
 
 // Match begins a route declaration matching the given path pattern.
@@ -97,6 +98,9 @@ func (r *Route) RedirectTo(target string, status int) *Route {
 	r.redirectStatus = status
 	return r
 }
+
+// RedirectNonGET selects the redirect status for methods other than GET.
+func (r *Route) RedirectNonGET(status int) *Route { r.redirectNonGETStatus = status; return r }
 
 // Handle serves matching requests with an in-process http.Handler instead of
 // proxying, serving files, or redirecting. It is the fourth mutually

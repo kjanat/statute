@@ -35,13 +35,19 @@ listener generation. Process lifecycle is exercised by generated-program startup
 refusal and successful serving tests. Observability differences produce explicit
 findings and require a migration decision.
 
-Forwarded-header handling currently blocks every generated listener, including
-inputs that rely on Traefik defaults. Tests compare the complete expected gap set
-and reject additional translation failures. Health candidates
-also report the all-unhealthy exclusion difference. Serving tests first prove
-that the emitted program refuses startup, then use an explicit test-only entrypoint
-to exercise candidate routing and expose the untrusted `X-Real-IP` behavior.
+Generated listeners explicitly select forwarded-header sanitation, escape
+normalization, path sanitation and alias-header policy. Adversarial tests cover
+forged client identity, trusted chains, ACLs, rate limits, logs and metrics.
+Generated-program tests compile and execute the emitted Go without replacing its
+entrypoint; supported synthetic inputs serve requests and incomplete inputs refuse
+startup. Differential tests compare generated redirects and security headers with
+Traefik middleware from the version in `traefikoracle/go.mod`.
 
-Architectural decisions required: none. Non-equivalent runtime capabilities remain
-explicit findings as allowed by #241; this change does not add a second runtime
-configuration loader or silently extend native matcher semantics.
+Health candidates report redirect, all-unhealthy and passive-failure differences.
+TLS and ACME findings distinguish key algorithms, propagation policy, strict SNI,
+per-host inheritance and fresh account state. Unsupported matchers and dependencies
+stay isolated; overlapping route priorities produce one ordering decision.
+
+See [the #259 change contract](traefik-migration-gaps-design.md) for native ingress
+and method-specific redirect additions. Migration remains offline and emits public
+Go configuration; it adds no runtime Traefik loader or matcher grammar.

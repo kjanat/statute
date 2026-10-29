@@ -124,9 +124,11 @@ const (
 
 // Listener is a resolved listener.
 type Listener struct {
-	Addr     string
-	Scheme   string // "http" or "https"
-	Redirect string // non-empty: this listener is a redirect-only listener
+	Addr                 string
+	Scheme               string // "http" or "https"
+	Redirect             string // non-empty: this listener is a redirect-only listener
+	RedirectNonGETStatus int    `json:",omitempty"`
+	RedirectStatus       int    `json:",omitempty"`
 
 	AutoTLS     *AutoTLS   // nil unless this is an HTTPS listener with ACME
 	StaticTLS   *StaticTLS // nil unless this is an HTTPS listener with static certs
@@ -176,6 +178,28 @@ type Listener struct {
 	// CloudflareFallback is the normalized consumer-provided startup snapshot.
 	// Nil selects Statute's bundled fallback; live snapshots remain runtime-only.
 	CloudflareFallback *CloudflareSnapshot
+	Ingress            *IngressPolicy `json:",omitempty"`
+}
+
+// HeaderAliasPolicy handles names containing characters other than ASCII
+// letters, digits and dashes. Underscore policies handle only underscores.
+type HeaderAliasPolicy string
+
+// Header alias handling modes.
+const (
+	HeaderAliasesKeep       HeaderAliasPolicy = "keep"
+	HeaderAliasesDelete     HeaderAliasPolicy = "delete"
+	HeaderAliasesReject     HeaderAliasPolicy = "reject"
+	HeaderUnderscoresDelete HeaderAliasPolicy = "delete-underscore"
+	HeaderUnderscoresReject HeaderAliasPolicy = "reject-underscore"
+)
+
+// IngressPolicy runs once before request routing and route middleware.
+type IngressPolicy struct {
+	ForwardedHeaders bool
+	NormalizePath    bool
+	SanitizePath     bool
+	HeaderAliases    HeaderAliasPolicy
 }
 
 // CloudflareSnapshot records a validated fallback pair and its source timestamp.
@@ -448,8 +472,9 @@ type Route struct {
 // Status and a Location built from Target, whose placeholders are
 // substituted from the live request.
 type Redirect struct {
-	Target string
-	Status int
+	Target       string
+	Status       int
+	NonGETStatus int `json:",omitempty"`
 }
 
 // Middleware identifies a single resolved middleware. The Type discriminator
@@ -522,8 +547,9 @@ type Middleware struct {
 	// Header mutation — the Type discriminator selects request or response
 	// and set, add, or remove. HeaderName is canonical ("X-Robots-Tag");
 	// HeaderValue is empty for the remove operations.
-	HeaderName  string
-	HeaderValue string
+	HeaderName      string
+	HeaderValue     string
+	HeaderHTTPSOnly bool `json:",omitempty"`
 
 	// Path rewrite — the Type discriminator selects the operation.
 	PathPrefix      string // strip/add: normalized prefix, leading "/", no trailing "/"

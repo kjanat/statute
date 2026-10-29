@@ -18,7 +18,7 @@ func (g *generator) fileProvider(o *Object) {
 		}
 	}
 	if o.value("watch") != nil {
-		o.mark("watch", Translated, "configuration changes require regeneration and recompilation; no runtime file watcher is generated")
+		o.mark("watch", OutOfScope, "runtime file watching is omitted; regenerate and recompile configuration changes")
 	}
 	if o.ready() {
 		o.Generated = true

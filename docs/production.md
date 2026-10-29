@@ -775,3 +775,41 @@ For real numbers, run a load test against your specific config. The Go runtime h
 **Running multiple statute instances on one host without coordination**: each instance owns its own ACME account and storage. Two instances trying to issue for overlapping domains will race on the storage and confuse Let's Encrypt. Run one statute per host, or shard storage and domains carefully.
 
 **Burying secrets in the binary**: the Go compiler does not encrypt strings. `strings yourbinary | grep -i token` finds anything you embed. Read secrets from env or a secrets manager at startup.
+
+## Listener ingress policy
+
+Use listener options to sanitize requests before routing and middleware:
+
+```go
+statute.HTTP(":8080").With(
+    statute.IngressPolicy{
+        ForwardedHeaders: true,
+        NormalizePath: true,
+        SanitizePath: true,
+        HeaderAliases: statute.HeaderAliasesReject,
+    },
+    statute.TrustedProxy("192.0.2.0/24"),
+)
+```
+
+HTTPS accepts the same options through `HTTPS(...)` or `.With(...)`.
+`ForwardedHeaders` removes managed forwarded headers and underscore aliases from
+untrusted peers, then derives peer, scheme, host and port values. Trusted proxies
+may supply forwarded values through the existing client-identity policy. Proxying
+appends the direct peer to the verified chain. Route header operations still apply
+after listener sanitation.
+
+`NormalizePath` decodes unreserved escapes and uppercases other percent escapes.
+`SanitizePath` cleans dot segments and repeated slashes. Both run before static,
+Docker and fallback route matching; query text is unchanged. Route rewrites and
+Retry receive that normalized path. Access logs preserve the original path and
+observe sanitized headers. Rejections count toward listener metrics.
+
+`HeaderAliasesKeep`, `HeaderAliasesDelete` and `HeaderAliasesReject` control names
+containing characters outside ASCII letters, digits and hyphens. Rejection returns
+400 before routing. `HeaderUnderscoresDelete` and `HeaderUnderscoresReject` restrict
+that check to underscores. Omitted alias policy means keep. Declare at most one
+`IngressPolicy` per listener; invalid policies fail resolution.
+
+Ingress policy is opt-in for native applications. Generated Traefik migrations
+select it explicitly. It adds no worker or persistent state.

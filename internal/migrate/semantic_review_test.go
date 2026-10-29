@@ -38,7 +38,7 @@ func TestAllUnhealthyBehaviorRequiresReview(t *testing.T) {
 		if !r.Report.Blocking || !strings.Contains(findings(r), "$health-degraded") || !strings.Contains(string(r.Go), "panic(") {
 			t.Fatalf("%s service accepted different all-unhealthy behavior", provider)
 		}
-		requireForwardedHeaderGap(t, r, "services.$health-degraded")
+		requireMigrationGaps(t, r, "services.$health-degraded")
 		c, err := statute.Resolve(r.Config)
 		if err != nil {
 			t.Fatal(err)
@@ -56,13 +56,16 @@ func TestAllUnhealthyBehaviorRequiresReview(t *testing.T) {
 	}
 }
 
-func TestForwardedHeaderDefaultsRequireReview(t *testing.T) {
+func TestForwardedHeaderDefaultsGenerateExplicitIngress(t *testing.T) {
 	for _, forwarded := range []string{"", "    forwardedHeaders: {}\n", "    forwardedHeaders: {insecure: false}\n", "    forwardedHeaders: {insecure: true}\n", "    forwardedHeaders: {trustedIPs: [192.0.2.0/24]}\n"} {
 		in := basicInputs(t, simpleDynamic)
 		in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n    http: {sanitizePath: false}\n"+forwarded)}
 		r := audit(t, in)
-		if !r.Report.Blocking || !strings.Contains(findings(r), "$forwarded-headers") || !strings.Contains(string(r.Go), "panic(") {
-			t.Fatal("unverified forwarded-header handling permits serving")
+		requireMigrationGaps(t, r)
+		c, err := statute.Resolve(r.Config)
+		if err != nil || c.Listeners[0].Ingress == nil || !c.Listeners[0].Ingress.ForwardedHeaders {
+			t.Fatalf("ingress policy missing: %v", err)
 		}
+		assertGeneratedParity(t, r)
 	}
 }

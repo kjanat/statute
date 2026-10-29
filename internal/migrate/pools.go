@@ -166,6 +166,7 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 	p := statute.Pool{Transport: g.transports["default@internal"]}
 	parts := serviceHost(o, &p)
 	parts = append(parts, serviceHealth(o, &p)...)
+	parts = append(parts, servicePassiveHealth(o, &p)...)
 	if name := o.text("loadBalancer.serversTransport"); name != "" {
 		id := qualified(name, providerDocker)
 		t, ok := g.transports[id]
@@ -184,7 +185,7 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 	if !o.ready() {
 		return
 	}
-	policy := statute.PoolPolicy{Transport: p.Transport, HealthCheck: p.HealthCheck, UpstreamHost: p.UpstreamHost}
+	policy := statute.PoolPolicy{Transport: p.Transport, HealthCheck: p.HealthCheck, PassiveHealthCheck: p.PassiveHealthCheck, UpstreamHost: p.UpstreamHost}
 	g.r.Config.Docker.PoolPolicy(o.Name+"@traefik", policy)
 	g.docker += fmt.Sprintf(".PoolPolicy(%q,statute.PoolPolicy{%s})", o.Name+"@traefik", strings.Join(parts, ","))
 }

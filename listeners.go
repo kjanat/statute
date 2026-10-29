@@ -4,9 +4,11 @@ import "bytes"
 
 // Listener is a surface listener declaration. Construct via HTTP or HTTPS.
 type Listener struct {
-	addr     string
-	scheme   string // "http" or "https"
-	redirect string // non-empty means this listener redirects to the named scheme
+	addr                 string
+	scheme               string // "http" or "https"
+	redirect             string // non-empty means this listener redirects to the named scheme
+	redirectNonGETStatus int
+	redirectStatus       int
 
 	autoTLS            []*AutoTLSConfig
 	staticTLS          []*StaticTLSConfig
@@ -17,6 +19,7 @@ type Listener struct {
 	http3Addr          string
 	behindCF           bool
 	trustedProxy       *TrustedProxyConfig
+	ingress            []IngressPolicy
 }
 
 // HTTP starts an HTTP/1.1 listener declaration on the given address.
@@ -41,6 +44,11 @@ func HTTP(addr string) *Listener {
 //	)
 func HTTPS(addr string, opts ...ListenerOption) *Listener {
 	l := &Listener{addr: addr, scheme: schemeHTTPS}
+	return l.With(opts...)
+}
+
+// With applies listener options to an HTTP or HTTPS listener.
+func (l *Listener) With(opts ...ListenerOption) *Listener {
 	for _, o := range opts {
 		o.applyListener(l)
 	}
@@ -54,7 +62,13 @@ func (l *Listener) RedirectTo(scheme string) *Listener {
 	return l
 }
 
-// ListenerOption configures an HTTPS listener.
+// RedirectNonGET selects the redirect status for methods other than GET.
+func (l *Listener) RedirectNonGET(status int) *Listener { l.redirectNonGETStatus = status; return l }
+
+// RedirectStatus selects the GET status of a redirect listener (default 301).
+func (l *Listener) RedirectStatus(status int) *Listener { l.redirectStatus = status; return l }
+
+// ListenerOption configures a listener.
 type ListenerOption interface {
 	applyListener(l *Listener)
 }
@@ -337,7 +351,7 @@ func (t *TrustedProxyConfig) FallbackSnapshot(snapshot []byte) *TrustedProxyConf
 // trusted proxies that is the address the proxy itself observed, while the
 // earlier values arrived from outside and remain client-controlled.
 func TrustedProxy(cidrs ...string) *TrustedProxyConfig {
-	return &TrustedProxyConfig{cidrs: cidrs, header: "X-Forwarded-For"}
+	return &TrustedProxyConfig{cidrs: cidrs, header: headerXForwardedFor}
 }
 
 // ClientIPHeader names the forwarded header consulted when the direct peer

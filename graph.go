@@ -207,6 +207,7 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 		if l.CloudflareTrustedProxy {
 			label += graphCloudflarePolicy(l)
 		}
+		label += graphIngressPolicy(l)
 		d.printf("  L%d [shape=Mrecord, style=filled, fillcolor=\"#cfe2ff\", label=%q];\n", i, label)
 	}
 
@@ -217,7 +218,7 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 		}
 		for j, target := range r.Listeners {
 			if target.Scheme == l.Redirect {
-				d.printf("  L%d -> L%d [label=\"redirect 301\", style=dashed];\n", i, j)
+				d.printf("  L%d -> L%d [label=%q, style=dashed];\n", i, j, graphListenerRedirectStatus(l))
 			}
 		}
 	}
@@ -234,6 +235,41 @@ func graphCloudflarePolicy(listener *resolved.Listener) string {
 	return fmt.Sprintf("\\ntrusted-proxy=cloudflare (startup + periodic)\\nfallback=%s fetched_at=%s (IPv4=%d IPv6=%d)", provenance, snapshot.FetchedAt.Format(time.RFC3339Nano), len(snapshot.IPv4), len(snapshot.IPv6))
 }
 
+func graphIngressPolicy(l *resolved.Listener) string {
+	if p := l.Ingress; p != nil {
+		return fmt.Sprintf("\\nforwarded-headers=%t normalize-path=%t sanitize-path=%t aliases=%s", p.ForwardedHeaders, p.NormalizePath, p.SanitizePath, p.HeaderAliases)
+	}
+	return ""
+}
+
+func graphListenerRedirectStatus(l *resolved.Listener) string {
+	status := l.RedirectStatus
+	if status == 0 {
+		status = 301
+	}
+	label := fmt.Sprintf("redirect %d", status)
+	if l.RedirectNonGETStatus != 0 {
+		label += fmt.Sprintf(" (non-GET %d)", l.RedirectNonGETStatus)
+	}
+	return label
+}
+
+func graphRoutePolicy(route *resolved.Route) string {
+	var label string
+	if r := route.Redirect; r != nil {
+		label = fmt.Sprintf("\\nredirect %d -> %s", r.Status, r.Target)
+		if r.NonGETStatus != 0 {
+			label += fmt.Sprintf(" (non-GET %d)", r.NonGETStatus)
+		}
+	}
+	for _, m := range route.Middleware {
+		if m.HeaderHTTPSOnly {
+			label += "\\nHTTPS header: " + m.HeaderName
+		}
+	}
+	return label
+}
+
 func graphRoutes(d *dotWriter, r *resolved.Config) {
 	d.printf("\n  // routes\n")
 	for i, route := range r.Routes {
@@ -242,6 +278,7 @@ func graphRoutes(d *dotWriter, r *resolved.Config) {
 			host = "*"
 		}
 		label := fmt.Sprintf("%s %s", host, route.Pattern)
+		label += graphRoutePolicy(route)
 		d.printf("  R%d [shape=box, style=\"filled,rounded\", fillcolor=\"#fff3cd\", label=%q];\n", i, label)
 	}
 
@@ -290,6 +327,7 @@ func graphFallbackRoutes(d *dotWriter, r *resolved.Config) {
 			host = "*"
 		}
 		label := fmt.Sprintf("terminal #%d: %s %s", i+1, host, route.Pattern)
+		label += graphRoutePolicy(route)
 		d.printf("  FR%d [shape=box, style=\"filled,rounded\", fillcolor=\"#f8d7da\", label=%q];\n", i, label)
 		if i > 0 {
 			d.printf("  FR%d -> FR%d [label=\"no match\", style=dashed];\n", i-1, i)

@@ -209,19 +209,9 @@ func (g *generator) checkMiddlewareOrder(o *Object, refs []string) {
 }
 
 func checkResponseHeaderOrder(router *Object, expanded []*Object) {
-	const prefix = "headers.customresponseheaders."
 	values := map[string]string{}
 	for _, m := range expanded {
-		for _, f := range m.Fields {
-			path := strings.ToLower(f.Path)
-			if !strings.HasPrefix(path, prefix) {
-				continue
-			}
-			value, ok := m.value(f.Path).(string)
-			if !ok {
-				continue
-			}
-			name := strings.TrimPrefix(path, prefix)
+		for name, value := range sourceResponseHeaders(m) {
 			if previous, exists := values[name]; exists && previous != value {
 				router.note("$response-header-order", Manual, "conflicting response-header operations run inner-to-outer in Traefik and in declaration order in Statute; review response-header precedence")
 				return
@@ -231,7 +221,42 @@ func checkResponseHeaderOrder(router *Object, expanded []*Object) {
 	}
 }
 
+func sourceResponseHeaders(m *Object) map[string]string {
+	values := map[string]string{}
+	for _, f := range []struct{ key, name, value string }{
+		{"contentTypeNosniff", "x-content-type-options", "nosniff"},
+		{"frameDeny", "x-frame-options", "DENY"},
+		{"browserXssFilter", "x-xss-protection", "1; mode=block"},
+	} {
+		if scalar(m.value("headers."+f.key)) == trueValue {
+			values[f.name] = f.value
+		}
+	}
+	for _, f := range []struct{ key, name string }{
+		{fieldReferrerPolicy, "referrer-policy"},
+		{"customFrameOptionsValue", "x-frame-options"},
+		{"contentSecurityPolicy", "content-security-policy"},
+		{"permissionsPolicy", "permissions-policy"},
+	} {
+		if value := m.text("headers." + f.key); value != "" {
+			values[f.name] = value
+		}
+	}
+	if value := sourceHSTSValue(m); value != "" {
+		values["strict-transport-security"] = value
+	}
+
+	const prefix = "headers.customresponseheaders."
+	for _, f := range m.Fields {
+		if path := strings.ToLower(f.Path); strings.HasPrefix(path, prefix) {
+			values[strings.TrimPrefix(path, prefix)] = scalar(m.value(f.Path))
+		}
+	}
+	return values
+}
+
 func hasFieldPrefix(o *Object, prefix string) bool {
+	prefix = strings.ToLower(prefix)
 	for _, f := range o.Fields {
 		if strings.HasPrefix(strings.ToLower(f.Path), prefix) {
 			return true
@@ -291,4 +316,19 @@ func classifyInlineUsers(o *Object, values []any) {
 		}
 	}
 	o.mark("basicAuth.users", Translated, "explicit bcrypt hash environment bindings; generated startup validates hashes")
+}
+
+func sourceHSTSValue(m *Object) string {
+	seconds, err := integer(m.value("headers.stsSeconds"))
+	if err != nil || seconds <= 0 {
+		return ""
+	}
+	value := fmt.Sprintf("max-age=%d", seconds)
+	if scalar(m.value("headers.stsIncludeSubdomains")) == trueValue {
+		value += "; includeSubDomains"
+	}
+	if scalar(m.value("headers.stsPreload")) == trueValue {
+		value += "; preload"
+	}
+	return value
 }

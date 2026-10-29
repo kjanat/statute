@@ -27,7 +27,7 @@ func TestDockerBuiltinTransportHasNoInventoryObject(t *testing.T) {
 	in := dockerServiceInputs(t, "      traefik.http.services.api.loadbalancer.serverstransport: default@internal\n")
 	in.Static = append(in.Static, fixture(t, "transport.yml", "serversTransport:\n  forwardingTimeouts: {dialTimeout: 9s}\n"))
 	r := audit(t, in)
-	requireForwardedHeaderGap(t, r)
+	requireMigrationGaps(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
 		t.Fatal(err)
@@ -49,10 +49,10 @@ func TestHealthURLSemanticsCannotBecomeLiteralPath(t *testing.T) {
 				}
 				r := audit(t, in)
 				if path == "/ready" {
-					requireForwardedHeaderGap(t, r, "services.$health-degraded")
+					requireMigrationGaps(t, r, "services.$health-degraded")
 					return
 				}
-				if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "$health-path") || !strings.Contains(string(r.Go), "panic(") {
+				if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$health-path") || !strings.Contains(string(r.Go), "panic(") {
 					t.Fatal("health URL semantics changed without blocking")
 				}
 			})
@@ -155,10 +155,10 @@ func TestACMEDefaultKeyTypeRequiresMigrationDecision(t *testing.T) {
 		in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  secure: {address: ':8443', http: {sanitizePath: false}}\ncertificatesResolvers:\n  cloud:\n    acme:\n      email: ops@example.com\n      storage: /acme/state.json\n      dnsChallenge: {provider: cloudflare}\n"+setting)}
 		r := audit(t, in)
 		if keyType == "EC256" {
-			requireForwardedHeaderGap(t, r)
+			requireMigrationGaps(t, r, "certificatesresolvers.$dns-propagation")
 			continue
 		}
-		if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "keyType") || !strings.Contains(string(r.Go), "panic(") {
+		if !hasBlockingGaps(r) || !strings.Contains(findings(r), "keyType") || !strings.Contains(string(r.Go), "panic(") {
 			t.Fatalf("incompatible ACME key type accepted: %q", keyType)
 		}
 	}

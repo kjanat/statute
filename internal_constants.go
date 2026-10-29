@@ -9,6 +9,10 @@ const (
 	headerContentRange    = "Content-Range"
 	headerAcceptRanges    = "Accept-Ranges"
 	headerXForwardedFor   = "X-Forwarded-For"
+	headerXForwardedHost  = "X-Forwarded-Host"
+	headerXForwardedProto = "X-Forwarded-Proto"
+	headerXForwardedPort  = "X-Forwarded-Port"
+	headerXRealIP         = "X-Real-Ip"
 
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"

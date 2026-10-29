@@ -47,6 +47,13 @@ acquire a Traefik input format or new matcher semantics.
 Help performs no migration I/O. Input flags preserve literal, repeatable paths;
 the migration engine owns file inventory and artifact generation.
 
+Listener ingress policy is opt-in and resolves into the canonical model.
+Sanitation runs before routing and route middleware, using existing trusted-proxy
+context for client identity. Access logs retain the original path while observing
+sanitized headers; rejection remains inside listener observability. Per-method
+redirect statuses belong to their route or redirect listener. HTTPS-only response
+operations are selected per request before cache and upgrade header projection.
+
 ## Ownership model
 
 | Layer           | Owns                                                                                                                  | Must not absorb                                                             |

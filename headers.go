@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 
 	"golang.org/x/net/http/httpguts"
@@ -18,9 +19,10 @@ import (
 // the operation they carry, so they share one type instead of repeating the
 // same two fields six times.
 type headerMW struct {
-	op    resolved.MiddlewareType
-	name  string
-	value string
+	op        resolved.MiddlewareType
+	name      string
+	value     string
+	httpsOnly bool
 }
 
 func (*headerMW) statuteMiddleware() {}
@@ -59,6 +61,9 @@ func RemoveRequestHeader(name string) *headerMW {
 func SetResponseHeader(name, value string) *headerMW {
 	return &headerMW{op: resolved.MWSetResponseHeader, name: name, value: value}
 }
+
+// OnHTTPS applies this response-header operation only to TLS requests.
+func (m *headerMW) OnHTTPS() *headerMW { m.httpsOnly = true; return m }
 
 // AddResponseHeader appends a value to the named response header, keeping the
 // values the upstream or file handler produced.
@@ -135,6 +140,7 @@ type headerOp struct {
 	value      string
 	ensureVary bool
 	identity   bool
+	httpsOnly  bool
 }
 
 func (op headerOp) apply(h http.Header) {
@@ -156,9 +162,9 @@ func (op headerOp) apply(h http.Header) {
 // one of them has to be reapplied afterwards, or the proxy's default silently
 // wins — see forwardedOpsFromContext.
 var proxyForwardedHeaders = map[string]bool{
-	"X-Forwarded-For":   true,
-	"X-Forwarded-Host":  true,
-	"X-Forwarded-Proto": true,
+	headerXForwardedFor:   true,
+	headerXForwardedHost:  true,
+	headerXForwardedProto: true,
 }
 
 // withHeaderMiddleware hoists a route's header operations out of the
@@ -181,15 +187,19 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var responseWriter *headerResponseWriter
+		selectedResponseOps := responseOps
+		if r.TLS == nil {
+			selectedResponseOps = plainHTTPHeaderOps(responseOps)
+		}
 		for _, op := range requestOps {
 			applyHeaderOp(r.Header, op.op, op.name, op.value)
 		}
 		if len(forwardedOps) > 0 {
 			r = r.WithContext(context.WithValue(r.Context(), forwardedOpsKey{}, forwardedOps))
 		}
-		if len(responseOps) > 0 {
-			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, responseOps))
-			responseWriter = &headerResponseWriter{ResponseWriter: w, ops: responseOps}
+		if len(selectedResponseOps) > 0 {
+			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, selectedResponseOps))
+			responseWriter = &headerResponseWriter{ResponseWriter: w, ops: selectedResponseOps}
 			w = responseWriter
 		}
 		next.ServeHTTP(w, r)
@@ -202,7 +212,7 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 func compileHeaderOps(mws []resolved.Middleware) (requestOps, responseOps, forwardedOps []headerOp) {
 	cors := false
 	for _, m := range mws {
-		op := headerOp{op: m.Type, name: m.HeaderName, value: m.HeaderValue}
+		op := headerOp{op: m.Type, name: m.HeaderName, value: m.HeaderValue, httpsOnly: m.HeaderHTTPSOnly}
 		switch {
 		case isRequestHeaderOp(m.Type):
 			requestOps = append(requestOps, op)
@@ -221,6 +231,19 @@ func compileHeaderOps(mws []resolved.Middleware) (requestOps, responseOps, forwa
 		responseOps = append(responseOps, headerOp{value: "Origin", ensureVary: true})
 	}
 	return requestOps, responseOps, forwardedOps
+}
+
+func plainHTTPHeaderOps(ops []headerOp) []headerOp {
+	if !slices.ContainsFunc(ops, func(op headerOp) bool { return op.httpsOnly }) {
+		return ops
+	}
+	out := make([]headerOp, 0, len(ops))
+	for _, op := range ops {
+		if !op.httpsOnly {
+			out = append(out, op)
+		}
+	}
+	return out
 }
 
 type forwardedOpsKey struct{}

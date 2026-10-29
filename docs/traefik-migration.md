@@ -5,11 +5,11 @@ plus a JSON audit. It does not start a proxy, contact Docker, acquire certificat
 interpolate environment variables, or perform a cutover. Traefik files do not
 become a Statute runtime input format.
 
-Generated listeners currently require manual review of forwarded-header handling.
-Traefik sanitizes untrusted proxy headers and derives `X-Real-IP` from the peer;
-native listeners do not provide equivalent behavior. This produces a blocking
-finding even when the source omits `forwardedHeaders`. Review and implement the
-required ingress policy before enabling the generated candidate.
+Generated listeners select `IngressPolicy` explicitly: untrusted forwarded
+headers are replaced with direct-peer values, paths are normalized before routing,
+and source alias-header and `sanitizePath` settings are applied. Configured
+trusted proxies may supply forwarded identity. Existing native listener defaults
+are unchanged. See [listener ingress policy](production.md#listener-ingress-policy).
 
 From a checkout:
 
@@ -101,18 +101,20 @@ configuration and resolve every blocking finding before replacing the guard with
   A router restricted to only part of the native shared content-listener set is
   blocked. Common entrypoint middleware is prepended to file routes and registered
   as Docker `DefaultMiddleware`; different per-listener chains remain blocked.
-  Traefik enables `http.sanitizePath` by default, cleaning dot segments and repeated
-  slashes before routing and forwarding. Statute preserves those paths, so an
-  omitted or enabled setting produces a blocking finding. An explicit boolean
-  `sanitizePath: false` is supported. Review the routing and upstream impact before
-  changing this policy in the source configuration.
+  Generated ingress decodes unreserved path escapes and normalizes escape casing.
+  Source `http.sanitizePath` additionally cleans dot segments and repeated slashes;
+  it defaults to enabled and can be explicitly disabled. Query text is preserved.
+  Alias headers can be kept, deleted or rejected before routing.
+
 - Named ACME resolvers generate `AutoTLS` sources using declared domains or literal
   `Host` matchers. HTTP-01 and Cloudflare DNS-01 are supported. Cloudflare uses a
   required `CF_DNS_API_TOKEN` environment binding. Source ACME JSON storage becomes
   a new sibling `.statute` directory: this starts new native account/certificate
   state and does not import Traefik's account keys. Review issuance and CA limits
   before deploying. Other challenge providers and TLS-ALPN-only requirements remain
-  explicit gaps. Native pinned ACME sources issue ECDSA P-256 certificates, requiring
+  explicit gaps. DNS resolvers and propagation delay generate `Propagation`
+  candidates. Traefik's authoritative-server checks differ from native propagation
+  checking; the report requests that specific choice. Native pinned ACME sources issue ECDSA P-256 certificates, requiring
   an explicit source `keyType: EC256`. An omitted key type defaults to RSA4096 in
   Traefik and blocks migration until certificate algorithm compatibility is reviewed.
 - Default certificate file references become `StaticTLS`. A single certificate
@@ -145,12 +147,17 @@ configuration and resolve every blocking finding before replacing the guard with
   Traefik stops forwarding and returns 503, while Statute's degraded mode continues
   trying primary backends. This requires a migration decision for file and Docker
   services, including single-backend services. Probe settings remain in the guarded
-  candidate for review.
+  candidate for review. Passive windows and thresholds generate pool policy.
+  Review success resets, exclusion duration and degraded forwarding before enabling it.
 - Docker services receive one exact-service `PoolPolicy` containing Host, health
   and transport together. Middleware registrations retain the exact label
   reference. Retained Compose labels are checked with the existing Docker parser
   using a synthetic address; this validates label interpretation without contacting
-  a daemon or claiming knowledge of the live network.
+  a daemon or claiming knowledge of the live network. Routers without a service
+  reference select the container's sole declared service, or an implicit service
+  from one explicit Compose TCP target port. Multiple services or missing port
+  evidence require a decision. Cross-provider references produce a guarded compiled
+  route helper with the provider-qualified target; they never select another pool.
 - `Host`, `Path`, `PathPrefix`, conjunctions and disjunctions use the shared
   Traefik parser. Native routes represent exact paths, catch-all paths and finite
   Traefik host spellings, including trailing-dot variants. File-provider byte
@@ -158,12 +165,20 @@ configuration and resolve every blocking finding before replacing the guard with
   matching would change their coverage. Docker retains its byte-prefix matcher.
 - File routes follow source priority. Equal-priority overlaps, overlapping
   file/Docker routes and Docker numeric-priority differences remain explicit
-  findings. Catch-all candidates become fallback routes only with a precedence
-  check. Unmatched traffic retains the native terminal 404.
+  findings, consolidated into one ordering decision naming the conflicting
+  routes and priorities. Catch-all candidates become fallback routes only with a
+  precedence check. Unmatched traffic retains the native terminal 404.
+- Fixed security headers generate response operations: nosniff, frame denial,
+  HSTS directives and standard referrer policies. HSTS is HTTPS-only unless the
+  source forces emission. Custom headers override security headers within one
+  middleware; arbitrary values use environment bindings. Conditional host, TLS
+  and CORS behavior requires a separate policy decision.
 - IP allow lists, ordered chains, request/response header operations, BasicAuth
   file or environment bindings and canonical `AddPrefix` prefixes become compiled
   route policy. Header values are bound through environment variables; inline
-  values are withheld and require relocation. Auth files must contain bcrypt
+  values are withheld and require relocation. Rate limits generate route-owned
+  candidates, with explicit findings for independent burst capacity, bounded
+  client-key admission, delayed source reservations and unsupported key selection. Auth files must contain bcrypt
   hashes; validation is deferred until the generated program loads them.
 - Header/path operations after other middleware remain blocked because Statute
   hoists them before authentication, denial and retry paths. Conflicting operations
@@ -175,14 +190,23 @@ configuration and resolve every blocking finding before replacing the guard with
   differences. RequestBuffer, Retry and gzip/Brotli candidates identify concrete
   resource, response-buffering and negotiation differences. Incomplete middleware
   candidates are emitted as separate review functions and never registered.
-- Redirect middleware and entrypoint redirects produce guarded native candidates.
-  Traefik uses method-dependent 301/308 or 302/307 statuses, while native redirect
-  listeners always return 301. Non-default target ports and custom redirect
-  precedence are separately reported; these differences are not silently accepted.
+- Redirect schemes and supported full-URI regex captures generate native redirects
+  with Traefik's GET/non-GET status split, including HEAD. Queries and captures
+  remain part of `{request_uri}`. Standard ports are omitted from scheme targets;
+  explicit ports are preserved. Literal-authority regexes produce guarded
+  candidates because raw Host case/port matching and non-match fallthrough differ
+  from native host routing. An equal replacement URL also needs a decision because
+  Traefik continues to the backend. Entrypoint redirect precedence is checked
+  separately from its target and method statuses.
+
 - Shared incoming timeout/header limits become explicit `Defaults`. Different
   per-entrypoint limits remain blocked. File-provider paths are accepted when the
   exact file or complete directory was explicitly supplied; hot reload is replaced
   by regeneration and compilation.
+
+Blocked middleware is reported at its definition with one dependency finding per
+affected route. Unsupported matchers identify the matcher kind. Dashboard, file
+watching, plugins and TCP/UDP are reported as out of scope.
 
 Unrecognized fields default to `manual`; they are not discarded to make validation
 pass. See [Docker compatibility](docker.md#traefik-compatibility-traefiklabels) for

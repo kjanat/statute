@@ -105,6 +105,11 @@ without a client certificate, and 421 responses for protected HTTP authorities
 sent over public-SNI connections. It runs in `make test-e2e-regression` alongside
 the listener-wide `TestRegression_ClientMTLS` scenario.
 
+`TestRegression_IngressBeforeRoutingAndPolicy` checks path normalization before
+routing and rewrites, unchanged query escapes, alias rejection, and resistance to
+forged forwarded headers at ACL and rate-limit boundaries. Only admitted requests
+reach the origin journal. It runs in `make test-e2e-regression`.
+
 Every run writes `e2e/artifacts/<run-id>/<scenario>/<topology>/`:
 
 - `compose.rendered.yml` — the fully resolved stack,

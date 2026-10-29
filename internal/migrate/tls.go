@@ -56,10 +56,16 @@ func (g *generator) acme(name string, domains []string) (statute.ListenerOption,
 		o.note("$storage", Manual, "supply persistent native ACME storage; source JSON cannot serve as a native storage directory")
 	}
 	code += g.acmeChallenge(o, a)
+	code += g.acmePropagation(o, a)
 	if o.text("acme.keyType") == "EC256" {
 		o.mark("acme.keyType", Translated, "pinned native ACME sources issue ECDSA P-256 keys")
 	} else {
-		o.note("$acme.keyType", Manual, "Traefik defaults to RSA4096 certificate keys; native pinned ACME sources issue ECDSA P-256; select EC256 explicitly or review certificate algorithm compatibility")
+		reason := "source certificate key algorithm differs from native ECDSA P-256; select EC256 or explicitly choose certificate provisioning"
+		if o.value("acme.keyType") != nil {
+			o.mark("acme.keyType", Manual, reason)
+		} else {
+			o.note("$acme.keyType", Manual, "source defaults to RSA4096; "+reason)
+		}
 	}
 	o.Generated = true
 	return a, code
@@ -171,6 +177,9 @@ func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []
 	opts, codes = clientAuthentication(object, base, opts, codes)
 	if scalar(object.value(base+".sniStrict")) == falseValue {
 		object.mark(base+".sniStrict", Exact, "unknown SNI may use the fallback certificate")
+	}
+	if scalar(object.value(base+".sniStrict")) == trueValue {
+		object.mark(base+".sniStrict", Manual, "source rejects unknown SNI; native fallback certificates still accept it, so choose an explicit listener SNI policy")
 	}
 	object.Generated = true
 	return opts, codes, true

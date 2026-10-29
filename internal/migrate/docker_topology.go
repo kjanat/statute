@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"maps"
 	"slices"
 
 	"statute.kjanat.dev/internal/docker"
@@ -22,7 +23,9 @@ func (g *generator) checkDockerExtraction(c *resolved.Config) {
 				networks[name] = "192.0.2.1"
 			}
 		}
-		container := docker.Container{ID: o.Source, Name: o.Source, Labels: o.labels, Networks: networks, Running: true}
+		labels := maps.Clone(o.labels)
+		labels["com.docker.compose.service"] = o.containerName
+		container := docker.Container{ID: o.Source, Name: o.containerName, Labels: labels, Ports: o.exposedPorts, Networks: networks, Running: true}
 		services, _, _ := docker.Extract(container, docker.ExtractOptions{TraefikLabels: true, ExposedByDefault: c.Docker.ExposedByDefault, Network: c.Docker.Network})
 		matchers, err := docker.ParseRule(o.text("rule"))
 		if err != nil {

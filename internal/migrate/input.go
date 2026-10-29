@@ -21,8 +21,13 @@ import (
 type Inputs struct{ Static, Dynamic, Compose []string }
 
 const (
-	maxInputBytes = 8 << 20
-	maxInputFiles = 256
+	protocolTCP         = "tcp"
+	dockerServerPort    = "loadbalancer.server.port"
+	fieldReferrerPolicy = "referrerPolicy"
+	fieldForceSTSHeader = "forceSTSHeader"
+	maxInputBytes       = 8 << 20
+	maxInputFiles       = 256
+	untranslatedReason  = "no verified translation; value withheld"
 )
 
 var (
@@ -247,7 +252,7 @@ func flatten(o *Object, path string, v any, depth int) {
 			return
 		}
 	}
-	f := Field{Path: path, Classification: Manual, Reason: "no verified translation; value withheld"}
+	f := Field{Path: path, Classification: Manual, Reason: untranslatedReason}
 	f.References = sourceReferences(o, path, v)
 	o.Fields = append(o.Fields, f)
 }
@@ -340,10 +345,13 @@ func inventoryComposeService(r *Report, source, name string, service map[string]
 		}
 		o := addObject(r, source+"#"+name, providerDocker, kind, obj, objects[id])
 		o.labels = retainedLabels
+		o.containerName = name
+		o.exposedPorts = composeExposedPorts(service)
 		if invalid {
 			o.note("$labels", Unsupported, "ambiguous or malformed Compose labels")
 		}
 	}
+	inventoryImplicitDockerService(r, source+"#"+name, name, service, objects, retainedLabels, invalid)
 	if invalid && len(objects) == 0 {
 		addObject(r, source+"#"+name, providerDocker, kindContainer, name, map[string]any{"$labels": nil})
 	}

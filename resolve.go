@@ -730,6 +730,12 @@ func resolveListener(l *Listener) (*resolved.Listener, error) {
 		HTTP3Addr:        l.http3Addr,
 		BehindCloudflare: l.behindCF,
 	}
+	if err := resolveIngress(l, rl); err != nil {
+		return nil, err
+	}
+	if err := resolveListenerRedirect(l, rl); err != nil {
+		return nil, err
+	}
 	if err := resolveListenerTLS(l, rl); err != nil {
 		return nil, err
 	}
@@ -781,6 +787,9 @@ func resolveTrustedProxy(t *TrustedProxyConfig, rl *resolved.Listener) error {
 // validateListenerTLSPresence rejects an HTTPS content listener that carries
 // no TLS material. Redirect-only listeners and plain HTTP need none.
 func validateListenerTLSPresence(l *Listener) error {
+	if l.scheme == schemeHTTP && (len(l.autoTLS)+len(l.staticTLS) > 0 || l.enableHTTP2 || l.http3Addr != "") {
+		return errors.New("TLS and HTTP/2/3 listener options require HTTPS")
+	}
 	if l.scheme == schemeHTTPS && l.redirect == "" && len(l.autoTLS) == 0 && len(l.staticTLS) == 0 {
 		return errors.New("https listener requires AutoTLS or StaticTLS")
 	}
@@ -1255,7 +1264,7 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 // validates its target and status into rr.Redirect, a handler route carries
 // its handler into rr.Handler and marks rr.HandlerRoute.
 func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.Route) error {
-	redirected := r.redirectTo != "" || r.redirectStatus != 0
+	redirected := redirectDeclared(r)
 	declared := countDeclared(r.upstream != "", r.staticDir != "", redirected, r.handlerSet)
 	switch {
 	case declared > 1:
@@ -1269,7 +1278,7 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 		}
 		rr.Upstream = pool
 	case redirected:
-		rd, err := resolveRedirect(r.redirectTo, r.redirectStatus)
+		rd, err := resolveRouteRedirect(r)
 		if err != nil {
 			return err
 		}
@@ -1637,7 +1646,10 @@ func resolveHeaderMW(m *headerMW) (resolved.Middleware, error) {
 	if reason, ok := unsettableRequestHeaders[name]; ok && isRequestHeaderOp(m.op) {
 		return resolved.Middleware{}, fmt.Errorf("%s: %q cannot be rewritten on a request; %s", label, name, reason)
 	}
-	return resolved.Middleware{Type: m.op, HeaderName: name, HeaderValue: value}, nil
+	if m.httpsOnly && !isResponseHeaderOp(m.op) {
+		return resolved.Middleware{}, errors.New("OnHTTPS requires a response-header operation")
+	}
+	return resolved.Middleware{Type: m.op, HeaderName: name, HeaderValue: value, HeaderHTTPSOnly: m.httpsOnly}, nil
 }
 
 // normalizePathPrefix validates and normalises a strip/add prefix: trailing

@@ -23,7 +23,7 @@ func TestTLSClientAuthenticationAndCipherPolicy(t *testing.T) {
         clientAuthType: RequireAndVerifyClientCert
         caFiles: [/not-read/client-ca.pem]`)
 	r := audit(t, in)
-	requireForwardedHeaderGap(t, r)
+	requireMigrationGaps(t, r)
 	assertGeneratedParity(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestTLSInvalidPolicyCannotBecomeDefaults(t *testing.T) {
 		"clientAuth: {clientAuthType: RequireAndVerifyClientCert, caFiles: {bad: shape}}",
 	} {
 		r := audit(t, tlsPolicyInputs(t, policy))
-		if !hasOtherBlockingGaps(r) {
+		if !hasBlockingGaps(r) {
 			t.Fatalf("accepted invalid security policy: %s", policy)
 		}
 	}
@@ -68,7 +68,7 @@ func TestTLSInvalidPolicyCannotBecomeDefaults(t *testing.T) {
 func TestTLSNoClientCertificateAndEmptyPolicy(t *testing.T) {
 	for _, policy := range []string{"clientAuth: {clientAuthType: NoClientCert}", "{}"} {
 		r := audit(t, tlsPolicyInputs(t, policy))
-		requireForwardedHeaderGap(t, r)
+		requireMigrationGaps(t, r)
 		c, err := statute.Resolve(r.Config)
 		if err != nil {
 			t.Fatal(err)
@@ -100,7 +100,7 @@ func TestUpstreamTLSFilesProbeAndFlushRemainPoolOwned(t *testing.T) {
       forwardingTimeouts: {dialTimeout: 4s, responseHeaderTimeout: 7s, idleConnTimeout: 45s}
 `
 	r := audit(t, basicInputs(t, body))
-	requireForwardedHeaderGap(t, r, "services.$health-degraded")
+	requireMigrationGaps(t, r, "services.$health-degraded")
 	assertGeneratedParity(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
@@ -143,7 +143,7 @@ certificatesResolvers:
       httpChallenge: {entryPoint: web}
 `)}
 	r := audit(t, in)
-	if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "$redirect-method") || !strings.Contains(findings(r), "$redirect-priority") {
+	if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$redirect-priority") || strings.Contains(findings(r), "$redirect-method") {
 		t.Fatal("redirect differences were not reported")
 	}
 	assertGeneratedParity(t, r)
@@ -164,7 +164,11 @@ func TestRedirectTargetAndChallengeGapsBlock(t *testing.T) {
 		in := basicInputs(t, simpleDynamic)
 		in.Static = []string{fixture(t, "static.yml", fmt.Sprintf("entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false, redirections: {entryPoint: {to: %q}}}}\n  secure: {address: ':8443', http: {sanitizePath: false}}\n", target))}
 		r := audit(t, in)
-		if !hasOtherBlockingGaps(r) || !strings.Contains(string(r.Go), "RedirectTo") {
+		if target == ":443" {
+			requireMigrationGaps(t, r)
+			continue
+		}
+		if !hasBlockingGaps(r) || !strings.Contains(string(r.Go), "RedirectTo") {
 			t.Fatal("redirect gap was accepted or candidate lost")
 		}
 	}
@@ -185,7 +189,7 @@ func TestDynamicDirectoryCoverageAndSymlinkRefusal(t *testing.T) {
 	static := fixture(t, "static.yml", fmt.Sprintf("entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false}}\nproviders:\n  file: {directory: %q}\n", dir))
 	in := Inputs{Static: []string{static}, Dynamic: []string{dir}}
 	r := audit(t, in)
-	requireForwardedHeaderGap(t, r)
+	requireMigrationGaps(t, r)
 	if r.Report.Routes != 1 {
 		t.Fatal("nested source omitted")
 	}
@@ -214,7 +218,7 @@ providers:
     watch: true
 `)}
 	r := audit(t, in)
-	requireForwardedHeaderGap(t, r)
+	requireMigrationGaps(t, r)
 	assertGeneratedParity(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
@@ -230,7 +234,7 @@ func TestEntrypointPolicyCannotDisappearOrLeakAcrossListeners(t *testing.T) {
 		in := basicInputs(t, simpleDynamic)
 		in.Static = []string{fixture(t, "static.yml", fmt.Sprintf("entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false, middlewares: %s}}\n", policy))}
 		r := audit(t, in)
-		if !hasOtherBlockingGaps(r) || !strings.Contains(string(r.Go), "panic(") {
+		if !hasBlockingGaps(r) || !strings.Contains(string(r.Go), "panic(") {
 			t.Fatal("unresolved entrypoint policy permits serving")
 		}
 	}
@@ -246,7 +250,7 @@ func TestEntrypointPolicyCannotDisappearOrLeakAcrossListeners(t *testing.T) {
   other: {address: ':8081', http: {sanitizePath: false}}
 `)}
 	r := audit(t, in)
-	if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "$entrypoint-middleware") {
+	if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$entrypoint-middleware") {
 		t.Fatal("different listener policies were combined")
 	}
 	if r.Config.Defaults.ReadTimeout == "5s" {
@@ -258,7 +262,7 @@ func TestBackendURLFeaturesCannotBeSilentlyRemoved(t *testing.T) {
 	for _, endpoint := range []string{"http://user:password@example.com", "http://example.com/base", "http://example.com?token=private", "http://example.com#fragment", "ftp://example.com", "http://%invalid"} {
 		body := strings.Replace(simpleDynamic, "http://127.0.0.1:9000", endpoint, 1)
 		r := audit(t, basicInputs(t, body))
-		if !hasOtherBlockingGaps(r) || len(r.Config.Upstreams) != 0 || !strings.Contains(string(r.Go), "panic(") {
+		if !hasBlockingGaps(r) || len(r.Config.Upstreams) != 0 || !strings.Contains(string(r.Go), "panic(") {
 			t.Fatalf("unsafe backend conversion accepted: %s", endpoint)
 		}
 	}

@@ -73,8 +73,6 @@ func (g *generator) classifyRouterPolicy(o *Object) {
 }
 
 func (g *generator) listener(o *Object) {
-	checkPathSanitization(o)
-	o.note("$forwarded-headers", Manual, "Traefik sanitizes untrusted forwarded headers by default and derives X-Real-IP from the connection peer; native listeners do not reproduce this header policy; review client identity and trusted proxy handling before serving")
 	addr := o.text("address")
 	if !literal(addr) || addr == "" {
 		return
@@ -106,23 +104,10 @@ func (g *generator) listener(o *Object) {
 		l = statute.HTTP(addr)
 		code = fmt.Sprintf("statute.HTTP(%q)", addr)
 	}
+	l, code = g.listenerIngress(o, l, code)
 	g.r.Config.Listeners = append(g.r.Config.Listeners, l)
 	g.listeners = append(g.listeners, code)
 	o.Generated = true
-}
-
-func checkPathSanitization(o *Object) {
-	const path = "http.sanitizePath"
-	if enabled, ok := o.value(path).(bool); ok && !enabled {
-		o.mark(path, Exact, "explicitly disabled source path sanitization; native routing preserves dot segments and duplicate slashes")
-		return
-	}
-	const reason = "Traefik enables pre-routing path sanitization by default; native routing and upstream paths retain dot segments and duplicate slashes; choose an explicit migration policy"
-	if o.value(path) == nil {
-		o.note("$"+path, Manual, reason)
-	} else {
-		o.mark(path, Manual, reason)
-	}
 }
 
 func (g *generator) listenerRedirect(o *Object, addr string) bool {
@@ -138,13 +123,28 @@ func (g *generator) listenerRedirect(o *Object, addr string) bool {
 		return true
 	}
 	g.checkRedirectTarget(o, base, scheme)
-	o.mark(base, Translated, "candidate native redirect-only listener; source redirect priority and status differences are reported separately")
-	o.note("$redirect-method", Manual, "Traefik redirects GET with 301/302 and other methods with 308/307; native redirect-only listeners always return 301")
+	for _, key := range []string{"to", "scheme", fieldPermanent} {
+		o.mark(base+"."+key, Translated, "explicit native redirect-listener policy")
+	}
 	if o.value(base+".priority") != nil {
+		o.mark(base+".priority", Translated, "explicit priority covered by the redirect-order decision")
 		o.note("$redirect-priority", Manual, "custom source redirect priority can allow content routers to win; native redirect listeners never dispatch content")
 	}
-	g.r.Config.Listeners = append(g.r.Config.Listeners, statute.HTTP(addr).RedirectTo(scheme))
-	g.listeners = append(g.listeners, fmt.Sprintf("statute.HTTP(%q).RedirectTo(%q)", addr, scheme))
+	permanent := true
+	if v := o.value(base + ".permanent"); v != nil {
+		if b, ok := v.(bool); ok {
+			permanent = b
+		} else {
+			o.mark(base+".permanent", Manual, "redirect permanence requires a literal boolean")
+		}
+	}
+	status, other := 301, 308
+	if !permanent {
+		status, other = 302, 307
+	}
+	l, code := g.listenerIngress(o, statute.HTTP(addr).RedirectTo(scheme).RedirectStatus(status).RedirectNonGET(other), fmt.Sprintf("statute.HTTP(%q).RedirectTo(%q).RedirectStatus(%d).RedirectNonGET(%d)", addr, scheme, status, other))
+	g.r.Config.Listeners = append(g.r.Config.Listeners, l)
+	g.listeners = append(g.listeners, code)
 	o.Generated = true
 	return true
 }

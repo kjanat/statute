@@ -3,7 +3,6 @@ package migrate
 import (
 	"reflect"
 	"slices"
-	"strconv"
 
 	statute "statute.kjanat.dev"
 	"statute.kjanat.dev/internal/docker"
@@ -137,16 +136,11 @@ func (g *generator) expectedRedirect(o *Object, refs []string) *resolved.Redirec
 	if mw == nil {
 		return nil
 	}
-	scheme := mw.text("redirectScheme.scheme")
-	if scheme != protocolHTTP && scheme != protocolHTTPS {
+	target, status, other, _ := redirectCandidate(mw)
+	if target == "" {
 		return nil
 	}
-	status := 302
-	permanent, _ := strconv.ParseBool(scalar(mw.value("redirectScheme.permanent")))
-	if permanent {
-		status = 301
-	}
-	return &resolved.Redirect{Target: scheme + "://{host}{request_uri}", Status: status}
+	return &resolved.Redirect{Target: target, Status: status, NonGETStatus: other}
 }
 
 func generatedFileRouter(o *Object) bool { return o.Generated && o.Provider == providerFile }

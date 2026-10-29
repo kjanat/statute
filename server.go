@@ -245,7 +245,7 @@ func (s *server) buildHTTPServer(l *resolved.Listener, handler http.Handler) (*h
 func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler, h3Alive *atomic.Bool, auth *clientAuthTable) http.Handler {
 	var handler http.Handler
 	if l.Redirect != "" {
-		handler = redirectHandler(l.Redirect)
+		handler = redirectHandlerWithPolicy(l.Redirect, l.RedirectStatus, l.RedirectNonGETStatus)
 	} else {
 		handler = content
 	}
@@ -264,6 +264,7 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 		handler = altSvcHandler(l.HTTP3Addr, h3Alive, handler)
 	}
 
+	handler = ingressHandler(l.Ingress, handler)
 	if s.cfg.Observability.AccessLog.Enabled {
 		handler = accessLogMiddleware(s.cfg.Observability.AccessLog, handler)
 	}
@@ -1075,10 +1076,25 @@ func stripPrefix(pattern string, h http.Handler) http.Handler {
 }
 
 func redirectHandler(scheme string) http.Handler {
+	return redirectHandlerWithMethods(scheme, 0)
+}
+
+func redirectHandlerWithMethods(scheme string, nonGETStatus int) http.Handler {
+	return redirectHandlerWithPolicy(scheme, 0, nonGETStatus)
+}
+
+func redirectHandlerWithPolicy(scheme string, getStatus, nonGETStatus int) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := stripPort(r.Host)
 		target := scheme + "://" + host + r.URL.RequestURI()
-		http.Redirect(w, r, target, http.StatusMovedPermanently) //nolint:gosec // G710: intentional same-host HTTP→HTTPS upgrade; redirecting to the requested host+path is the required behavior
+		status := http.StatusMovedPermanently
+		if getStatus != 0 {
+			status = getStatus
+		}
+		if r.Method != http.MethodGet && nonGETStatus != 0 {
+			status = nonGETStatus
+		}
+		http.Redirect(w, r, target, status) //nolint:gosec // G710: intentional same-host HTTP→HTTPS upgrade; redirecting to the requested host+path is the required behavior
 	})
 }
 
@@ -1260,6 +1276,7 @@ func newBackendProxy(target *url.URL, transport *http.Transport, p *resolved.Poo
 				pr.Out.Host = pr.In.Host
 			}
 			pr.SetXForwarded()
+			applyIngressForwarded(pr.In, pr.Out.Header)
 			// SetXForwarded has just overwritten the X-Forwarded-* fields
 			// from the real connection, including any a route configured on
 			// purpose. Reapply those so an explicit route declaration wins

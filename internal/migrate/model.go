@@ -41,14 +41,18 @@ type Object struct {
 	Fields         []Field        `json:"fields"`
 	data           map[string]any
 	labels         map[string]string
+	containerName  string
+	exposedPorts   []int
 }
 
 // Check is a bounded diagnostic from the canonical configuration tools.
 type Check struct {
-	Tool     string `json:"tool"`
-	Code     string `json:"code"`
-	Blocking bool   `json:"blocking"`
-	Deferred bool   `json:"deferred,omitempty"`
+	Tool       string   `json:"tool"`
+	Code       string   `json:"code"`
+	Blocking   bool     `json:"blocking"`
+	Deferred   bool     `json:"deferred,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+	References []string `json:"references,omitempty"`
 }
 
 // Report is a versioned, deterministic audit; source values are excluded.
@@ -79,18 +83,36 @@ func (r Report) WriteHuman(w io.Writer) error {
 	fmt.Fprintf(&b, "Traefik migration: routes=%d hosts=%d unknown-rule-counts=%d generated-routes=%d blocking=%t\n", r.Routes, r.Hosts, r.UnknownRouteCounts, r.GeneratedRoutes, r.Blocking)
 	for _, o := range r.Objects {
 		fmt.Fprintf(&b, "%s %s %q@%s (%q), generated=%t\n", o.Classification, o.Kind, o.Name, o.Provider, o.Source, o.Generated)
+		if outOfScopeOnly(o) {
+			if len(o.Fields) > 0 {
+				fmt.Fprintf(&b, "  %s\n", o.Fields[0].Reason)
+			}
+			continue
+		}
 		for _, f := range o.Fields {
 			fmt.Fprintf(&b, "  %s %q: %s\n", f.Classification, f.Path, f.Reason)
 		}
 	}
 	for _, c := range r.Checks {
 		fmt.Fprintf(&b, "check %s: %s (blocking=%t, deferred=%t)\n", c.Tool, c.Code, c.Blocking, c.Deferred)
+		if c.Reason != "" {
+			fmt.Fprintf(&b, "  %s\n", c.Reason)
+		}
 	}
 	for _, u := range r.Unmatched {
 		fmt.Fprintf(&b, "unmatched: %q\n", u)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+func outOfScopeOnly(o *Object) bool {
+	for _, field := range o.Fields {
+		if field.Classification != OutOfScope {
+			return false
+		}
+	}
+	return len(o.Fields) > 0
 }
 
 func (o *Object) mark(prefix string, c Classification, reason string) {
@@ -108,6 +130,11 @@ func (o *Object) mark(prefix string, c Classification, reason string) {
 }
 
 func (o *Object) note(path string, c Classification, reason string) {
+	for _, field := range o.Fields {
+		if field.Path == path && field.Classification == c && field.Reason == reason {
+			return
+		}
+	}
 	o.Fields = append(o.Fields, Field{Path: path, Classification: c, Reason: reason})
 }
 
