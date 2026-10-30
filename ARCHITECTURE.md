@@ -257,7 +257,10 @@ Changed or unrepresentable committed policy disables admission monotonically,
 including discarded Retry attempts. The observer carries only an earliest
 timestamp and an unsafe flag, synchronized for late Timeout producers; it owns
 no cache entries, header maps or allocation leases. Hidden ETag/Retry/Timeout
-buffering consumes the same header-time TTL, and missing Date uses that receipt.
+and BufferBodies buffering consumes the same header-time TTL, and missing Date
+uses that receipt. EncodeResponse gives its producer a private header map. The
+first final status, write, flush or return publishes it once to the encoder and
+reports that commitment to the observer; later producer edits reach only trailers.
 
 Response-cache admission belongs to each route's Cache instance. Request or
 downstream response `Cache-Control: no-store` prohibits new storage. Cache also

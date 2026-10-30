@@ -86,7 +86,8 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 	if err != nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	}
-	gzipHandler := gzipWrapper(next)
+	committed := preserveCommittedHeader(next)
+	gzipHandler := gzipWrapper(committed)
 	return responseEncodingVariance(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if responseEncodingBypass(r, requestType, excluded) {
@@ -112,7 +113,7 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 		r = r.WithContext(context.WithValue(r.Context(), compressedRepresentationKey{}, etagEncodingSelector(writer)))
 		returned := false
 		defer func() { writer.finish(returned) }()
-		next.ServeHTTP(writer, r)
+		committed.ServeHTTP(writer, r)
 		returned = true
 	}))
 }

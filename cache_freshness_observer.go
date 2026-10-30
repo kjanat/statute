@@ -91,11 +91,16 @@ func (w *cacheCommitObserver) capture() {
 		return
 	}
 	w.committed = time.Now()
-	w.observation.record(w.committed)
-	w.snapshot = w.policy()
-	if !w.snapshot.valid {
-		w.observation.unsafe.Store(true)
+	w.snapshot = w.observation.observe(w.Header(), w.committed)
+}
+
+func (o *cacheObservation) observe(h http.Header, committed time.Time) cacheFreshness {
+	o.record(committed)
+	policy := cacheObservedPolicy(h, committed)
+	if !policy.valid {
+		o.unsafe.Store(true)
 	}
+	return policy
 }
 
 func (w *cacheCommitObserver) policy() cacheFreshness {

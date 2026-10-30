@@ -298,6 +298,10 @@ func (g *generator) collectTLSPolicyAssignments(ep *Object) (map[string]string, 
 			name = defaultName
 		}
 		name = qualified(name, providerFile)
+		if _, provider, _ := strings.Cut(name, "@"); provider != providerFile {
+			owner.mark(base+".options", Unsupported, "TLS policy provider is not supplied to migration")
+			return
+		}
 		hosts, err := parseRuleHosts(o)
 		if err != nil {
 			return

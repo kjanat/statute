@@ -65,6 +65,6 @@ func bodyBufferNext(policy BodyBufferPolicy, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Oxy stores the last explicit status and requires an initial value.
 		w.WriteHeader(http.StatusOK)
-		next.ServeHTTP(w, r)
+		observeCacheCommit(next, w, r, false)
 	})
 }

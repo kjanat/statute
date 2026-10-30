@@ -65,6 +65,24 @@ func TestTLSInvalidPolicyCannotBecomeDefaults(t *testing.T) {
 	}
 }
 
+func TestTLSUnsupportedProviderPolicyRemainsBlocking(t *testing.T) {
+	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      tls: {options: selected@kubernetescrd}", 1)
+	body += "tls:\n  stores:\n    default:\n      defaultCertificate: {certFile: /not-read/cert.pem, keyFile: /not-read/key.pem}\n"
+	in := basicInputs(t, body)
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  secure: {address: ':8443', http: {sanitizePath: false}}\n")}
+	r := audit(t, in)
+	if !hasBlockingGaps(r) || !strings.Contains(string(r.Go), "migration incomplete") {
+		t.Fatalf("unsupported provider TLS policy fell back to the default\n%s", findings(r))
+	}
+	c, err := statute.Resolve(r.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Listeners[0].TLSPolicies) != 0 || len(c.Listeners[0].ClientAuthPolicies) != 0 {
+		t.Fatal("unsupported provider TLS policy invented a native policy")
+	}
+}
+
 func TestTLSNoClientCertificateAndEmptyPolicy(t *testing.T) {
 	for _, policy := range []string{"clientAuth: {clientAuthType: NoClientCert}", "{}"} {
 		r := audit(t, tlsPolicyInputs(t, policy))
