@@ -109,7 +109,7 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 			next.ServeHTTP(w, r)
 			return
 		}
-		writer := &responseEncodingWriter{ResponseWriter: w, policy: p, coding: coding, status: http.StatusOK}
+		writer := &responseEncodingWriter{ResponseWriter: w, policy: p, coding: coding, status: http.StatusOK, multiplexed: r.ProtoMajor >= 2}
 		r = r.WithContext(context.WithValue(r.Context(), compressedRepresentationKey{}, etagEncodingSelector(writer)))
 		returned := false
 		defer func() { writer.finish(returned) }()
@@ -163,6 +163,7 @@ type responseEncodingWriter struct {
 	coding                         string
 	status                         int
 	statusSet, committed, hijacked bool
+	multiplexed                    bool
 	prefix                         []byte
 	codec                          interface {
 		io.Writer
@@ -174,7 +175,7 @@ type responseEncodingWriter struct {
 
 func (w *responseEncodingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *responseEncodingWriter) WriteHeader(status int) {
-	if w.committed || w.statusSet {
+	if w.committed || w.statusSet || (status == http.StatusSwitchingProtocols && w.multiplexed) {
 		return
 	}
 	if status >= 100 && status < 200 {
