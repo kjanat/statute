@@ -18,7 +18,9 @@ func policyInputs(t *testing.T, definition string) Inputs {
 	out.WriteString(body)
 	out.WriteString("  middlewares:\n    candidate:\n")
 	for line := range strings.SplitSeq(strings.TrimSpace(definition), "\n") {
-		out.WriteString("      " + line + "\n")
+		out.WriteString("      ")
+		out.WriteString(line)
+		out.WriteString("\n")
 	}
 	return basicInputs(t, out.String())
 }

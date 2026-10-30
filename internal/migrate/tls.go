@@ -34,7 +34,9 @@ func (g *generator) acme(name string, domains []string) (statute.ListenerOption,
 	}
 	a := statute.AutoTLS(domains...)
 	var builder strings.Builder
-	builder.WriteString("statute.AutoTLS(" + quoted(domains) + ")")
+	builder.WriteString("statute.AutoTLS(")
+	builder.WriteString(quoted(domains))
+	builder.WriteString(")")
 	for _, f := range []struct {
 		key, method string
 		apply       func(string) *statute.AutoTLSConfig

@@ -95,8 +95,8 @@ func migrationProgram(t *testing.T, origin string) string {
 	}
 	static := filepath.Join(dir, "static.yml")
 	file := filepath.Join(dir, "dynamic.yml")
-	writeMigrationFile(t, static, []byte(fmt.Sprintf("entryPoints:\n  web: {address: %q}\n", address)))
-	writeMigrationFile(t, file, []byte(fmt.Sprintf(`http:
+	writeMigrationFile(t, static, fmt.Appendf(nil, "entryPoints:\n  web: {address: %q}\n", address))
+	writeMigrationFile(t, file, fmt.Appendf(nil, `http:
   routers:
     browser: {rule: 'Host(%s) && Path(%s)', service: origin, middlewares: [browser]}
     scheme: {rule: 'Host(%s) && Path(%s)', service: origin, middlewares: [scheme]}
@@ -112,7 +112,7 @@ func migrationProgram(t *testing.T, origin string) string {
       redirectScheme: {scheme: https, permanent: true}
     capture:
       redirectRegex: {regex: '^https?://[^/]+/(.*)', replacement: 'https://new.example/${1}', permanent: true}
-`, "`api.example`", "`/headers`", "`api.example`", "`/scheme`", "`api.example`", "`/capture`", origin)))
+`, "`api.example`", "`/headers`", "`api.example`", "`/scheme`", "`api.example`", "`/capture`", origin))
 	r, err := migrate.Audit(migrate.Inputs{Static: []string{static}, Dynamic: []string{file}})
 	if err != nil || r.Report.Blocking {
 		t.Fatalf("synthetic migration blocked: %v %+v", err, r)

@@ -250,10 +250,12 @@ func graphRoutePolicy(route *resolved.Route) string {
 		fmt.Fprintf(&label, "\\npriority=%d", route.Priority)
 	}
 	if route.PathMatch != "" {
-		label.WriteString("\\npath-match=" + route.PathMatch)
+		label.WriteString("\\npath-match=")
+		label.WriteString(route.PathMatch)
 	}
 	if route.DiscoveredUpstream != "" {
-		label.WriteString("\\ndiscovered-upstream=" + route.DiscoveredUpstream)
+		label.WriteString("\\ndiscovered-upstream=")
+		label.WriteString(route.DiscoveredUpstream)
 	}
 	if len(route.PeerIPCIDRs) > 0 {
 		fmt.Fprintf(&label, "\\npeer=%v", route.PeerIPCIDRs)
@@ -267,7 +269,8 @@ func graphRoutePolicy(route *resolved.Route) string {
 	for _, m := range middlewareLeaves(route.Middleware) {
 		label.WriteString(graphMiddlewarePolicy(m))
 		if m.HeaderHTTPSOnly {
-			label.WriteString("\\nHTTPS header: " + m.HeaderName)
+			label.WriteString("\\nHTTPS header: ")
+			label.WriteString(m.HeaderName)
 		}
 	}
 	return label.String()

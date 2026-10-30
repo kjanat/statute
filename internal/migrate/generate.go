@@ -708,17 +708,29 @@ func (g *generator) source() ([]byte, error) {
 		}
 	}
 	b.WriteString("\nfunc configuration() statute.Config {\nreturn statute.Config{\n")
-	b.WriteString("PrioritizeRoutes:true,\nDefaults:" + g.defaults + ",\n")
+	b.WriteString("PrioritizeRoutes:true,\nDefaults:")
+	b.WriteString(g.defaults)
+	b.WriteString(",\n")
 	if g.observability != "" {
-		b.WriteString("Observability:" + g.observability + ",\n")
+		b.WriteString("Observability:")
+		b.WriteString(g.observability)
+		b.WriteString(",\n")
 	}
-	b.WriteString("Listeners:statute.Listeners{" + strings.Join(g.listeners, ",") + "},\nUpstreams:statute.Upstreams{\n")
+	b.WriteString("Listeners:statute.Listeners{")
+	b.WriteString(strings.Join(g.listeners, ","))
+	b.WriteString("},\nUpstreams:statute.Upstreams{\n")
 	for _, name := range keys(g.pools) {
 		fmt.Fprintf(&b, "%q:%s,\n", name, g.pools[name])
 	}
-	b.WriteString("},\nRoutes:statute.Routes{" + strings.Join(g.routes, ",") + "},\nFallbackRoutes:statute.Routes{" + strings.Join(g.fallbacks, ",") + "},\n")
+	b.WriteString("},\nRoutes:statute.Routes{")
+	b.WriteString(strings.Join(g.routes, ","))
+	b.WriteString("},\nFallbackRoutes:statute.Routes{")
+	b.WriteString(strings.Join(g.fallbacks, ","))
+	b.WriteString("},\n")
 	if g.docker != "" {
-		b.WriteString("Docker:" + g.docker + ",\n")
+		b.WriteString("Docker:")
+		b.WriteString(g.docker)
+		b.WriteString(",\n")
 	}
 	b.WriteString("}\n}\n\nfunc main(){\n")
 	if g.hasImplementationGaps() {
