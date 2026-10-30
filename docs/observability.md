@@ -26,8 +26,12 @@ creates it with mode `0600`, and requires its parent directory to exist. An open
 failure stops startup before listeners serve.
 
 `Buffer(n)` queues up to `n` records and applies backpressure when full. Shutdown
-and failed-start cleanup drain the queue and close the destination. A flush error
-is returned by shutdown. Without a queue, writes run in the request goroutine.
+drains within the remaining `Shutdown.GracePeriod`. At the deadline it returns an
+error, releases waiting producers, discards queued records and closes its file.
+A write already blocked on application-owned stdout or stderr ends when that
+destination accepts it; Statute leaves those streams open. Failed-start cleanup
+also drains the queue and closes its file. Without a queue, writes run in the
+request goroutine.
 
 | Field           | Type   | Description                                                                                                                                  |
 | --------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------- |

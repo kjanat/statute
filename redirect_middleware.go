@@ -136,9 +136,7 @@ func redirectRequestURL(r *http.Request, forwarded bool) string {
 		uri = r.URL.RequestURI()
 	}
 	if forwarded {
-		if name, number, err := net.SplitHostPort(host); err == nil {
-			host, port = name, ":"+number
-		}
+		host, port = redirectHostAndPort(host)
 	}
 	if match := redirectAbsoluteURI.FindStringSubmatch(uri); match != nil {
 		scheme, uri = match[1], match[4]
@@ -156,6 +154,17 @@ func redirectRequestURL(r *http.Request, forwarded bool) string {
 		scheme, port = forwardedRedirectAuthority(r, scheme, port)
 	}
 	return scheme + "://" + host + port + uri
+}
+
+func redirectHostAndPort(authority string) (string, string) {
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		return authority, ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return host, ":" + port
 }
 
 func redirectForwardedProto(r *http.Request) string {

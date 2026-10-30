@@ -6,6 +6,22 @@ import (
 	"testing"
 )
 
+func TestSchemeRedirectPreservesIPv6Authority(t *testing.T) {
+	for _, tc := range []struct{ authority, port, want string }{
+		{"[::1]:8080", "", "https://[::1]/path?q=1"},
+		{"[2001:db8::1]:8080", "8443", "https://[2001:db8::1]:8443/path?q=1"},
+		{"[::1]", "", "https://[::1]/path?q=1"},
+	} {
+		h := chain(t, http.NotFoundHandler(), RedirectScheme("https").Port(tc.port))
+		r := httptest.NewRequest(http.MethodGet, "http://"+tc.authority+"/path?q=1", nil)
+		r.RequestURI = "/path?q=1"
+		w := runRequest(t, h, r)
+		if got := w.Header().Get("Location"); got != tc.want {
+			t.Fatalf("authority=%s Location=%q want=%q", tc.authority, got, tc.want)
+		}
+	}
+}
+
 func TestConditionalRedirectMethodsAndAbsoluteURIs(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, url, location string

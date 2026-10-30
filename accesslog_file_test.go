@@ -2,6 +2,7 @@ package statute
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -30,10 +31,10 @@ func TestAccessLogFileFlushAndRestart(t *testing.T) {
 				if _, err := sink.Write([]byte(line)); err != nil {
 					t.Fatal(err)
 				}
-				if err := run.stop(); err != nil {
+				if err := run.stop(context.Background()); err != nil {
 					t.Fatal(err)
 				}
-				if err := run.stop(); err != nil {
+				if err := run.stop(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -58,7 +59,7 @@ func TestBufferedAccessLogReportsWriteFailureOnStop(t *testing.T) {
 	if _, err := sink.Write([]byte("entry")); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.stop(); !errors.Is(err, want) {
+	if err := run.stop(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("flush error=%v", err)
 	}
 	if _, err := (&accessLogSink{}).start(); err == nil {
@@ -128,7 +129,7 @@ func TestAccessLogFileOpenFailureCanRetry(t *testing.T) {
 	if _, err := sink.Write([]byte("recovered\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.stop(); err != nil {
+	if err := run.stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(sink.path)

@@ -26,7 +26,7 @@ func (p hostTLSPolicy) applyListener(l *Listener) { l.tlsPolicies = append(l.tls
 
 func resolveScopedTLSPolicies(l *Listener, out *resolved.Listener) error {
 	if len(l.tlsPolicies) == 0 {
-		return nil
+		return validateTLSPolicyCertCompat(l, out)
 	}
 	if l.scheme != schemeHTTPS || l.redirect != "" {
 		return errors.New("tls_policies: requires an HTTPS listener")
@@ -46,7 +46,7 @@ func resolveScopedTLSPolicies(l *Listener, out *resolved.Listener) error {
 		}
 		out.TLSPolicies = append(out.TLSPolicies, resolved.HostTLSPolicy{Hosts: hosts, Policy: resolved.TLSPolicy{StrictSNI: binding.policy.StrictSNI, Identity: binding.policy.Identity, MinVersion: tlsVersionName(binding.policy.MinVersion), MaxVersion: tlsVersionName(binding.policy.MaxVersion), CipherSuites: suites}})
 	}
-	return nil
+	return validateTLSPolicyCertCompat(l, out)
 }
 
 type tlsPolicyTable struct {

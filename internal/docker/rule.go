@@ -545,9 +545,9 @@ func intersectRulePeers(a, b []string) ([]string, error) {
 		l, _ := netip.ParsePrefix(left)
 		for _, right := range b {
 			r, _ := netip.ParsePrefix(right)
-			if l.Contains(r.Addr()) {
+			if l.Bits() <= r.Bits() && l.Contains(r.Addr()) {
 				intersection = append(intersection, right)
-			} else if r.Contains(l.Addr()) {
+			} else if r.Bits() <= l.Bits() && r.Contains(l.Addr()) {
 				intersection = append(intersection, left)
 			}
 		}

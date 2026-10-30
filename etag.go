@@ -14,6 +14,10 @@ import (
 // Buffered renders have no streaming flush boundary to expose to the client.
 type bufferedETagRenderKey struct{}
 
+type etagEncodingSelector interface {
+	selectETagEncoding(*responseBuffer) (string, bool)
+}
+
 // etagHandler hashes a complete inner GET representation. HEAD renders that
 // same path internally and omits delivery. Original preconditions are evaluated
 // against the generated validator after rendering; buffering is explicit.
@@ -94,8 +98,8 @@ func setETagMetadata(buf *responseBuffer, etag string) {
 // An outer compressor must select the representation before read conditions
 // can turn a successful render into a bodyless 304 or 412.
 func selectETagEncoding(r *http.Request, buf *responseBuffer) (string, bool) {
-	if n, ok := r.Context().Value(compressedRepresentationKey{}).(*compressionNegotiator); ok && buf.status == http.StatusOK {
-		return n.selectCoding(buf.header, buf.status)
+	if n, ok := r.Context().Value(compressedRepresentationKey{}).(etagEncodingSelector); ok && buf.status == http.StatusOK {
+		return n.selectETagEncoding(buf)
 	}
 	return "", true
 }

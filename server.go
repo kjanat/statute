@@ -549,7 +549,7 @@ func (a *startAttempt) rollback() error {
 	for _, pool := range a.pools {
 		pool.shutdown()
 	}
-	return errors.Join(err, a.accessLogs.stop())
+	return errors.Join(err, a.accessLogs.stop(context.Background()))
 }
 
 // serveHealthEarly binds and serves the health endpoint before the fallible prerequisite phase, ready still false, so supervisors observe live=200/ready=503 throughout startup.
@@ -827,7 +827,7 @@ func (r *serverRun) shutdown(ctx context.Context) error {
 	if h := r.listeners.health; h != nil {
 		err = errors.Join(err, h.shutdown(ctx))
 	}
-	return errors.Join(err, r.accessLogs.stop())
+	return errors.Join(err, r.accessLogs.stop(ctx))
 }
 
 func findListener(ls []*resolved.Listener, addr string) (*resolved.Listener, bool) {

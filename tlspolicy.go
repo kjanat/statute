@@ -92,8 +92,7 @@ const (
 // upper bound, and Go's own TLS 1.2 suite selection. Declaring the policy
 // twice on one listener is a resolve error rather than a silent last-wins.
 //
-// One policy governs the whole listener — every TLS source on it, and the
-// HTTP/3 listener that shares its certificates.
+// TLSPolicy is the listener default. TLSPolicyFor selects an override by SNI.
 type TLSPolicy struct {
 	// Identity distinguishes independently named policies for authority admission.
 	Identity string
@@ -286,10 +285,7 @@ func resolveTLSPolicySuites(p TLSPolicy) ([]string, error) {
 	return out, nil
 }
 
-// validateTLSPolicyProtocols rejects a policy the listener's own transport
-// stack could never serve: a version window HTTP/3 cannot work under, a
-// suite list net/http refuses to start with, and a suite list the
-// listener's certificates could never sign for.
+// validateTLSPolicyProtocols checks HTTP/3 support and net/http's required suites.
 func validateTLSPolicyProtocols(p TLSPolicy, rl *resolved.Listener) error {
 	// QUIC is defined over TLS 1.3 alone (RFC 9001 §4.2), so a 1.2 cap
 	// would leave the HTTP/3 listener unable to complete any handshake.
@@ -299,7 +295,7 @@ func validateTLSPolicyProtocols(p TLSPolicy, rl *resolved.Listener) error {
 	if err := validateTLSPolicyRequiredSuite(p); err != nil {
 		return err
 	}
-	return validateTLSPolicyCertCompat(p, rl)
+	return nil
 }
 
 // validateTLSPolicyRequiredSuite enforces net/http's own precondition: on
@@ -317,23 +313,7 @@ func validateTLSPolicyRequiredSuite(p TLSPolicy) error {
 	return errors.New("tls_policy: cipher_suites must include statute.TLSECDHEECDSAWithAES128GCM or statute.TLSECDHERSAWithAES128GCM; net/http refuses to serve TLS with a suite override that omits both, even with HTTP/2 disabled")
 }
 
-// validateTLSPolicyCertCompat rejects an RSA-only suite list that would
-// leave a pinned source's domains unservable. The judgement is per source,
-// not per listener: the SNI router picks the source that matches the name
-// and never falls back past it, so no other certificate on the listener —
-// static fallback included — can rescue a source whose own certificate the
-// policy cannot authenticate. The in-tree ACME manager behind every
-// pinned HTTP-01/DNS-01 source generates ECDSA P-256 keys without
-// exception, and an ECDHE_RSA suite needs an RSA certificate to sign the
-// key exchange, so with TLS 1.3 capped away those domains are provably
-// dead.
-//
-// ChallengeAuto sources are lint rule TLS004's territory instead of a
-// resolve error: autocert picks each leaf's key type from the ClientHello,
-// so their fate depends on the client population, not the config alone.
-// Static sources are never judged — resolve does not read the files, and
-// an RSA key pair serves an RSA-only policy fine.
-func validateTLSPolicyCertCompat(p TLSPolicy, rl *resolved.Listener) error {
+func validateCertificatePolicy(p TLSPolicy, source *resolved.AutoTLS, host string) error {
 	if p.MaxVersion != TLS12 || len(p.CipherSuites) == 0 {
 		return nil
 	}
@@ -345,14 +325,9 @@ func validateTLSPolicyCertCompat(p TLSPolicy, rl *resolved.Listener) error {
 			rsaAllowed = true
 		}
 	}
-	for _, source := range rl.AutoTLSSources {
-		if source.Challenge == resolved.ChallengeAuto {
-			continue
-		}
-		rsaKey := strings.HasPrefix(source.KeyType, "RSA")
-		if !certificateKeyAllowed(rsaKey, rsaAllowed, ecdsaAllowed) {
-			return fmt.Errorf("tls_policy: cipher suites cannot authenticate %s certificate keys for %s", source.KeyType, strings.Join(source.Domains, ","))
-		}
+	rsaKey := strings.HasPrefix(source.KeyType, "RSA")
+	if !certificateKeyAllowed(rsaKey, rsaAllowed, ecdsaAllowed) {
+		return fmt.Errorf("tls_policy: cipher suites cannot authenticate %s certificate keys for %s", source.KeyType, host)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package statute
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"mime"
@@ -109,6 +110,7 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 		}
 		w.Header().Add("Vary", "Accept-Encoding")
 		writer := &responseEncodingWriter{ResponseWriter: w, policy: p, coding: coding, status: http.StatusOK}
+		r = r.WithContext(context.WithValue(r.Context(), compressedRepresentationKey{}, etagEncodingSelector(writer)))
 		returned := false
 		defer func() { writer.finish(returned) }()
 		next.ServeHTTP(writer, r)
@@ -214,22 +216,33 @@ func (w *responseEncodingWriter) Write(data []byte) (int, error) {
 }
 
 func (w *responseEncodingWriter) eligible() bool {
-	_, partial := cacheHeaderValues(w.Header(), "Content-Range")
-	if w.status == http.StatusPartialContent || partial || !cacheControlAllows(w.Header(), "no-transform") {
+	return responseEncodingEligible(w.Header(), w.status, w.policy)
+}
+
+func (w *responseEncodingWriter) selectETagEncoding(buf *responseBuffer) (string, bool) {
+	if buf.body.Len() < w.policy.MinimumBytes || !responseEncodingEligible(buf.header, buf.status, w.policy) {
+		return "", true
+	}
+	return w.coding, true
+}
+
+func responseEncodingEligible(h http.Header, status int, policy *resolved.EncodingPolicy) bool {
+	_, partial := cacheHeaderValues(h, "Content-Range")
+	if status == http.StatusPartialContent || partial || !cacheControlAllows(h, "no-transform") {
 		return false
 	}
-	if responseEncodingBodyless(w.status) || w.Header().Get("Content-Encoding") != "" {
+	if responseEncodingBodyless(status) || h.Get("Content-Encoding") != "" {
 		return false
 	}
-	text := w.Header().Get("Content-Type")
+	text := h.Get("Content-Type")
 	kind, _, err := mime.ParseMediaType(text)
 	if err != nil {
 		return false
 	}
-	if len(w.policy.IncludedTypes) > 0 {
-		return slices.Contains(w.policy.IncludedTypes, kind)
+	if len(policy.IncludedTypes) > 0 {
+		return slices.Contains(policy.IncludedTypes, kind)
 	}
-	return kind != "application/grpc" && !slices.Contains(w.policy.ExcludedTypes, kind)
+	return kind != "application/grpc" && !slices.Contains(policy.ExcludedTypes, kind)
 }
 
 func responseEncodingBodyless(status int) bool {

@@ -151,6 +151,8 @@ program while still reporting `blocking: true` until its inputs are supplied.
   Label validation uses a synthetic address and makes no claim about live
   container networking.
 - TLS version/cipher policies and client authentication are selected by SNI.
+  TLS 1.2 cipher restrictions must support the selected pinned ACME source's key
+  type; incompatible policies fail `Resolve`.
   Selected hostname policies replace the listener defaults. HTTP Host reuse
   across different TLS policies returns 421. Hostless rules use the default
   source policy. Router TLS inherits the complete entrypoint object only when

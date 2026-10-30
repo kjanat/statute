@@ -118,6 +118,10 @@ type compressionNegotiator struct {
 	gzip, brotli, transform bool
 }
 
+func (n *compressionNegotiator) selectETagEncoding(buf *responseBuffer) (string, bool) {
+	return n.selectCoding(buf.header, buf.status)
+}
+
 // selectCoding returns a new coding, or an empty coding to preserve the
 // representation. Existing coding stacks must be acceptable in their entirety.
 func (n *compressionNegotiator) selectCoding(h http.Header, status int) (string, bool) {
