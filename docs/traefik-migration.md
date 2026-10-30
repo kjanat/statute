@@ -157,6 +157,8 @@ program while still reporting `blocking: true` until its inputs are supplied.
   across different TLS policies returns 421. Hostless rules use the default
   source policy. Router TLS inherits the complete entrypoint object only when
   the router has no TLS object; an explicit empty object prevents inheritance.
+  Strict TLS conflicts between Docker routers block migration: discovery cannot
+  enforce the source's router exclusions. File-router exclusions are generated.
 - ACME supports HTTP-01 and Cloudflare DNS-01. Source key types include EC256,
   EC384 and RSA2048/3072/4096/8192; omission selects Traefik's RSA4096 default.
   DNS propagation can verify authoritative servers and recursive resolvers,

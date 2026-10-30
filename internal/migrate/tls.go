@@ -25,7 +25,7 @@ func parseRuleHosts(o *Object) ([]string, error) {
 func (g *generator) acme(name string, domains []string) (statute.ListenerOption, string) {
 	o := g.objects["certificatesresolvers:"+name+"@static"]
 	if o == nil {
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: "tls", Code: "missing-certificate-resolver", Blocking: true})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: kindTLS, Code: "missing-certificate-resolver", Blocking: true})
 		return nil, ""
 	}
 	if len(domains) == 0 {
@@ -148,7 +148,7 @@ func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []
 	object := g.objects["tls:options."+name]
 	if object == nil || object.value("options."+plain) == nil {
 		if plain != defaultName {
-			g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: "tls", Code: "missing-named-tls-policy", Blocking: true})
+			g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: kindTLS, Code: "missing-named-tls-policy", Blocking: true})
 		}
 		return nil, nil, plain == defaultName
 	}
@@ -322,7 +322,7 @@ func (g *generator) disableTLSConflicts(ep *Object, owners map[string][]*Object,
 		strict, _ = sourceBoolValue(core.value("strictTLSOptions"), false)
 	}
 	if strict {
-		for host := range conflicts {
+		for _, host := range keys(conflicts) {
 			for _, router := range owners[host] {
 				entries := slices.Clone(g.routerEntries[router])
 				entries = slices.DeleteFunc(entries, func(name string) bool { return name == ep.Name })
@@ -331,7 +331,19 @@ func (g *generator) disableTLSConflicts(ep *Object, owners map[string][]*Object,
 					g.disabledRouters[router] = true
 				}
 				router.note("$tls-conflict", Translated, "source disables this router on an entrypoint with conflicting TLS policies")
+				g.guardDockerTLSConflict(router)
 			}
 		}
 	}
+}
+
+func (g *generator) guardDockerTLSConflict(router *Object) {
+	if router.Provider != providerDocker {
+		return
+	}
+	g.r.Report.Checks = append(g.r.Report.Checks, Check{
+		Tool: kindTLS, Code: "docker-strict-tls-conflict", Blocking: true,
+		Reason:     "Docker discovery cannot enforce source router exclusions for conflicting TLS policies",
+		References: []string{router.identity()},
+	})
 }

@@ -63,8 +63,9 @@ func (r *rateLimitMW) Per(k RateLimitKey) *rateLimitMW {
 }
 
 // MaxBuckets limits the number of retained keys per compiled middleware instance.
-// Zero selects the default of 65,536; negative values fail resolution. Only fully
-// replenished buckets can retire. At capacity, an unknown key receives 503 with
+// Zero selects the default of 65,536; negative values fail resolution. By default,
+// only fully replenished buckets can retire. ExpireIdle and EvictOldest permit
+// earlier replacement. At capacity, an unknown key receives 503 with
 // Cache-Control: no-store; existing keys retain their normal token policy.
 func (r *rateLimitMW) MaxBuckets(n int) *rateLimitMW {
 	r.maxBuckets = n

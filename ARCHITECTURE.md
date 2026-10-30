@@ -167,7 +167,10 @@ to 65,536 unless explicitly positive; negative values fail resolution. Each stor
 retains only fixed-size hashes of the existing effective client-IP or exact Host
 key, with one indexed refill-deadline entry per bucket. One mutex owns admission,
 refill, and retirement; it is released before response writing or downstream work.
-Only fully replenished buckets may retire; outstanding token debt retains its slot.
+By default, only fully replenished buckets may retire; outstanding token debt
+retains its slot. Explicit `ExpireIdle` permits resets after inactivity, and
+`EvictOldest` permits replacing the oldest key at capacity. These options apply
+to both immediate admission and reservation mode.
 Existing keys retain their token policy at capacity (including 429 and Retry-After);
 new keys with no reclaimable slot fail closed with 503 and Cache-Control: no-store.
 No timer, worker, or shutdown owner is added. Handler retirement releases the store.

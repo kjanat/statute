@@ -17,6 +17,36 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
+func TestRateLimitIdlePolicyWorksWithoutReservation(t *testing.T) {
+	for _, reserve := range []bool{false, true} {
+		policy := RateLimit("1/h").Burst(1).ExpireIdle("100ms")
+		if reserve {
+			policy.Reserve("0s")
+		}
+		h := chain(t, noContentHandler, policy)
+		for i := range 2 {
+			if i > 0 {
+				time.Sleep(150 * time.Millisecond)
+			}
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			if w := runRequest(t, h, r); w.Code != http.StatusNoContent {
+				t.Fatalf("reserve=%t request=%d status=%d", reserve, i, w.Code)
+			}
+		}
+	}
+}
+
+func TestRateLimitEvictsOldestWithoutReservation(t *testing.T) {
+	h := chain(t, noContentHandler, RateLimit("1/h").Burst(1).MaxBuckets(1).ExpireIdle("1h").EvictOldest())
+	for _, peer := range []string{"192.0.2.1:80", "192.0.2.2:80", "192.0.2.1:80"} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = peer
+		if w := runRequest(t, h, r); w.Code != http.StatusNoContent {
+			t.Fatalf("peer=%s status=%d", peer, w.Code)
+		}
+	}
+}
+
 func TestReservationCapacityReclaimsInactiveBuckets(t *testing.T) {
 	for _, idle := range []time.Duration{0, 100 * time.Millisecond} {
 		s := newBucketStore(1, 1)

@@ -32,7 +32,7 @@ func rateLimitHandler(m resolved.Middleware, next http.Handler) http.Handler {
 			serveRateReservation(buckets, m, key, w, r, next)
 			return
 		}
-		switch buckets.allow(key, time.Now()) {
+		switch buckets.allowWithPolicy(key, time.Now(), m) {
 		case http.StatusTooManyRequests:
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -79,13 +79,26 @@ func newBucketStore(rate float64, limit int) *bucketStore {
 // allow accepts an explicit clock reading to make refill and retirement testable.
 // Zero means admitted; denials return their HTTP status.
 func (s *bucketStore) allow(key string, now time.Time) int {
+	return s.allowWithPolicy(key, now, resolved.Middleware{})
+}
+
+func (s *bucketStore) allowWithPolicy(key string, now time.Time, cfg resolved.Middleware) int {
 	digest := sha256.Sum256([]byte(key))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.buckets[digest]
+	if b.idleExpired(now) {
+		heap.Remove(&s.expiry, b.index)
+		delete(s.buckets, digest)
+		b = nil
+	}
 	if b == nil {
-		if len(s.buckets) == s.limit && !s.retire(now) {
-			return http.StatusServiceUnavailable
+		if len(s.buckets) >= s.limit && !s.retire(now) {
+			if !cfg.RateLimitEvictIdle {
+				return http.StatusServiceUnavailable
+			}
+			oldest := heap.Pop(&s.expiry).(*bucket)
+			delete(s.buckets, oldest.key)
 		}
 		b = &bucket{key: digest, tokens: s.capacity, last: now}
 		s.buckets[digest] = b
@@ -97,8 +110,7 @@ func (s *bucketStore) allow(key string, now time.Time) int {
 		b.tokens--
 		status = 0
 	}
-	b.fullAt = s.deadline(b)
-	heap.Fix(&s.expiry, b.index)
+	s.indexBucket(b, now, cfg, s.deadline(b))
 	return status
 }
 
@@ -107,7 +119,7 @@ func (s *bucketStore) reserve(key string, now time.Time, cfg resolved.Middleware
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.buckets[digest]
-	if b != nil && !b.idleAt.IsZero() && !now.Before(b.idleAt) {
+	if b.idleExpired(now) {
 		heap.Remove(&s.expiry, b.index)
 		delete(s.buckets, digest)
 		b = nil
@@ -138,11 +150,16 @@ func (s *bucketStore) reserve(key string, now time.Time, cfg resolved.Middleware
 }
 
 func (s *bucketStore) indexReservation(b *bucket, now time.Time, cfg resolved.Middleware) {
+	fullAt := s.refillDeadline(now, float64(b.limiter.Burst())-b.limiter.TokensAt(now))
+	s.indexBucket(b, now, cfg, fullAt)
+}
+
+func (s *bucketStore) indexBucket(b *bucket, now time.Time, cfg resolved.Middleware, fullAt time.Time) {
 	b.idleAt = time.Time{}
 	if cfg.RateLimitIdleTTL > 0 {
 		b.idleAt = now.Add(cfg.RateLimitIdleTTL)
 	}
-	b.fullAt = s.refillDeadline(now, float64(b.limiter.Burst())-b.limiter.TokensAt(now))
+	b.fullAt = fullAt
 	if cfg.RateLimitEvictIdle || (!b.idleAt.IsZero() && b.idleAt.Before(b.fullAt)) {
 		b.fullAt = b.idleAt
 	}
@@ -154,8 +171,7 @@ func (s *bucketStore) retireReservation(now time.Time) bool {
 	if now.Before(b.fullAt) {
 		return false
 	}
-	idleExpired := !b.idleAt.IsZero() && !now.Before(b.idleAt)
-	if !idleExpired && b.limiter.TokensAt(now) < float64(b.limiter.Burst()) {
+	if !b.idleExpired(now) && b.limiter.TokensAt(now) < float64(b.limiter.Burst()) {
 		return false
 	}
 	heap.Pop(&s.expiry)
@@ -193,7 +209,7 @@ func (s *bucketStore) retire(now time.Time) bool {
 	// A rounded or saturated deadline is only a hint. Recheck real token debt
 	// under the admission lock before releasing the slot.
 	s.refill(b, now)
-	if b.tokens < s.capacity {
+	if !b.idleExpired(now) && b.tokens < s.capacity {
 		b.fullAt = s.deadline(b)
 		heap.Fix(&s.expiry, b.index)
 		return false
@@ -201,6 +217,10 @@ func (s *bucketStore) retire(now time.Time) bool {
 	heap.Pop(&s.expiry)
 	delete(s.buckets, b.key)
 	return true
+}
+
+func (b *bucket) idleExpired(now time.Time) bool {
+	return b != nil && !b.idleAt.IsZero() && !now.Before(b.idleAt)
 }
 
 type bucketHeap []*bucket

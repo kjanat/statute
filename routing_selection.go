@@ -87,11 +87,12 @@ func bestPriorityRoute(routes []compiledRoute, host string, r *http.Request) *co
 }
 
 func priorityDynamicRoute(t *dynamicTable, host string, r *http.Request) *compiledRoute {
-	serving := bestPriorityRoute(t.routes, host, r)
-	quarantine := bestPriorityRoute(t.quarantines, host, r)
+	serving := bestUnquarantinedPriorityRoute(t, host, r)
 	rejection := bestPriorityRoute(t.rejections, host, r)
-	if quarantine != nil && (serving == nil || quarantine.matcher.Priority >= serving.matcher.Priority) {
-		return quarantine
+	if serving == nil {
+		if quarantine := bestPriorityRoute(t.quarantines, host, r); quarantine != nil {
+			return quarantine
+		}
 	}
 	if rejection != nil && (serving == nil || rejection.matcher.Priority >= serving.matcher.Priority) {
 		return rejection
@@ -100,6 +101,34 @@ func priorityDynamicRoute(t *dynamicTable, host string, r *http.Request) *compil
 		return refusal
 	}
 	return serving
+}
+
+func bestUnquarantinedPriorityRoute(t *dynamicTable, host string, r *http.Request) *compiledRoute {
+	var best *compiledRoute
+	for i := range t.routes {
+		candidate := findCompiledRoute(t.routes[i:i+1], host, r)
+		if candidate != nil && (best == nil || candidate.matcher.Priority > best.matcher.Priority) &&
+			!priorityRouteQuarantined(t, candidate, host, r) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func priorityRouteQuarantined(t *dynamicTable, route *compiledRoute, host string, r *http.Request) bool {
+	matched, sameService := false, false
+	for i := range t.quarantines {
+		quarantine := findCompiledRoute(t.quarantines[i:i+1], host, r)
+		if quarantine == nil || quarantine.matcher.Priority < route.matcher.Priority {
+			continue
+		}
+		if !sameDynamicTraffic(quarantine.matcher, route.matcher) || findSameServiceDynamicRoute(t.routes, host, r, quarantine) == nil {
+			return true
+		}
+		matched = true
+		sameService = sameService || quarantine.service == route.service
+	}
+	return matched && !sameService
 }
 
 func listenerMatches(names []string, r *http.Request) bool {
