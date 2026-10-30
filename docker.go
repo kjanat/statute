@@ -267,7 +267,7 @@ func (r Readiness) String() string {
 	case resolved.ReadinessDockerHealth:
 		return "docker_health"
 	case resolved.ReadinessTCP:
-		return "tcp"
+		return networkTCP
 	case resolved.ReadinessHTTP:
 		return "http:" + r.path
 	default:

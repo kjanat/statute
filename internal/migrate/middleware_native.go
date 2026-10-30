@@ -20,7 +20,7 @@ func (g *generator) basicAuth(o *Object, chain *middleware) {
 	}
 	realm := o.text("basicAuth.realm")
 	if realm == "" {
-		realm = "traefik"
+		realm = sourceTraefik
 	}
 	if !literal(realm) {
 		return
@@ -131,15 +131,7 @@ func (g *generator) nativeRewrite(o *Object, chain *middleware) {
 			o.mark("replacePath.path", Translated, "escaped replacement with X-Replaced-Path at its declared middleware position")
 		}
 	}
-	if o.value("replacePathRegex") != nil || hasFieldPrefix(o, "replacePathRegex.") {
-		pattern, replacement := o.text("replacePathRegex.regex"), o.text("replacePathRegex.replacement")
-		if _, err := regexp.Compile(strings.TrimSpace(pattern)); err == nil && !strings.Contains(pattern, "${") && !strings.Contains(pattern+replacement, "{{") {
-			chain.values = append(chain.values, statute.RewriteEscapedPath(pattern, replacement).RecordOriginal())
-			chain.code = append(chain.code, fmt.Sprintf("statute.RewriteEscapedPath(%q,%q).RecordOriginal()", pattern, replacement))
-			o.mark("replacePathRegex.regex", Translated, "escaped path regexp")
-			o.mark("replacePathRegex.replacement", Translated, "capture replacement with X-Replaced-Path")
-		}
-	}
+	g.regexRewrite(o, chain)
 	if prefixes, ok := stringList(o.value("stripPrefix.prefixes"), o.Provider == providerDocker); ok {
 		force, valid := sourceBoolValue(o.value("stripPrefix.forceSlash"), false)
 		if !valid {
@@ -172,15 +164,8 @@ func (g *generator) compression(o *Object, chain *middleware) {
 		}
 		p.Encodings = values
 	}
-	if value := o.value("compress.minResponseBodyBytes"); value != nil {
-		n, err := integer(value)
-		if err != nil {
-			o.mark("compress.minResponseBodyBytes", Manual, "minimum body size must be an integer")
-			return
-		}
-		if n > 0 {
-			p.MinimumBytes = n
-		}
+	if !sourceCompressionMinimum(o, &p) {
+		return
 	}
 	p.DefaultEncoding = o.text("compress.defaultEncoding")
 	for _, field := range []struct {
@@ -264,44 +249,6 @@ func (g *generator) retainMiddlewareCandidate(o *Object, chain middleware) {
 	g.helpers[name] = fmt.Sprintf("// %s is incomplete; see the audit for %s.\nfunc %s() []statute.Middleware {return []statute.Middleware{%s}}", name, strconv.Quote(o.identity()), name, strings.Join(chain.code, ","))
 }
 
-func (g *generator) checkMiddlewareOrder(o *Object, refs []string) {
-	// Source middleware groups execute at their declared position.
-}
-
-func sourceResponseHeaders(m *Object) map[string]string {
-	values := map[string]string{}
-	for _, f := range []struct{ key, name, value string }{
-		{"contentTypeNosniff", "x-content-type-options", "nosniff"},
-		{"frameDeny", "x-frame-options", "DENY"},
-		{"browserXssFilter", "x-xss-protection", "1; mode=block"},
-	} {
-		if scalar(m.value("headers."+f.key)) == trueValue {
-			values[f.name] = f.value
-		}
-	}
-	for _, f := range []struct{ key, name string }{
-		{fieldReferrerPolicy, "referrer-policy"},
-		{"customFrameOptionsValue", "x-frame-options"},
-		{"contentSecurityPolicy", "content-security-policy"},
-		{"permissionsPolicy", "permissions-policy"},
-	} {
-		if value := m.text("headers." + f.key); value != "" {
-			values[f.name] = value
-		}
-	}
-	if value := sourceHSTSValue(m); value != "" {
-		values["strict-transport-security"] = value
-	}
-
-	const prefix = "headers.customresponseheaders."
-	for _, f := range m.Fields {
-		if path := strings.ToLower(f.Path); strings.HasPrefix(path, prefix) {
-			values[strings.TrimPrefix(path, prefix)] = scalar(m.value(f.Path))
-		}
-	}
-	return values
-}
-
 func hasFieldPrefix(o *Object, prefix string) bool {
 	prefix = strings.ToLower(prefix)
 	for _, f := range o.Fields {
@@ -310,25 +257,6 @@ func hasFieldPrefix(o *Object, prefix string) bool {
 		}
 	}
 	return false
-}
-
-func (g *generator) flattenMiddleware(id string, out *[]*Object, seen map[string]bool) {
-	if seen[id] || len(*out) >= 256 {
-		return
-	}
-	seen[id] = true
-	o := g.objects["middlewares:"+id]
-	if o == nil {
-		return
-	}
-	if refs, ok := stringList(o.value("chain.middlewares"), o.Provider == providerDocker); ok {
-		for _, ref := range refs {
-			g.flattenMiddleware(qualified(ref, o.Provider), out, seen)
-		}
-	} else {
-		*out = append(*out, o)
-	}
-	delete(seen, id)
 }
 
 func inlineUsers(o *Object) ([]any, bool) {
@@ -347,7 +275,7 @@ func inlineUsers(o *Object) ([]any, bool) {
 func authenticationRealm(o *Object) (string, bool) {
 	realm := o.text("basicAuth.realm")
 	if realm == "" {
-		realm = "traefik"
+		realm = sourceTraefik
 	}
 	return realm, literal(realm)
 }
@@ -365,17 +293,28 @@ func classifyInlineUsers(o *Object, values []any) {
 	o.mark("basicAuth.users", Translated, "explicit bcrypt hash environment bindings; generated startup validates hashes")
 }
 
-func sourceHSTSValue(m *Object) string {
-	seconds, err := integer(m.value("headers.stsSeconds"))
-	if err != nil || seconds <= 0 {
-		return ""
+func (g *generator) regexRewrite(o *Object, chain *middleware) {
+	if o.value("replacePathRegex") != nil || hasFieldPrefix(o, "replacePathRegex.") {
+		pattern, replacement := o.text("replacePathRegex.regex"), o.text("replacePathRegex.replacement")
+		if _, err := regexp.Compile(strings.TrimSpace(pattern)); err == nil && !strings.Contains(pattern, "${") && !strings.Contains(pattern+replacement, "{{") {
+			chain.values = append(chain.values, statute.RewriteEscapedPath(pattern, replacement).RecordOriginal())
+			chain.code = append(chain.code, fmt.Sprintf("statute.RewriteEscapedPath(%q,%q).RecordOriginal()", pattern, replacement))
+			o.mark("replacePathRegex.regex", Translated, "escaped path regexp")
+			o.mark("replacePathRegex.replacement", Translated, "capture replacement with X-Replaced-Path")
+		}
 	}
-	value := fmt.Sprintf("max-age=%d", seconds)
-	if scalar(m.value("headers.stsIncludeSubdomains")) == trueValue {
-		value += "; includeSubDomains"
+}
+
+func sourceCompressionMinimum(o *Object, p *statute.EncodingPolicy) bool {
+	if value := o.value("compress.minResponseBodyBytes"); value != nil {
+		n, err := integer(value)
+		if err != nil {
+			o.mark("compress.minResponseBodyBytes", Manual, "minimum body size must be an integer")
+			return false
+		}
+		if n > 0 {
+			p.MinimumBytes = n
+		}
 	}
-	if scalar(m.value("headers.stsPreload")) == trueValue {
-		value += "; preload"
-	}
-	return value
+	return true
 }

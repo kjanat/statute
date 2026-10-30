@@ -16,7 +16,7 @@ func (g *generator) checkSourceTopology(c *resolved.Config) {
 	routes, fallbacks := slices.Clone(c.Routes[:len(c.Routes)-len(g.internalRoutes)]), slices.Clone(c.FallbackRoutes)
 	failed := false
 	for _, o := range g.orderedRouters() {
-		if !generatedFileRouter(o) || g.disabledRouters[o] {
+		if !g.activeFileRouter(o) {
 			continue
 		}
 		ms, err := docker.ParseRule(o.text("rule"))
@@ -26,7 +26,7 @@ func (g *generator) checkSourceTopology(c *resolved.Config) {
 		}
 		for _, m := range ms {
 			target := &routes
-			if !g.r.Config.PrioritizeRoutes && m.Host == "" && m.PathKind == docker.PathAny {
+			if g.terminalMatcher(m) {
 				target = &fallbacks
 			}
 			failed = g.checkSourceMatcher(c, o, m, target) || failed
@@ -79,7 +79,7 @@ func (g *generator) checkDockerTopology(c *resolved.Config) {
 				failed = true
 			}
 		}
-		if _, ok := c.Docker.PoolPolicy[o.text("service")+"@traefik"]; !ok && c.Docker.ServiceBindings[o.text("service")].Upstream == "" && !c.Docker.ServiceBindings[o.text("service")].HandlerBinding {
+		if !dockerServiceHasPolicy(c.Docker, o.text("service")) {
 			failed = true
 		}
 	})
@@ -118,7 +118,7 @@ func (g *generator) checkRoutePolicy(c *resolved.Config, o *Object, r *resolved.
 	name := qualified(o.text("service"), o.Provider)
 	plan := g.r.Config
 	route := statute.Match("/*").ProxyTo(name).With(chain...)
-	if name == "noop@internal" {
+	if name == serviceNoop {
 		route = statute.Match("/*").Handle(migrationNoop).With(chain...)
 	} else if g.discoveredService(name) {
 		route = statute.Match("/*").ProxyToDiscovered(strings.TrimSuffix(name, "@docker") + "@traefik").With(chain...)
@@ -133,3 +133,13 @@ func (g *generator) checkRoutePolicy(c *resolved.Config, o *Object, r *resolved.
 }
 
 func generatedFileRouter(o *Object) bool { return o.Generated && o.Provider == providerFile }
+
+func (g *generator) activeFileRouter(o *Object) bool {
+	return generatedFileRouter(o) && !g.disabledRouters[o]
+}
+
+func dockerServiceHasPolicy(d *resolved.Docker, name string) bool {
+	_, ok := d.PoolPolicy[name+"@traefik"]
+	binding := d.ServiceBindings[name]
+	return ok || binding.Upstream != "" || binding.HandlerBinding
+}

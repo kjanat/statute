@@ -10,9 +10,24 @@ Observability: statute.Observability{
 }
 ```
 
-One JSON line per selected request, written to the configured destination (`Stdout`, `Stderr`, or any `io.Writer` via the `LogWriter` type). Recording runs when the handler returns or unwinds, including streaming aborts.
+One JSON line per selected request, written to the configured destination (`Stdout`, `Stderr`, or `LogFile(path)`). Recording runs when the handler returns or unwinds, including streaming aborts.
 
 ### Fields
+
+For a file destination and a bounded asynchronous queue:
+
+```go
+AccessLog: statute.CommonLog(statute.LogFile("/var/log/statute/access.log")).Buffer(256)
+```
+
+`CommonLog` writes common-format request lines. `JSONLog` writes structured JSON;
+both support the same sampling and status filters. `LogFile` appends to a file,
+creates it with mode `0600`, and requires its parent directory to exist. An open
+failure stops startup before listeners serve.
+
+`Buffer(n)` queues up to `n` records and applies backpressure when full. Shutdown
+and failed-start cleanup drain the queue and close the destination. A flush error
+is returned by shutdown. Without a queue, writes run in the request goroutine.
 
 | Field           | Type   | Description                                                                                                                                  |
 | --------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------- |

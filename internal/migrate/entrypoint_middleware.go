@@ -7,8 +7,6 @@ import (
 	statute "statute.kjanat.dev"
 )
 
-func (g *generator) defaultMiddlewareRefs() ([]string, bool) { return nil, true }
-
 func (g *generator) entrypointMiddleware() {
 	for _, name := range keys(g.entrypoints) {
 		o := g.entrypoints[name]
@@ -20,18 +18,8 @@ func (g *generator) entrypointMiddleware() {
 			o.mark("http.middlewares", Manual, "invalid entrypoint middleware list")
 			continue
 		}
-		var values []statute.Middleware
-		var code []string
-		valid := true
-		for _, ref := range refs {
-			chain, found := g.chains[ref]
-			if !found || !strings.Contains(ref, "@") {
-				valid = false
-				break
-			}
-			values = append(values, chain.values...)
-			code = append(code, chain.code...)
-		}
+		chain, valid := g.entrypointChain(refs)
+		values, code := chain.values, chain.code
 		if !valid {
 			o.mark("http.middlewares", Manual, "entrypoint references a missing or blocked middleware")
 			continue
@@ -55,7 +43,7 @@ func (g *generator) entrypointMiddleware() {
 
 func (g *generator) middlewareRefs(o *Object) ([]string, bool) { return middlewareRefs(o) }
 
-func (g *generator) checkDefaultMiddleware(o *Object, refs []string) {
+func (g *generator) checkDefaultMiddleware(o *Object) {
 	for _, name := range g.routerEntries[o] {
 		entry := g.entrypoints[name]
 		if entry == nil || entry.value("http.middlewares") == nil {
@@ -72,4 +60,17 @@ func (g *generator) checkDefaultMiddleware(o *Object, refs []string) {
 			}
 		}
 	}
+}
+
+func (g *generator) entrypointChain(refs []string) (middleware, bool) {
+	var values middleware
+	for _, ref := range refs {
+		chain, found := g.chains[ref]
+		if !found || !strings.Contains(ref, "@") {
+			return middleware{}, false
+		}
+		values.values = append(values.values, chain.values...)
+		values.code = append(values.code, chain.code...)
+	}
+	return values, true
 }

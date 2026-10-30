@@ -98,51 +98,8 @@ func (g *generator) tlsPolicy(ep *Object, opts []statute.ListenerOption, codes [
 		opts = append(opts, defaults...)
 		codes = append(codes, defaultCode...)
 	}
-	selected := map[string]string{}
-	owners := map[string][]*Object{}
-	conflicts := map[string]bool{}
-	g.each("routers", func(o *Object) {
-		if !slices.Contains(g.routerEntries[o], ep.Name) {
-			return
-		}
-		owner, base := routerTLSSource(o, ep)
-		name := owner.text(base + ".options")
-		if name == "" {
-			name = defaultName
-		}
-		name = qualified(name, providerFile)
-		hosts, err := parseRuleHosts(o)
-		if err != nil {
-			return
-		}
-		for _, host := range hosts {
-			owners[host] = append(owners[host], o)
-			if old, exists := selected[host]; exists && old != name {
-				selected[host] = "default@file"
-				conflicts[host] = true
-			} else {
-				selected[host] = name
-			}
-		}
-		owner.mark(base+".options", Translated, "TLS policy selected by SNI; conflicting hostname assignments use the default")
-	})
-	strict := false
-	if core := g.objects["setting:core@static"]; core != nil {
-		strict, _ = sourceBoolValue(core.value("strictTLSOptions"), false)
-	}
-	if strict {
-		for host := range conflicts {
-			for _, router := range owners[host] {
-				entries := slices.Clone(g.routerEntries[router])
-				entries = slices.DeleteFunc(entries, func(name string) bool { return name == ep.Name })
-				g.routerEntries[router] = entries
-				if len(entries) == 0 {
-					g.disabledRouters[router] = true
-				}
-				router.note("$tls-conflict", Translated, "source disables this router on an entrypoint with conflicting TLS policies")
-			}
-		}
-	}
+	selected, owners, conflicts := g.collectTLSPolicyAssignments(ep)
+	g.disableTLSConflicts(ep, owners, conflicts)
 	grouped := map[string][]string{}
 	for _, host := range keys(selected) {
 		name := selected[host]
@@ -325,4 +282,56 @@ func (g *generator) unusedTLSPolicies() {
 			o.mark("", OutOfScope, "TLS profile is not selected by any supplied HTTP router or listener")
 		}
 	})
+}
+
+func (g *generator) collectTLSPolicyAssignments(ep *Object) (map[string]string, map[string][]*Object, map[string]bool) {
+	selected := map[string]string{}
+	owners := map[string][]*Object{}
+	conflicts := map[string]bool{}
+	g.each("routers", func(o *Object) {
+		if !slices.Contains(g.routerEntries[o], ep.Name) {
+			return
+		}
+		owner, base := routerTLSSource(o, ep)
+		name := owner.text(base + ".options")
+		if name == "" {
+			name = defaultName
+		}
+		name = qualified(name, providerFile)
+		hosts, err := parseRuleHosts(o)
+		if err != nil {
+			return
+		}
+		for _, host := range hosts {
+			owners[host] = append(owners[host], o)
+			if old, exists := selected[host]; exists && old != name {
+				selected[host] = "default@file"
+				conflicts[host] = true
+			} else {
+				selected[host] = name
+			}
+		}
+		owner.mark(base+".options", Translated, "TLS policy selected by SNI; conflicting hostname assignments use the default")
+	})
+	return selected, owners, conflicts
+}
+
+func (g *generator) disableTLSConflicts(ep *Object, owners map[string][]*Object, conflicts map[string]bool) {
+	strict := false
+	if core := g.objects["setting:core@static"]; core != nil {
+		strict, _ = sourceBoolValue(core.value("strictTLSOptions"), false)
+	}
+	if strict {
+		for host := range conflicts {
+			for _, router := range owners[host] {
+				entries := slices.Clone(g.routerEntries[router])
+				entries = slices.DeleteFunc(entries, func(name string) bool { return name == ep.Name })
+				g.routerEntries[router] = entries
+				if len(entries) == 0 {
+					g.disabledRouters[router] = true
+				}
+				router.note("$tls-conflict", Translated, "source disables this router on an entrypoint with conflicting TLS policies")
+			}
+		}
+	}
 }

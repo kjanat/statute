@@ -20,18 +20,8 @@ func resolveServiceBindings(bindings map[string]ServiceBinding) map[string]resol
 }
 
 func validateServiceBindings(cfg *resolved.Config) error {
-	if cfg.Docker != nil {
-		for name, binding := range cfg.Docker.ServiceBindings {
-			if name == "" || (binding.Upstream != "") == binding.HandlerBinding {
-				return fmt.Errorf("docker service binding %q: select one pool or handler", name)
-			}
-			if binding.Upstream != "" && cfg.Upstreams[binding.Upstream] == nil {
-				return fmt.Errorf("docker service binding %q: unknown upstream", name)
-			}
-			if binding.HandlerBinding && isNilHandler(binding.Handler) {
-				return fmt.Errorf("docker service binding %q: nil handler", name)
-			}
-		}
+	if err := validateDockerServiceBindings(cfg); err != nil {
+		return err
 	}
 	for _, routes := range [][]*resolved.Route{cfg.Routes, cfg.FallbackRoutes} {
 		for _, route := range routes {
@@ -49,6 +39,21 @@ func (p *dockerProvider) boundServices() map[string]bool {
 		out[name] = true
 	}
 	return out
+}
+
+func (p *dockerProvider) referencedServices() map[string]bool {
+	names := map[string]bool{}
+	if p.srv == nil || p.srv.cfg == nil {
+		return names
+	}
+	for _, routes := range [][]*resolved.Route{p.srv.cfg.Routes, p.srv.cfg.FallbackRoutes} {
+		for _, route := range routes {
+			if route.DiscoveredUpstream != "" {
+				names[route.DiscoveredUpstream] = true
+			}
+		}
+	}
+	return names
 }
 
 func (p *dockerProvider) addBoundService(svc *docker.Service, next *dynamicTable) []docker.Matcher {
@@ -79,4 +84,21 @@ func (s *server) discoveredUpstream(name string) http.Handler {
 		}
 		table.serviceHandlers[name].ServeHTTP(w, r)
 	})
+}
+
+func validateDockerServiceBindings(cfg *resolved.Config) error {
+	if cfg.Docker != nil {
+		for name, binding := range cfg.Docker.ServiceBindings {
+			if name == "" || (binding.Upstream != "") == binding.HandlerBinding {
+				return fmt.Errorf("docker service binding %q: select one pool or handler", name)
+			}
+			if binding.Upstream != "" && cfg.Upstreams[binding.Upstream] == nil {
+				return fmt.Errorf("docker service binding %q: unknown upstream", name)
+			}
+			if binding.HandlerBinding && isNilHandler(binding.Handler) {
+				return fmt.Errorf("docker service binding %q: nil handler", name)
+			}
+		}
+	}
+	return nil
 }

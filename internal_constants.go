@@ -4,6 +4,7 @@ package statute
 // in many places (listener scheme switching, ALPN advertisement, request
 // matching) and a typo in a string literal would silently mis-route.
 const (
+	headerForwardedLower  = "forwarded"
 	headerContentLength   = "Content-Length"
 	headerContentEncoding = "Content-Encoding"
 	headerContentRange    = "Content-Range"
@@ -13,6 +14,8 @@ const (
 	headerXForwardedProto = "X-Forwarded-Proto"
 	headerXForwardedPort  = "X-Forwarded-Port"
 	headerXRealIP         = "X-Real-Ip"
+
+	networkTCP = "tcp"
 
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"

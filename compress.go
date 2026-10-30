@@ -170,17 +170,8 @@ func (c *compressResponseWriter) startEncoding() {
 	c.coding = coding
 	c.encoded = true
 	c.droppedTrailers = stripCompressionTrailers(h)
-	deleteHeaderFold(h, "Content-Length")
-	for _, name := range []string{"Content-Encoding", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, "Accept-Ranges"} {
-		deleteHeaderFold(h, name)
-	}
+	prepareEncodedMetadata(h)
 	h.Set("Content-Encoding", c.coding)
-	tags, _ := cacheHeaderValues(h, "ETag")
-	if len(tags) == 1 && strings.HasPrefix(tags[0], `"`) {
-		tag := tags[0]
-		deleteHeaderFold(h, "ETag")
-		h.Set("ETag", "W/"+tag)
-	}
 	if c.head {
 		return
 	}
@@ -192,6 +183,17 @@ func (c *compressResponseWriter) startEncoding() {
 		c.brotli = brotliPool.Get().(*brotli.Writer)
 		c.brotli.Reset(c.ResponseWriter)
 		c.w = c.brotli
+	}
+}
+
+func prepareEncodedMetadata(h http.Header) {
+	for _, name := range []string{headerContentLength, "Content-Encoding", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, "Accept-Ranges"} {
+		deleteHeaderFold(h, name)
+	}
+	tags, _ := cacheHeaderValues(h, "ETag")
+	if len(tags) == 1 && strings.HasPrefix(tags[0], `"`) {
+		deleteHeaderFold(h, "ETag")
+		h.Set("ETag", "W/"+tags[0])
 	}
 }
 

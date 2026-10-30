@@ -96,6 +96,9 @@ func clientAuthALPN(protos []string, state *listenerTLS, l *resolved.Listener, a
 // applyTLSPolicy preserves defaults for unset bounds, including the TLS 1.2 floor.
 // Both TCP and QUIC use this resolved listener policy.
 func applyTLSPolicy(cfg *tls.Config, p *resolved.TLSPolicy) {
+	cfg.MinVersion = tls.VersionTLS12
+	cfg.MaxVersion = 0
+	cfg.CipherSuites = nil
 	if p == nil {
 		return
 	}

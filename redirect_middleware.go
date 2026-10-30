@@ -58,14 +58,8 @@ func (m *redirectMW) resolve() (resolved.Middleware, error) {
 	}
 	out := resolved.Middleware{Type: resolved.MWRedirectRegex, RedirectPattern: m.pattern, RedirectReplacement: m.replacement, RedirectStatus: m.status, RedirectNonGETStatus: m.nonGETStatus}
 	if m.schemeRedirect {
-		if m.scheme != schemeHTTP && m.scheme != schemeHTTPS {
-			return resolved.Middleware{}, errors.New("redirect_scheme: scheme must be http or https")
-		}
-		if m.port != "" {
-			n, err := strconv.Atoi(m.port)
-			if err != nil || n < 1 || n > 65535 {
-				return resolved.Middleware{}, errors.New("redirect_scheme: port must be between 1 and 65535")
-			}
+		if err := validateRedirectScheme(m.scheme, m.port); err != nil {
+			return resolved.Middleware{}, err
 		}
 		out.Type, out.RedirectScheme, out.RedirectPort = resolved.MWRedirectScheme, m.scheme, m.port
 		return out, nil
@@ -95,18 +89,12 @@ const redirectSchemePattern = `^(https?://)?(\[[\w:.]+\]|[\w._-]+)?(:\d+)?(.*)$`
 func redirectMiddlewareHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	pattern, replacement := m.RedirectPattern, m.RedirectReplacement
 	if m.Type == resolved.MWRedirectScheme {
-		port := m.RedirectPort
-		if port != "" && !(m.RedirectScheme == schemeHTTP && port == "80" || m.RedirectScheme == schemeHTTPS && port == "443") {
-			port = ":" + port
-		} else {
-			port = ""
-		}
+		port := redirectTargetPort(m.RedirectScheme, m.RedirectPort)
 		pattern, replacement = redirectSchemePattern, m.RedirectScheme+"://${2}"+port+"${4}"
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		// Resolve rejects invalid patterns. A hand-built resolved value must
-		// still refuse requests rather than silently dropping the policy.
+		// Invalid patterns refuse requests, including hand-built resolved values.
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeRedirectStatus(w, http.StatusInternalServerError) })
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -165,15 +153,7 @@ func redirectRequestURL(r *http.Request, forwarded bool) string {
 		scheme = schemeHTTPS
 	}
 	if forwarded {
-		switch proto := redirectForwardedProto(r); {
-		case strings.EqualFold(proto, schemeHTTP), strings.EqualFold(proto, "ws"):
-			scheme = schemeHTTP
-		case strings.EqualFold(proto, schemeHTTPS), strings.EqualFold(proto, "wss"):
-			scheme = schemeHTTPS
-		}
-		if scheme == schemeHTTP && port == ":80" || scheme == schemeHTTPS && port == ":443" {
-			port = ""
-		}
+		scheme, port = forwardedRedirectAuthority(r, scheme, port)
 	}
 	return scheme + "://" + host + port + uri
 }
@@ -187,4 +167,41 @@ func redirectForwardedProto(r *http.Request) string {
 		return r.Header.Get(headerXForwardedProto)
 	}
 	return ""
+}
+
+func validateRedirectScheme(scheme, port string) error {
+	if scheme != schemeHTTP && scheme != schemeHTTPS {
+		return errors.New("redirect_scheme: scheme must be http or https")
+	}
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("redirect_scheme: port must be between 1 and 65535")
+		}
+	}
+	return nil
+}
+
+func forwardedRedirectAuthority(r *http.Request, scheme, port string) (string, string) {
+	switch proto := redirectForwardedProto(r); {
+	case strings.EqualFold(proto, schemeHTTP), strings.EqualFold(proto, "ws"):
+		scheme = schemeHTTP
+	case strings.EqualFold(proto, schemeHTTPS), strings.EqualFold(proto, "wss"):
+		scheme = schemeHTTPS
+	}
+	if redirectStandardPort(scheme, strings.TrimPrefix(port, ":")) {
+		port = ""
+	}
+	return scheme, port
+}
+
+func redirectTargetPort(scheme, port string) string {
+	if port == "" || redirectStandardPort(scheme, port) {
+		return ""
+	}
+	return ":" + port
+}
+
+func redirectStandardPort(scheme, port string) bool {
+	return scheme == schemeHTTP && port == "80" || scheme == schemeHTTPS && port == "443"
 }

@@ -860,19 +860,28 @@ func writeECPrivateKey(path string, key *ecdsa.PrivateKey) error {
 	return os.WriteFile(path, pemBytes, 0o600)
 }
 
+const (
+	acmeKeyEC256   = "EC256"
+	acmeKeyEC384   = "EC384"
+	acmeKeyRSA2048 = "RSA2048"
+	acmeKeyRSA3072 = "RSA3072"
+	acmeKeyRSA4096 = "RSA4096"
+	acmeKeyRSA8192 = "RSA8192"
+)
+
 func generateLeafKey(kind string) (crypto.Signer, error) {
 	switch kind {
-	case "", "EC256":
+	case "", acmeKeyEC256:
 		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	case "EC384":
+	case acmeKeyEC384:
 		return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	case "RSA2048":
+	case acmeKeyRSA2048:
 		return rsa.GenerateKey(rand.Reader, 2048)
-	case "RSA3072":
+	case acmeKeyRSA3072:
 		return rsa.GenerateKey(rand.Reader, 3072)
-	case "RSA4096":
+	case acmeKeyRSA4096:
 		return rsa.GenerateKey(rand.Reader, 4096)
-	case "RSA8192":
+	case acmeKeyRSA8192:
 		return rsa.GenerateKey(rand.Reader, 8192)
 	default:
 		return nil, errors.New("unsupported certificate key type")
@@ -896,21 +905,13 @@ func leafKeyMatches(kind string, cert *tls.Certificate) bool {
 	}
 	switch key := cert.PrivateKey.(type) {
 	case *ecdsa.PrivateKey:
-		if kind == "" || kind == "EC256" {
+		if kind == "" || kind == acmeKeyEC256 {
 			return key.Curve == elliptic.P256()
 		}
-		return kind == "EC384" && key.Curve == elliptic.P384()
+		return kind == acmeKeyEC384 && key.Curve == elliptic.P384()
 	case *rsa.PrivateKey:
-		switch kind {
-		case "RSA2048":
-			return key.N.BitLen() == 2048
-		case "RSA3072":
-			return key.N.BitLen() == 3072
-		case "RSA4096":
-			return key.N.BitLen() == 4096
-		case "RSA8192":
-			return key.N.BitLen() == 8192
-		}
+		bits := map[string]int{acmeKeyRSA2048: 2048, acmeKeyRSA3072: 3072, acmeKeyRSA4096: 4096, acmeKeyRSA8192: 8192}
+		return key.N.BitLen() == bits[kind]
 	}
 	return false
 }

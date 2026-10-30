@@ -250,6 +250,7 @@ type HostTLSPolicy struct {
 type ClientAuthMode string
 
 const (
+	// ClientAuthNone does not request a client certificate.
 	ClientAuthNone ClientAuthMode = "none"
 	// ClientAuthRequest asks for a certificate without requiring it.
 	ClientAuthRequest ClientAuthMode = "request"

@@ -256,7 +256,7 @@ const (
 func (a CompressAlgo) String() string {
 	switch a {
 	case Gzip:
-		return "gzip"
+		return codingGzip
 	case Brotli:
 		return "br"
 	default:

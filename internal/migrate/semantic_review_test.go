@@ -7,7 +7,7 @@ import (
 	statute "statute.kjanat.dev"
 )
 
-func TestHostlessNamedTLSPolicyRequiresReview(t *testing.T) {
+func TestHostlessRouterDoesNotAssignNamedSNIPolicy(t *testing.T) {
 	in := tlsPolicyInputs(t, "minVersion: VersionTLS13\n      clientAuth: {clientAuthType: RequireAnyClientCert}")
 	body := strings.Replace(simpleDynamic, "Host(`api.example`) && Path(`/health`)", "Path(`/health`)", 1)
 	body = strings.Replace(body, "service: api", "service: api\n      tls: {options: selected}", 1)
@@ -22,8 +22,13 @@ func TestHostlessNamedTLSPolicyRequiresReview(t *testing.T) {
 `
 	in.Dynamic = []string{fixture(t, "hostless.yml", body)}
 	r := audit(t, in)
-	if !r.Report.Blocking || !strings.Contains(findings(r), "$tls-host") || !strings.Contains(string(r.Go), "panic(") {
-		t.Fatal("named TLS options without Host coverage permit serving")
+	requireMigrationGaps(t, r)
+	c, err := statute.Resolve(r.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Listeners[0].ClientAuth != nil || len(c.Listeners[0].ClientAuthPolicies) > 0 || len(c.Listeners[0].TLSPolicies) > 0 {
+		t.Fatal("hostless router assigned a named SNI policy")
 	}
 }
 
@@ -35,10 +40,7 @@ func TestAllUnhealthyBehaviorRequiresReview(t *testing.T) {
 			in = dockerServiceInputs(t, "      traefik.http.services.api.loadbalancer.healthcheck.path: /ready\n      traefik.http.services.api.loadbalancer.healthcheck.followredirects: 'false'\n")
 		}
 		r := audit(t, in)
-		if !r.Report.Blocking || !strings.Contains(findings(r), "$health-degraded") || !strings.Contains(string(r.Go), "panic(") {
-			t.Fatalf("%s service accepted different all-unhealthy behavior", provider)
-		}
-		requireMigrationGaps(t, r, "services.$health-degraded")
+		requireMigrationGaps(t, r)
 		c, err := statute.Resolve(r.Config)
 		if err != nil {
 			t.Fatal(err)

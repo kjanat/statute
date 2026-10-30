@@ -27,42 +27,9 @@ func rateLimitHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		buckets.capacity = float64(m.RateLimitBurst)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := selectedRequestIP(m.IPSelection, r)
-		switch m.RateLimitKey {
-		case resolved.KeyHostHeader:
-			key = r.Host
-		case resolved.KeyPeerIP:
-			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-				key = host
-			} else {
-				key = r.RemoteAddr
-			}
-		case resolved.KeyRequestHeader:
-			key = r.Header.Get(m.RateLimitRequestHeader)
-		}
+		key := rateLimitRequestKey(m, r)
 		if m.RateLimitReservations {
-			delay, ok := buckets.reserve(key, time.Now(), m)
-			if !ok {
-				w.Header().Set("Cache-Control", "no-store")
-				http.Error(w, "rate limit capacity unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			if delay > m.RateLimitMaxDelay {
-				w.Header().Set("Retry-After", fmt.Sprintf("%.0f", math.Ceil(delay.Seconds())))
-				w.Header().Set("X-Retry-In", delay.String())
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(http.StatusText(http.StatusTooManyRequests)))
-				return
-			}
-			timer := time.NewTimer(delay)
-			defer timer.Stop()
-			select {
-			case <-r.Context().Done():
-				http.Error(w, "context canceled", http.StatusInternalServerError)
-				return
-			case <-timer.C:
-			}
-			next.ServeHTTP(w, r)
+			serveRateReservation(buckets, m, key, w, r, next)
 			return
 		}
 		switch buckets.allow(key, time.Now()) {
@@ -139,7 +106,7 @@ func (s *bucketStore) reserve(key string, now time.Time, cfg resolved.Middleware
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.buckets[digest]
-	if b != nil && cfg.RateLimitIdleTTL > 0 && b.fullAt.Unix() <= now.Unix() {
+	if b != nil && cfg.RateLimitIdleTTL > 0 && !now.Before(b.fullAt) {
 		heap.Remove(&s.expiry, b.index)
 		delete(s.buckets, digest)
 		b = nil
@@ -227,4 +194,46 @@ func (h *bucketHeap) Pop() any {
 	old[len(old)-1] = nil
 	*h = old[:len(old)-1]
 	return b
+}
+
+func rateLimitRequestKey(m resolved.Middleware, r *http.Request) string {
+	key := selectedRequestIP(m.IPSelection, r)
+	switch m.RateLimitKey {
+	case resolved.KeyHostHeader:
+		return r.Host
+	case resolved.KeyRequestHeader:
+		return r.Header.Get(m.RateLimitRequestHeader)
+	case resolved.KeyPeerIP:
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			return host
+		}
+		return r.RemoteAddr
+	default:
+		return key
+	}
+}
+
+func serveRateReservation(buckets *bucketStore, m resolved.Middleware, key string, w http.ResponseWriter, r *http.Request, next http.Handler) {
+	delay, ok := buckets.reserve(key, time.Now(), m)
+	if !ok {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "rate limit capacity unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if delay > m.RateLimitMaxDelay {
+		w.Header().Set("Retry-After", fmt.Sprintf("%.0f", math.Ceil(delay.Seconds())))
+		w.Header().Set("X-Retry-In", delay.String())
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(http.StatusText(http.StatusTooManyRequests)))
+		return
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-r.Context().Done():
+		http.Error(w, "context canceled", http.StatusInternalServerError)
+		return
+	case <-timer.C:
+	}
+	next.ServeHTTP(w, r)
 }

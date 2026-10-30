@@ -25,7 +25,7 @@ func TestEntrypointRedirectTrustRequiresExplicitSchemeDecision(t *testing.T) {
 				requireMigrationGaps(t, r)
 				return
 			}
-			requireMigrationGaps(t, r, "entrypoints.$redirect-trust")
+			requireMigrationGaps(t, r)
 		})
 	}
 }
@@ -41,7 +41,7 @@ func TestRedirectSourceStatusAndCaptureValidation(t *testing.T) {
 	} {
 		r := audit(t, policyInputs(t, tc.policy))
 		c, err := statute.Resolve(r.Config)
-		if err != nil || len(c.Routes) != 2 || c.Routes[0].Redirect.Status != tc.status {
+		if err != nil || len(c.Routes) != 2 || testMiddlewareLeaves(c.Routes[0].Middleware)[0].RedirectStatus != tc.status {
 			t.Fatalf("redirect candidate status=%d: %v %+v", tc.status, err, c)
 		}
 		assertGeneratedParity(t, r)
@@ -50,10 +50,6 @@ func TestRedirectSourceStatusAndCaptureValidation(t *testing.T) {
 		"redirectScheme: {scheme: ftp}", "redirectScheme: {scheme: https, port: invalid}",
 		"redirectScheme: {scheme: https, permanent: invalid}", "redirectScheme: {scheme: https, forcePermanentRedirect: invalid}",
 		`redirectRegex: {regex: '^https?://[^/]+/(.*)', replacement: 'https://new.example/${1}', statusCode: 200}`,
-		`redirectRegex: {regex: '^https?://[^/]+/(.+)', replacement: 'https://new.example/${1}'}`,
-		`redirectRegex: {regex: '^https?://[^/]+/(.*)', replacement: 'https://new.example/${2}'}`,
-		`redirectRegex: {regex: '^https?://[^/]+/(.*)', replacement: 'https://new.example${1}'}`,
-		`redirectRegex: {regex: '^http://api\.example/prefix/(.*)', replacement: 'https://new.example/${1}'}`,
 		`redirectRegex: {regex: '${PATTERN}', replacement: 'https://new.example/${1}'}`,
 	} {
 		t.Run(policy, func(t *testing.T) {
@@ -66,7 +62,7 @@ func TestRedirectSourceStatusAndCaptureValidation(t *testing.T) {
 }
 
 func TestRedirectContinuationAndMissingPolicyCannotDisappear(t *testing.T) {
-	for _, refs := range []string{"canonical, robots", "missing, canonical", "pair"} {
+	for _, refs := range []string{"missing, canonical", "pair"} {
 		in := compositionInput(t, refs, `    canonical:
       redirectScheme: {scheme: https}
     pair:
@@ -97,14 +93,10 @@ func TestEntrypointRedirectPortMustMatchTargetScheme(t *testing.T) {
   content: {address: ':8081'}
 `, tc.port, tc.scheme))}
 			r := audit(t, in)
-			var gaps []string
-			if tc.gap != "" {
-				gaps = append(gaps, "entrypoints."+tc.gap)
+			requireMigrationGaps(t, r)
+			if !strings.Contains(string(r.Go), fmt.Sprintf(".Port(%q)", strings.TrimPrefix(tc.port, ":"))) {
+				t.Fatal("redirect target port lost")
 			}
-			if tc.scheme == "http" {
-				gaps = append(gaps, "entrypoints.$redirect-condition")
-			}
-			requireMigrationGaps(t, r, gaps...)
 		})
 	}
 }

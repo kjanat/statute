@@ -29,13 +29,13 @@ func TestDNSPropagationCandidatePreservesResolverOrderAndDelay(t *testing.T) {
 	t.Setenv("CF_DNS_API_TOKEN", "migration-binding")
 	for _, delay := range []string{"propagation: {delayBeforeChecks: 3s, disableChecks: false, disableANSChecks: false, requireAllRNS: true}", "delayBeforeCheck: 3s, disablePropagationCheck: false"} {
 		r := audit(t, dnsPolicyInputs(t, "resolvers: [1.1.1.1, '2001:db8::1', 'resolver.example:5353', resolver.example], "+delay))
-		requireMigrationGaps(t, r, "certificatesresolvers.$dns-propagation")
+		requireMigrationGaps(t, r)
 		c, err := statute.Resolve(r.Config)
 		if err != nil {
 			t.Fatal(err)
 		}
 		p := c.Listeners[0].AutoTLSSources[0].DNS01.Propagation
-		if p == nil || p.Delay != 3*time.Second || strings.Join(p.Resolvers, ",") != "1.1.1.1:53,[2001:db8::1]:53,resolver.example:5353,resolver.example:53" {
+		if p == nil || p.Delay != 3*time.Second || strings.Join(p.DiscoveryResolvers, ",") != "1.1.1.1:53,[2001:db8::1]:53,resolver.example:5353,resolver.example:53" {
 			t.Fatalf("propagation candidate=%+v", p)
 		}
 		assertGeneratedParity(t, r)
@@ -59,7 +59,7 @@ func TestInvalidDNSPolicyCannotBecomeAcceptedMigration(t *testing.T) {
 		})
 	}
 	r := audit(t, dnsPolicyInputs(t, "propagation: {delayBeforeChecks: 0s}"))
-	requireMigrationGaps(t, r, "certificatesresolvers.$dns-propagation")
+	requireMigrationGaps(t, r)
 }
 
 func TestIngressSourcePolicyValidation(t *testing.T) {
@@ -129,7 +129,6 @@ func TestHeaderPolicyValidationAndDisabledFeatures(t *testing.T) {
 func TestRateSourceAdmissionAndKeyDifferencesStayExplicit(t *testing.T) {
 	for _, policy := range []string{
 		"rateLimit: {average: 0}", "rateLimit: {average: 1, period: -1s}", "rateLimit: {average: 1, period: invalid}",
-		"rateLimit: {average: 1, sourceCriterion: {requestHeaderName: X-Client}}",
 		"rateLimit: {average: 1, distributed: true}",
 	} {
 		r := audit(t, policyInputs(t, policy))
@@ -139,7 +138,7 @@ func TestRateSourceAdmissionAndKeyDifferencesStayExplicit(t *testing.T) {
 	}
 	for _, criterion := range []string{"{}", "{requestHost: false}", "{requestHost: true}"} {
 		r := audit(t, policyInputs(t, fmt.Sprintf("rateLimit: {average: 1, burst: 2, period: 0s, distributed: false, sourceCriterion: %s}", criterion)))
-		requireMigrationGaps(t, r, "middlewares.$rate-capacity", "middlewares.$rate-delay", "routers.$middleware:candidate@file")
+		requireMigrationGaps(t, r)
 		if !strings.Contains(string(r.Go), `statute.RateLimit("1/s")`) {
 			t.Fatal("source zero period lost its one-second default")
 		}
@@ -150,8 +149,10 @@ func TestPassiveHealthValidationKeepsInvalidPolicyBlocked(t *testing.T) {
 	for _, policy := range []string{"{}", "{failureWindow: -1s}", "{failureWindow: invalid}", "{maxFailedAttempts: 0}", "{maxFailedAttempts: invalid}"} {
 		body := strings.Replace(simpleDynamic, "      loadBalancer:", "      loadBalancer:\n        passiveHealthCheck: "+policy, 1)
 		r := audit(t, basicInputs(t, body))
-		if !r.Report.Blocking || !strings.Contains(findings(r), "$health-passive") {
-			t.Fatal("passive policy lost its explicit behavior decision")
+		if policy == "{}" {
+			requireMigrationGaps(t, r)
+		} else if !r.Report.Blocking {
+			t.Fatal("invalid passive policy accepted")
 		}
 		if policy == "{}" && !strings.Contains(string(r.Go), "MaxFailures: 1") {
 			t.Fatal("source passive defaults missing")

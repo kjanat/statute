@@ -82,15 +82,15 @@ func TestRuleEnvelope(t *testing.T) {
 		why  string
 	}{
 		{
-			rule: "Host(`admin.example.com`) && ClientIP(`10.0.0.0/8`)",
+			rule: "Host(`admin.example.com`) && Query(`private`, `yes`)",
 			want: []Matcher{m("admin.example.com", "/*")},
-			why:  "ClientIP contributes nothing, so the Host conjunct survives; the CIDR is never rebuilt onto the tombstone",
+			why:  "Query is unsupported, so the Host conjunct bounds the refusal",
 		}, {
 			rule: "Host(`admin.example.com`) && PathPrefix(`/api`) && Header(`X-Token`, `t`)",
 			want: []Matcher{px("admin.example.com", "/api")},
 			why:  "both representable conjuncts survive; the header was the whole authorization story",
 		}, {
-			rule: "PathPrefix(`/private`) && ClientIP(`10.0.0.0/8`)",
+			rule: "PathPrefix(`/private`) && Query(`private`, `yes`)",
 			want: []Matcher{px("", "/private")},
 			why:  "no Host conjunct exists, so the envelope must stay host-less",
 		}, {
@@ -98,7 +98,7 @@ func TestRuleEnvelope(t *testing.T) {
 			want: []Matcher{m("", "/login")},
 			why:  "an exact-path envelope is legitimate; it refuses GET /login too, which is allowed",
 		}, {
-			rule: "ClientIP(`10.0.0.0/8`)",
+			rule: "Query(`private`, `yes`)",
 			want: global(),
 			why:  "the rule constrains neither host nor path, so only the global envelope is a superset",
 		}, {
@@ -130,7 +130,7 @@ func TestRuleEnvelope(t *testing.T) {
 			want: global(),
 			why:  "an empty host argument constrains nothing, which is a widening and hence sound",
 		}, {
-			rule: "Host(`a.example.com`) || ClientIP(`10.0.0.0/8`)",
+			rule: "Host(`a.example.com`) || Query(`private`, `yes`)",
 			want: global(),
 			why:  "branch-aware union: keeping only the understood branch is the headline subset bug",
 		}, {
@@ -138,11 +138,11 @@ func TestRuleEnvelope(t *testing.T) {
 			want: []Matcher{px("a.example.com", "/x"), m("b.example.com", "/*")},
 			why:  "one branch is exact and the other widens only its own path",
 		}, {
-			rule: "Host(`a.example.com`) && Header(`X`, `y`) || Host(`b.example.com`) && ClientIP(`10.0.0.0/8`)",
+			rule: "Host(`a.example.com`) && Header(`X`, `y`) || Host(`b.example.com`) && Query(`private`, `yes`)",
 			want: []Matcher{m("a.example.com", "/*"), m("b.example.com", "/*")},
 			why:  "'&&' binds tighter than '||', so neither branch is unconstrained",
 		}, {
-			rule: "(Host(`a.example.com`) || PathPrefix(`/x`)) && ClientIP(`10.0.0.0/8`)",
+			rule: "(Host(`a.example.com`) || PathPrefix(`/x`)) && Query(`private`, `yes`)",
 			want: []Matcher{px("", "/x"), m("a.example.com", "/*")},
 			why:  "the disjuncts constrain different dimensions, so neither subsumes the other",
 		}, {
@@ -150,7 +150,7 @@ func TestRuleEnvelope(t *testing.T) {
 			want: []Matcher{px("", "/x")},
 			why:  "the inner union unconstrains the host, then the outer meet re-narrows the path",
 		}, {
-			rule: "Host(`a.example.com`) && (PathPrefix(`/x`) || ClientIP(`10.0.0.0/8`))",
+			rule: "Host(`a.example.com`) && (PathPrefix(`/x`) || Query(`private`, `yes`))",
 			want: []Matcher{m("a.example.com", "/*")},
 			why:  "the second branch subsumes the first; stopping at the first branch would emit /x/*",
 		}, {
@@ -190,7 +190,7 @@ func TestRuleEnvelope(t *testing.T) {
 			want: []Matcher{m("a.example.com", "/*")},
 			why:  "the parser compares hosts raw while the dispatcher folds case: this rule is rejected yet matches",
 		}, {
-			rule: "Host(`a.example.com`) && Host(`b.example.com`) || Host(`c.example.com`) && ClientIP(`10.0.0.0/8`)",
+			rule: "Host(`a.example.com`) && Host(`b.example.com`) || Host(`c.example.com`) && Query(`private`, `yes`)",
 			want: []Matcher{m("a.example.com", "/*"), m("c.example.com", "/*")},
 			why:  "the deriver must stay branch-aware on the error path too",
 		}, {
@@ -250,19 +250,19 @@ func TestRuleEnvelope(t *testing.T) {
 			want: global(),
 			why:  "a globally widened branch must poison the union; keeping only the readable branch is the subset bug",
 		}, {
-			rule: "Host(`api.example.com`) && Path(`/users/{id:[0-9]+}`) && ClientIP(`10.0.0.0/8`)",
+			rule: "Host(`api.example.com`) && Path(`/users/{id:[0-9]+}`) && Query(`private`, `yes`)",
 			want: []Matcher{m("api.example.com", "/*")},
 			why:  "a placeholder path is not read literally, so only the host survives",
 		}, {
-			rule: "PathPrefix(`/foo/{id:[0-9]+}`) && ClientIP(`10.0.0.0/8`)",
+			rule: "PathPrefix(`/foo/{id:[0-9]+}`) && Query(`private`, `yes`)",
 			want: global(),
 			why:  "truncating a placeholder to its segment boundary needs a grammar this repository cannot pin",
 		}, {
-			rule: "Host(`{sub:[a-z]+}.example.com`) && ClientIP(`10.0.0.0/8`)",
+			rule: "Host(`{sub:[a-z]+}.example.com`) && Query(`private`, `yes`)",
 			want: global(),
 			why:  "mining `example.com` would miss every sub-domain the placeholder really covered",
 		}, {
-			rule: "Path(`/a%20b`) && ClientIP(`10.0.0.0/8`)",
+			rule: "Path(`/a%20b`) && Query(`private`, `yes`)",
 			want: global(),
 			why:  "req.URL.Path is percent-decoded, so the literal under-refuses in both directions",
 		}, {

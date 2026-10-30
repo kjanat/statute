@@ -33,32 +33,12 @@ func resolveScopedTLSPolicies(l *Listener, out *resolved.Listener) error {
 	}
 	claimed := map[string]bool{}
 	for _, binding := range l.tlsPolicies {
-		if len(binding.hosts) == 0 {
-			return errors.New("tls_policies: at least one hostname required")
-		}
-		hosts := make([]string, len(binding.hosts))
-		for i, name := range binding.hosts {
-			host := canonicalTLSName(name)
-			if host == "" || strings.ContainsAny(host, ":/\\ \t\r\n@?#[]%") {
-				return errors.New("tls_policies: invalid hostname")
-			}
-			if err := validateTLSWildcard(host); err != nil {
-				return err
-			}
-			if claimed[host] {
-				return fmt.Errorf("tls_policies: hostname %q is declared twice", host)
-			}
-			claimed[host] = true
-			hosts[i] = host
-		}
-		if err := validateTLSPolicyVersions(binding.policy); err != nil {
-			return err
-		}
-		suites, err := resolveTLSPolicySuites(binding.policy)
+		hosts, err := resolveTLSPolicyHosts(binding.hosts, claimed)
 		if err != nil {
 			return err
 		}
-		if err = validateTLSPolicyRequiredSuite(binding.policy); err != nil {
+		suites, err := resolveScopedPolicySuites(binding.policy)
+		if err != nil {
 			return err
 		}
 		if out.HTTP3Addr != "" && binding.policy.MaxVersion == TLS12 {
@@ -88,6 +68,9 @@ func buildTLSPolicyTable(l *resolved.Listener) (*tlsPolicyTable, error) {
 }
 
 func (t *tlsPolicyTable) selectPolicy(host string) *resolved.TLSPolicy {
+	if t == nil {
+		return nil
+	}
 	if policy, ok := t.names.lookup(host); ok {
 		return policy
 	}
@@ -124,4 +107,40 @@ func strictSNICertificate(router *certRouter, table *tlsPolicyTable, hello *tls.
 		}
 	}
 	return certificate, nil
+}
+
+func resolveTLSPolicyHosts(names []string, claimed map[string]bool) ([]string, error) {
+	if len(names) == 0 {
+		return nil, errors.New("tls_policies: at least one hostname required")
+	}
+	hosts := make([]string, len(names))
+	for i, name := range names {
+		host := canonicalTLSName(name)
+		if host == "" || strings.ContainsAny(host, ":/\\ \t\r\n@?#[]%") {
+			return nil, errors.New("tls_policies: invalid hostname")
+		}
+		if err := validateTLSWildcard(host); err != nil {
+			return nil, err
+		}
+		if claimed[host] {
+			return nil, fmt.Errorf("tls_policies: hostname %q is declared twice", host)
+		}
+		claimed[host] = true
+		hosts[i] = host
+	}
+	return hosts, nil
+}
+
+func resolveScopedPolicySuites(policy TLSPolicy) ([]string, error) {
+	if err := validateTLSPolicyVersions(policy); err != nil {
+		return nil, err
+	}
+	suites, err := resolveTLSPolicySuites(policy)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateTLSPolicyRequiredSuite(policy); err != nil {
+		return nil, err
+	}
+	return suites, nil
 }

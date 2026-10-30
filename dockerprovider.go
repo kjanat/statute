@@ -657,10 +657,11 @@ func mergeService(base *docker.Service, add docker.Service) {
 // extractOptions is the provider's label-extraction configuration.
 func (p *dockerProvider) extractOptions() docker.ExtractOptions {
 	return docker.ExtractOptions{
-		Network:          p.cfg.Network,
-		ExposedByDefault: p.cfg.ExposedByDefault,
-		TraefikLabels:    p.cfg.TraefikLabels,
-		BoundServices:    p.boundServices(),
+		Network:            p.cfg.Network,
+		ExposedByDefault:   p.cfg.ExposedByDefault,
+		TraefikLabels:      p.cfg.TraefikLabels,
+		BoundServices:      p.boundServices(),
+		ReferencedServices: p.referencedServices(),
 	}
 }
 
@@ -728,21 +729,14 @@ func (p *dockerProvider) buildTable(services []docker.Service, tombstones, rejec
 			p.warn([]string{fmt.Sprintf("pool policy %q matches no discovered service; policy is not applied", name)})
 		}
 	}
-	sortDynamicRoutes(next.routes)
-	sortDynamicRoutes(next.rejections)
 	next.quarantines = compileQuarantineRoutes(quarantines)
-	sortDynamicRoutes(next.quarantines)
 	next.tombstones = p.compileTombstones(tombs)
-
-	var retired []*runningPool
-	if prev != nil {
-		for name, pool := range prev.pools {
-			if next.pools[name] != pool {
-				retired = append(retired, pool)
-			}
-		}
+	for _, routes := range [][]compiledRoute{next.routes, next.rejections, next.quarantines, next.tombstones} {
+		p.normalizeRouteConstraints(routes)
+		sortDynamicRoutes(routes)
 	}
-	return next, retired
+
+	return next, retiredServicePools(prev, next)
 }
 
 // addService compiles one ordinary merged service into the next generation.
@@ -767,7 +761,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	}
 
 	kept, tombs := p.routeChains(svc, next)
-	if len(kept) == 0 {
+	if len(kept) == 0 && len(svc.Routes) > 0 {
 		return tombs
 	}
 	var revision workloadRoutingRevision
@@ -778,11 +772,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 
 	running := p.servicePoolHandler(svc.Name, rp, binding, prev, next)
 	if running == nil {
-		keptMatchers := make([]docker.Matcher, 0, len(kept))
-		for _, rc := range kept {
-			keptMatchers = append(keptMatchers, rc.m)
-		}
-		return append(tombs, p.refuse(next, svc.Name, keptMatchers)...)
+		return append(tombs, p.refuse(next, svc.Name, routeChainMatchers(kept))...)
 	}
 	// The gate resolves the pool at proxy time: the generation that
 	// queued a waiter cannot carry a dormant container's backend.
@@ -790,12 +780,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	if gated != nil {
 		base = &workloadGate{p: p, w: gated, binding: binding, revision: revision}
 	}
-	serviceBase := base
-	if gated != nil {
-		serviceBase = &workloadRevisionGate{p: p, service: svc.Name, binding: binding, revision: revision, next: serviceBase}
-		serviceBase = &workloadRequestScope{p: p, w: gated, next: serviceBase}
-	}
-	next.serviceHandlers[svc.Name] = serviceBase
+	next.serviceHandlers[svc.Name] = p.serviceBaseHandler(svc.Name, base, gated, binding, revision)
 	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, next)
 	return tombs
 }
@@ -819,14 +804,6 @@ func compileQuarantineRoutes(claims []docker.RouteClaim) []compiledRoute {
 
 func (p *dockerProvider) appendServiceRoutes(name string, rp *resolved.Pool, chains []routeChain, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision, next *dynamicTable) {
 	for _, rc := range chains {
-		if p.srv != nil && p.srv.cfg != nil {
-			rc.m.PriorityOrder = p.srv.cfg.PrioritizeRoutes
-		}
-		if !p.cfg.RouterConstraints {
-			rc.m.ListenerNames = nil
-		} else if len(rc.m.ListenerNames) == 0 {
-			rc.m.ListenerNames = append([]string(nil), p.cfg.DefaultListeners...)
-		}
 		handler := wrapRouteMiddleware(rc.mws, researchDockerRoute(name, rc.m.Host, rc.m.Path, base), rp != nil)
 		if gated != nil {
 			handler = &workloadRevisionGate{
@@ -956,8 +933,18 @@ func (p *dockerProvider) refuse(next *dynamicTable, service string, ms []docker.
 // can only refuse. A global envelope leaves one tombstone after absorption.
 func (p *dockerProvider) compileTombstones(ms []docker.Matcher) []compiledRoute {
 	env := docker.EnvelopeOf(ms)
+	if p.cfg.RouterConstraints || p.prioritizesRoutes() {
+		env = nil
+		for _, matcher := range ms {
+			env = append(env, docker.EnvelopeOf([]docker.Matcher{matcher})...)
+		}
+	}
 	p.announceRefusal(env)
 	return compileRefusals(env)
+}
+
+func (p *dockerProvider) prioritizesRoutes() bool {
+	return p.srv != nil && p.srv.cfg != nil && p.srv.cfg.PrioritizeRoutes
 }
 
 // compileRefusals preserves each input predicate. Only fallback tombstones may
@@ -1225,4 +1212,47 @@ func dynamicPatternSpecificity(m docker.Matcher) (exact bool, prefixLen, kind in
 	default:
 		return true, len(m.Path), 2
 	}
+}
+
+func (p *dockerProvider) normalizeRouteConstraints(routes []compiledRoute) {
+	for i := range routes {
+		m := &routes[i].matcher
+		if p.srv != nil && p.srv.cfg != nil {
+			m.PriorityOrder = p.srv.cfg.PrioritizeRoutes
+		}
+		if !p.cfg.RouterConstraints {
+			m.ListenerNames = nil
+		} else if len(m.ListenerNames) == 0 {
+			m.ListenerNames = append([]string(nil), p.cfg.DefaultListeners...)
+		}
+	}
+}
+
+func retiredServicePools(prev, next *dynamicTable) []*runningPool {
+	var retired []*runningPool
+	if prev != nil {
+		for name, pool := range prev.pools {
+			if next.pools[name] != pool {
+				retired = append(retired, pool)
+			}
+		}
+	}
+	return retired
+}
+
+func (p *dockerProvider) serviceBaseHandler(name string, base http.Handler, gated *workload, binding workloadBindingKey, revision workloadRoutingRevision) http.Handler {
+	serviceBase := base
+	if gated != nil {
+		serviceBase = &workloadRevisionGate{p: p, service: name, binding: binding, revision: revision, next: serviceBase}
+		serviceBase = &workloadRequestScope{p: p, w: gated, next: serviceBase}
+	}
+	return serviceBase
+}
+
+func routeChainMatchers(chains []routeChain) []docker.Matcher {
+	matchers := make([]docker.Matcher, 0, len(chains))
+	for _, chain := range chains {
+		matchers = append(matchers, chain.m)
+	}
+	return matchers
 }

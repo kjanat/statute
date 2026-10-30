@@ -8,7 +8,7 @@ type Upstreams map[string]Pool
 type Pool struct {
 	// AllowEmpty serves 503 while this static pool has no backends.
 	AllowEmpty bool
-	// RejectUnhealthy returns 503 instead of forwarding to unhealthy primaries.
+	// RejectUnhealthy returns 503 when every backend is unhealthy.
 	RejectUnhealthy bool
 	Backends        []Backend
 	Strategy        Strategy

@@ -17,19 +17,7 @@ func (g *generator) checkDockerExtraction(c *resolved.Config) {
 		if o.Provider != providerDocker || !o.Generated {
 			return
 		}
-		networks := map[string]string{"migration": "192.0.2.1"}
-		for _, name := range []string{c.Docker.Network, o.labels["traefik.docker.network"]} {
-			if name != "" {
-				networks[name] = "192.0.2.1"
-			}
-		}
-		labels := maps.Clone(o.labels)
-		labels["com.docker.compose.service"] = o.containerName
-		container := docker.Container{ID: o.Source, Name: o.containerName, Labels: labels, Ports: o.exposedPorts, Networks: networks, Running: true}
-		bound := map[string]bool{}
-		for name := range c.Docker.ServiceBindings {
-			bound[name] = true
-		}
+		container, bound := dockerAuditContainer(o, c.Docker)
 		services, _, _ := docker.Extract(container, docker.ExtractOptions{TraefikLabels: true, BoundServices: bound, ExposedByDefault: c.Docker.ExposedByDefault, Network: c.Docker.Network})
 		matchers, err := docker.ParseRule(o.text("rule"))
 		if err != nil {
@@ -76,4 +64,21 @@ func middlewareRefsForEntries(o *Object) ([]string, bool) {
 		return nil, true
 	}
 	return stringList(o.value("entryPoints"), o.Provider == providerDocker)
+}
+
+func dockerAuditContainer(o *Object, d *resolved.Docker) (docker.Container, map[string]bool) {
+	networks := map[string]string{"migration": "192.0.2.1"}
+	for _, name := range []string{d.Network, o.labels["traefik.docker.network"]} {
+		if name != "" {
+			networks[name] = "192.0.2.1"
+		}
+	}
+	labels := maps.Clone(o.labels)
+	labels["com.docker.compose.service"] = o.containerName
+	container := docker.Container{ID: o.Source, Name: o.containerName, Labels: labels, Ports: o.exposedPorts, Networks: networks, Running: true}
+	bound := map[string]bool{}
+	for name := range d.ServiceBindings {
+		bound[name] = true
+	}
+	return container, bound
 }

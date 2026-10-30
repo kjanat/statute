@@ -350,28 +350,16 @@ func validateTLSPolicyCertCompat(p TLSPolicy, rl *resolved.Listener) error {
 			continue
 		}
 		rsaKey := strings.HasPrefix(source.KeyType, "RSA")
-		if rsaKey && !rsaAllowed || !rsaKey && !ecdsaAllowed {
+		if !certificateKeyAllowed(rsaKey, rsaAllowed, ecdsaAllowed) {
 			return fmt.Errorf("tls_policy: cipher suites cannot authenticate %s certificate keys for %s", source.KeyType, strings.Join(source.Domains, ","))
 		}
 	}
 	return nil
 }
 
-// tlsPolicyHasECDSASuite reports whether the list holds at least one suite
-// an ECDSA certificate can serve.
-func tlsPolicyHasECDSASuite(suites []CipherSuite) bool {
-	for _, cs := range suites {
-		if slices.Contains(tls12ECDSACipherSuites, cs) {
-			return true
-		}
+func certificateKeyAllowed(rsaKey, rsaAllowed, ecdsaAllowed bool) bool {
+	if rsaKey {
+		return rsaAllowed
 	}
-	return false
-}
-
-// acmeChallengeLabel names a pinned source's challenge for error messages.
-func acmeChallengeLabel(a *resolved.AutoTLS) string {
-	if a.Challenge == resolved.ChallengeDNS01 {
-		return "DNS-01"
-	}
-	return "HTTP-01"
+	return ecdsaAllowed
 }

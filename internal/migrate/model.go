@@ -10,6 +10,15 @@ import (
 	statute "statute.kjanat.dev"
 )
 
+const (
+	serviceNoop        = "noop@internal"
+	sourceTraefik      = "traefik"
+	codePermanent      = ".Permanent()"
+	frameDenyValue     = "DENY"
+	xssBlockValue      = "1; mode=block"
+	frameOptionsHeader = "x-frame-options"
+)
+
 // Classification describes the disposition of a source field or object.
 type Classification string
 

@@ -32,8 +32,8 @@ func (g *generator) securityHeaders(o *Object, chain *middleware) {
 func (g *generator) booleanSecurityHeaders(o *Object, chain *middleware) {
 	for _, f := range []struct{ key, name, value string }{
 		{"contentTypeNosniff", "X-Content-Type-Options", "nosniff"},
-		{"frameDeny", "X-Frame-Options", "DENY"},
-		{"browserXssFilter", "X-Xss-Protection", "1; mode=block"},
+		{"frameDeny", "X-Frame-Options", frameDenyValue},
+		{"browserXssFilter", "X-Xss-Protection", xssBlockValue},
 	} {
 		path := "headers." + f.key
 		if o.value(path) == nil {
@@ -166,24 +166,11 @@ func (g *generator) rateLimit(o *Object, chain *middleware) {
 	if !ok {
 		return
 	}
-	burst := 1
-	if value := o.value("rateLimit.burst"); value != nil {
-		var err error
-		burst, err = integer(value)
-		if err != nil {
-			o.mark("rateLimit.burst", Manual, "burst must be an integer")
-			return
-		}
+	burst, ok := sourceRateBurst(o)
+	if !ok {
+		return
 	}
-	burst = max(1, burst)
-	delay := 500 * time.Millisecond
-	if rate >= 1 {
-		delay = time.Second / (time.Duration(rate) * 2)
-	}
-	ttl := 2 * time.Second
-	if rate < 1 {
-		ttl = time.Duration(1+int(1/rate)) * time.Second
-	}
+	delay, ttl := sourceRateTiming(rate)
 	value := strconv.FormatFloat(rate, 'g', -1, 64) + "/s"
 	limiter := statute.RateLimit(value).Burst(burst).Reserve(delay.String()).ExpireIdle(ttl.String()).EvictOldest()
 	code := fmt.Sprintf("statute.RateLimit(%q).Burst(%d).Reserve(%q).ExpireIdle(%q).EvictOldest()", value, burst, delay.String(), ttl.String())
@@ -258,14 +245,30 @@ func classifyRateCriterion(o *Object) {
 	}
 }
 
-func (g *generator) classifyClientIPPolicy(o *Object) {
-	for _, ep := range g.entrypoints {
-		ranges, _ := stringList(ep.value("forwardedHeaders.trustedIPs"), false)
-		if scalar(ep.value("forwardedHeaders.insecure")) == trueValue || len(ranges) > 0 {
-			o.note("$client-ip-policy", Manual, "source default client-IP policy uses the direct peer; native ACL/rate keys use verified forwarded identity for trusted proxies")
-			return
-		}
+func headerFamily(path string) bool { return strings.HasPrefix(strings.ToLower(path), "headers.") }
+
+func sourceRateTiming(rate float64) (time.Duration, time.Duration) {
+	delay := 500 * time.Millisecond
+	if rate >= 1 {
+		delay = time.Second / (time.Duration(rate) * 2)
 	}
+	ttl := 2 * time.Second
+	if rate < 1 {
+		ttl = time.Duration(1+int(1/rate)) * time.Second
+	}
+	return delay, ttl
 }
 
-func headerFamily(path string) bool { return strings.HasPrefix(strings.ToLower(path), "headers.") }
+func sourceRateBurst(o *Object) (int, bool) {
+	burst := 1
+	if value := o.value("rateLimit.burst"); value != nil {
+		var err error
+		burst, err = integer(value)
+		if err != nil {
+			o.mark("rateLimit.burst", Manual, "burst must be an integer")
+			return 0, false
+		}
+	}
+	burst = max(1, burst)
+	return burst, true
+}

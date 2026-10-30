@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -60,7 +61,7 @@ func dnsExchange(ctx context.Context, server, name string, kind uint16, recursiv
 	client := &dns.Client{Net: "udp"}
 	reply, _, err := client.ExchangeContext(ctx, message, server)
 	if err == nil && reply.Truncated {
-		client.Net = "tcp"
+		client.Net = networkTCP
 		reply, _, err = client.ExchangeContext(ctx, message, server)
 	}
 	if err != nil {
@@ -73,53 +74,39 @@ func dnsExchange(ctx context.Context, server, name string, kind uint16, recursiv
 }
 
 func (s *dns01Solver) recursiveQuery(ctx context.Context, name string, kind uint16) (*dns.Msg, error) {
-	for _, server := range s.recursiveServers() {
-		if reply, err := dnsExchange(ctx, server, name, kind, true); err == nil {
-			return reply, nil
+	ctx, cancel := context.WithCancel(ctx)
+	servers := s.recursiveServers()
+	answers := make(chan *dns.Msg, len(servers))
+	var queries sync.WaitGroup
+	defer func() { cancel(); queries.Wait() }()
+	for _, server := range servers {
+		queries.Go(func() {
+			reply, err := s.exchangeDNS(ctx, server, name, kind, true)
+			if err != nil {
+				reply = nil
+			}
+			answers <- reply
+		})
+	}
+	for range servers {
+		select {
+		case reply := <-answers:
+			if reply != nil {
+				return reply, nil
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 	return nil, errors.New("no recursive resolver answered")
 }
 
 func (s *dns01Solver) authoritativeVisible(ctx context.Context, name, value string) bool {
-	// Follow the delegated challenge name before locating its authoritative zone.
-	for range 16 {
-		response, err := s.recursiveQuery(ctx, name, dns.TypeCNAME)
-		if err != nil {
-			return false
-		}
-		target := ""
-		for _, record := range response.Answer {
-			if record, ok := record.(*dns.CNAME); ok && strings.EqualFold(record.Hdr.Name, name) {
-				target = record.Target
-				break
-			}
-		}
-		if target == "" {
-			break
-		}
-		name = target
+	name = s.delegatedChallenge(ctx, name)
+	if name == "" {
+		return false
 	}
-	zone := ""
-	for candidate := name; candidate != "."; {
-		response, err := s.recursiveQuery(ctx, candidate, dns.TypeSOA)
-		if err == nil {
-			for _, record := range append(response.Answer, response.Ns...) {
-				if record, ok := record.(*dns.SOA); ok {
-					zone = record.Hdr.Name
-					break
-				}
-			}
-		}
-		if zone != "" {
-			break
-		}
-		_, rest, found := strings.Cut(candidate, ".")
-		if !found || rest == "" {
-			break
-		}
-		candidate = rest
-	}
+	zone := s.authoritativeZone(ctx, name)
 	if zone == "" {
 		return false
 	}
@@ -127,38 +114,88 @@ func (s *dns01Solver) authoritativeVisible(ctx context.Context, name, value stri
 	if err != nil {
 		return false
 	}
-	var servers []string
-	for _, record := range append(response.Answer, response.Ns...) {
-		if record, ok := record.(*dns.NS); ok {
-			servers = append(servers, record.Ns)
-		}
-	}
+	servers := nameservers(response)
 	if len(servers) == 0 {
 		return false
 	}
 	for _, server := range servers {
-		addresses := s.nameserverAddresses(ctx, server)
-		visible := false
-		for _, address := range addresses {
-			response, err := dnsExchange(ctx, net.JoinHostPort(address, "53"), name, dns.TypeTXT, false)
-			if err != nil || !response.Authoritative {
-				continue
-			}
-			for _, record := range response.Answer {
-				if record, ok := record.(*dns.TXT); ok && strings.Join(record.Txt, "") == value {
-					visible = true
-					break
-				}
-			}
-			if visible {
-				break
-			}
-		}
-		if !visible {
+		if !s.authoritativeTXT(ctx, server, name, value) {
 			return false
 		}
 	}
 	return true
+}
+
+func (s *dns01Solver) delegatedChallenge(ctx context.Context, name string) string {
+	for range 16 {
+		response, err := s.recursiveQuery(ctx, name, dns.TypeCNAME)
+		if err != nil {
+			return ""
+		}
+		target := ""
+		for _, rr := range response.Answer {
+			if record, ok := rr.(*dns.CNAME); ok && strings.EqualFold(record.Hdr.Name, name) {
+				target = record.Target
+				break
+			}
+		}
+		if target == "" {
+			return name
+		}
+		name = target
+	}
+	return ""
+}
+
+func (s *dns01Solver) authoritativeZone(ctx context.Context, name string) string {
+	for candidate := name; candidate != "."; {
+		response, err := s.recursiveQuery(ctx, candidate, dns.TypeSOA)
+		if err == nil {
+			for _, rr := range append(response.Answer, response.Ns...) {
+				if record, ok := rr.(*dns.SOA); ok {
+					return record.Hdr.Name
+				}
+			}
+		}
+		_, rest, found := strings.Cut(candidate, ".")
+		if !found || rest == "" {
+			break
+		}
+		candidate = rest
+	}
+	return ""
+}
+
+func nameservers(response *dns.Msg) []string {
+	var servers []string
+	for _, rr := range append(response.Answer, response.Ns...) {
+		if record, ok := rr.(*dns.NS); ok {
+			servers = append(servers, record.Ns)
+		}
+	}
+	return servers
+}
+
+func (s *dns01Solver) authoritativeTXT(ctx context.Context, server, name, value string) bool {
+	for _, address := range s.nameserverAddresses(ctx, server) {
+		response, err := s.exchangeDNS(ctx, net.JoinHostPort(address, "53"), name, dns.TypeTXT, false)
+		if err != nil || !response.Authoritative {
+			continue
+		}
+		for _, rr := range response.Answer {
+			if record, ok := rr.(*dns.TXT); ok && strings.Join(record.Txt, "") == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *dns01Solver) exchangeDNS(ctx context.Context, server, name string, kind uint16, recursive bool) (*dns.Msg, error) {
+	if s.queryDNS != nil {
+		return s.queryDNS(ctx, server, name, kind, recursive)
+	}
+	return dnsExchange(ctx, server, name, kind, recursive)
 }
 
 func (s *dns01Solver) nameserverAddresses(ctx context.Context, name string) []string {

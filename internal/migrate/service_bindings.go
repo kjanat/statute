@@ -18,7 +18,7 @@ func (g *generator) bindService(o *Object, name string) bool {
 		o.note("$provider", Manual, "Docker provider is required for discovered routers")
 		return false
 	}
-	if name == "noop@internal" {
+	if name == serviceNoop {
 		g.r.Config.Docker.BindHandler(name, migrationNoop)
 		g.imports["net/http"] = true
 		g.docker += fmt.Sprintf(".BindHandler(%q,http.HandlerFunc(func(w http.ResponseWriter,_ *http.Request){w.WriteHeader(http.StatusTeapot)}))", name)

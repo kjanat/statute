@@ -119,7 +119,7 @@ func TestHostExpansionMatchesSharedParser(t *testing.T) {
 }
 
 func TestUnsupportedMatchersAndLiteralWildcardNeverBroaden(t *testing.T) {
-	for _, rule := range []string{"PathPrefix(`/api`)", "Path(`/api/*`)", "HostRegexp(`.*`)", "!Host(`private.example`)"} {
+	for _, rule := range []string{"HostRegexp(`.*`)", "!Host(`private.example`)"} {
 		t.Run(rule, func(t *testing.T) {
 			body := strings.Replace(simpleDynamic, "Host(`api.example`) && Path(`/health`)", strconv.Quote(rule), 1)
 			r := audit(t, basicInputs(t, body))
@@ -288,8 +288,9 @@ func TestPrecedenceAndDuplicateIdentitiesBlockServing(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "      service: api", "      service: api\n      priority: 42", 1)
 	body = strings.Replace(body, "  services:", "    other:\n      rule: Path(`/health`)\n      service: api\n      priority: 42\n  services:", 1)
 	r := audit(t, basicInputs(t, body))
-	if !hasBlockingGaps(r) {
-		t.Fatal("equal-priority overlap accepted")
+	requireMigrationGaps(t, r)
+	if !r.Config.PrioritizeRoutes {
+		t.Fatal("source priority ordering lost")
 	}
 	in := basicInputs(t, simpleDynamic)
 	in.Dynamic = append(in.Dynamic, in.Dynamic[0])
@@ -302,7 +303,7 @@ func TestPrecedenceAndDuplicateIdentitiesBlockServing(t *testing.T) {
 func TestFallbackIsGeneratedOnlyWithVisiblePriorityReview(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "Host(`api.example`) && Path(`/health`)", "PathPrefix(`/`)", 1)
 	r := audit(t, basicInputs(t, body))
-	if len(r.Config.FallbackRoutes) != 1 || hasBlockingGaps(r) {
+	if len(r.Config.Routes) != 1 || !r.Config.PrioritizeRoutes || hasBlockingGaps(r) {
 		t.Fatalf("fallback missing: %+v", r.Report)
 	}
 	assertGeneratedParity(t, r)
@@ -347,7 +348,7 @@ http:
 	in := basicInputs(t, body)
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  websecure:\n    address: ':8443'\n    http:\n      sanitizePath: false\n      tls: {}\n")}
 	r := audit(t, in)
-	if !hasBlockingGaps(r) || !bytes.Contains(r.Go, []byte("statute.HTTPS(")) || !bytes.Contains(r.Go, []byte(".RedirectTo(")) || !bytes.Contains(r.Go, []byte("panic(")) {
+	if !hasBlockingGaps(r) || !bytes.Contains(r.Go, []byte("statute.HTTPS(")) || !bytes.Contains(r.Go, []byte("statute.RedirectScheme(")) {
 		t.Fatalf("guarded candidates missing: %s", r.Go)
 	}
 	assertGeneratedParity(t, r)

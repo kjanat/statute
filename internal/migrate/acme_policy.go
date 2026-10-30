@@ -24,15 +24,10 @@ func (g *generator) acmePropagation(o *Object, a *statute.AutoTLSConfig) string 
 	if !ok {
 		return ""
 	}
-	disabled, valid := sourceBoolValue(o.value(dnsChallengeBase+".propagation.disableChecks"), false)
-	legacy, legacyOK := sourceBoolValue(o.value(dnsChallengeBase+".disablePropagationCheck"), false)
-	noANS, ansOK := sourceBoolValue(o.value(dnsChallengeBase+".propagation.disableANSChecks"), false)
-	allRNS, rnsOK := sourceBoolValue(o.value(dnsChallengeBase+".propagation.requireAllRNS"), false)
-	if !valid || !legacyOK || !ansOK || !rnsOK {
-		o.mark(dnsChallengeBase, Manual, "invalid DNS propagation switch")
+	disabled, noANS, allRNS, valid := sourceDNSChecks(o)
+	if !valid {
 		return ""
 	}
-	disabled = disabled || legacy || noANS && !allRNS
 	p := statute.DNSPropagation{Delay: delay, Authoritative: !noANS, DiscoveryResolvers: resolvers, DisableChecks: disabled}
 	p.RequireAllRecursive = allRNS
 	if allRNS {
@@ -115,4 +110,17 @@ func classifyDNSChecks(o *Object) {
 		}
 		o.mark(path, Translated, "source DNS check mode covered by the propagation decision")
 	}
+}
+
+func sourceDNSChecks(o *Object) (bool, bool, bool, bool) {
+	disabled, valid := sourceBoolValue(o.value(dnsChallengeBase+".propagation.disableChecks"), false)
+	legacy, legacyOK := sourceBoolValue(o.value(dnsChallengeBase+".disablePropagationCheck"), false)
+	noANS, ansOK := sourceBoolValue(o.value(dnsChallengeBase+".propagation.disableANSChecks"), false)
+	allRNS, rnsOK := sourceBoolValue(o.value(dnsChallengeBase+".propagation.requireAllRNS"), false)
+	if !valid || !legacyOK || !ansOK || !rnsOK {
+		o.mark(dnsChallengeBase, Manual, "invalid DNS propagation switch")
+		return false, false, false, false
+	}
+	disabled = disabled || legacy || noANS && !allRNS
+	return disabled, noANS, allRNS, true
 }

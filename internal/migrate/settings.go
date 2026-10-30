@@ -21,32 +21,28 @@ func (g *generator) setting(o *Object) {
 			}
 		}
 	case "core":
-		if _, ok := sourceBoolValue(o.value("strictTLSOptions"), false); ok {
-			o.mark("strictTLSOptions", Translated, "conflicting TLS router policies follow the source conflict rule")
-		}
-		if syntax := o.text("defaultRuleSyntax"); syntax == "v2" || syntax == "v3" {
-			o.mark("defaultRuleSyntax", Translated, "shared literal rule parser")
-		}
+		classifyCoreSettings(o)
 	case "log":
 		o.mark("level", OutOfScope, "Traefik internal diagnostic levels do not configure Statute's logger")
 	case "api", "dashboard":
 		o.mark("", OutOfScope, "Traefik dashboard is outside Statute's scope")
 	}
+	classifyEmptyProcessSetting(o)
 	if o.ready() {
 		o.Generated = true
 	}
 }
 
+func classifyEmptyProcessSetting(o *Object) {
+	if o.data != nil && len(o.Fields) == 1 && o.Fields[0].Path == "" && (o.Name == "accessLog" || o.Name == "ping") {
+		o.mark("", Translated, "default process setting")
+	}
+}
+
 func (g *generator) accessLog(o *Object) {
-	destination := statute.Stdout
-	code := "statute.Stdout"
-	if path := o.text("filePath"); path != "" {
-		if !literal(path) {
-			o.mark("filePath", Manual, "log path contains unresolved interpolation")
-			return
-		}
-		destination = statute.LogFile(path)
-		code = fmt.Sprintf("statute.LogFile(%q)", path)
+	destination, code, ok := sourceLogDestination(o)
+	if !ok {
+		return
 	}
 	format := o.text("format")
 	log := statute.JSONLog(destination)
@@ -60,8 +56,8 @@ func (g *generator) accessLog(o *Object) {
 	}
 	code = "statute." + constructor + "(" + code + ")"
 	if value := o.value("bufferingSize"); value != nil {
-		n, err := integer(value)
-		if err != nil || n < 0 {
+		n, valid := sourceLogBuffer(value)
+		if !valid {
 			o.mark("bufferingSize", Manual, "log buffer size must be a nonnegative integer")
 			return
 		}
@@ -86,7 +82,7 @@ func (g *generator) accessLog(o *Object) {
 func (g *generator) ping(o *Object) {
 	entry := o.text("entryPoint")
 	if entry == "" {
-		entry = "traefik"
+		entry = sourceTraefik
 	}
 	manual, ok := sourceBoolValue(o.value("manualRouting"), false)
 	if !ok {
@@ -113,3 +109,28 @@ func (g *generator) ping(o *Object) {
 		o.mark(key, Translated, "listener-scoped process ping with shutdown status")
 	}
 }
+
+func classifyCoreSettings(o *Object) {
+	if _, ok := sourceBoolValue(o.value("strictTLSOptions"), false); ok {
+		o.mark("strictTLSOptions", Translated, "conflicting TLS router policies follow the source conflict rule")
+	}
+	if syntax := o.text("defaultRuleSyntax"); syntax == "v2" || syntax == "v3" {
+		o.mark("defaultRuleSyntax", Translated, "shared literal rule parser")
+	}
+}
+
+func sourceLogDestination(o *Object) (statute.LogWriter, string, bool) {
+	destination := statute.Stdout
+	code := "statute.Stdout"
+	if path := o.text("filePath"); path != "" {
+		if !literal(path) {
+			o.mark("filePath", Manual, "log path contains unresolved interpolation")
+			return destination, code, false
+		}
+		destination = statute.LogFile(path)
+		code = fmt.Sprintf("statute.LogFile(%q)", path)
+	}
+	return destination, code, true
+}
+
+func sourceLogBuffer(value any) (int, bool) { n, err := integer(value); return n, err == nil && n >= 0 }

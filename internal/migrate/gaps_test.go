@@ -37,7 +37,7 @@ func TestSecurityHeaderTranslation(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload", "Referrer-Policy": "strict-origin-when-cross-origin"}
-	for _, m := range c.Routes[0].Middleware {
+	for _, m := range testMiddlewareLeaves(c.Routes[0].Middleware) {
 		if m.HeaderValue != want[m.HeaderName] {
 			t.Fatalf("unexpected policy: %+v", m)
 		}
@@ -64,9 +64,9 @@ func TestRedirectSchemeMethodTranslation(t *testing.T) {
 		if permanent {
 			status, other = 301, 308
 		}
-		want := resolved.Redirect{Target: "https://{host}{request_uri}", Status: status, NonGETStatus: other}
-		if *c.Routes[0].Redirect != want {
-			t.Fatalf("redirect=%+v want=%+v", c.Routes[0].Redirect, want)
+		mws := testMiddlewareLeaves(c.Routes[0].Middleware)
+		if len(mws) != 1 || mws[0].Type != resolved.MWRedirectScheme || mws[0].RedirectScheme != "https" || mws[0].RedirectStatus != status || mws[0].RedirectNonGETStatus != other {
+			t.Fatalf("redirect policy lost: %+v", mws)
 		}
 		assertGeneratedParity(t, r)
 	}
@@ -76,19 +76,16 @@ func TestConsolidatedStaticDockerPriorityDecision(t *testing.T) {
 	in := dockerServiceInputs(t, "      traefik.http.routers.api.priority: '100'\n")
 	in.Dynamic = []string{fixture(t, "file.yml", strings.Replace(simpleDynamic, "service: api", "service: api\n      priority: 10", 1))}
 	r := audit(t, in)
-	requireMigrationGaps(t, r, "check.routing.route-precedence-decision")
-	count := 0
-	for _, check := range r.Report.Checks {
-		if check.Code != "route-precedence-decision" {
-			continue
-		}
-		count++
-		if len(check.References) != 2 || !strings.Contains(check.Reason, "priority 100") || !strings.Contains(check.Reason, "priority 10") {
-			t.Fatalf("ordering decision: %+v", check)
-		}
+	requireMigrationGaps(t, r)
+	c, err := statute.Resolve(r.Config)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("ordering findings=%d", count)
+	if !c.PrioritizeRoutes || c.Routes[0].Priority != 10 {
+		t.Fatal("static source priority lost")
+	}
+	if !strings.Contains(string(r.Go), "PrioritizeRoutes: true") {
+		t.Fatal("cross-provider priority ordering missing")
 	}
 }
 
@@ -115,7 +112,7 @@ func TestImplicitDockerServiceSelection(t *testing.T) {
 func TestPassiveHealthCandidatePreservesSettings(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "      loadBalancer:", "      loadBalancer:\n        passiveHealthCheck: {failureWindow: 30s, maxFailedAttempts: 3}", 1)
 	r := audit(t, basicInputs(t, body))
-	requireMigrationGaps(t, r, "services.$health-passive")
+	requireMigrationGaps(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +153,9 @@ func TestSecurityHeaderOrderAcrossMiddlewares(t *testing.T) {
       headers: {customFrameOptionsValue: '${FRAME_POLICY}'}
 `
 	r := audit(t, basicInputs(t, body))
-	requireMigrationGaps(t, r, "routers.$response-header-order")
+	requireMigrationGaps(t, r)
+	t.Setenv("FRAME_POLICY", "migration-binding")
+	assertGeneratedParity(t, r)
 }
 
 func TestImplicitDockerServiceFromComposeTargetPort(t *testing.T) {
@@ -182,7 +181,7 @@ func TestDockerPolicyFamiliesUseCaseInsensitiveLabelPaths(t *testing.T) {
       traefik.http.middlewares.limiter.ratelimit.burst: '40'
 `)
 	r := audit(t, in)
-	requireMigrationGaps(t, r, "middlewares.$rate-capacity", "middlewares.$rate-delay", "routers.$middleware:limiter@docker", "services.$health-passive")
+	requireMigrationGaps(t, r)
 	if !strings.Contains(string(r.Go), `statute.RateLimit("20/s")`) || !strings.Contains(string(r.Go), "MaxFailures: 3") {
 		t.Fatal("Docker policy candidates missing")
 	}

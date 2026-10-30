@@ -80,9 +80,7 @@ func (g *generator) listener(o *Object) {
 	if o.value("asDefault") != nil {
 		o.mark("asDefault", Translated, "default entrypoint membership expanded into router inventory")
 	}
-	if g.listenerRedirect(o, addr) {
-		return
-	}
+	g.listenerRedirect(o)
 	var l *statute.Listener
 	var code string
 	if g.entryTLS[o.Name] || o.value("http.tls") != nil {
@@ -107,33 +105,19 @@ func (g *generator) listener(o *Object) {
 	o.Generated = true
 }
 
-func (g *generator) listenerRedirect(o *Object, addr string) bool {
+func (g *generator) listenerRedirect(o *Object) {
 	const base = "http.redirections.entryPoint"
 	if o.value(base) == nil {
-		return false
+		return
 	}
-	scheme := o.text(base + ".scheme")
-	if scheme == "" {
-		scheme = protocolHTTPS
-	}
-	if scheme != protocolHTTP && scheme != protocolHTTPS {
-		o.mark(base, Manual, "invalid redirect scheme")
-		return false
-	}
-	to := o.text(base + ".to")
-	address := to
-	if target := g.entrypoints[to]; target != nil {
-		address = target.text("address")
-	}
-	_, port, err := net.SplitHostPort(address)
-	if err != nil || !validPort(port) {
-		o.mark(base+".to", Manual, "redirect target must name an entrypoint or valid port")
-		return false
+	scheme, port, ok := g.listenerRedirectTarget(o)
+	if !ok {
+		return
 	}
 	permanent, ok := sourceBoolValue(o.value(base+".permanent"), true)
 	if !ok {
 		o.mark(base+".permanent", Manual, "invalid redirect permanence")
-		return false
+		return
 	}
 	order := math.MaxInt - 1
 	if value := o.value(base + ".priority"); value != nil {
@@ -141,14 +125,14 @@ func (g *generator) listenerRedirect(o *Object, addr string) bool {
 		order, err = integer(value)
 		if err != nil {
 			o.mark(base+".priority", Manual, "invalid redirect priority")
-			return false
+			return
 		}
 	}
 	policy := statute.RedirectScheme(scheme).Port(port)
 	code := fmt.Sprintf("statute.RedirectScheme(%q).Port(%q)", scheme, port)
 	if permanent {
 		policy.Permanent()
-		code += ".Permanent()"
+		code += codePermanent
 	}
 	route := statute.Match("/*").OnListeners(o.Name).Priority(order).Handle(migrationNoop).With(policy)
 	g.internalRoutes = append(g.internalRoutes, route)
@@ -157,7 +141,6 @@ func (g *generator) listenerRedirect(o *Object, addr string) bool {
 	for _, key := range []string{"to", "scheme", fieldPermanent, "priority"} {
 		o.mark(base+"."+key, Translated, "listener-scoped conditional redirect at source priority")
 	}
-	return false
 }
 
 func (g *generator) listenerTLS(ep *Object) ([]statute.ListenerOption, []string) {
@@ -253,4 +236,27 @@ func certificateDomains(values []any) ([]string, bool) {
 		out = append(out, sans...)
 	}
 	return out, true
+}
+
+func (g *generator) listenerRedirectTarget(o *Object) (string, string, bool) {
+	const base = "http.redirections.entryPoint"
+	scheme := o.text(base + ".scheme")
+	if scheme == "" {
+		scheme = protocolHTTPS
+	}
+	if scheme != protocolHTTP && scheme != protocolHTTPS {
+		o.mark(base, Manual, "invalid redirect scheme")
+		return "", "", false
+	}
+	to := o.text(base + ".to")
+	address := to
+	if target := g.entrypoints[to]; target != nil {
+		address = target.text("address")
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil || !validPort(port) {
+		o.mark(base+".to", Manual, "redirect target must name an entrypoint or valid port")
+		return "", "", false
+	}
+	return scheme, port, true
 }

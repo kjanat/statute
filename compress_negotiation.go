@@ -7,7 +7,10 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
-const codingGzip = "gzip"
+const (
+	codingGzip = "gzip"
+	codingZstd = "zstd"
+)
 
 type encodingPreferences struct {
 	present bool

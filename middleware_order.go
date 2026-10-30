@@ -13,7 +13,7 @@ type orderedMW struct{ values []Middleware }
 func (*orderedMW) statuteMiddleware() {}
 
 // InOrder executes a group at its declared position. Header operations and path
-// rewrites run at the group's edge, rather than at the edge of the whole route.
+// rewrites run at the group's edge.
 // Retry outside the group invokes it again for each attempt.
 func InOrder(mws ...Middleware) *orderedMW {
 	return &orderedMW{values: append([]Middleware(nil), mws...)}

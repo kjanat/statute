@@ -24,12 +24,12 @@ type cli struct {
 }
 
 type traefikCommand struct {
-	PathMap []string `help:"Map a source provider path to a supplied local path (repeatable)." placeholder:"SOURCE=LOCAL" sep:"none"`
-	Static  []string `help:"Traefik static YAML/TOML file (repeatable)."                            placeholder:"FILE"        sep:"none"`
-	Dynamic []string `help:"File-provider YAML/TOML file or directory (repeatable)."                placeholder:"FILE_OR_DIR" sep:"none"`
-	Compose []string `help:"Compose file containing Traefik labels (repeatable; no interpolation)." placeholder:"FILE"        sep:"none"`
-	Out     string   `help:"Write Go source to a new file; never overwrite an existing file."       placeholder:"FILE"        required:""`
-	Report  string   `help:"Write the JSON audit to a new file; never overwrite an existing file."  placeholder:"FILE"        required:""`
+	PathMap []string `help:"Map a source provider path to a supplied local path (repeatable)."      placeholder:"SOURCE=LOCAL" sep:"none"`
+	Static  []string `help:"Traefik static YAML/TOML file (repeatable)."                            placeholder:"FILE"         sep:"none"`
+	Dynamic []string `help:"File-provider YAML/TOML file or directory (repeatable)."                placeholder:"FILE_OR_DIR"  sep:"none"`
+	Compose []string `help:"Compose file containing Traefik labels (repeatable; no interpolation)." placeholder:"FILE"         sep:"none"`
+	Out     string   `help:"Write Go source to a new file; never overwrite an existing file."       placeholder:"FILE"         required:""`
+	Report  string   `help:"Write the JSON audit to a new file; never overwrite an existing file."  placeholder:"FILE"         required:""`
 }
 
 type commandOutput struct{ stdout io.Writer }

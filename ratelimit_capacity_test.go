@@ -33,6 +33,45 @@ func assertBucketStore(t *testing.T, s *bucketStore, want int) {
 	}
 }
 
+func TestRateLimitIdleExpiryKeepsSubsecondPrecision(t *testing.T) {
+	s := newBucketStore(1, 1)
+	s.capacity = 1
+	cfg := resolved.Middleware{RateLimitIdleTTL: 100 * time.Millisecond}
+	start := time.Unix(100, 100*int64(time.Millisecond))
+	for i := range 5 {
+		delay, ok := s.reserve("client", start.Add(time.Duration(i)*time.Millisecond), cfg)
+		if !ok || (i == 0 && delay != 0) || (i > 0 && delay <= 0) {
+			t.Fatalf("request %d: delay=%s admitted=%t", i, delay, ok)
+		}
+	}
+	if delay, ok := s.reserve("client", start.Add(105*time.Millisecond), cfg); !ok || delay != 0 {
+		t.Fatalf("expired bucket was not replenished: %s %t", delay, ok)
+	}
+}
+
+func TestRateLimitReservationCapacityAndExplicitEviction(t *testing.T) {
+	for _, evict := range []bool{false, true} {
+		policy := RateLimit("1/h").Burst(1).Reserve("0s").ExpireIdle("1h").MaxBuckets(1)
+		if evict {
+			policy.EvictOldest()
+		}
+		h := chain(t, noContentHandler, policy)
+		for i, peer := range []string{"192.0.2.1:80", "192.0.2.2:80"} {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = peer
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			want := http.StatusNoContent
+			if i > 0 && !evict {
+				want = http.StatusServiceUnavailable
+			}
+			if w.Code != want {
+				t.Fatalf("evict=%t request=%d status=%d want=%d", evict, i, w.Code, want)
+			}
+		}
+	}
+}
+
 func assertBucketTokens(t *testing.T, b *bucket, capacity float64) {
 	t.Helper()
 	if math.IsNaN(b.tokens) || math.IsInf(b.tokens, 0) || b.tokens < 0 || b.tokens > capacity {

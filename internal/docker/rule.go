@@ -315,46 +315,14 @@ func (e andExpr) expand() ([]conj, error) {
 // constraints on one conjunction are rejected.
 func mergeConj(a, b conj) (conj, error) {
 	out := a
-	if len(b.hosts) > 0 {
-		if len(out.hosts) == 0 {
-			out.hosts = b.hosts
-		} else {
-			var inter []string
-			for _, h := range out.hosts {
-				for _, g := range b.hosts {
-					if h == g {
-						inter = append(inter, h)
-					}
-				}
-			}
-			if len(inter) == 0 {
-				return conj{}, fmt.Errorf("rule: conjunction of disjoint Host() sets can never match")
-			}
-			out.hosts = inter
-		}
+	var err error
+	out.hosts, err = intersectRuleHosts(a.hosts, b.hosts)
+	if err != nil {
+		return conj{}, err
 	}
-	if len(b.peers) > 0 {
-		if len(out.peers) == 0 {
-			out.peers = b.peers
-		} else {
-			var intersection []string
-			for _, left := range out.peers {
-				a, _ := netip.ParsePrefix(left)
-				for _, right := range b.peers {
-					b, _ := netip.ParsePrefix(right)
-					if a.Contains(b.Addr()) {
-						intersection = append(intersection, right)
-					} else if b.Contains(a.Addr()) {
-						intersection = append(intersection, left)
-					}
-				}
-			}
-			if len(intersection) == 0 {
-				return conj{}, fmt.Errorf("rule: disjoint ClientIP constraints")
-			}
-			slices.Sort(intersection)
-			out.peers = slices.Compact(intersection)
-		}
+	out.peers, err = intersectRulePeers(a.peers, b.peers)
+	if err != nil {
+		return conj{}, err
 	}
 	if b.pathSet {
 		if out.pathSet {
@@ -542,4 +510,51 @@ func (p *ruleParser) expect(kind int, what string) error {
 	}
 	p.pos++
 	return nil
+}
+
+func intersectRuleHosts(a, b []string) ([]string, error) {
+	if len(a) == 0 {
+		return b, nil
+	}
+	if len(b) == 0 {
+		return a, nil
+	}
+	var intersection []string
+	for _, left := range a {
+		for _, right := range b {
+			if left == right {
+				intersection = append(intersection, left)
+			}
+		}
+	}
+	if len(intersection) == 0 {
+		return nil, fmt.Errorf("rule: conjunction of disjoint Host() sets can never match")
+	}
+	return intersection, nil
+}
+
+func intersectRulePeers(a, b []string) ([]string, error) {
+	if len(a) == 0 {
+		return b, nil
+	}
+	if len(b) == 0 {
+		return a, nil
+	}
+	var intersection []string
+	for _, left := range a {
+		l, _ := netip.ParsePrefix(left)
+		for _, right := range b {
+			r, _ := netip.ParsePrefix(right)
+			if l.Contains(r.Addr()) {
+				intersection = append(intersection, right)
+			} else if r.Contains(l.Addr()) {
+				intersection = append(intersection, left)
+			}
+		}
+	}
+	if len(intersection) == 0 {
+		return nil, fmt.Errorf("rule: disjoint ClientIP constraints")
+	}
+	slices.Sort(intersection)
+	return slices.Compact(intersection), nil
 }

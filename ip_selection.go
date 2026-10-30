@@ -20,7 +20,7 @@ func resolveIPSelection(p *IPSelection) (*resolved.IPSelection, error) {
 		return nil, nil
 	}
 	out := *p
-	if out.Mode != "peer" && out.Mode != "verified" && out.Mode != "forwarded" {
+	if !slices.Contains([]string{"peer", "verified", "forwarded"}, out.Mode) {
 		return nil, errors.New("ip_selection: invalid mode")
 	}
 	if out.Depth < 0 {
@@ -57,26 +57,7 @@ func selectedRequestIP(p *resolved.IPSelection, r *http.Request) string {
 		value = host
 	}
 	if p.Mode == "forwarded" {
-		parts := strings.Split(r.Header.Get(headerXForwardedFor), ",")
-		value = ""
-		if p.Depth > 0 {
-			if p.Depth <= len(parts) {
-				value = strings.TrimSpace(parts[len(parts)-p.Depth])
-			}
-		} else {
-			excluded := mustParsePrefixes(p.ExcludedIPs)
-			for _, part := range slices.Backward(parts) {
-				part = strings.TrimSpace(part)
-				if part == "" {
-					continue
-				}
-				ip, err := netip.ParseAddr(part)
-				if err != nil || !addrInPrefixes(ip, excluded) {
-					value = part
-					break
-				}
-			}
-		}
+		value = forwardedSelection(p, r)
 	}
 	if p.IPv6Subnet != nil {
 		if ip, err := netip.ParseAddr(value); err == nil && ip.Is6() {
@@ -96,8 +77,34 @@ func (m *allowIPsMW) SelectIP(policy IPSelection) *allowIPsMW {
 }
 
 // SelectIP chooses the address used for client-IP rate-limit keys.
-func (m *rateLimitMW) SelectIP(policy IPSelection) *rateLimitMW {
+func (r *rateLimitMW) SelectIP(policy IPSelection) *rateLimitMW {
 	policy.ExcludedIPs = slices.Clone(policy.ExcludedIPs)
-	m.selection = &policy
-	return m
+	r.selection = &policy
+	return r
+}
+
+func forwardedSelection(p *resolved.IPSelection, r *http.Request) string {
+	value := ""
+
+	parts := strings.Split(r.Header.Get(headerXForwardedFor), ",")
+	value = ""
+	if p.Depth > 0 {
+		if p.Depth <= len(parts) {
+			value = strings.TrimSpace(parts[len(parts)-p.Depth])
+		}
+	} else {
+		excluded := mustParsePrefixes(p.ExcludedIPs)
+		for _, part := range slices.Backward(parts) {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			ip, err := netip.ParseAddr(part)
+			if err != nil || !addrInPrefixes(ip, excluded) {
+				value = part
+				break
+			}
+		}
+	}
+	return value
 }

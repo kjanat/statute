@@ -38,9 +38,9 @@ providers:
 `)}
 		}
 		r := audit(t, in)
-		if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$response-header-order") {
-			t.Fatalf("%s router lost entrypoint response policy precedence", provider)
-		}
+		requireMigrationGaps(t, r)
+		t.Setenv("SERVER_HEADER", "migration-binding")
+		assertGeneratedParity(t, r)
 	}
 }
 

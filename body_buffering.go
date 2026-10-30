@@ -49,11 +49,22 @@ func (m *bufferBodiesMW) resolve() (resolved.Middleware, error) {
 
 func bufferBodiesHandler(m resolved.Middleware, next http.Handler) http.Handler {
 	if m.BodyBuffers != nil {
-		if handler, err := buffer.New(next, bodyBufferOptions(*m.BodyBuffers)...); err == nil {
+		if handler, err := buffer.New(bodyBufferNext(*m.BodyBuffers, next), bodyBufferOptions(*m.BodyBuffers)...); err == nil {
 			return handler
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "invalid body buffer policy", http.StatusInternalServerError)
+	})
+}
+
+func bodyBufferNext(policy BodyBufferPolicy, next http.Handler) http.Handler {
+	if policy.DisableResponse {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Oxy stores the last explicit status and requires an initial value.
+		w.WriteHeader(http.StatusOK)
+		next.ServeHTTP(w, r)
 	})
 }

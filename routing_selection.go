@@ -34,21 +34,7 @@ func validateListenerNames(cfg *resolved.Config) error {
 	}
 	for _, routes := range [][]*resolved.Route{cfg.Routes, cfg.FallbackRoutes} {
 		for _, route := range routes {
-			var checkMiddlewareNames func([]resolved.Middleware) error
-			checkMiddlewareNames = func(chain []resolved.Middleware) error {
-				for _, m := range chain {
-					for _, name := range m.MiddlewareListeners {
-						if !names[name] {
-							return fmt.Errorf("middleware references unknown listener %q", name)
-						}
-					}
-					if err := checkMiddlewareNames(m.Group); err != nil {
-						return err
-					}
-				}
-				return nil
-			}
-			if err := checkMiddlewareNames(route.Middleware); err != nil {
+			if err := validateMiddlewareListenerNames(route.Middleware, names); err != nil {
 				return err
 			}
 			for _, name := range route.Listeners {
@@ -95,10 +81,10 @@ func priorityDynamicRoute(t *dynamicTable, host string, r *http.Request) *compil
 	if rejection != nil && (serving == nil || rejection.matcher.Priority >= serving.matcher.Priority) {
 		return rejection
 	}
-	if serving != nil {
-		return serving
+	if refusal := bestPriorityRoute(t.tombstones, host, r); refusal != nil && (serving == nil || refusal.matcher.Priority >= serving.matcher.Priority) {
+		return refusal
 	}
-	return findCompiledRoute(t.tombstones, host, r)
+	return serving
 }
 
 func listenerMatches(names []string, r *http.Request) bool {
@@ -107,4 +93,18 @@ func listenerMatches(names []string, r *http.Request) bool {
 	}
 	name, _ := r.Context().Value(listenerNameKey{}).(string)
 	return slices.Contains(names, name)
+}
+
+func validateMiddlewareListenerNames(chain []resolved.Middleware, names map[string]bool) error {
+	for _, m := range chain {
+		for _, name := range m.MiddlewareListeners {
+			if !names[name] {
+				return fmt.Errorf("middleware references unknown listener %q", name)
+			}
+		}
+		if err := validateMiddlewareListenerNames(m.Group, names); err != nil {
+			return err
+		}
+	}
+	return nil
 }

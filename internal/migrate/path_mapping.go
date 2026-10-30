@@ -11,30 +11,8 @@ func (r *Result) inventoryMounts(source string, document map[string]any) {
 		mapping := map[string]string{}
 		ownsStatic := false
 		for _, volume := range volumes {
-			from, to := "", ""
-			if text, ok := volume.(string); ok {
-				parts := strings.Split(text, ":")
-				if len(parts) >= 2 {
-					from, to = parts[0], parts[1]
-				}
-			} else {
-				values := asMap(volume)
-				if values["type"] != "bind" {
-					continue
-				}
-				from, to = stringValue(values["source"]), stringValue(values["target"])
-			}
-			if from == "" || to == "" || !literal(from) || !literal(to) || !filepath.IsAbs(to) {
-				continue
-			}
-			if !filepath.IsAbs(from) {
-				if !strings.HasPrefix(from, ".") {
-					continue
-				}
-				from = filepath.Join(filepath.Dir(source), from)
-			}
-			from, err := filepath.Abs(from)
-			if err != nil {
+			from, to, ok := composeBindMount(source, volume)
+			if !ok {
 				continue
 			}
 			mapping[filepath.Clean(to)] = from
@@ -87,4 +65,38 @@ func (g *generator) mappedProviderPaths(path string) []string {
 		}
 	}
 	return out
+}
+
+func composeBindMount(source string, volume any) (string, string, bool) {
+	from, to := "", ""
+	if text, ok := volume.(string); ok {
+		parts := strings.Split(text, ":")
+		if len(parts) >= 2 {
+			from, to = parts[0], parts[1]
+		}
+	} else {
+		values := asMap(volume)
+		if values["type"] != "bind" {
+			return "", "", false
+		}
+		from, to = stringValue(values["source"]), stringValue(values["target"])
+	}
+	if !validComposeBindPath(from, to) {
+		return "", "", false
+	}
+	if !filepath.IsAbs(from) {
+		if !strings.HasPrefix(from, ".") {
+			return "", "", false
+		}
+		from = filepath.Join(filepath.Dir(source), from)
+	}
+	from, err := filepath.Abs(from)
+	if err != nil {
+		return "", "", false
+	}
+	return from, to, true
+}
+
+func validComposeBindPath(from, to string) bool {
+	return from != "" && to != "" && literal(from) && literal(to) && filepath.IsAbs(to)
 }

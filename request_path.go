@@ -21,7 +21,7 @@ type requestPathMW struct {
 func (*requestPathMW) statuteMiddleware() {}
 
 // ReplaceEscapedPath replaces the escaped path without changing the query.
-// Unlike ReplacePath, it executes at its declared middleware position.
+// It executes at its declared middleware position.
 func ReplaceEscapedPath(path string) *requestPathMW {
 	return &requestPathMW{kind: resolved.MWReplaceEscapedPath, replacement: path}
 }
@@ -92,72 +92,84 @@ func requestPathHandler(m resolved.Middleware, next http.Handler) http.Handler {
 		if current == "" {
 			current = out.URL.EscapedPath()
 		}
-		normalize := false
-		switch m.Type {
-		case resolved.MWReplaceEscapedPath:
-			if m.PathRecordOriginal {
-				out.Header.Add("X-Replaced-Path", current)
+		if expression != nil && !expression.MatchString(current) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		normalize, err := applyRequestPath(m, expression, out, current)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if m.Type == resolved.MWStripBytePrefixes {
+				status = http.StatusBadRequest
 			}
-			out.URL.RawPath = m.PathReplacement
-			path, err := url.PathUnescape(out.URL.RawPath)
-			if err != nil {
-				http.Error(w, "invalid rewritten path", http.StatusInternalServerError)
-				return
-			}
-			out.URL.Path = path
-		case resolved.MWRewriteEscapedPath:
-			if !expression.MatchString(current) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if m.PathRecordOriginal {
-				out.Header.Add("X-Replaced-Path", current)
-			}
-			out.URL.RawPath = expression.ReplaceAllString(current, m.PathReplacement)
-			path, err := url.PathUnescape(out.URL.RawPath)
-			if err != nil {
-				http.Error(w, "invalid rewritten path", http.StatusInternalServerError)
-				return
-			}
-			out.URL.Path = path
-			normalize = true
-		case resolved.MWPrefixPath:
-			out.URL.Path = rootRequestPath(m.PathReplacement+out.URL.Path, false)
-			if out.URL.RawPath != "" {
-				out.URL.RawPath = rootRequestPath(m.PathReplacement+out.URL.RawPath, false)
-			}
-		case resolved.MWStripBytePrefixes:
-			for _, prefix := range m.PathPrefixes {
-				if !strings.HasPrefix(out.URL.Path, prefix) {
-					continue
-				}
-				out.URL.Path = rootRequestPath(strings.TrimPrefix(out.URL.Path, prefix), m.PathForceSlash)
-				if out.URL.RawPath != "" {
-					tail, ok := rawTailFromDecodedOffset(out.URL.RawPath, len(prefix))
-					if !ok {
-						http.Error(w, "invalid escaped path", http.StatusBadRequest)
-						return
-					}
-					out.URL.RawPath = rootRequestPath(tail, m.PathForceSlash)
-				}
-				if m.PathRecordOriginal {
-					out.Header.Add("X-Forwarded-Prefix", prefix)
-				}
-				normalize = true
-				break
-			}
+			http.Error(w, err.Error(), status)
+			return
 		}
 		out.RequestURI = out.URL.RequestURI()
-		if normalize && out.URL.Path != "" {
-			path := out.URL.Path
-			out.URL = out.URL.JoinPath()
-			if path != out.URL.Path {
-				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-				return
-			}
+		if normalize && !requestPathNormalized(out) {
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			return
 		}
 		next.ServeHTTP(w, out)
 	})
+}
+
+func applyRequestPath(m resolved.Middleware, expression *regexp.Regexp, out *http.Request, current string) (bool, error) {
+	switch m.Type {
+	case resolved.MWReplaceEscapedPath, resolved.MWRewriteEscapedPath:
+		if m.PathRecordOriginal {
+			out.Header.Add("X-Replaced-Path", current)
+		}
+		raw := m.PathReplacement
+		if expression != nil {
+			raw = expression.ReplaceAllString(current, raw)
+		}
+		path, err := url.PathUnescape(raw)
+		if err != nil {
+			return false, errors.New("invalid rewritten path")
+		}
+		out.URL.RawPath, out.URL.Path = raw, path
+		return expression != nil, nil
+	case resolved.MWPrefixPath:
+		out.URL.Path = rootRequestPath(m.PathReplacement+out.URL.Path, false)
+		if out.URL.RawPath != "" {
+			out.URL.RawPath = rootRequestPath(m.PathReplacement+out.URL.RawPath, false)
+		}
+	case resolved.MWStripBytePrefixes:
+		return stripRequestPrefixes(m, out)
+	default:
+	}
+	return false, nil
+}
+
+func stripRequestPrefixes(m resolved.Middleware, out *http.Request) (bool, error) {
+	for _, prefix := range m.PathPrefixes {
+		if !strings.HasPrefix(out.URL.Path, prefix) {
+			continue
+		}
+		out.URL.Path = rootRequestPath(strings.TrimPrefix(out.URL.Path, prefix), m.PathForceSlash)
+		if out.URL.RawPath != "" {
+			tail, ok := rawTailFromDecodedOffset(out.URL.RawPath, len(prefix))
+			if !ok {
+				return false, errors.New("invalid escaped path")
+			}
+			out.URL.RawPath = rootRequestPath(tail, m.PathForceSlash)
+		}
+		if m.PathRecordOriginal {
+			out.Header.Add("X-Forwarded-Prefix", prefix)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func requestPathNormalized(out *http.Request) bool {
+	if out.URL.Path == "" {
+		return true
+	}
+	path := out.URL.Path
+	out.URL = out.URL.JoinPath()
+	return path == out.URL.Path
 }
 
 func rootRequestPath(path string, force bool) string {

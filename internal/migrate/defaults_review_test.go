@@ -7,6 +7,7 @@ import (
 	"time"
 
 	statute "statute.kjanat.dev"
+	"statute.kjanat.dev/resolved"
 )
 
 func dockerServiceInputs(t *testing.T, labels string) Inputs {
@@ -48,12 +49,19 @@ func TestHealthURLSemanticsCannotBecomeLiteralPath(t *testing.T) {
 					in = dockerServiceInputs(t, fmt.Sprintf("      traefik.http.services.api.loadbalancer.healthcheck.path: %q\n      traefik.http.services.api.loadbalancer.healthcheck.followredirects: 'false'\n", path))
 				}
 				r := audit(t, in)
-				if path == "/ready" {
-					requireMigrationGaps(t, r, "services.$health-degraded")
-					return
+				requireMigrationGaps(t, r)
+				c, err := statute.Resolve(r.Config)
+				if err != nil {
+					t.Fatal(err)
 				}
-				if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$health-path") || !strings.Contains(string(r.Go), "panic(") {
-					t.Fatal("health URL semantics changed without blocking")
+				var h resolved.HealthCheck
+				if provider == providerDocker {
+					h = c.Docker.PoolPolicy["api@traefik"].HealthCheck
+				} else {
+					h = c.Upstreams["api@file"].HealthCheck
+				}
+				if h.Path != path || !h.ResolvePath {
+					t.Fatalf("health URL policy lost: %+v", h)
 				}
 			})
 		}
@@ -105,7 +113,7 @@ certificatesResolvers:
 			t.Fatal(err)
 		}
 		l := c.Listeners[0]
-		got := selection{clientAuth: l.ClientAuth != nil, policy: l.TLSPolicy != nil, sources: len(l.AutoTLSSources)}
+		got := selection{clientAuth: l.ClientAuth != nil || len(l.ClientAuthPolicies) > 0, policy: l.TLSPolicy != nil || len(l.TLSPolicies) > 0, sources: len(l.AutoTLSSources)}
 		if len(l.AutoTLSSources) > 0 {
 			got.domain = l.AutoTLSSources[0].Domains[0]
 		}

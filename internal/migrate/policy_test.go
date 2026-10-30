@@ -30,10 +30,10 @@ func TestTLSClientAuthenticationAndCipherPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	listener := c.Listeners[0]
-	if listener.ClientAuth == nil || len(listener.ClientAuth.CAFiles) != 1 {
+	if len(listener.ClientAuthPolicies) != 1 || len(listener.ClientAuthPolicies[0].Policy.CAFiles) != 1 {
 		t.Fatal("client CA policy was dropped")
 	}
-	if listener.TLSPolicy == nil || len(listener.TLSPolicy.CipherSuites) != 1 {
+	if len(listener.TLSPolicies) != 1 || len(listener.TLSPolicies[0].Policy.CipherSuites) != 1 {
 		t.Fatal("cipher policy was dropped")
 	}
 	if !strings.Contains(string(r.Go), "statute.RequireAndVerifyClientCert") {
@@ -100,7 +100,7 @@ func TestUpstreamTLSFilesProbeAndFlushRemainPoolOwned(t *testing.T) {
       forwardingTimeouts: {dialTimeout: 4s, responseHeaderTimeout: 7s, idleConnTimeout: 45s}
 `
 	r := audit(t, basicInputs(t, body))
-	requireMigrationGaps(t, r, "services.$health-degraded")
+	requireMigrationGaps(t, r)
 	assertGeneratedParity(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
@@ -113,7 +113,7 @@ func TestUpstreamTLSFilesProbeAndFlushRemainPoolOwned(t *testing.T) {
 	if p.Transport.ClientCertificate == nil || len(p.Transport.RootCAFiles) != 1 {
 		t.Fatal("upstream TLS identity or roots lost")
 	}
-	if len(p.HealthCheck.Statuses) != 200 || p.HealthCheck.Host != "health.example.com" {
+	if len(p.HealthCheck.Statuses) != 0 || p.HealthCheck.Redirects != "none" || p.HealthCheck.Host != "health.example.com" {
 		t.Fatal("probe redirects or Host policy changed")
 	}
 }
@@ -143,16 +143,14 @@ certificatesResolvers:
       httpChallenge: {entryPoint: web}
 `)}
 	r := audit(t, in)
-	if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$redirect-priority") || strings.Contains(findings(r), "$redirect-method") {
-		t.Fatal("redirect differences were not reported")
-	}
+	requireMigrationGaps(t, r)
 	assertGeneratedParity(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Listeners[1].Redirect != "https" {
-		t.Fatal("redirect listener lost")
+	if len(c.Routes) < 1 || !strings.Contains(string(r.Go), "statute.RedirectScheme(") {
+		t.Fatal("conditional listener redirect lost")
 	}
 	if len(c.Listeners[0].AutoTLSSources[0].Domains) != 2 {
 		t.Fatal("explicit ACME domain coverage lost")
@@ -164,11 +162,11 @@ func TestRedirectTargetAndChallengeGapsBlock(t *testing.T) {
 		in := basicInputs(t, simpleDynamic)
 		in.Static = []string{fixture(t, "static.yml", fmt.Sprintf("entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false, redirections: {entryPoint: {to: %q}}}}\n  secure: {address: ':8443', http: {sanitizePath: false}}\n", target))}
 		r := audit(t, in)
-		if target == ":443" {
+		if target != "missing" {
 			requireMigrationGaps(t, r)
 			continue
 		}
-		if !hasBlockingGaps(r) || !strings.Contains(string(r.Go), "RedirectTo") {
+		if !hasBlockingGaps(r) {
 			t.Fatal("redirect gap was accepted or candidate lost")
 		}
 	}
@@ -250,8 +248,9 @@ func TestEntrypointPolicyCannotDisappearOrLeakAcrossListeners(t *testing.T) {
   other: {address: ':8081', http: {sanitizePath: false}}
 `)}
 	r := audit(t, in)
-	if !hasBlockingGaps(r) || !strings.Contains(findings(r), "$entrypoint-middleware") {
-		t.Fatal("different listener policies were combined")
+	requireMigrationGaps(t, r, "entrypoints.transport.respondingTimeouts.readTimeout")
+	if !strings.Contains(string(r.Go), "OnListeners") {
+		t.Fatal("listener-specific policy missing")
 	}
 	if r.Config.Defaults.ReadTimeout == "5s" {
 		t.Fatal("listener timeout leaked into global defaults")

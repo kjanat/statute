@@ -155,14 +155,13 @@ func (r *Route) Handle(h http.Handler) *Route {
 	return r
 }
 
-// With attaches middleware to the route. Middleware runs in declaration order
-// before the upstream proxy or static file handler.
 // WithOuter prepends middleware ahead of the route's existing chain.
 func (r *Route) WithOuter(mws ...Middleware) *Route {
 	r.middleware = append(append([]Middleware(nil), mws...), r.middleware...)
 	return r
 }
 
+// With attaches middleware in declaration order before the route handler.
 func (r *Route) With(mws ...Middleware) *Route {
 	r.middleware = append(r.middleware, mws...)
 	return r

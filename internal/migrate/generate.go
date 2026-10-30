@@ -87,7 +87,7 @@ func generate(r *Result) error {
 	g.routes = append(g.routes, g.internalCode...)
 	r.Report.GeneratedRoutes += len(g.internalRoutes)
 	g.unusedTLSPolicies()
-	g.checkPrecedence(routers)
+	g.checkPrecedence()
 	if r.Config.Docker != nil {
 		g.registerMiddleware(routers)
 	}
@@ -237,7 +237,7 @@ func (g *generator) service(o *Object) {
 	}
 	parts := []string{"Backends:[]statute.Backend{" + strings.Join(backends, ",") + "}", fmt.Sprintf("AllowEmpty:%t", pool.AllowEmpty)}
 	parts = append(parts, serviceHost(o, &pool)...)
-	parts = append(parts, serviceHealth(o, &pool)...)
+	parts = append(parts, g.serviceHealth(o, &pool)...)
 	parts = append(parts, servicePassiveHealth(o, &pool)...)
 	parts = append(parts, fmt.Sprintf("RejectUnhealthy:%t", pool.RejectUnhealthy))
 	if name := o.text("loadBalancer.serversTransport"); name != "" {
@@ -254,7 +254,7 @@ func (g *generator) service(o *Object) {
 	}
 	serviceFlush(o, &pool.Transport)
 	parts = append(parts, "Transport:"+transportLiteral(pool.Transport))
-	if !o.ready() {
+	if !o.readyWithBindings() {
 		return
 	}
 	id := o.Name + "@file"
@@ -404,6 +404,7 @@ func priority(o *Object) int {
 func (g *generator) router(o *Object) {
 	g.r.Report.Routes++
 	if g.disabledRouters[o] {
+		o.mark("", OutOfScope, "router disabled by source strict TLS conflict policy")
 		o.Generated = true
 		return
 	}
@@ -431,7 +432,7 @@ func (g *generator) router(o *Object) {
 	}
 	name := qualified(o.text("service"), o.Provider)
 	o.reference("service", "service", o.text("service"))
-	if _, ok := g.pools[name]; !ok && name != "noop@internal" && !g.discoveredService(name) {
+	if !g.serviceAvailable(name) {
 		o.mark("service", Exact, "provider-qualified service reference inventoried; unresolved service is reported separately")
 		o.note("$service", Manual, "service reference is missing, unsupported or blocked")
 		return
@@ -474,8 +475,7 @@ func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 		chain.values = append(chain.values, g.entryDefaults.values...)
 		chain.code = append(chain.code, g.entryDefaults.code...)
 	}
-	g.checkDefaultMiddleware(o, refs)
-	g.checkMiddlewareOrder(o, refs)
+	g.checkDefaultMiddleware(o)
 	for _, ref := range refs {
 		if !literal(ref) {
 			o.note("$middleware", Manual, "unresolved middleware reference; interpolation is not evaluated")
@@ -557,15 +557,6 @@ func (g *generator) dockerDependencies(o *Object) {
 	}
 }
 
-func nativePaths(ms []docker.Matcher) bool {
-	for _, m := range ms {
-		if m.PathKind == docker.PathByte || (m.PathKind == docker.PathExact && strings.HasSuffix(m.Path, "/*")) {
-			return false
-		}
-	}
-	return true
-}
-
 func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) {
 	hosts := hostSpellings(m.Host)
 	constructor := "Match"
@@ -577,6 +568,7 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 	case docker.PathByte:
 		constructor = "MatchPrefix"
 		newRoute = statute.MatchPrefix
+	default:
 	}
 	route := newRoute(m.Path).ProxyTo(name).With(chain.values...).Priority(m.Priority).OnListeners(m.ListenerNames...)
 	code := fmt.Sprintf("statute.%s(%q).ProxyTo(%q).Priority(%d).OnListeners(%s)", constructor, m.Path, name, m.Priority, quoted(m.ListenerNames))
@@ -585,7 +577,7 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 		route = newRoute(m.Path).ProxyToDiscovered(target).With(chain.values...).Priority(m.Priority).OnListeners(m.ListenerNames...)
 		code = fmt.Sprintf("statute.%s(%q).ProxyToDiscovered(%q).Priority(%d).OnListeners(%s)", constructor, m.Path, target, m.Priority, quoted(m.ListenerNames))
 	}
-	if name == "noop@internal" {
+	if name == serviceNoop {
 		g.imports["net/http"] = true
 		route = newRoute(m.Path).Handle(migrationNoop).With(chain.values...).Priority(m.Priority).OnListeners(m.ListenerNames...)
 		code = fmt.Sprintf("statute.%s(%q).Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request){w.WriteHeader(http.StatusTeapot)})).Priority(%d).OnListeners(%s)", constructor, m.Path, m.Priority, quoted(m.ListenerNames))
@@ -601,7 +593,7 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 	if len(chain.code) > 0 {
 		code += ".With(" + strings.Join(chain.code, ",") + ")"
 	}
-	if !g.r.Config.PrioritizeRoutes && m.Host == "" && m.PathKind == docker.PathAny {
+	if g.terminalMatcher(m) {
 		g.r.Config.FallbackRoutes = append(g.r.Config.FallbackRoutes, route)
 		g.fallbacks = append(g.fallbacks, code)
 	} else {
@@ -638,58 +630,8 @@ func middlewareRefs(o *Object) ([]string, bool) {
 	return stringList(v, o.Provider == providerDocker)
 }
 
-func (g *generator) checkPrecedence(routers []*Object) {
+func (g *generator) checkPrecedence() {
 	g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: "routing", Code: "source-route-priority-enabled"})
-}
-
-func generatedCatchAll(o *Object) bool {
-	if o.Provider != providerFile || !o.Generated {
-		return false
-	}
-	ms, _ := docker.ParseRule(o.text("rule"))
-	for _, m := range ms {
-		if m.Host == "" && m.PathKind == docker.PathAny {
-			return true
-		}
-	}
-	return false
-}
-
-func needsPrecedenceReview(a, b *Object) bool {
-	return a.Provider != b.Provider || priority(a) == priority(b) || a.Provider == providerDocker
-}
-
-func rulesMayOverlap(a, b *Object) bool {
-	x, ex := docker.ParseRule(a.text("rule"))
-	y, ey := docker.ParseRule(b.text("rule"))
-	if ex != nil || ey != nil {
-		return true
-	}
-	for _, m := range x {
-		for _, n := range y {
-			if matchersMayOverlap(m, n) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func matchersMayOverlap(m, n docker.Matcher) bool {
-	if m.PathKind == docker.PathExact && n.PathKind == docker.PathExact && m.Path != n.Path {
-		return false
-	}
-	if m.Host == "" || n.Host == "" {
-		return true
-	}
-	for _, a := range hostSpellings(m.Host) {
-		for _, b := range hostSpellings(n.Host) {
-			if strings.EqualFold(a, b) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (g *generator) validate() {
@@ -802,4 +744,13 @@ func (g *generator) hasImplementationGaps() bool {
 		}
 	}
 	return false
+}
+
+func (g *generator) serviceAvailable(name string) bool {
+	_, ok := g.pools[name]
+	return ok || name == serviceNoop || g.discoveredService(name)
+}
+
+func (g *generator) terminalMatcher(m docker.Matcher) bool {
+	return !g.r.Config.PrioritizeRoutes && m.Host == "" && m.PathKind == docker.PathAny
 }

@@ -36,49 +36,12 @@ func (g *generator) redirectMiddleware(o *Object, chain *middleware) {
 	var mw statute.Middleware
 	var code string
 	if family == redirectFamilyScheme {
-		scheme, port := o.text(family+".scheme"), o.text(family+".port")
-		if scheme != protocolHTTP && scheme != protocolHTTPS {
-			o.mark(family, Manual, "redirect scheme must be http or https")
-			return
-		}
-		if port != "" && !validPort(port) {
-			o.mark(family, Manual, "invalid redirect port")
-			return
-		}
-		value := statute.RedirectScheme(scheme)
-		code = fmt.Sprintf("statute.RedirectScheme(%q)", scheme)
-		if port != "" {
-			value.Port(port)
-			code += fmt.Sprintf(".Port(%q)", port)
-		}
-		if status == 301 && other == 308 {
-			value.Permanent()
-			code += ".Permanent()"
-		} else if status == other {
-			value.Status(status)
-			code += fmt.Sprintf(".Status(%d)", status)
-		}
-		mw = value
+		mw, code, ok = sourceSchemeRedirect(o, family, status, other)
 	} else {
-		pattern, replacement := o.text(family+".regex"), o.text(family+".replacement")
-		if strings.ContainsAny(pattern+replacement, "\r\n\x00") || strings.Contains(pattern, "${") || strings.Contains(pattern+replacement, "{{") {
-			o.mark(family, Manual, "redirect contains unresolved interpolation or invalid control characters")
-			return
-		}
-		if _, err := regexp.Compile(pattern); err != nil {
-			o.mark(family, Manual, "invalid redirect regular expression")
-			return
-		}
-		value := statute.RedirectRegex(pattern, replacement)
-		code = fmt.Sprintf("statute.RedirectRegex(%q,%q)", pattern, replacement)
-		if status == 301 && other == 308 {
-			value.Permanent()
-			code += ".Permanent()"
-		} else if status == other {
-			value.Status(status)
-			code += fmt.Sprintf(".Status(%d)", status)
-		}
-		mw = value
+		mw, code, ok = sourceRegexRedirect(o, family, status, other)
+	}
+	if !ok {
+		return
 	}
 	chain.values = append(chain.values, mw)
 	chain.code = append(chain.code, code)
@@ -133,4 +96,52 @@ func validSourceRedirectStatus(status int) bool {
 	default:
 		return false
 	}
+}
+
+func sourceSchemeRedirect(o *Object, family string, status, other int) (statute.Middleware, string, bool) {
+	scheme, port := o.text(family+".scheme"), o.text(family+".port")
+	if scheme != protocolHTTP && scheme != protocolHTTPS {
+		o.mark(family, Manual, "redirect scheme must be http or https")
+		return nil, "", false
+	}
+	if port != "" && !validPort(port) {
+		o.mark(family, Manual, "invalid redirect port")
+		return nil, "", false
+	}
+	value := statute.RedirectScheme(scheme)
+	code := fmt.Sprintf("statute.RedirectScheme(%q)", scheme)
+	if port != "" {
+		value.Port(port)
+		code += fmt.Sprintf(".Port(%q)", port)
+	}
+	if status == 301 && other == 308 {
+		value.Permanent()
+		code += codePermanent
+	} else if status == other {
+		value.Status(status)
+		code += fmt.Sprintf(".Status(%d)", status)
+	}
+	return value, code, true
+}
+
+func sourceRegexRedirect(o *Object, family string, status, other int) (statute.Middleware, string, bool) {
+	pattern, replacement := o.text(family+".regex"), o.text(family+".replacement")
+	if strings.ContainsAny(pattern+replacement, "\r\n\x00") || strings.Contains(pattern, "${") || strings.Contains(pattern+replacement, "{{") {
+		o.mark(family, Manual, "redirect contains unresolved interpolation or invalid control characters")
+		return nil, "", false
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		o.mark(family, Manual, "invalid redirect regular expression")
+		return nil, "", false
+	}
+	value := statute.RedirectRegex(pattern, replacement)
+	code := fmt.Sprintf("statute.RedirectRegex(%q,%q)", pattern, replacement)
+	if status == 301 && other == 308 {
+		value.Permanent()
+		code += codePermanent
+	} else if status == other {
+		value.Status(status)
+		code += fmt.Sprintf(".Status(%d)", status)
+	}
+	return value, code, true
 }

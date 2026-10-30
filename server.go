@@ -72,13 +72,7 @@ func newServer(cfg *resolved.Config) (*server, error) {
 		cloudflare:     cloudflareSourceForListeners(cfg.Listeners),
 	}
 
-	if logging := cfg.Observability.AccessLog; logging.Enabled && (logging.FilePath != "" || logging.BufferSize > 0) {
-		copy := *cfg
-		s.accessLogs = &accessLogSink{path: logging.FilePath, size: logging.BufferSize, fallback: logging.Writer}
-		copy.Observability.AccessLog.Writer = s.accessLogs
-		cfg = &copy
-		s.cfg = cfg
-	}
+	cfg = s.configureAccessLogs(cfg)
 
 	mgr, err := buildAutocertManager(cfg.Listeners)
 	if err != nil {
@@ -297,11 +291,7 @@ func (s *server) buildListenerHandler(l *resolved.Listener, content http.Handler
 	}
 	// The per-peer trust policy wraps outermost for the same reason; when
 	// both are configured, clientIP consults this policy alone.
-	if l.CloudflareTrustedProxy {
-		handler = s.cloudflare.middleware(l.ClientIPHeader, handler)
-	} else if len(l.TrustedProxies) > 0 {
-		handler = trustedProxyMiddleware(l, handler)
-	}
+	handler = s.listenerProxyPolicy(l, handler)
 	return preserveRequestTrailers(processState(&s.ready, namedListener(l.Name, handler)))
 }
 
@@ -728,9 +718,9 @@ func (s *server) bindSockets(attempt *startAttempt) error {
 
 func (s *server) bindTCP(ctx context.Context, addr string) (net.Listener, error) {
 	if s.listenTCP != nil {
-		return s.listenTCP(ctx, "tcp", addr)
+		return s.listenTCP(ctx, networkTCP, addr)
 	}
-	return (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	return (&net.ListenConfig{}).Listen(ctx, networkTCP, addr)
 }
 
 func (s *server) bindPacket(ctx context.Context, addr string) (net.PacketConn, error) {
@@ -898,11 +888,8 @@ func findCompiledRoute(routes []compiledRoute, host string, req *http.Request) *
 		if !listenerMatches(c.matcher.ListenerNames, req) || !routeMatchesRequest(*c, host, req.URL.Path) {
 			continue
 		}
-		if len(c.peerPrefixes) > 0 {
-			peer, err := netip.ParseAddrPort(req.RemoteAddr)
-			if err != nil || !addrInPrefixes(peer.Addr().WithZone(""), c.peerPrefixes) {
-				continue
-			}
+		if !routePeerMatches(c.peerPrefixes, req) {
+			continue
 		}
 		if len(c.clientPrefixes) > 0 {
 			if !clientResolved {
@@ -1017,18 +1004,9 @@ func (s *server) buildRouter() http.Handler {
 
 	return s.requestBuffers.wrap(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host := stripPort(req.Host)
-		if s.cfg.PrioritizeRoutes {
-			chosen := bestPriorityRoute(static, host, req)
-			if table := s.dynamic.Load(); table != nil {
-				candidate := priorityDynamicRoute(table, host, req)
-				if candidate != nil && (chosen == nil || candidate.matcher.Priority > chosen.matcher.Priority) {
-					chosen = candidate
-				}
-			}
-			if chosen != nil {
-				chosen.handler.ServeHTTP(w, req)
-				return
-			}
+		if chosen := s.selectPriorityRoute(static, host, req); chosen != nil {
+			chosen.handler.ServeHTTP(w, req)
+			return
 		}
 		if h := findHandler(static, host, req); h != nil {
 			h.ServeHTTP(w, req)
@@ -1443,38 +1421,39 @@ func wrapRouteMiddleware(mws []resolved.Middleware, base http.Handler, nativePro
 			http.Error(w, "no handler configured for route", http.StatusInternalServerError)
 		})
 	}
-	// RequestID can introduce credentials inside a buffered/cloned request,
-	// beyond an outer Cache's view. Such a route cannot use shared entries.
+	// Inner request clones can introduce credentials after an outer cache lookup.
 	leaves := middlewareLeaves(mws)
 	cacheBypass := routeWritesCacheCredentials(leaves) || routeWritesCacheAge(leaves)
 	h := base
-	cacheEnabled := slices.ContainsFunc(leaves, func(m resolved.Middleware) bool { return m.Type == resolved.MWCache && m.CacheTTL > 0 })
+	cacheEnabled := !cacheBypass && slices.ContainsFunc(leaves, func(m resolved.Middleware) bool { return m.Type == resolved.MWCache && m.CacheTTL > 0 })
 	for _, mw := range slices.Backward(mws) {
 		if cacheBypass && mw.Type == resolved.MWCache {
 			continue
 		}
-		if mw.Type == resolved.MWCache && mw.CacheTTL > 0 {
-			cacheEnabled = true
-		}
-		if mw.Type == resolved.MWOnListeners {
+		switch mw.Type {
+		case resolved.MWOnListeners:
 			h = conditionalListenerMiddleware(mw, h, cacheBypass)
-		} else if mw.Type == resolved.MWInOrder {
+		case resolved.MWInOrder:
 			h = orderedMiddlewareHandler(mw, h, cacheBypass)
-		} else {
+		default:
 			h = applyMiddleware(mw, h)
 		}
 	}
 	h = withHeaderMiddleware(mws, withPathRewrite(mws, h))
-	if nativeProxy && cacheEnabled {
-		h = withCacheProxyPolicy(h)
-	}
-	return h
+	return nativeCachePolicy(nativeProxy, cacheEnabled, h)
 }
 
 func routeWritesCacheCredentials(mws []resolved.Middleware) bool {
 	return slices.ContainsFunc(mws, func(m resolved.Middleware) bool {
-		return m.Type == resolved.MWRequestID &&
-			(strings.EqualFold(m.RequestIDHeader, "Authorization") || strings.EqualFold(m.RequestIDHeader, "Cookie"))
+		name := ""
+		switch m.Type {
+		case resolved.MWRequestID:
+			name = m.RequestIDHeader
+		case resolved.MWSetRequestHeader, resolved.MWAddRequestHeader:
+			name = m.HeaderName
+		default:
+		}
+		return strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Cookie")
 	})
 }
 
@@ -1538,4 +1517,54 @@ func applyMiddleware(m resolved.Middleware, next http.Handler) http.Handler {
 		return build(m, next)
 	}
 	return next
+}
+
+func (s *server) configureAccessLogs(cfg *resolved.Config) *resolved.Config {
+	if logging := cfg.Observability.AccessLog; logging.Enabled && (logging.FilePath != "" || logging.BufferSize > 0) {
+		config := *cfg
+		s.accessLogs = &accessLogSink{path: logging.FilePath, size: logging.BufferSize, fallback: logging.Writer}
+		config.Observability.AccessLog.Writer = s.accessLogs
+		cfg = &config
+		s.cfg = cfg
+	}
+
+	return cfg
+}
+
+func (s *server) selectPriorityRoute(static []compiledRoute, host string, req *http.Request) *compiledRoute {
+	if !s.cfg.PrioritizeRoutes {
+		return nil
+	}
+	chosen := bestPriorityRoute(static, host, req)
+	if table := s.dynamic.Load(); table != nil {
+		candidate := priorityDynamicRoute(table, host, req)
+		if candidate != nil && (chosen == nil || candidate.matcher.Priority > chosen.matcher.Priority) {
+			chosen = candidate
+		}
+	}
+	return chosen
+}
+
+func routePeerMatches(prefixes []netip.Prefix, req *http.Request) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	peer, err := netip.ParseAddrPort(req.RemoteAddr)
+	return err == nil && addrInPrefixes(peer.Addr().WithZone(""), prefixes)
+}
+
+func nativeCachePolicy(native, enabled bool, h http.Handler) http.Handler {
+	if native && enabled {
+		return withCacheProxyPolicy(h)
+	}
+	return h
+}
+
+func (s *server) listenerProxyPolicy(l *resolved.Listener, handler http.Handler) http.Handler {
+	if l.CloudflareTrustedProxy {
+		handler = s.cloudflare.middleware(l.ClientIPHeader, handler)
+	} else if len(l.TrustedProxies) > 0 {
+		handler = trustedProxyMiddleware(l, handler)
+	}
+	return handler
 }

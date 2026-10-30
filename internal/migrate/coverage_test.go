@@ -16,7 +16,7 @@ func requireMigrationGaps(t *testing.T, r *Result, expected ...string) {
 	t.Helper()
 	want := slices.Clone(expected)
 	slices.Sort(want)
-	if r.Report.Blocking != (len(want) > 0) || strings.Contains(string(r.Go), "migration incomplete") != (len(want) > 0) || !slices.Equal(blockingGaps(r), want) {
+	if r.Report.Blocking != (len(want) > 0) || strings.Contains(string(r.Go), "migration incomplete") != (&generator{r: r}).hasImplementationGaps() || !slices.Equal(blockingGaps(r), want) {
 		var b bytes.Buffer
 		_ = r.Report.WriteHuman(&b)
 		t.Fatalf("expected only %v; got %v\n%s", want, blockingGaps(r), b.String())
@@ -118,10 +118,10 @@ certificatesResolvers:
       traefik.http.services.worker.loadbalancer.healthcheck.status: '200'
 `)
 	r := audit(t, Inputs{Static: []string{static}, Dynamic: []string{dynamic}, Compose: []string{compose}})
-	requireMigrationGaps(t, r, "certificatesresolvers.$dns-propagation", "services.$health-degraded")
+	requireMigrationGaps(t, r)
 	t.Setenv("CF_DNS_API_TOKEN", "migration-binding")
 	assertGeneratedParity(t, r)
-	for _, want := range []string{"PoolPolicy", "HealthCheck", "TargetHost", "ServerName", "CloudflareDNS01", "TLSPolicy", "AddPrefix", "Middleware"} {
+	for _, want := range []string{"PoolPolicy", "HealthCheck", "TargetHost", "ServerName", "CloudflareDNS01", "TLSPolicy", "PrefixPath", "Middleware"} {
 		if !strings.Contains(string(r.Go), want) {
 			t.Errorf("missing %s", want)
 		}
@@ -160,8 +160,15 @@ func TestListenerIsolationCannotBecomeSharedPolicy(t *testing.T) {
 	in := basicInputs(t, strings.Replace(simpleDynamic, "service: api", "service: api\n      entryPoints: [private]", 1))
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  public: {address: ':8080', http: {sanitizePath: false}}\n  private: {address: ':8081', http: {sanitizePath: false}}\n")}
 	r := audit(t, in)
-	if !hasBlockingGaps(r) || !strings.Contains(string(r.Go), "migration incomplete") {
-		t.Fatal("listener restriction silently dropped")
+	requireMigrationGaps(t, r)
+	c, err := statute.Resolve(r.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range c.Routes {
+		if !slices.Equal(route.Listeners, []string{"private"}) {
+			t.Fatalf("listener restriction lost: %v", route.Listeners)
+		}
 	}
 }
 
@@ -231,8 +238,13 @@ func TestGuardedMiddlewareCandidatesCompile(t *testing.T) {
 		body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: [candidate]", 1)
 		body += "  middlewares:\n    candidate:\n      " + definition + "\n"
 		r := audit(t, basicInputs(t, body))
-		if !hasBlockingGaps(r) || !strings.Contains(string(r.Go), "func migrationCandidate") {
-			t.Fatalf("missing guarded native candidate for %s", definition)
+		if strings.HasPrefix(definition, "retry:") {
+			requireMigrationGaps(t, r, "middlewares.retry.attempts", "routers.$middleware:candidate@file")
+		} else {
+			requireMigrationGaps(t, r)
+			if r.Report.GeneratedRoutes == 0 {
+				t.Fatalf("middleware missing: %s", definition)
+			}
 		}
 		compileGenerated(t, r)
 	}

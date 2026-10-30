@@ -68,13 +68,7 @@ func Resolve(cfg Config) (*resolved.Config, error) {
 	}
 	out.Shutdown = sh
 
-	if err := validateServiceBindings(out); err != nil {
-		return nil, err
-	}
-	if err := validateListenerNames(out); err != nil {
-		return nil, err
-	}
-	if err := validateResolved(out); err != nil {
+	if err := validateResolvedConfig(out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -477,17 +471,7 @@ func validateProbePolicy(h HealthCheck) error {
 			return errors.New("path: invalid URL reference")
 		}
 	}
-	for name, value := range h.Headers {
-		if !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value) {
-			return errors.New("headers: invalid field")
-		}
-	}
-	for i, code := range h.Statuses {
-		if code < 100 || code > 599 {
-			return fmt.Errorf("statuses[%d]: %d is outside 100-599", i, code)
-		}
-	}
-	return nil
+	return validateProbeMetadata(h)
 }
 
 // resolvePassiveHealthCheck validates the pool's passive demotion policy.
@@ -511,12 +495,9 @@ func resolvePassiveHealthCheck(p PassiveHealthCheck) (resolved.PassiveHealthChec
 	if window == 0 {
 		return resolved.PassiveHealthCheck{}, errors.New("failure_window: duration is zero")
 	}
-	hold := time.Duration(0)
-	if p.HoldDown != "" {
-		hold, err = parse.Duration(p.HoldDown)
-		if err != nil || hold <= 0 {
-			return resolved.PassiveHealthCheck{}, errors.New("hold_down: duration must be positive")
-		}
+	hold, err := resolvePassiveHoldDown(p.HoldDown)
+	if err != nil {
+		return resolved.PassiveHealthCheck{}, err
 	}
 	return resolved.PassiveHealthCheck{
 		ResetOnSuccess: p.ResetOnSuccess, HoldDown: hold,
@@ -944,27 +925,11 @@ func resolveAutoTLS(a *AutoTLSConfig) (*resolved.AutoTLS, error) {
 		Directory: directory,
 		KeyType:   a.keyType,
 	}
-	switch {
-	case a.dns01 != nil:
-		dns01, derr := resolveCloudflareDNS01(a)
-		if derr != nil {
-			return nil, derr
-		}
-		at.DNS01 = dns01
-		at.Challenge = resolved.ChallengeDNS01
-	case a.explicitHTTP01:
-		at.Challenge = resolved.ChallengeHTTP01
+	if err := resolveAutoTLSChallengeConfig(a, at); err != nil {
+		return nil, err
 	}
-	if at.KeyType == "" {
-		at.KeyType = "EC256"
-	}
-	switch at.KeyType {
-	case "EC256", "EC384", "RSA2048", "RSA3072", "RSA4096", "RSA8192":
-	default:
-		return nil, errors.New("auto_tls: unsupported leaf key type")
-	}
-	if at.Challenge == resolved.ChallengeAuto && at.KeyType != "EC256" {
-		return nil, errors.New("auto_tls: custom leaf key requires HTTP01 or DNS01")
+	if err := resolveACMEKeyType(at); err != nil {
+		return nil, err
 	}
 	return at, nil
 }
@@ -1048,7 +1013,7 @@ func resolveDNSPropagation(p *DNSPropagation) (*resolved.DNSPropagation, error) 
 	// already expresses. Checked after the polling validation so a
 	// timeout or interval without resolvers gets its own message, not a
 	// claim that the policy is empty.
-	if delay == 0 && len(resolvers) == 0 && !p.Authoritative && !p.RequireAllRecursive && !p.DisableChecks {
+	if delay == 0 && !dnsPropagationChecks(p, len(resolvers)) {
 		return nil, errors.New("dns_propagation: the policy waits for nothing; set a positive delay, resolvers, or drop the option")
 	}
 	return &resolved.DNSPropagation{
@@ -1301,15 +1266,8 @@ func resolveRoute(r *Route, pools map[string]*resolved.Pool) (*resolved.Route, e
 		Host:      r.host,
 		StaticDir: r.staticDir,
 	}
-	if r.peerIPsSet {
-		if len(r.peerIPs) == 0 {
-			return nil, errors.New("peer_ips: at least one CIDR required")
-		}
-		canon, err := resolveCIDRs(r.peerIPs)
-		if err != nil {
-			return nil, fmt.Errorf("peer_ips: %w", err)
-		}
-		rr.PeerIPCIDRs = canon
+	if err := resolveRoutePeerIPs(r, rr); err != nil {
+		return nil, err
 	}
 	if r.clientIPsSet {
 		// An explicitly empty matcher would silently match every client —
@@ -1362,16 +1320,7 @@ func resolveRouteTarget(r *Route, pools map[string]*resolved.Pool, rr *resolved.
 		}
 		rr.Redirect = rd
 	case r.handlerSet:
-		if isNilHandler(r.handler) {
-			return errors.New("handle: handler is nil")
-		}
-		if validator, ok := r.handler.(interface{ validateHandler() error }); ok {
-			if err := validator.validateHandler(); err != nil {
-				return err
-			}
-		}
-		rr.Handler = r.handler
-		rr.HandlerRoute = true
+		return resolveRouteHandler(r, rr)
 	}
 	return nil
 }
@@ -1450,7 +1399,7 @@ func resolveMiddlewares(mws []Middleware) ([]resolved.Middleware, error) {
 // commit outside the codec, irrespective of middleware declaration order.
 func validateMiddlewareRepresentation(mws []resolved.Middleware) error {
 	compresses := slices.ContainsFunc(mws, func(mw resolved.Middleware) bool {
-		return mw.Type == resolved.MWCompress && len(mw.CompressAlgos) != 0
+		return mw.Type == resolved.MWCompress && len(mw.CompressAlgos) != 0 || mw.Type == resolved.MWEncodeResponse
 	})
 	if !compresses {
 		return nil
@@ -1462,7 +1411,7 @@ func validateMiddlewareRepresentation(mws []resolved.Middleware) error {
 			writesHeader, header = true, mw.RequestIDHeader
 		}
 		if writesHeader && strings.EqualFold(header, "Content-Encoding") {
-			return fmt.Errorf("middleware[%d]: cannot modify Content-Encoding with Compress; the representation producer owns this header", i)
+			return fmt.Errorf("middleware[%d]: cannot modify Content-Encoding with Compress or EncodeResponse; the representation producer owns this header", i)
 		}
 	}
 	return nil
@@ -1573,7 +1522,7 @@ func resolveTimeoutMW(m *timeoutMW) (resolved.Middleware, error) {
 // carries the rate-limit key.
 func resolveRateLimitMW(m *rateLimitMW) (resolved.Middleware, error) {
 	if m.maxBuckets < 0 || m.burst < 0 {
-		return resolved.Middleware{}, errors.New("rate_limit: bucket count and burst must be nonnegative")
+		return resolved.Middleware{}, errors.New("rate_limit: max buckets and burst must be nonnegative")
 	}
 	maximum := m.maxBuckets
 	if maximum == 0 {
@@ -1584,29 +1533,12 @@ func resolveRateLimitMW(m *rateLimitMW) (resolved.Middleware, error) {
 		return resolved.Middleware{}, fmt.Errorf("rate_limit: %w", err)
 	}
 	out := resolved.Middleware{Type: resolved.MWRateLimit, RateLimitPerSecond: value, RateLimitKey: resolved.RateLimitKey(m.key), RateLimitMaxBuckets: maximum, RateLimitBurst: m.burst, RateLimitReservations: m.reserve, RateLimitEvictIdle: m.evictIdle}
-	if m.key < ClientIP || m.key > RequestHeader {
-		return out, errors.New("rate_limit: invalid key")
+
+	if err := resolveRateReservation(m, &out); err != nil {
+		return out, err
 	}
-	if m.reserve {
-		out.RateLimitMaxDelay, err = time.ParseDuration(m.maxDelay)
-		if err != nil || out.RateLimitMaxDelay < 0 {
-			return out, errors.New("rate_limit: invalid reservation delay")
-		}
-	}
-	if m.idleTTL != "" {
-		out.RateLimitIdleTTL, err = time.ParseDuration(m.idleTTL)
-		if err != nil || out.RateLimitIdleTTL <= 0 {
-			return out, errors.New("rate_limit: idle expiry must be positive")
-		}
-	}
-	if m.evictIdle && out.RateLimitIdleTTL == 0 {
-		return out, errors.New("rate_limit: eviction requires idle expiry")
-	}
-	if m.key == RequestHeader {
-		out.RateLimitRequestHeader, err = parse.HeaderName(m.header)
-		if err != nil {
-			return out, fmt.Errorf("rate_limit header: %w", err)
-		}
+	if err := resolveRateKey(m, &out); err != nil {
+		return out, err
 	}
 	selection, err := resolveIPSelection(m.selection)
 	if err != nil {
@@ -1948,33 +1880,11 @@ func resolveCORSMW(m *corsMW) (resolved.Middleware, error) {
 
 func resolveObservability(o Observability) (resolved.Observability, error) {
 	out := resolved.Observability{}
-	if o.AccessLog != nil {
-		switch al := o.AccessLog.(type) {
-		case *jsonLog:
-			statuses, err := resolveStatusRanges(al.statuses)
-			if err != nil {
-				return resolved.Observability{}, err
-			}
-			if al.bufferSize < 0 {
-				return resolved.Observability{}, errors.New("access_log: buffer size must be nonnegative")
-			}
-			format := al.format
-			if format == "" {
-				format = accessLogFormatJSON
-			}
-			out.AccessLog = resolved.AccessLog{
-				FilePath: al.dest.filePath, BufferSize: al.bufferSize,
-				Enabled:    true,
-				Format:     format,
-				Writer:     al.dest.Writer(),
-				Name:       al.dest.Name(),
-				SampleRate: al.sampleRate,
-				Statuses:   statuses,
-			}
-		default:
-			return resolved.Observability{}, fmt.Errorf("unknown access log type %T", o.AccessLog)
-		}
+	log, err := resolveAccessLog(o)
+	if err != nil {
+		return out, err
 	}
+	out.AccessLog = log
 	metrics, err := resolveMetrics(o.Metrics)
 	if err != nil {
 		return resolved.Observability{}, err
@@ -2160,4 +2070,166 @@ func resolveGlobalDefaults(cfg Config, out *resolved.Config) error {
 	out.Defaults = defaults
 	out.RequestBuffers, err = resolveRequestBufferResources(cfg.RequestBuffers)
 	return err
+}
+
+func validateResolvedConfig(cfg *resolved.Config) error {
+	for _, validate := range []func(*resolved.Config) error{validateServiceBindings, validateListenerNames, validateResolved} {
+		if err := validate(cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProbeMetadata(h HealthCheck) error {
+	for name, value := range h.Headers {
+		if !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value) {
+			return errors.New("headers: invalid field")
+		}
+	}
+	for i, code := range h.Statuses {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("statuses[%d]: %d is outside 100-599", i, code)
+		}
+	}
+	return nil
+}
+
+func resolvePassiveHoldDown(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	hold, err := parse.Duration(value)
+	if err != nil || hold <= 0 {
+		return 0, errors.New("hold_down: duration must be positive")
+	}
+	return hold, nil
+}
+
+func resolveACMEKeyType(at *resolved.AutoTLS) error {
+	if at.KeyType == "" {
+		at.KeyType = acmeKeyEC256
+	}
+	switch at.KeyType {
+	case acmeKeyEC256, acmeKeyEC384, acmeKeyRSA2048, acmeKeyRSA3072, acmeKeyRSA4096, acmeKeyRSA8192:
+	default:
+		return errors.New("auto_tls: unsupported leaf key type")
+	}
+	if at.Challenge == resolved.ChallengeAuto && at.KeyType != acmeKeyEC256 {
+		return errors.New("auto_tls: custom leaf key requires HTTP01 or DNS01")
+	}
+	return nil
+}
+
+func dnsPropagationChecks(p *DNSPropagation, resolvers int) bool {
+	return resolvers > 0 || p.Authoritative || p.RequireAllRecursive || p.DisableChecks
+}
+
+func resolveRoutePeerIPs(r *Route, rr *resolved.Route) error {
+	if r.peerIPsSet {
+		if len(r.peerIPs) == 0 {
+			return errors.New("peer_ips: at least one CIDR required")
+		}
+		canon, err := resolveCIDRs(r.peerIPs)
+		if err != nil {
+			return fmt.Errorf("peer_ips: %w", err)
+		}
+		rr.PeerIPCIDRs = canon
+	}
+	return nil
+}
+
+func resolveRouteHandler(r *Route, rr *resolved.Route) error {
+	if isNilHandler(r.handler) {
+		return errors.New("handle: handler is nil")
+	}
+	if validator, ok := r.handler.(interface{ validateHandler() error }); ok {
+		if err := validator.validateHandler(); err != nil {
+			return err
+		}
+	}
+	rr.Handler = r.handler
+	rr.HandlerRoute = true
+	return nil
+}
+
+func resolveRateReservation(m *rateLimitMW, out *resolved.Middleware) error {
+	var err error
+	if m.reserve {
+		out.RateLimitMaxDelay, err = time.ParseDuration(m.maxDelay)
+		if err != nil || out.RateLimitMaxDelay < 0 {
+			return errors.New("rate_limit: invalid reservation delay")
+		}
+	}
+	if m.idleTTL != "" {
+		out.RateLimitIdleTTL, err = time.ParseDuration(m.idleTTL)
+		if err != nil || out.RateLimitIdleTTL <= 0 {
+			return errors.New("rate_limit: idle expiry must be positive")
+		}
+	}
+	if m.evictIdle && out.RateLimitIdleTTL == 0 {
+		return errors.New("rate_limit: eviction requires idle expiry")
+	}
+	return nil
+}
+
+func resolveAccessLog(o Observability) (resolved.AccessLog, error) {
+	var out resolved.AccessLog
+	if o.AccessLog != nil {
+		switch al := o.AccessLog.(type) {
+		case *jsonLog:
+			statuses, err := resolveStatusRanges(al.statuses)
+			if err != nil {
+				return resolved.AccessLog{}, err
+			}
+			if al.bufferSize < 0 {
+				return resolved.AccessLog{}, errors.New("access_log: buffer size must be nonnegative")
+			}
+			format := al.format
+			if format == "" {
+				format = accessLogFormatJSON
+			}
+			out = resolved.AccessLog{
+				FilePath: al.dest.filePath, BufferSize: al.bufferSize,
+				Enabled:    true,
+				Format:     format,
+				Writer:     al.dest.Writer(),
+				Name:       al.dest.Name(),
+				SampleRate: al.sampleRate,
+				Statuses:   statuses,
+			}
+		default:
+			return resolved.AccessLog{}, fmt.Errorf("unknown access log type %T", o.AccessLog)
+		}
+	}
+	return out, nil
+}
+
+func resolveAutoTLSChallengeConfig(a *AutoTLSConfig, at *resolved.AutoTLS) error {
+	switch {
+	case a.dns01 != nil:
+		dns01, derr := resolveCloudflareDNS01(a)
+		if derr != nil {
+			return derr
+		}
+		at.DNS01 = dns01
+		at.Challenge = resolved.ChallengeDNS01
+	case a.explicitHTTP01:
+		at.Challenge = resolved.ChallengeHTTP01
+	}
+	return nil
+}
+
+func resolveRateKey(m *rateLimitMW, out *resolved.Middleware) error {
+	var err error
+	if m.key < ClientIP || m.key > RequestHeader {
+		return errors.New("rate_limit: invalid key")
+	}
+	if m.key == RequestHeader {
+		out.RateLimitRequestHeader, err = parse.HeaderName(m.header)
+		if err != nil {
+			return fmt.Errorf("rate_limit header: %w", err)
+		}
+	}
+	return nil
 }

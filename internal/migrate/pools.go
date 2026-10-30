@@ -2,7 +2,6 @@ package migrate
 
 import (
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -85,7 +84,7 @@ func serviceFlush(o *Object, t *statute.Transport) {
 	}
 }
 
-func serviceHealth(o *Object, pool *statute.Pool) []string {
+func (g *generator) serviceHealth(o *Object, pool *statute.Pool) []string {
 	const base = "loadBalancer.healthCheck"
 	path := o.text(base + ".path")
 	if path == "" || !literal(path) {
@@ -102,22 +101,14 @@ func serviceHealth(o *Object, pool *statute.Pool) []string {
 			o.mark(base+"."+f.key, Translated, "pool-owned health policy")
 		}
 	}
-	healthBehavior(o, &h)
+	headers := g.healthBehavior(o, &h)
 	pool.HealthCheck = h
 	pool.RejectUnhealthy = true
-	return []string{"HealthCheck:" + healthLiteral(h)}
+	return []string{"HealthCheck:" + healthLiteral(h, headers)}
 }
 
-func healthPathPreserved(path string) bool {
-	u, err := url.Parse(path)
-	if err != nil || u.IsAbs() || u.Host != "" || strings.ContainsAny(path, "%?#") {
-		return false
-	}
-	base := &url.URL{Scheme: protocolHTTP, Host: "migration.invalid", Path: "/"}
-	return base.ResolveReference(u).Path == path
-}
-
-func healthBehavior(o *Object, h *statute.HealthCheck) {
+func (g *generator) healthBehavior(o *Object, h *statute.HealthCheck) map[string]string {
+	headers := map[string]string{}
 	const base = "loadBalancer.healthCheck"
 	if n, err := integer(o.value(base + ".status")); err == nil && n >= 100 && n <= 599 {
 		h.Statuses = []int{n}
@@ -133,33 +124,23 @@ func healthBehavior(o *Object, h *statute.HealthCheck) {
 	follow, ok := sourceBoolValue(o.value(base+".followRedirects"), true)
 	if !ok {
 		o.mark(base+".followRedirects", Manual, "invalid redirect switch")
-		return
+		return headers
 	}
 	if !follow {
 		h.Redirects = "none"
 	}
 	o.mark(base+".followRedirects", Translated, "explicit probe redirect policy")
-	if values, ok := o.value(base + ".headers").(map[string]any); ok {
-		h.Headers = map[string]string{}
-		for name, value := range values {
-			text, ok := value.(string)
-			if !ok || !literal(name) || !literal(text) {
-				continue
-			}
-			h.Headers[name] = text
-			o.mark(base+".headers."+name, Translated, "probe request header")
-		}
-	}
+	return g.healthHeaders(o, h)
 }
 
-func healthLiteral(h statute.HealthCheck) string {
+func healthLiteral(h statute.HealthCheck, bindings map[string]string) string {
 	statuses := make([]string, len(h.Statuses))
 	for i, n := range h.Statuses {
 		statuses[i] = strconv.Itoa(n)
 	}
-	var headers []string
+	headers := make([]string, 0, len(h.Headers))
 	for _, name := range keys(h.Headers) {
-		headers = append(headers, fmt.Sprintf("%q:%q", name, h.Headers[name]))
+		headers = append(headers, fmt.Sprintf("%q:%s", name, bindings[name]))
 	}
 	return fmt.Sprintf("statute.HealthCheck{Path:%q,Interval:%q,Timeout:%q,Healthy:%d,Unhealthy:%d,Host:%q,Statuses:[]int{%s},ResolvePath:%t,Redirects:%q,Method:%q,Headers:map[string]string{%s}}", h.Path, h.Interval, h.Timeout, h.Healthy, h.Unhealthy, h.Host, strings.Join(statuses, ","), h.ResolvePath, h.Redirects, h.Method, strings.Join(headers, ","))
 }
@@ -171,7 +152,7 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 	}
 	p := statute.Pool{Transport: g.transports["default@internal"]}
 	parts := serviceHost(o, &p)
-	parts = append(parts, serviceHealth(o, &p)...)
+	parts = append(parts, g.serviceHealth(o, &p)...)
 	parts = append(parts, servicePassiveHealth(o, &p)...)
 	parts = append(parts, fmt.Sprintf("RejectUnhealthy:%t", p.RejectUnhealthy))
 	if name := o.text("loadBalancer.serversTransport"); name != "" {
@@ -189,7 +170,7 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 	}
 	serviceFlush(o, &p.Transport)
 	parts = append(parts, "Transport:"+transportLiteral(p.Transport))
-	if !o.ready() {
+	if !o.readyWithBindings() {
 		return
 	}
 	policy := statute.PoolPolicy{RejectUnhealthy: p.RejectUnhealthy, Transport: p.Transport, HealthCheck: p.HealthCheck, PassiveHealthCheck: p.PassiveHealthCheck, UpstreamHost: p.UpstreamHost}
@@ -210,4 +191,43 @@ func (g *generator) defaultTransport() {
 		g.transports["default@internal"] = t
 		o.Generated = true
 	}
+}
+
+func (g *generator) healthHeaders(o *Object, h *statute.HealthCheck) map[string]string {
+	const base = "loadBalancer.healthCheck"
+	headers := map[string]string{}
+	if values := probeHeaderValues(o); values != nil {
+		h.Headers = map[string]string{}
+		for name, value := range values {
+			text, ok := value.(string)
+			if !ok || !literal(name) {
+				continue
+			}
+			path := base + ".headers." + name
+			o.mark(path, Translated, "probe request header")
+			if text != "" {
+				h.Headers[name], headers[name] = g.sensitiveValue(o, path, text)
+			} else {
+				h.Headers[name], headers[name] = "", strconv.Quote("")
+			}
+		}
+	}
+	return headers
+}
+
+func probeHeaderValues(o *Object) map[string]any {
+	const path = "loadBalancer.healthCheck.headers"
+	if values, ok := o.value(path).(map[string]any); ok {
+		if len(values) == 0 {
+			o.mark(path, Translated, "empty probe header map")
+		}
+		return values
+	}
+	values := map[string]any{}
+	for _, field := range o.Fields {
+		if strings.HasPrefix(strings.ToLower(field.Path), strings.ToLower(path)+".") {
+			values[field.Path[len(path)+1:]] = o.value(field.Path)
+		}
+	}
+	return values
 }

@@ -2,15 +2,12 @@ package statute
 
 import (
 	"bufio"
-	"cmp"
 	"errors"
 	"io"
 	"mime"
 	"net"
 	"net/http"
 	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/gzhttp"
@@ -43,16 +40,13 @@ func EncodeResponse(policy EncodingPolicy) *encodeResponseMW {
 
 func (m *encodeResponseMW) resolve() (resolved.Middleware, error) {
 	p := m.policy
+	p.IncludedTypes = append([]string(nil), p.IncludedTypes...)
+	p.ExcludedTypes = append([]string(nil), p.ExcludedTypes...)
 	if len(p.Encodings) == 0 {
-		p.Encodings = []string{"gzip", "br", "zstd"}
+		p.Encodings = []string{codingGzip, "br", codingZstd}
 	}
-	for _, name := range p.Encodings {
-		if name != "gzip" && name != "br" && name != "zstd" {
-			return resolved.Middleware{}, errors.New("encode_response: unsupported encoding")
-		}
-	}
-	if p.DefaultEncoding != "" && !slices.Contains(p.Encodings, p.DefaultEncoding) {
-		return resolved.Middleware{}, errors.New("encode_response: default encoding must be enabled")
+	if err := validateResponseEncodings(p); err != nil {
+		return resolved.Middleware{}, err
 	}
 	if p.MinimumBytes < 0 {
 		return resolved.Middleware{}, errors.New("encode_response: minimum bytes must be nonnegative")
@@ -94,16 +88,22 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 	gzipHandler := gzipWrapper(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if r.Method == http.MethodHead || slices.Contains(excluded, requestType) {
+		if responseEncodingBypass(r, requestType, excluded) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		coding := selectResponseEncoding(r.Header, p)
-		if coding == "gzip" {
+		if coding == codingGzip {
+			if _, present := cacheHeaderValues(r.Header, "Accept-Encoding"); !present {
+				out := r.Clone(r.Context())
+				out.Trailer = r.Trailer
+				out.Header.Set("Accept-Encoding", codingGzip)
+				r = out
+			}
 			gzipHandler.ServeHTTP(w, r)
 			return
 		}
-		if coding != "br" && coding != "zstd" {
+		if coding != "br" && coding != codingZstd {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -116,52 +116,34 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 	})
 }
 
+func responseEncodingBypass(r *http.Request, requestType string, excluded []string) bool {
+	return r.Method == http.MethodHead || !cacheControlAllows(r.Header, "no-transform") || slices.Contains(excluded, requestType)
+}
+
 func selectResponseEncoding(h http.Header, p *resolved.EncodingPolicy) string {
-	values, present := h["Accept-Encoding"]
-	if !present {
-		return p.DefaultEncoding
-	}
-	priority := map[string]int{"*": -1, "identity": len(p.Encodings)}
-	for i, name := range p.Encodings {
-		priority[name] = i
-	}
-	type preference struct {
-		name string
-		q    float64
-	}
-	var choices []preference
-	for _, line := range values {
-		for item := range strings.SplitSeq(strings.ReplaceAll(line, " ", ""), ",") {
-			name, parameter, _ := strings.Cut(item, ";")
-			if _, ok := priority[name]; !ok {
-				continue
-			}
-			q := 1.0
-			if raw, ok := strings.CutPrefix(parameter, "q="); ok {
-				q, _ = strconv.ParseFloat(raw, 64)
-				if q == 0 {
-					continue
-				}
-			}
-			choices = append(choices, preference{name, q})
-		}
-	}
-	if len(choices) == 0 {
+	prefs, valid := parseAcceptEncoding(h)
+	if !valid {
 		return ""
 	}
-	slices.SortFunc(choices, func(a, b preference) int {
-		if a.q == b.q {
-			return cmp.Compare(priority[a.name], priority[b.name])
-		}
-		return cmp.Compare(b.q, a.q)
-	})
-	if choices[0].name == "*" {
-		if p.DefaultEncoding != "" {
-			return p.DefaultEncoding
-		}
-		return p.Encodings[0]
+	if !prefs.present {
+		return p.DefaultEncoding
 	}
-	return choices[0].name
+	best, bestQ := "", 0
+	preference := p.Encodings
+	if p.DefaultEncoding != "" {
+		if _, explicit := prefs.quality[p.DefaultEncoding]; !explicit {
+			preference = append([]string{p.DefaultEncoding}, preference...)
+		}
+	}
+	for _, name := range preference {
+		if q := prefs.weight(name); q > bestQ {
+			best, bestQ = name, q
+		}
+	}
+	if prefs.quality["identity"] > bestQ {
+		return ""
+	}
+	return best
 }
 
 type responseEncodingWriter struct {
@@ -176,6 +158,7 @@ type responseEncodingWriter struct {
 		Flush() error
 		Close() error
 	}
+	droppedTrailers headerNameSet
 }
 
 func (w *responseEncodingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -201,6 +184,14 @@ func (w *responseEncodingWriter) Write(data []byte) (int, error) {
 		}
 		return w.ResponseWriter.Write(data)
 	}
+	if w.Header().Get("Content-Type") == "" {
+		if len(w.prefix)+len(data) < max(512, w.policy.MinimumBytes) {
+			w.prefix = append(w.prefix, data...)
+			return len(data), nil
+		}
+		sample := append(slices.Clone(w.prefix[:min(len(w.prefix), 512)]), data[:min(len(data), 512)]...)
+		w.Header().Set("Content-Type", http.DetectContentType(sample[:min(len(sample), 512)]))
+	}
 	if !w.eligible() {
 		if err := w.commit(false); err != nil {
 			return 0, err
@@ -221,13 +212,14 @@ func (w *responseEncodingWriter) Write(data []byte) (int, error) {
 }
 
 func (w *responseEncodingWriter) eligible() bool {
-	if w.status == http.StatusNoContent || w.status == http.StatusResetContent || w.status == http.StatusNotModified || w.Header().Get("Content-Encoding") != "" {
+	_, partial := cacheHeaderValues(w.Header(), "Content-Range")
+	if w.status == http.StatusPartialContent || partial || !cacheControlAllows(w.Header(), "no-transform") {
+		return false
+	}
+	if responseEncodingBodyless(w.status) || w.Header().Get("Content-Encoding") != "" {
 		return false
 	}
 	text := w.Header().Get("Content-Type")
-	if text == "" {
-		return true
-	}
 	kind, _, err := mime.ParseMediaType(text)
 	if err != nil {
 		return false
@@ -236,6 +228,10 @@ func (w *responseEncodingWriter) eligible() bool {
 		return slices.Contains(w.policy.IncludedTypes, kind)
 	}
 	return kind != "application/grpc" && !slices.Contains(w.policy.ExcludedTypes, kind)
+}
+
+func responseEncodingBodyless(status int) bool {
+	return status == http.StatusNoContent || status == http.StatusResetContent || status == http.StatusNotModified
 }
 
 func (w *responseEncodingWriter) commit(encode bool) error {
@@ -257,7 +253,8 @@ func (w *responseEncodingWriter) commit(encode bool) error {
 		}
 	}
 	if encode {
-		w.Header().Del("Content-Length")
+		w.droppedTrailers = stripCompressionTrailers(w.Header())
+		prepareEncodedMetadata(w.Header())
 		w.Header().Set("Content-Encoding", w.coding)
 	}
 	w.committed = true
@@ -275,11 +272,9 @@ func (w *responseEncodingWriter) commit(encode bool) error {
 }
 
 func (w *responseEncodingWriter) Flush() {
-	if len(w.prefix) == 0 && !w.committed {
-		return
-	}
 	if !w.committed {
-		_ = w.commit(w.eligible())
+		w.detectContentType()
+		_ = w.commit(len(w.prefix) > 0 && w.eligible())
 	}
 	if w.codec != nil {
 		_ = w.codec.Flush()
@@ -300,9 +295,33 @@ func (w *responseEncodingWriter) finish(returned bool) {
 		return
 	}
 	if !w.committed {
-		_ = w.commit(false)
+		w.detectContentType()
+		_ = w.commit(len(w.prefix) >= w.policy.MinimumBytes && w.eligible())
 	}
 	if w.codec != nil {
+		dropped := stripCompressionTrailers(w.Header())
+		for name := range w.droppedTrailers {
+			dropped[name] = struct{}{}
+		}
+		dropped.removeFrom(w.Header())
 		_ = w.codec.Close()
 	}
+}
+
+func (w *responseEncodingWriter) detectContentType() {
+	if len(w.prefix) > 0 && w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", http.DetectContentType(w.prefix))
+	}
+}
+
+func validateResponseEncodings(p EncodingPolicy) error {
+	for _, name := range p.Encodings {
+		if name != codingGzip && name != "br" && name != codingZstd {
+			return errors.New("encode_response: unsupported encoding")
+		}
+	}
+	if p.DefaultEncoding != "" && !slices.Contains(p.Encodings, p.DefaultEncoding) {
+		return errors.New("encode_response: default encoding must be enabled")
+	}
+	return nil
 }

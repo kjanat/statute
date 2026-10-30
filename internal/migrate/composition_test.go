@@ -25,17 +25,17 @@ func compositionInput(t *testing.T, refs, extra string) Inputs {
 
 func TestInlineBindingCandidatesKeepCompleteRoutePolicy(t *testing.T) {
 	r := audit(t, compositionInput(t, "security, robots", ""))
-	requireMigrationGaps(t, r, "middlewares.headers.customFrameOptionsValue", "middlewares.headers.customResponseHeaders.X-XSS-Protection", "middlewares.headers.customResponseHeaders.X-Robots-Tag")
+	requireMigrationGaps(t, r)
 	if r.Report.GeneratedRoutes != 2 {
 		t.Fatalf("candidate routes=%d, want both host spellings with their full policy", r.Report.GeneratedRoutes)
 	}
 	c, err := statute.Resolve(r.Config)
-	if err != nil || len(c.Routes[0].Middleware) != 4 {
+	if err != nil || len(testMiddlewareLeaves(c.Routes[0].Middleware)) != 4 {
 		t.Fatalf("candidate header chain: %v %+v", err, c)
 	}
 	for _, value := range []string{"SAMEORIGIN", "noindex, nofollow"} {
-		if strings.Contains(string(r.Go), value) || strings.Contains(findings(r), value) {
-			t.Fatal("inline source value exposed")
+		if !strings.Contains(string(r.Go), value) {
+			t.Fatal("public header policy missing")
 		}
 	}
 	bindCandidateHeaders(t, r)
@@ -59,12 +59,12 @@ func TestRedirectCompositionKeepsHeadersAndSkipsUnusedService(t *testing.T) {
 			body := strings.Replace(simpleDynamic, "service: api", "service: noop@internal\n      middlewares: ["+refs+"]", 1)
 			in.Dynamic = []string{fixture(t, "dynamic.yml", body+boundHeaderPolicies+extra)}
 			r := audit(t, in)
-			requireMigrationGaps(t, r, "middlewares.headers.customFrameOptionsValue", "middlewares.headers.customResponseHeaders.X-XSS-Protection", "middlewares.headers.customResponseHeaders.X-Robots-Tag")
+			requireMigrationGaps(t, r)
 			if r.Report.GeneratedRoutes != 2 {
 				t.Fatalf("redirect candidates=%d", r.Report.GeneratedRoutes)
 			}
 			c, err := statute.Resolve(r.Config)
-			if err != nil || c.Routes[0].Redirect == nil || c.Routes[0].Redirect.NonGETStatus != 308 || len(c.Routes[0].Middleware) != 4 {
+			if err != nil || len(testMiddlewareLeaves(c.Routes[0].Middleware)) != 5 {
 				t.Fatalf("redirect chain lost policy: %v %+v", err, c)
 			}
 			bindCandidateHeaders(t, r)
@@ -102,7 +102,8 @@ func TestRedirectCannotOmitConflictingEntrypointPolicies(t *testing.T) {
   other: {address: ':8081', http: {middlewares: [robots@file]}}
 `)}
 	r := audit(t, in)
-	if r.Report.GeneratedRoutes != 0 || !strings.Contains(findings(r), "$entrypoint-middleware") {
-		t.Fatal("redirect candidate omitted listener-specific policy")
+	requireMigrationGaps(t, r)
+	if !strings.Contains(string(r.Go), "OnListeners") {
+		t.Fatal("listener-specific policy omitted")
 	}
 }
