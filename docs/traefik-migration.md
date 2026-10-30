@@ -176,7 +176,8 @@ program while still reporting `blocking: true` until its inputs are supplied.
 
 For provider paths inside a container, supply `--path-map SOURCE=LOCAL`. An
 explicit mapping takes precedence over Compose bind mounts, and the longest
-matching source prefix wins. Mount inference uses only services that mount a
+matching source prefix wins. Inferred mounts keep their Compose service scope:
+a nested mount shadows its parent within that service. Mount inference uses only services that mount a
 supplied static file. Provider inputs must still be supplied explicitly with
 `--dynamic`; mappings do not authorize reading arbitrary container paths.
 

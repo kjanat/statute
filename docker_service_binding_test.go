@@ -1,11 +1,44 @@
 package statute
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"statute.kjanat.dev/resolved"
 )
+
+func TestCompiledServiceSurvivesRefusedDockerRouter(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		backend := httptest.NewServer(statusHandler(http.StatusAccepted))
+		t.Cleanup(backend.Close)
+		host, port := backendHostPort(t, backend)
+		cfg, err := resolveDocker(Docker().TraefikLabels())
+		if err != nil {
+			t.Fatal(err)
+		}
+		labels := map[string]string{"traefik.enable": "true", "traefik.http.services.api.loadbalancer.server.port": fmt.Sprint(port), "traefik.http.routers.private.rule": "Host(`private.example`)", "traefik.http.routers.private.service": "api", "traefik.http.routers.private.middlewares": "missing-auth"}
+		p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{name: "api", ip: host, port: port, labels: labels}})
+		routes := []*resolved.Route{{Host: "compiled.example", Pattern: "/*", DiscoveredUpstream: "api@traefik"}}
+		if fallback {
+			srv.cfg.FallbackRoutes = routes
+		} else {
+			srv.cfg.Routes = routes
+		}
+		mustSync(t, p)
+		for _, tc := range []struct {
+			host   string
+			status int
+		}{{"compiled.example", http.StatusAccepted}, {"private.example", http.StatusNotFound}} {
+			w := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://"+tc.host+"/", nil))
+			if w.Code != tc.status {
+				t.Fatalf("fallback=%t host=%s status=%d want=%d", fallback, tc.host, w.Code, tc.status)
+			}
+		}
+	}
+}
 
 func TestDockerRoutersUseCompiledServiceBindings(t *testing.T) {
 	backend := httptest.NewServer(statusHandler(http.StatusAccepted))

@@ -761,7 +761,7 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	}
 
 	kept, tombs := p.routeChains(svc, next)
-	if len(kept) == 0 && len(svc.Routes) > 0 {
+	if !p.servicePoolRequired(svc, kept) {
 		return tombs
 	}
 	var revision workloadRoutingRevision
@@ -783,6 +783,10 @@ func (p *dockerProvider) addService(svc *docker.Service, prev, next *dynamicTabl
 	next.serviceHandlers[svc.Name] = p.serviceBaseHandler(svc.Name, base, gated, binding, revision)
 	p.appendServiceRoutes(svc.Name, rp, kept, base, gated, binding, revision, next)
 	return tombs
+}
+
+func (p *dockerProvider) servicePoolRequired(svc *docker.Service, chains []routeChain) bool {
+	return len(chains) > 0 || len(svc.Routes) == 0 || p.referencedServices()[svc.Name]
 }
 
 // compileQuarantineRoutes installs lifecycle outcomes from route envelopes

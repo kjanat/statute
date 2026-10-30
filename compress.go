@@ -26,7 +26,7 @@ func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Hand
 	if !wantGzip && !wantBrotli {
 		return next
 	}
-	vary := []headerOp{{op: resolved.MWAddResponseHeader, name: "Vary", value: "Accept-Encoding"}}
+	vary := encodingVarianceOps()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Upgrade") != "" {
 			next.ServeHTTP(w, r)
@@ -44,6 +44,10 @@ func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Hand
 		serveCompressed(ww, r, next, n)
 		ww.applyOps() // A normal empty response commits after the handler returns.
 	})
+}
+
+func encodingVarianceOps() []headerOp {
+	return []headerOp{{op: resolved.MWAddResponseHeader, name: "Vary", value: "Accept-Encoding"}}
 }
 
 func compressionAlgorithms(algos []resolved.CompressAlgo) (gzipEnabled, brotliEnabled bool) {

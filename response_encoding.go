@@ -87,7 +87,7 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	}
 	gzipHandler := gzipWrapper(next)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return responseEncodingVariance(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if responseEncodingBypass(r, requestType, excluded) {
 			next.ServeHTTP(w, r)
@@ -108,13 +108,21 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 			next.ServeHTTP(w, r)
 			return
 		}
-		w.Header().Add("Vary", "Accept-Encoding")
 		writer := &responseEncodingWriter{ResponseWriter: w, policy: p, coding: coding, status: http.StatusOK}
 		r = r.WithContext(context.WithValue(r.Context(), compressedRepresentationKey{}, etagEncodingSelector(writer)))
 		returned := false
 		defer func() { writer.finish(returned) }()
 		next.ServeHTTP(writer, r)
 		returned = true
+	}))
+}
+
+func responseEncodingVariance(next http.Handler) http.Handler {
+	ops := encodingVarianceOps()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writer := &headerResponseWriter{ResponseWriter: w, ops: ops}
+		next.ServeHTTP(writer, r)
+		writer.applyOps()
 	})
 }
 

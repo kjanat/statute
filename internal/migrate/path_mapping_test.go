@@ -1,10 +1,42 @@
 package migrate
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestProviderInventoryRespectsNestedMountShadowing(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	static := write("root/traefik.yml", "entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false}}\nproviders:\n  file: {filename: /etc/traefik/dynamic/routes.yml}\n")
+	hidden := write("root/dynamic/routes.yml", simpleDynamic)
+	actual := write("actual-dynamic/routes.yml", simpleDynamic)
+	for _, reverse := range []bool{false, true} {
+		mounts := []string{"./root:/etc/traefik", "./actual-dynamic:/etc/traefik/dynamic"}
+		if reverse {
+			mounts[0], mounts[1] = mounts[1], mounts[0]
+		}
+		compose := write("compose.yml", fmt.Sprintf("services:\n  traefik:\n    volumes: [%q, %q]\n", mounts[0], mounts[1]))
+		for _, path := range []string{hidden, actual} {
+			r := audit(t, Inputs{Static: []string{static}, Dynamic: []string{path}, Compose: []string{compose}})
+			if r.Report.Blocking != (path == hidden) {
+				t.Fatalf("reverse=%t input=%s blocking=%t findings=%s", reverse, path, r.Report.Blocking, findings(r))
+			}
+		}
+	}
+}
 
 func TestProviderPathsFollowStaticOwnerMounts(t *testing.T) {
 	root := t.TempDir()

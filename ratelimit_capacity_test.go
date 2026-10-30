@@ -17,6 +17,82 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
+func TestReservationCapacityReclaimsInactiveBuckets(t *testing.T) {
+	for _, idle := range []time.Duration{0, 100 * time.Millisecond} {
+		s := newBucketStore(1, 1)
+		s.capacity = 1
+		cfg := resolved.Middleware{RateLimitIdleTTL: idle}
+		start := time.Unix(100, 0)
+		if delay, ok := s.reserve("first", start, cfg); !ok || delay != 0 {
+			t.Fatal("first reservation rejected")
+		}
+		if _, ok := s.reserve("second", start.Add(50*time.Millisecond), cfg); ok {
+			t.Fatal("capacity reclaimed before debt or idle expiry elapsed")
+		}
+		elapsed := time.Second
+		if idle > 0 {
+			elapsed = idle
+		}
+		if delay, ok := s.reserve("second", start.Add(elapsed), cfg); !ok || delay != 0 {
+			t.Fatalf("idle=%s restored capacity rejected: delay=%s admitted=%t", idle, delay, ok)
+		}
+	}
+}
+
+func TestReservationCapacityPreservesOutstandingDebt(t *testing.T) {
+	s := newBucketStore(1, 1)
+	s.capacity = 1
+	cfg := resolved.Middleware{RateLimitMaxDelay: time.Second}
+	start := time.Unix(100, 0)
+	for _, want := range []time.Duration{0, time.Second} {
+		if delay, ok := s.reserve("first", start, cfg); !ok || delay != want {
+			t.Fatalf("reservation delay=%s admitted=%t want=%s", delay, ok, want)
+		}
+	}
+	if _, ok := s.reserve("second", start.Add(time.Second), cfg); ok {
+		t.Fatal("pending reservation debt was evicted")
+	}
+	if delay, ok := s.reserve("second", start.Add(2*time.Second), cfg); !ok || delay != 0 {
+		t.Fatal("fully replenished reserved bucket was not reclaimed")
+	}
+}
+
+func TestReservationCapacityReclaimsEarliestReplenishedBucket(t *testing.T) {
+	s := newBucketStore(1, 2)
+	s.capacity = 1
+	cfg := resolved.Middleware{RateLimitMaxDelay: time.Second}
+	start := time.Unix(100, 0)
+	for _, key := range []string{"busy", "busy", "idle"} {
+		if _, ok := s.reserve(key, start, cfg); !ok {
+			t.Fatal("initial client rejected")
+		}
+	}
+	if delay, ok := s.reserve("new", start.Add(time.Second), cfg); !ok || delay != 0 {
+		t.Fatal("replenished client did not release capacity")
+	}
+	if delay, ok := s.reserve("busy", start.Add(time.Second), cfg); !ok || delay != time.Second {
+		t.Fatalf("busy client's debt changed: delay=%s admitted=%t", delay, ok)
+	}
+}
+
+func TestReservationExplicitEvictionKeepsOldestActivityOrder(t *testing.T) {
+	s := newBucketStore(1, 2)
+	s.capacity = 1
+	cfg := resolved.Middleware{RateLimitMaxDelay: time.Second, RateLimitIdleTTL: time.Hour, RateLimitEvictIdle: true}
+	start := time.Unix(100, 0)
+	for _, key := range []string{"old", "old"} {
+		if _, ok := s.reserve(key, start, cfg); !ok {
+			t.Fatal("initial reservation rejected")
+		}
+	}
+	for i, key := range []string{"recent", "new", "old"} {
+		delay, ok := s.reserve(key, start.Add(time.Duration(i+1)*100*time.Millisecond), cfg)
+		if !ok || delay != 0 {
+			t.Fatalf("client=%s delay=%s admitted=%t", key, delay, ok)
+		}
+	}
+}
+
 func assertBucketStore(t *testing.T, s *bucketStore, want int) {
 	t.Helper()
 	if len(s.buckets) != want || len(s.expiry) != want || want > s.limit {

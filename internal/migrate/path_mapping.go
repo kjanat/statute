@@ -6,7 +6,9 @@ import (
 )
 
 func (r *Result) inventoryMounts(source string, document map[string]any) {
-	for _, service := range asMap(document["services"]) {
+	services := asMap(document["services"])
+	for _, name := range keys(services) {
+		service := services[name]
 		volumes, _ := asMap(service)["volumes"].([]any)
 		mapping := map[string]string{}
 		ownsStatic := false
@@ -26,12 +28,7 @@ func (r *Result) inventoryMounts(source string, document map[string]any) {
 		if !ownsStatic {
 			continue
 		}
-		if r.pathMappings == nil {
-			r.pathMappings = map[string][]string{}
-		}
-		for target, host := range mapping {
-			r.pathMappings[target] = append(r.pathMappings[target], host)
-		}
+		r.pathMappings = append(r.pathMappings, mapping)
 	}
 }
 
@@ -42,9 +39,22 @@ func pathInside(directory, path string) bool {
 
 func (g *generator) mappedProviderPaths(path string) []string {
 	// An explicit mapping wins over inferred Compose mounts.
+	if mapped, ok := mappedMountPath(g.r.inputs.PathMappings, path); ok {
+		return []string{mapped}
+	}
+	var out []string
+	for _, mapping := range g.r.pathMappings {
+		if mapped, ok := mappedMountPath(mapping, path); ok {
+			out = append(out, mapped)
+		}
+	}
+	return out
+}
+
+func mappedMountPath(mapping map[string]string, path string) (string, bool) {
 	prefix := ""
 	mapped := ""
-	for from, to := range g.r.inputs.PathMappings {
+	for from, to := range mapping {
 		from = filepath.Clean(from)
 		if pathInside(from, path) && len(from) > len(prefix) {
 			prefix, mapped = from, to
@@ -52,19 +62,9 @@ func (g *generator) mappedProviderPaths(path string) []string {
 	}
 	if prefix != "" {
 		relative, _ := filepath.Rel(prefix, path)
-		return []string{filepath.Join(mapped, relative)}
+		return filepath.Join(mapped, relative), true
 	}
-	var out []string
-	for target, hosts := range g.r.pathMappings {
-		if !pathInside(target, path) {
-			continue
-		}
-		relative, _ := filepath.Rel(target, path)
-		for _, host := range hosts {
-			out = append(out, filepath.Join(host, relative))
-		}
-	}
-	return out
+	return "", false
 }
 
 func composeBindMount(source string, volume any) (string, string, bool) {

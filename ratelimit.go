@@ -60,6 +60,7 @@ type bucket struct {
 	key          [sha256.Size]byte
 	tokens       float64
 	last, fullAt time.Time
+	idleAt       time.Time
 	index        int
 	limiter      *rate.Limiter
 }
@@ -106,13 +107,13 @@ func (s *bucketStore) reserve(key string, now time.Time, cfg resolved.Middleware
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.buckets[digest]
-	if b != nil && cfg.RateLimitIdleTTL > 0 && !now.Before(b.fullAt) {
+	if b != nil && !b.idleAt.IsZero() && !now.Before(b.idleAt) {
 		heap.Remove(&s.expiry, b.index)
 		delete(s.buckets, digest)
 		b = nil
 	}
 	if b == nil {
-		if len(s.buckets) >= s.limit {
+		if len(s.buckets) >= s.limit && !s.retireReservation(now) {
 			if !cfg.RateLimitEvictIdle {
 				return 0, false
 			}
@@ -124,17 +125,42 @@ func (s *bucketStore) reserve(key string, now time.Time, cfg resolved.Middleware
 		s.buckets[digest] = b
 		heap.Push(&s.expiry, b)
 	}
-	b.fullAt = now.Add(cfg.RateLimitIdleTTL)
-	heap.Fix(&s.expiry, b.index)
 	reservation := b.limiter.ReserveN(now, 1)
-	if !reservation.OK() {
-		return time.Duration(math.MaxInt64), true
+	delay := time.Duration(math.MaxInt64)
+	if reservation.OK() {
+		delay = reservation.DelayFrom(now)
+		if delay > cfg.RateLimitMaxDelay {
+			reservation.CancelAt(now)
+		}
 	}
-	delay := reservation.DelayFrom(now)
-	if delay > cfg.RateLimitMaxDelay {
-		reservation.CancelAt(now)
-	}
+	s.indexReservation(b, now, cfg)
 	return delay, true
+}
+
+func (s *bucketStore) indexReservation(b *bucket, now time.Time, cfg resolved.Middleware) {
+	b.idleAt = time.Time{}
+	if cfg.RateLimitIdleTTL > 0 {
+		b.idleAt = now.Add(cfg.RateLimitIdleTTL)
+	}
+	b.fullAt = s.refillDeadline(now, float64(b.limiter.Burst())-b.limiter.TokensAt(now))
+	if cfg.RateLimitEvictIdle || (!b.idleAt.IsZero() && b.idleAt.Before(b.fullAt)) {
+		b.fullAt = b.idleAt
+	}
+	heap.Fix(&s.expiry, b.index)
+}
+
+func (s *bucketStore) retireReservation(now time.Time) bool {
+	b := s.expiry[0]
+	if now.Before(b.fullAt) {
+		return false
+	}
+	idleExpired := !b.idleAt.IsZero() && !now.Before(b.idleAt)
+	if !idleExpired && b.limiter.TokensAt(now) < float64(b.limiter.Burst()) {
+		return false
+	}
+	heap.Pop(&s.expiry)
+	delete(s.buckets, b.key)
+	return true
 }
 
 func (s *bucketStore) refill(b *bucket, now time.Time) {
@@ -147,12 +173,16 @@ func (s *bucketStore) refill(b *bucket, now time.Time) {
 }
 
 func (s *bucketStore) deadline(b *bucket) time.Time {
-	nanos := math.Ceil((s.capacity - b.tokens) / s.rate * float64(time.Second))
+	return s.refillDeadline(b.last, s.capacity-b.tokens)
+}
+
+func (s *bucketStore) refillDeadline(now time.Time, missing float64) time.Time {
+	nanos := math.Ceil(missing / s.rate * float64(time.Second))
 	delay := time.Duration(math.MaxInt64)
 	if nanos < float64(math.MaxInt64) {
 		delay = time.Duration(nanos)
 	}
-	return b.last.Add(delay)
+	return now.Add(delay)
 }
 
 func (s *bucketStore) retire(now time.Time) bool {
