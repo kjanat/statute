@@ -47,7 +47,7 @@ func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Hand
 }
 
 func encodingVarianceOps() []headerOp {
-	return []headerOp{{op: resolved.MWAddResponseHeader, name: "Vary", value: "Accept-Encoding"}}
+	return []headerOp{{value: "Accept-Encoding", ensureVary: true}}
 }
 
 func compressionAlgorithms(algos []resolved.CompressAlgo) (gzipEnabled, brotliEnabled bool) {

@@ -127,3 +127,43 @@ func TestResponseEncodingPublishesUncommittedHeadersAndLateTrailers(t *testing.T
 		})
 	}
 }
+
+func TestEncodingVarianceAddsAcceptEncodingOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		coding string
+		mw     Middleware
+	}{
+		{"encode/gzip", "gzip", EncodeResponse(EncodingPolicy{Encodings: []string{"gzip"}, MinimumBytes: 1})},
+		{"encode/br", "br", EncodeResponse(EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1})},
+		{"encode/zstd", "zstd", EncodeResponse(EncodingPolicy{Encodings: []string{"zstd"}, MinimumBytes: 1})},
+		{"compress/gzip", "gzip", Compress(Gzip)},
+		{"compress/br", "br", Compress(Brotli)},
+	} {
+		for _, preset := range []string{"", "accept-encoding", "Origin, Accept-Encoding"} {
+			t.Run(tc.name+"/"+preset, func(t *testing.T) {
+				h := chain(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/plain")
+					if preset != "" {
+						w.Header().Set("Vary", preset)
+					}
+					_, _ = io.WriteString(w, strings.Repeat("body", 512))
+				}), tc.mw)
+				r := httptest.NewRequest(http.MethodGet, "/", nil)
+				r.Header.Set("Accept-Encoding", tc.coding)
+				w := runRequest(t, h, r)
+				count := 0
+				for _, value := range w.Header().Values("Vary") {
+					for token := range strings.SplitSeq(value, ",") {
+						if strings.EqualFold(strings.TrimSpace(token), "Accept-Encoding") {
+							count++
+						}
+					}
+				}
+				if count != 1 || w.Header().Get("Content-Encoding") != tc.coding {
+					t.Fatalf("Vary=%q Content-Encoding=%q", w.Header().Values("Vary"), w.Header().Get("Content-Encoding"))
+				}
+			})
+		}
+	}
+}
