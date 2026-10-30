@@ -187,6 +187,7 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var responseWriter *headerResponseWriter
+		observation := cacheObservationFrom(r.Context())
 		selectedResponseOps := responseOps
 		if r.TLS == nil {
 			selectedResponseOps = plainHTTPHeaderOps(responseOps)
@@ -203,7 +204,7 @@ func withHeaderMiddleware(mws []resolved.Middleware, next http.Handler) http.Han
 			existing, _ := r.Context().Value(responseHeaderOpsKey{}).([]headerOp)
 			combined := append(slices.Clone(selectedResponseOps), existing...)
 			r = r.WithContext(context.WithValue(r.Context(), responseHeaderOpsKey{}, combined))
-			responseWriter = &headerResponseWriter{ResponseWriter: w, ops: selectedResponseOps}
+			responseWriter = &headerResponseWriter{ResponseWriter: w, ops: selectedResponseOps, observation: observation}
 			w = responseWriter
 		}
 		next.ServeHTTP(w, r)
@@ -366,8 +367,9 @@ func forwardedOpsFromContext(ctx context.Context) []headerOp {
 // hijacking. Custom handlers writing raw handshake bytes own those bytes.
 type headerResponseWriter struct {
 	http.ResponseWriter
-	ops     []headerOp
-	applied bool
+	ops         []headerOp
+	applied     bool
+	observation *cacheObservation
 }
 
 // WriteHeader applies the operations, then writes the status. A 1xx is
@@ -430,9 +432,11 @@ func (w *headerResponseWriter) applyOps() {
 	}
 	w.applied = true
 	h := w.Header()
-	for _, op := range w.ops {
-		op.apply(h)
-	}
+	observeCacheHeaderEdits(w.observation, h, func() {
+		for _, op := range w.ops {
+			op.apply(h)
+		}
+	})
 }
 
 func deleteHeaderFold(h http.Header, name string) {

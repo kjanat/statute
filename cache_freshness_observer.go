@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,38 @@ func (o *cacheObservation) record(now time.Time) {
 }
 
 func (o *cacheObservation) usable() bool { return o == nil || !o.unsafe.Load() }
+
+func observeCacheHeaderEdits(o *cacheObservation, h http.Header, apply func()) {
+	if o == nil || !o.usable() {
+		apply()
+		return
+	}
+	now := time.Now()
+	o.record(now)
+	policy := cacheObservedPolicy(h, now)
+	vary, valid := cacheVary(h)
+	_, partial := cacheHeaderValues(h, "Content-Range")
+	if !policy.valid || !valid || partial {
+		o.unsafe.Store(true)
+	}
+	apply()
+	if policy != cacheObservedPolicy(h, now) || !cacheOriginVarianceSurvives(vary, h) {
+		o.unsafe.Store(true)
+	}
+}
+
+func cacheOriginVarianceSurvives(origin []string, h http.Header) bool {
+	current, valid := cacheVary(h)
+	if !valid {
+		return false
+	}
+	for _, name := range origin {
+		if _, found := slices.BinarySearch(current, name); !found {
+			return false
+		}
+	}
+	return true
+}
 
 type cacheCommitObserver struct {
 	http.ResponseWriter

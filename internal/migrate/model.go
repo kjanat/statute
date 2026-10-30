@@ -149,6 +149,35 @@ func (o *Object) note(path string, c Classification, reason string) {
 	o.Fields = append(o.Fields, Field{Path: path, Classification: c, Reason: reason})
 }
 
+func (o *Object) markConsumed(base string, keys []string, reason string) {
+	if value, ok := o.value(base).(map[string]any); ok && len(value) == 0 {
+		o.markConsumedValue(base, reason)
+		return
+	}
+	for _, key := range keys {
+		path := base + "." + key
+		value := o.value(path)
+		if value == nil {
+			continue
+		}
+		o.markConsumedValue(path, reason)
+		if values, ok := value.([]any); ok {
+			for index := range values {
+				o.markConsumedValue(fmt.Sprintf("%s[%d]", path, index), reason)
+			}
+		}
+	}
+}
+
+func (o *Object) markConsumedValue(path, reason string) {
+	for i := range o.Fields {
+		field := &o.Fields[i]
+		if field.Path == path || (o.Provider == providerDocker && strings.EqualFold(field.Path, path)) {
+			field.Classification, field.Reason = Translated, reason
+		}
+	}
+}
+
 func (o *Object) reference(path, kind, name string) {
 	if !literal(name) {
 		return

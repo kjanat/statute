@@ -131,9 +131,10 @@ func applyRequestPath(m resolved.Middleware, expression *regexp.Regexp, out *htt
 		out.URL.RawPath, out.URL.Path = raw, path
 		return expression != nil, nil
 	case resolved.MWPrefixPath:
-		out.URL.Path = rootRequestPath(m.PathReplacement+out.URL.Path, false)
+		addPathPrefix(out.URL, m.PathReplacement)
+		out.URL.Path = rootRequestPath(out.URL.Path, false)
 		if out.URL.RawPath != "" {
-			out.URL.RawPath = rootRequestPath(m.PathReplacement+out.URL.RawPath, false)
+			out.URL.RawPath = rootRequestPath(out.URL.RawPath, false)
 		}
 	case resolved.MWStripBytePrefixes:
 		return stripRequestPrefixes(m, out)

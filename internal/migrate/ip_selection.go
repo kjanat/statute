@@ -32,7 +32,7 @@ func sourceIPSelection(o *Object, base string) (statute.IPSelection, string, boo
 	if p.Depth > 0 || len(p.ExcludedIPs) > 0 {
 		p.Mode = "forwarded"
 	}
-	o.mark(base, Translated, "explicit direct-peer or forwarded-chain address selection")
+	o.markConsumed(base, []string{"depth", "excludedIPs", "ipv6Subnet"}, "explicit direct-peer or forwarded-chain address selection")
 	return p, fmt.Sprintf("statute.IPSelection{Mode:%q,Depth:%d,ExcludedIPs:[]string{%s},IPv6Subnet:%s}", p.Mode, p.Depth, quoted(p.ExcludedIPs), subnet), true
 }
 

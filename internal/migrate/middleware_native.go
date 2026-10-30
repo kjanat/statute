@@ -167,7 +167,21 @@ func (g *generator) compression(o *Object, chain *middleware) {
 	if !sourceCompressionMinimum(o, &p) {
 		return
 	}
-	p.DefaultEncoding = o.text("compress.defaultEncoding")
+	fallback, ok := sourceLiteralText(o, "compress.defaultEncoding")
+	if !ok {
+		o.mark("compress.defaultEncoding", Manual, "default encoding requires a literal string")
+		return
+	}
+	p.DefaultEncoding = fallback
+	if !sourceCompressionTypes(o, &p) {
+		return
+	}
+	chain.values = append(chain.values, statute.EncodeResponse(p))
+	chain.code = append(chain.code, fmt.Sprintf("statute.EncodeResponse(statute.EncodingPolicy{Encodings:[]string{%s},MinimumBytes:%d,DefaultEncoding:%q,IncludedTypes:[]string{%s},ExcludedTypes:[]string{%s}})", quoted(p.Encodings), p.MinimumBytes, p.DefaultEncoding, quoted(p.IncludedTypes), quoted(p.ExcludedTypes)))
+	o.markConsumed("compress", []string{"encodings", "defaultEncoding", "minResponseBodyBytes", "includedContentTypes", "excludedContentTypes"}, "response encoding, media filters and minimum body size")
+}
+
+func sourceCompressionTypes(o *Object, p *statute.EncodingPolicy) bool {
 	for _, field := range []struct {
 		key string
 		dst *[]string
@@ -175,14 +189,12 @@ func (g *generator) compression(o *Object, chain *middleware) {
 		if o.value("compress."+field.key) != nil {
 			values, ok := stringList(o.value("compress."+field.key), o.Provider == providerDocker)
 			if !ok {
-				return
+				return false
 			}
 			*field.dst = values
 		}
 	}
-	chain.values = append(chain.values, statute.EncodeResponse(p))
-	chain.code = append(chain.code, fmt.Sprintf("statute.EncodeResponse(statute.EncodingPolicy{Encodings:[]string{%s},MinimumBytes:%d,DefaultEncoding:%q,IncludedTypes:[]string{%s},ExcludedTypes:[]string{%s}})", quoted(p.Encodings), p.MinimumBytes, p.DefaultEncoding, quoted(p.IncludedTypes), quoted(p.ExcludedTypes)))
-	o.mark("compress", Translated, "response encoding, media filters and minimum body size")
+	return true
 }
 
 func (g *generator) buffering(o *Object, chain *middleware) {
@@ -219,14 +231,24 @@ func (g *generator) buffering(o *Object, chain *middleware) {
 		}
 		*field.dst = value
 	}
-	p.RetryExpression = o.text("buffering.retryExpression")
-	if !literal(p.RetryExpression) {
-		o.mark("buffering.retryExpression", Manual, "retry expression contains unresolved interpolation")
+	retry, ok := sourceLiteralText(o, "buffering.retryExpression")
+	if !ok {
+		o.mark("buffering.retryExpression", Manual, "retry expression requires a literal string")
 		return
 	}
+	p.RetryExpression = retry
 	chain.values = append(chain.values, statute.BufferBodies(p))
 	chain.code = append(chain.code, fmt.Sprintf("statute.BufferBodies(statute.BodyBufferPolicy{MaxRequestBytes:%d,MemoryRequestBytes:%d,MaxResponseBytes:%d,MemoryResponseBytes:%d,DisableRequest:%t,DisableResponse:%t,RetryExpression:%q})", p.MaxRequestBytes, p.MemoryRequestBytes, p.MaxResponseBytes, p.MemoryResponseBytes, p.DisableRequest, p.DisableResponse, p.RetryExpression))
-	o.mark("buffering", Translated, "request and response buffering with disk spill and retry predicate")
+	o.markConsumed("buffering", []string{"maxRequestBodyBytes", "memRequestBodyBytes", "maxResponseBodyBytes", "memResponseBodyBytes", "disableRequestBuffer", "disableResponseBuffer", "retryExpression"}, "request and response buffering with disk spill and retry predicate")
+}
+
+func sourceLiteralText(o *Object, path string) (string, bool) {
+	value := o.value(path)
+	if value == nil {
+		return "", true
+	}
+	text, ok := value.(string)
+	return text, ok && literal(text)
 }
 
 func (g *generator) retry(o *Object, chain *middleware) {

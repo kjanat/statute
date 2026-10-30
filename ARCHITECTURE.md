@@ -273,6 +273,9 @@ presence in the effective request bypasses both lookup and storage. Origin or
 projected response private directives (including qualified forms) and Set-Cookie
 fields prohibit storage; raw response-header operations cannot erase an origin
 privacy restriction. Public anonymous entries remain independently reusable.
+Grouped header operations report origin policy before editing headers. Erased
+privacy restrictions, changed freshness, lost Vary dimensions and partial
+metadata disable admission through the existing request-owned cache observer.
 Requests carrying TLS peer certificates or verified client chains also bypass
 lookup and storage: certificate identity is not part of the shared key. This
 includes optional and application-verified client certificates. Ordinary HTTPS
