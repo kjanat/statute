@@ -202,23 +202,8 @@ func (g *generator) buffering(o *Object, chain *middleware) {
 		return
 	}
 	p := statute.BodyBufferPolicy{}
-	for _, field := range []struct {
-		key string
-		dst *int64
-	}{
-		{"maxRequestBodyBytes", &p.MaxRequestBytes},
-		{"memRequestBodyBytes", &p.MemoryRequestBytes},
-		{"maxResponseBodyBytes", &p.MaxResponseBytes},
-		{"memResponseBodyBytes", &p.MemoryResponseBytes},
-	} {
-		if value := o.value("buffering." + field.key); value != nil {
-			n, err := integer(value)
-			if err != nil || n < 0 {
-				o.mark("buffering."+field.key, Manual, "buffer size must be a nonnegative integer")
-				return
-			}
-			*field.dst = int64(n)
-		}
+	if !sourceBufferSizes(o, &p) {
+		return
 	}
 	for _, field := range []struct {
 		key string
@@ -237,9 +222,41 @@ func (g *generator) buffering(o *Object, chain *middleware) {
 		return
 	}
 	p.RetryExpression = retry
+	noteBufferBounds(o, p)
 	chain.values = append(chain.values, statute.BufferBodies(p))
 	chain.code = append(chain.code, fmt.Sprintf("statute.BufferBodies(statute.BodyBufferPolicy{MaxRequestBytes:%d,MemoryRequestBytes:%d,MaxResponseBytes:%d,MemoryResponseBytes:%d,DisableRequest:%t,DisableResponse:%t,RetryExpression:%q})", p.MaxRequestBytes, p.MemoryRequestBytes, p.MaxResponseBytes, p.MemoryResponseBytes, p.DisableRequest, p.DisableResponse, p.RetryExpression))
 	o.markConsumed("buffering", []string{"maxRequestBodyBytes", "memRequestBodyBytes", "maxResponseBodyBytes", "memResponseBodyBytes", "disableRequestBuffer", "disableResponseBuffer", "retryExpression"}, "request and response buffering with disk spill and retry predicate")
+}
+
+func sourceBufferSizes(o *Object, p *statute.BodyBufferPolicy) bool {
+	for _, field := range []struct {
+		key string
+		dst *int64
+	}{
+		{"maxRequestBodyBytes", &p.MaxRequestBytes},
+		{"memRequestBodyBytes", &p.MemoryRequestBytes},
+		{"maxResponseBodyBytes", &p.MaxResponseBytes},
+		{"memResponseBodyBytes", &p.MemoryResponseBytes},
+	} {
+		if value := o.value("buffering." + field.key); value != nil {
+			n, err := integer(value)
+			if err != nil || n < 0 {
+				o.mark("buffering."+field.key, Manual, "buffer size must be a nonnegative integer")
+				return false
+			}
+			*field.dst = int64(n)
+		}
+	}
+	return true
+}
+
+func noteBufferBounds(o *Object, p statute.BodyBufferPolicy) {
+	if (!p.DisableRequest && p.MaxRequestBytes == 0) || (!p.DisableResponse && p.MaxResponseBytes == 0) {
+		o.note("$body-limits", Translated, "unlimited source body size becomes the native 8 MiB maximum")
+	}
+	if !p.DisableRequest || !p.DisableResponse {
+		o.note("$in-flight", Translated, "native buffering admits 128 concurrent requests per route middleware")
+	}
 }
 
 func sourceLiteralText(o *Object, path string) (string, bool) {

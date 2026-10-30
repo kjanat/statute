@@ -553,6 +553,17 @@ transports that return before closing request bodies. Close/Read overlap,
 GetBody replacement and duplicate Close prove final-owner retirement. Export,
 fallback and Docker generation tests prove route scope and configuration parity.
 
+### Traefik-compatible body buffering
+
+Each compiled `BufferBodies` instance owns its admission slots: 128 by default,
+configured by MaxInFlight. Resolve normalizes zero request and response maximums
+to 8 MiB; negative values fail resolution. Static, fallback and Docker routes keep
+these limits, and shared pools never share slots. Admission never queues;
+exhaustion returns empty 503 with no-store. A slot stays held until Oxy's handler
+returns or panics, covering its retry attempts and request-owned spill files.
+Memory and disk use per instance are therefore bounded by MaxInFlight times the
+maximums. No worker, server budget or shutdown owner is added.
+
 ### Strict request buffering
 
 `RequestBuffer` belongs to the route. Each resolved middleware declaration carries

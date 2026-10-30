@@ -3,6 +3,9 @@ package migrate
 import (
 	"strings"
 	"testing"
+
+	statute "statute.kjanat.dev"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestNativeMiddlewarePoliciesGenerateCompleteRoutes(t *testing.T) {
@@ -91,4 +94,52 @@ func TestUnsupportedRuleStillReportsMissingService(t *testing.T) {
 	if !strings.Contains(findings(r), "referenced service is absent") || r.Report.GeneratedRoutes != 0 {
 		t.Fatal("unsupported rule hid its missing dependency")
 	}
+}
+
+func TestBufferingReportsNativeBounds(t *testing.T) {
+	for _, tc := range []struct {
+		policy           string
+		limits, inFlight bool
+		maxRequest       int64
+	}{
+		{"buffering: {retryExpression: 'Attempts() < 2'}", true, true, 8 << 20},
+		{"buffering: {maxRequestBodyBytes: 0, maxResponseBodyBytes: 2048}", true, true, 8 << 20},
+		{"buffering: {maxRequestBodyBytes: 1024, maxResponseBodyBytes: 2048}", false, true, 1024},
+		{"buffering: {maxRequestBodyBytes: 1024, disableResponseBuffer: true}", false, true, 1024},
+		{"buffering: {disableRequestBuffer: true, disableResponseBuffer: true}", false, false, 8 << 20},
+	} {
+		t.Run(tc.policy, func(t *testing.T) {
+			r := audit(t, policyInputs(t, tc.policy))
+			requireMigrationGaps(t, r)
+			notes := map[string]bool{}
+			for _, o := range r.Report.Objects {
+				for _, f := range o.Fields {
+					notes[f.Path] = true
+				}
+			}
+			if notes["$body-limits"] != tc.limits || notes["$in-flight"] != tc.inFlight {
+				t.Fatalf("notes=%v\n%s", notes, findings(r))
+			}
+			c, err := statute.Resolve(r.Config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := bodyBufferPolicy(c.Routes[0].Middleware)
+			if p == nil || p.MaxRequestBytes != tc.maxRequest || p.MaxInFlight != 128 {
+				t.Fatalf("resolved policy=%+v", p)
+			}
+		})
+	}
+}
+
+func bodyBufferPolicy(mws []resolved.Middleware) *resolved.BodyBufferPolicy {
+	for _, m := range mws {
+		if m.BodyBuffers != nil {
+			return m.BodyBuffers
+		}
+		if p := bodyBufferPolicy(m.Group); p != nil {
+			return p
+		}
+	}
+	return nil
 }

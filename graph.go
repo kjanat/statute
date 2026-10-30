@@ -457,7 +457,7 @@ func graphMiddlewarePolicy(m resolved.Middleware) string {
 		}
 	case resolved.MWBufferBodies:
 		if m.BodyBuffers != nil {
-			label += fmt.Sprintf("\\nbody-buffers request=%d/%d response=%d/%d", m.BodyBuffers.MemoryRequestBytes, m.BodyBuffers.MaxRequestBytes, m.BodyBuffers.MemoryResponseBytes, m.BodyBuffers.MaxResponseBytes)
+			label += fmt.Sprintf("\\nbody-buffers request=%d/%d response=%d/%d in-flight=%d", m.BodyBuffers.MemoryRequestBytes, m.BodyBuffers.MaxRequestBytes, m.BodyBuffers.MemoryResponseBytes, m.BodyBuffers.MaxResponseBytes, m.BodyBuffers.MaxInFlight)
 		}
 	case resolved.MWReplaceEscapedPath, resolved.MWRewriteEscapedPath, resolved.MWStripBytePrefixes, resolved.MWPrefixPath:
 		label += fmt.Sprintf("\\nrequest-path op=%d original-header=%t", m.Type, m.PathRecordOriginal)

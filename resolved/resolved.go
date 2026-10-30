@@ -682,6 +682,7 @@ type BodyBufferPolicy struct {
 	MaxResponseBytes, MemoryResponseBytes int64
 	DisableRequest, DisableResponse       bool
 	RetryExpression                       string
+	MaxInFlight                           int
 }
 
 // EncodingPolicy describes ordered response encoding and media-type filters.

@@ -16,7 +16,7 @@ func TestGraphKeepsRouteConstraintsAlongsideActions(t *testing.T) {
 	if err := GraphDOT(cfg, &graph); err != nil {
 		t.Fatal(err)
 	}
-	for _, fragment := range []string{"priority=99", "listeners=[web]", "peer=[192.0.2.0/24]", "encodings=[br zstd] min=8", "body-buffers request=64/0", "request-path op="} {
+	for _, fragment := range []string{"priority=99", "listeners=[web]", "peer=[192.0.2.0/24]", "encodings=[br zstd] min=8", "body-buffers request=64/8388608", "response=0/8388608 in-flight=128", "request-path op="} {
 		if !strings.Contains(graph.String(), fragment) {
 			t.Fatalf("graph omitted %s", fragment)
 		}

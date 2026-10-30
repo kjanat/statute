@@ -131,7 +131,9 @@ program while still reporting `blocking: true` until its inputs are supplied.
   a request header. State belongs to each route. Idle expiry and oldest-bucket
   replacement bound the native store.
 - Body buffering supports request/response limits, memory spill thresholds and
-  the source retry expression. Spill files belong to the request. Response
+  the source retry expression. Spill files belong to the request. An unlimited
+  source maximum becomes the native 8 MiB bound, and each route admits 128
+  concurrent buffered requests; the report notes both. Response
   encoding supports gzip, Brotli and zstd, media-type filters and a minimum body
   size. A standalone Traefik Retry policy remains blocking where its transport
   failure behavior differs from native buffered Retry.

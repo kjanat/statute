@@ -1,6 +1,7 @@
 package statute
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -9,9 +10,15 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-// BodyBufferPolicy sets request and response limits and memory spill thresholds.
-// Zero limits permit any body size. Excess data spills to temporary files owned
-// by the request. RetryExpression uses Attempts, ResponseCode and IsNetworkError.
+const (
+	defaultBodyBufferMaxBytes    = 8 << 20
+	defaultBodyBufferMaxInFlight = 128
+)
+
+// BodyBufferPolicy sets request and response limits, memory spill thresholds
+// and concurrent buffered requests. Zero maximums select 8 MiB and zero
+// MaxInFlight selects 128. Excess data spills to temporary files owned by the
+// request. RetryExpression uses Attempts, ResponseCode and IsNetworkError.
 type BodyBufferPolicy = resolved.BodyBufferPolicy
 
 type bufferBodiesMW struct{ policy BodyBufferPolicy }
@@ -40,19 +47,51 @@ func bodyBufferOptions(p BodyBufferPolicy) []buffer.Option {
 }
 
 func (m *bufferBodiesMW) resolve() (resolved.Middleware, error) {
-	if _, err := buffer.New(http.NotFoundHandler(), bodyBufferOptions(m.policy)...); err != nil {
+	policy := m.policy
+	if policy.MaxRequestBytes == 0 {
+		policy.MaxRequestBytes = defaultBodyBufferMaxBytes
+	}
+	if policy.MaxResponseBytes == 0 {
+		policy.MaxResponseBytes = defaultBodyBufferMaxBytes
+	}
+	if policy.MaxInFlight < 0 {
+		return resolved.Middleware{}, errors.New("buffer_bodies: max in-flight must be nonnegative")
+	}
+	if policy.MaxInFlight == 0 {
+		policy.MaxInFlight = defaultBodyBufferMaxInFlight
+	}
+	if _, err := buffer.New(http.NotFoundHandler(), bodyBufferOptions(policy)...); err != nil {
 		return resolved.Middleware{}, fmt.Errorf("buffer_bodies: %w", err)
 	}
-	policy := m.policy
 	return resolved.Middleware{Type: resolved.MWBufferBodies, BodyBuffers: &policy}, nil
 }
 
 func bufferBodiesHandler(m resolved.Middleware, next http.Handler) http.Handler {
-	if m.BodyBuffers != nil {
-		if handler, err := buffer.New(bodyBufferNext(*m.BodyBuffers, next), bodyBufferOptions(*m.BodyBuffers)...); err == nil {
-			return handler
-		}
+	if m.BodyBuffers == nil || m.BodyBuffers.MaxInFlight <= 0 {
+		return invalidBodyBufferHandler()
 	}
+	policy := *m.BodyBuffers
+	handler, err := buffer.New(bodyBufferNext(policy, next), bodyBufferOptions(policy)...)
+	if err != nil {
+		return invalidBodyBufferHandler()
+	}
+	if policy.DisableRequest && policy.DisableResponse {
+		return handler
+	}
+	slots := make(chan struct{}, policy.MaxInFlight)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case slots <- struct{}{}:
+		default:
+			writeResponseLimitFailure(w, http.StatusServiceUnavailable)
+			return
+		}
+		defer func() { <-slots }()
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func invalidBodyBufferHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "invalid body buffer policy", http.StatusInternalServerError)
 	})

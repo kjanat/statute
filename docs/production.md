@@ -531,11 +531,18 @@ trailers. An outer Cache observes that commitment time.
 
 `BufferBodies(BodyBufferPolicy{...})` buffers request and response bodies.
 Bodies above the memory thresholds spill to temporary files in `TMPDIR`, removed
-when the request finishes. A zero threshold selects 1 MiB; a zero maximum permits
-any size. A request above `MaxRequestBytes` receives 413, and a response above
-`MaxResponseBytes` becomes 500. `DisableRequest` and `DisableResponse` turn off
-either direction. These limits apply per request; `RequestBuffer` keeps its
-server-wide budgets.
+when the request finishes. A zero threshold selects 1 MiB, and a zero maximum
+selects 8 MiB. A request above `MaxRequestBytes` receives 413, and a response
+above `MaxResponseBytes` becomes 500. `DisableRequest` and `DisableResponse` turn
+off either direction.
+
+Each route's middleware admits `MaxInFlight` buffered requests at once, 128 by
+default. A request beyond that receives an empty 503 with `Cache-Control:
+no-store`; there is no queue. A slot stays held until the handler returns,
+including retry attempts and panics. Memory and disk use per middleware are
+therefore at most `MaxInFlight` times the request and response maximums. When
+both directions are disabled, requests pass through without admission.
+`RequestBuffer` keeps its separate server-wide budgets.
 
 `RetryExpression` replays a buffered nonempty request body when the expression
 holds, for at most 10 attempts. It uses `Attempts()`, `ResponseCode()` and
