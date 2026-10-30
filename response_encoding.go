@@ -2,6 +2,7 @@ package statute
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -11,7 +12,6 @@ import (
 	"slices"
 
 	"github.com/andybalholm/brotli"
-	"github.com/klauspost/compress/gzhttp"
 	"github.com/klauspost/compress/zstd"
 
 	"statute.kjanat.dev/resolved"
@@ -71,23 +71,12 @@ func (m *encodeResponseMW) resolve() (resolved.Middleware, error) {
 }
 
 func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handler {
-	if m.Encoding == nil {
+	if !validResolvedEncoding(m.Encoding) {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	}
 	p := m.Encoding
 	excluded := append([]string{"application/grpc"}, p.ExcludedTypes...)
-	var gzipWrapper func(http.Handler) http.HandlerFunc
-	var err error
-	if len(p.IncludedTypes) > 0 {
-		gzipWrapper, err = gzhttp.NewWrapper(gzhttp.EnableZstd(false), gzhttp.MinSize(p.MinimumBytes), gzhttp.ContentTypes(p.IncludedTypes))
-	} else {
-		gzipWrapper, err = gzhttp.NewWrapper(gzhttp.EnableZstd(false), gzhttp.MinSize(p.MinimumBytes), gzhttp.ExceptContentTypes(excluded))
-	}
-	if err != nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
-	}
 	committed := preserveCommittedHeader(next)
-	gzipHandler := gzipWrapper(committed)
 	return responseEncodingVariance(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if responseEncodingBypass(r, requestType, excluded) {
@@ -95,17 +84,7 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 			return
 		}
 		coding := selectResponseEncoding(r.Header, p)
-		if coding == codingGzip {
-			if _, present := cacheHeaderValues(r.Header, "Accept-Encoding"); !present {
-				out := r.Clone(r.Context())
-				out.Trailer = r.Trailer
-				out.Header.Set("Accept-Encoding", codingGzip)
-				r = out
-			}
-			gzipHandler.ServeHTTP(w, r)
-			return
-		}
-		if coding != "br" && coding != codingZstd {
+		if coding == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -116,6 +95,13 @@ func encodeResponseHandler(m resolved.Middleware, next http.Handler) http.Handle
 		committed.ServeHTTP(writer, r)
 		returned = true
 	}))
+}
+
+func validResolvedEncoding(p *resolved.EncodingPolicy) bool {
+	if p == nil || p.MinimumBytes <= 0 || len(p.Encodings) == 0 || (len(p.IncludedTypes) > 0 && len(p.ExcludedTypes) > 0) {
+		return false
+	}
+	return validateResponseEncodings(EncodingPolicy{Encodings: p.Encodings, DefaultEncoding: p.DefaultEncoding}) == nil
 }
 
 func responseEncodingVariance(next http.Handler) http.Handler {
@@ -264,9 +250,14 @@ func (w *responseEncodingWriter) commit(encode bool) error {
 		return nil
 	}
 	if encode {
-		if w.coding == "br" {
+		switch w.coding {
+		case codingGzip:
+			codec := gzipPool.Get().(*gzip.Writer)
+			codec.Reset(w.ResponseWriter)
+			w.codec = pooledGzipWriter{codec}
+		case "br":
 			w.codec = brotli.NewWriter(w.ResponseWriter)
-		} else {
+		default:
 			codec, err := zstd.NewWriter(w.ResponseWriter)
 			if err != nil {
 				w.status = http.StatusInternalServerError
@@ -349,4 +340,12 @@ func validateResponseEncodings(p EncodingPolicy) error {
 		return errors.New("encode_response: default encoding must be enabled")
 	}
 	return nil
+}
+
+type pooledGzipWriter struct{ *gzip.Writer }
+
+func (g pooledGzipWriter) Close() error {
+	err := g.Writer.Close()
+	gzipPool.Put(g.Writer)
+	return err
 }

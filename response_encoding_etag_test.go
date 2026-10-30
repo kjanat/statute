@@ -9,7 +9,7 @@ import (
 )
 
 func TestResponseEncodingETagChecksSelectedRepresentation(t *testing.T) {
-	for _, coding := range []string{"br", "zstd"} {
+	for _, coding := range []string{"gzip", "br", "zstd"} {
 		for _, minimum := range []int{1, 4096} {
 			h := chain(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/plain")

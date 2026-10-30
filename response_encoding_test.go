@@ -2,6 +2,7 @@ package statute
 
 import (
 	"bufio"
+	"compress/gzip"
 	"io"
 	"net"
 	"net/http"
@@ -116,6 +117,12 @@ func TestResponseEncodingOwnsCodingHeader(t *testing.T) {
 func decodeEncodedResponse(t *testing.T, coding string, body io.Reader) io.Reader {
 	t.Helper()
 	switch coding {
+	case "gzip":
+		reader, err := gzip.NewReader(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reader
 	case "br":
 		return brotli.NewReader(body)
 	case "zstd":
@@ -176,7 +183,13 @@ func TestResponseEncodingValidation(t *testing.T) {
 			t.Fatal("invalid encoding policy accepted")
 		}
 	}
-	for _, mw := range []resolved.Middleware{{}, {Encoding: &resolved.EncodingPolicy{MinimumBytes: -1}}} {
+	for _, mw := range []resolved.Middleware{
+		{},
+		{Encoding: &resolved.EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: -1}},
+		{Encoding: &resolved.EncodingPolicy{MinimumBytes: 1}},
+		{Encoding: &resolved.EncodingPolicy{Encodings: []string{"deflate"}, MinimumBytes: 1}},
+		{Encoding: &resolved.EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1, IncludedTypes: []string{"text/html"}, ExcludedTypes: []string{"text/plain"}}},
+	} {
 		w := httptest.NewRecorder()
 		encodeResponseHandler(mw, http.NotFoundHandler()).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 		if w.Code != http.StatusInternalServerError {

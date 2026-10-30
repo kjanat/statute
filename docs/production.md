@@ -523,6 +523,12 @@ response `no-transform` and responses with an existing `Content-Encoding` keep
 their representation. Every response carries one `Accept-Encoding` token in
 `Vary`.
 
+All three codings share one writer. Encoding removes identity length, digests,
+range support and representation trailers, and weakens a strong ETag. An inner
+`ETag()` learns the selected coding before evaluating preconditions, so a strong
+identity tag fails `If-Match` against encoded delivery. A 101 written on HTTP/2
+or HTTP/3 is ignored and the later final status is delivered.
+
 The producer's headers take effect at its first final status, write, flush or
 return, as on an unbuffered response writer. Later header changes reach only
 trailers. An outer Cache observes that commitment time.
