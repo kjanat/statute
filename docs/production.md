@@ -215,8 +215,8 @@ freshness fields declared as trailers prevent storage without rejecting the
 producer's response. A valid `s-maxage` overrides lower-priority `max-age` and
 `Expires`; invalid selected values do not fall through to a weaker policy.
 
-ETag, Retry and Timeout buffering preserve the producer's original commitment
-time. Changes to committed freshness policy disable storage for the enclosing
+ETag, Retry, Timeout, BufferBodies and EncodeResponse buffering preserve the
+producer's original commitment time. Changes to committed freshness policy disable storage for the enclosing
 cache request, including discarded Retry attempts; response delivery is unchanged.
 
 Origin and projected route policy both constrain expiry. Setting a longer
@@ -507,6 +507,40 @@ outer Cache delegates conditional requests to ETag. Upgrade requests bypass thes
 representation stages. A render error/panic publishes no generated validator or
 partial buffered content. Choose streaming delivery without ETag when buffering
 or HEAD rendering cost is undesirable.
+
+## Traefik-compatible response encoding
+
+`EncodeResponse(EncodingPolicy{...})` encodes responses with gzip, Brotli or
+zstd. `Encodings` lists the enabled codings in preference order for equal
+quality values; it defaults to gzip, Brotli, zstd. `DefaultEncoding` must be
+enabled and applies to requests without `Accept-Encoding`. `MinimumBytes`
+defaults to 1024. `IncludedTypes` and `ExcludedTypes` are mutually exclusive
+media-type lists, and `application/grpc` is always excluded.
+
+HEAD requests, request `no-transform`, malformed `Accept-Encoding` and requests
+with an excluded `Content-Type` pass through unencoded. Partial responses,
+response `no-transform` and responses with an existing `Content-Encoding` keep
+their representation. Every response carries one `Accept-Encoding` token in
+`Vary`.
+
+The producer's headers take effect at its first final status, write, flush or
+return, as on an unbuffered response writer. Later header changes reach only
+trailers. An outer Cache observes that commitment time.
+
+## Per-request body buffering
+
+`BufferBodies(BodyBufferPolicy{...})` buffers request and response bodies.
+Bodies above the memory thresholds spill to temporary files in `TMPDIR`, removed
+when the request finishes. A zero threshold selects 1 MiB; a zero maximum permits
+any size. A request above `MaxRequestBytes` receives 413, and a response above
+`MaxResponseBytes` becomes 500. `DisableRequest` and `DisableResponse` turn off
+either direction. These limits apply per request; `RequestBuffer` keeps its
+server-wide budgets.
+
+`RetryExpression` replays a buffered nonempty request body when the expression
+holds, for at most 10 attempts. It uses `Attempts()`, `ResponseCode()` and
+`IsNetworkError()`. Invalid expressions and negative sizes fail resolution.
+Response buffering preserves the producer's commitment time for an outer Cache.
 
 ## Running on low ports as a non-root user
 

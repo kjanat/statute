@@ -140,14 +140,14 @@ func TestResponseEncodingDefaultAndSmallBodies(t *testing.T) {
 	}{
 		{"default brotli", "", EncodingPolicy{Encodings: []string{"br"}, DefaultEncoding: "br", MinimumBytes: 1}, "GET", 200, "br"},
 		{"default gzip", "", EncodingPolicy{Encodings: []string{"gzip"}, DefaultEncoding: "gzip", MinimumBytes: 1}, "GET", 200, "gzip"},
-		{"empty header", "", EncodingPolicy{Encodings: []string{"br"}, DefaultEncoding: "br"}, "GET", 200, ""},
+		{"empty header", "", EncodingPolicy{Encodings: []string{"br"}, DefaultEncoding: "br", MinimumBytes: 1}, "GET", 200, ""},
 		{"head", "br", EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1}, "HEAD", 200, ""},
 		{"no content", "br", EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1}, "GET", 204, ""},
 		{"reset content", "br", EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1}, "GET", 205, ""},
 		{"not modified", "br", EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1}, "GET", 304, ""},
-		{"unknown coding", "deflate", EncodingPolicy{}, "GET", 200, ""},
-		{"malformed quality", "br;q=bogus", EncodingPolicy{}, "GET", 200, ""},
-		{"identity preferred", "identity;q=1, br;q=0.5", EncodingPolicy{}, "GET", 200, ""},
+		{"unknown coding", "deflate", EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1}, "GET", 200, ""},
+		{"malformed quality", "br;q=bogus", EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1}, "GET", 200, ""},
+		{"identity preferred", "identity;q=1, br;q=0.5", EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1}, "GET", 200, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := chain(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -270,5 +270,35 @@ func TestResponseEncodingPreservesUpgradeAndDeadlineInterfaces(t *testing.T) {
 	data, err := io.ReadAll(reader)
 	if err != nil || string(data) != "upgraded" {
 		t.Fatalf("upgrade bytes=%q err=%v", data, err)
+	}
+}
+
+func TestResponseEncodingBypassesMalformedAndExcludedRequests(t *testing.T) {
+	for _, tc := range []struct{ name, accept, requestType string }{
+		{"malformed accept", "br;q=bogus", ""},
+		{"grpc request", "br", "application/grpc"},
+		{"excluded request", "br", "text/csv"},
+		{"eligible", "br", "text/plain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := chain(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = io.WriteString(w, strings.Repeat("body", 64))
+			}), EncodeResponse(EncodingPolicy{Encodings: []string{"br"}, MinimumBytes: 1, ExcludedTypes: []string{"text/csv"}}))
+			r := httptest.NewRequest(http.MethodPost, "/", nil)
+			r.Header.Set("Accept-Encoding", tc.accept)
+			if tc.requestType != "" {
+				r.Header.Set("Content-Type", tc.requestType)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			want := ""
+			if tc.name == "eligible" {
+				want = "br"
+			}
+			if vary := w.Header().Values("Vary"); w.Header().Get("Content-Encoding") != want || len(vary) != 1 || vary[0] != "Accept-Encoding" {
+				t.Fatalf("encoding=%q vary=%q", w.Header().Get("Content-Encoding"), w.Header().Values("Vary"))
+			}
+		})
 	}
 }

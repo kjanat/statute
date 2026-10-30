@@ -63,6 +63,20 @@ func TestBodyBufferLimitsAndDisabledDirections(t *testing.T) {
 	}
 }
 
+func TestBodyBufferRejectsOversizedUnknownLengthRequest(t *testing.T) {
+	for _, memory := range []int64{0, 2} {
+		calls := 0
+		h := chain(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }), BufferBodies(BodyBufferPolicy{MaxRequestBytes: 4, MemoryRequestBytes: memory}))
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("request"))
+		r.ContentLength = -1
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusRequestEntityTooLarge || calls != 0 {
+			t.Fatalf("memory=%d status=%d calls=%d", memory, w.Code, calls)
+		}
+	}
+}
+
 func TestBodyBufferInvalidPolicyRefuses(t *testing.T) {
 	if _, err := resolveMiddleware(BufferBodies(BodyBufferPolicy{RetryExpression: "invalid("})); err == nil {
 		t.Fatal("invalid retry expression accepted")
