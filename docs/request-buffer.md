@@ -77,6 +77,17 @@ smaller requests can still succeed. This warning compares the capacity needed
 for the maximum body with the budgets; it does not predict concurrent use or
 the additional capacity needed while growing a buffer.
 
+## BufferBodies budget
+
+`BufferBodiesBudget` limits every `BufferBodies` middleware on the server,
+1 GiB by default. Each admitted request reserves its enabled request and
+response maximums before buffering, covering memory and spill files together,
+and releases them when its handler returns. Static, fallback and Docker routes,
+including routes from a replaced Docker configuration, share this budget.
+Exhaustion and shutdown return **503** with `Cache-Control: no-store`. Lint
+reports a middleware whose reservation exceeds the budget as `RBF002`; every
+buffered request on that route receives 503.
+
 ## Middleware order and replay
 
 RequestBuffer runs at its declared position. Put authentication or IP policy

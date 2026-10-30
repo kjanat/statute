@@ -48,6 +48,8 @@ type RequestBufferResources struct {
 	MemoryBudgetBytes int64
 	Storage           string
 	DiskBudgetBytes   int64
+	// BufferBodiesBudgetBytes limits the reserved BufferBodies bodies, memory and spill files.
+	BufferBodiesBudgetBytes int64
 }
 
 // Docker is the resolved Docker label-discovery provider configuration.

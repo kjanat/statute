@@ -3,6 +3,7 @@ package statute
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 
 	"github.com/vulcand/oxy/v2/buffer"
@@ -26,7 +27,7 @@ type bufferBodiesMW struct{ policy BodyBufferPolicy }
 func (*bufferBodiesMW) statuteMiddleware() {}
 
 // BufferBodies buffers requests and responses with per-request disk spill.
-// Native RequestBuffer keeps its existing server-wide budgets and defaults.
+// Admitted requests reserve their maximums from RequestBufferResources.BufferBodiesBudget.
 func BufferBodies(policy BodyBufferPolicy) *bufferBodiesMW { return &bufferBodiesMW{policy: policy} }
 
 func bodyBufferOptions(p BodyBufferPolicy) []buffer.Option {
@@ -79,6 +80,7 @@ func bufferBodiesHandler(m resolved.Middleware, next http.Handler) http.Handler 
 		return handler
 	}
 	slots := make(chan struct{}, policy.MaxInFlight)
+	reservation := bodyBufferReservation(policy)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case slots <- struct{}{}:
@@ -87,8 +89,29 @@ func bufferBodiesHandler(m resolved.Middleware, next http.Handler) http.Handler 
 			return
 		}
 		defer func() { <-slots }()
+		if state, ok := r.Context().Value(requestBufferContextKey{}).(*requestBufferRequest); ok {
+			if !state.manager.reserveBodies(reservation) {
+				writeResponseLimitFailure(w, http.StatusServiceUnavailable)
+				return
+			}
+			defer state.manager.releaseBodies(reservation)
+		}
 		handler.ServeHTTP(w, r)
 	})
+}
+
+func bodyBufferReservation(p BodyBufferPolicy) int64 {
+	var size int64
+	if !p.DisableRequest {
+		size += p.MaxRequestBytes
+	}
+	if !p.DisableResponse {
+		if p.MaxResponseBytes > math.MaxInt64-size {
+			return math.MaxInt64
+		}
+		size += p.MaxResponseBytes
+	}
+	return size
 }
 
 func invalidBodyBufferHandler() http.Handler {

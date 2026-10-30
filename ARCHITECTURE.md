@@ -561,8 +561,12 @@ to 8 MiB; negative values fail resolution. Static, fallback and Docker routes ke
 these limits, and shared pools never share slots. Admission never queues;
 exhaustion returns empty 503 with no-store. A slot stays held until Oxy's handler
 returns or panics, covering its retry attempts and request-owned spill files.
-Memory and disk use per instance are therefore bounded by MaxInFlight times the
-maximums. No worker, server budget or shutdown owner is added.
+Each admission also reserves its enabled request and response maximums from
+the server's RequestBuffers manager, 1 GiB by default. Static, fallback and Docker
+routes, including retired generations, share that reservation budget; it covers
+memory and spill files together. Exhaustion and stopped admission at shutdown
+return the same 503. Reservations release when the handler returns or panics.
+No worker or shutdown owner is added.
 
 ### Strict request buffering
 

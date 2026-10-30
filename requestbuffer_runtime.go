@@ -16,12 +16,14 @@ import (
 const (
 	requestBufferMaxInFlight        = 128
 	initialRequestBufferBytes int64 = 512
+	defaultBufferBodiesBudget int64 = 1 << 30
 )
 
 type requestBufferManager struct {
 	cfg          resolved.RequestBufferResources
 	mu           sync.Mutex
 	memory, disk int64
+	bodies       int64
 	active       int
 	closed       bool
 	ctx          context.Context
@@ -33,6 +35,9 @@ type requestBufferManager struct {
 func newRequestBufferManager(cfg resolved.RequestBufferResources) *requestBufferManager {
 	if cfg.MaxInFlight == 0 {
 		cfg.MaxInFlight = requestBufferMaxInFlight
+	}
+	if cfg.BufferBodiesBudgetBytes == 0 {
+		cfg.BufferBodiesBudgetBytes = defaultBufferBodiesBudget
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &requestBufferManager{cfg: cfg, ctx: ctx, cancel: cancel, removeSpool: os.Remove}
@@ -49,6 +54,22 @@ func (m *requestBufferManager) acquire(size int64) *requestBodyBuffer {
 	m.memory += size
 	m.active++
 	return &requestBodyBuffer{manager: m, refs: 1, memory: size, data: make([]byte, int(size))}
+}
+
+func (m *requestBufferManager) reserveBodies(size int64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || size > m.cfg.BufferBodiesBudgetBytes-m.bodies {
+		return false
+	}
+	m.bodies += size
+	return true
+}
+
+func (m *requestBufferManager) releaseBodies(size int64) {
+	m.mu.Lock()
+	m.bodies -= size
+	m.mu.Unlock()
 }
 
 func (m *requestBufferManager) reserveDisk(size int64) bool {

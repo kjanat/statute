@@ -537,12 +537,13 @@ above `MaxResponseBytes` becomes 500. `DisableRequest` and `DisableResponse` tur
 off either direction.
 
 Each route's middleware admits `MaxInFlight` buffered requests at once, 128 by
-default. A request beyond that receives an empty 503 with `Cache-Control:
-no-store`; there is no queue. A slot stays held until the handler returns,
-including retry attempts and panics. Memory and disk use per middleware are
-therefore at most `MaxInFlight` times the request and response maximums. When
-both directions are disabled, requests pass through without admission.
-`RequestBuffer` keeps its separate server-wide budgets.
+default. Each admitted request also reserves its request and response maximums
+from the server's `RequestBuffers.BufferBodiesBudget`, 1 GiB by default, shared
+by every route. A request beyond either limit receives an empty 503 with
+`Cache-Control: no-store`; there is no queue. Slots and reservations stay held
+until the handler returns, including retry attempts and panics. When both
+directions are disabled, requests pass through without admission. See
+[request buffering](request-buffer.md#bufferbodies-budget).
 
 `RetryExpression` replays a buffered nonempty request body when the expression
 holds, for at most 10 attempts. It uses `Attempts()`, `ResponseCode()` and
