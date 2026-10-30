@@ -10,6 +10,35 @@ import (
 	"testing"
 )
 
+func TestResponseEncodingKeepsImplicitStatusAcrossLateHeaders(t *testing.T) {
+	for _, coding := range []string{"br", "zstd"} {
+		for _, minimum := range []int{1, 1024} {
+			h := chain(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, "body")
+				w.WriteHeader(http.StatusNoContent)
+			}), Retry(2), Cache("1h"), EncodeResponse(EncodingPolicy{Encodings: []string{coding}, MinimumBytes: minimum}))
+			server := httptest.NewServer(h)
+			t.Cleanup(server.Close)
+			for range 2 {
+				r, err := http.NewRequest(http.MethodGet, server.URL, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.Header.Set("Accept-Encoding", coding)
+				res, err := server.Client().Do(r)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := io.ReadAll(decodeEncodedResponse(t, res.Header.Get("Content-Encoding"), res.Body))
+				_ = res.Body.Close()
+				if err != nil || res.StatusCode != http.StatusOK || string(body) != "body" {
+					t.Fatalf("coding=%s min=%d status=%d body=%q err=%v", coding, minimum, res.StatusCode, body, err)
+				}
+			}
+		}
+	}
+}
+
 func TestResponseEncodingPreservesPartialAndNoTransform(t *testing.T) {
 	for _, coding := range []string{"br", "zstd"} {
 		for _, mode := range []string{"partial status", "content range", "response no-transform", "request no-transform"} {

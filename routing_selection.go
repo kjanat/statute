@@ -44,6 +44,21 @@ func validateListenerNames(cfg *resolved.Config) error {
 			}
 		}
 	}
+	return validateDockerMiddlewareListenerNames(cfg.Docker, names)
+}
+
+func validateDockerMiddlewareListenerNames(cfg *resolved.Docker, names map[string]bool) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := validateMiddlewareListenerNames(cfg.DefaultMiddleware, names); err != nil {
+		return fmt.Errorf("docker default middleware: %w", err)
+	}
+	for name, chain := range cfg.Middleware {
+		if err := validateMiddlewareListenerNames(chain, names); err != nil {
+			return fmt.Errorf("docker middleware %q: %w", name, err)
+		}
+	}
 	return nil
 }
 

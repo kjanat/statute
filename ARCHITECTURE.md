@@ -297,7 +297,8 @@ variance at commitment even when it negotiates identity, so an outer cache sees
 the same selection dimensions for every encoding.
 
 Cache keys distinguish the effective URL target, original RequestURI, request
-Host, method, URL scheme, and TLS presence. Custom handlers inspecting the original
+Host, method, URL scheme, listener name, and TLS presence. Listener names partition
+responses selected by `OnListeners`, including with an outer Cache. Custom handlers inspecting the original
 target therefore remain isolated after a route path rewrite. Application context
 and arbitrary connection identity are not inferred: personalized handlers must
 omit Cache, prevent storage from their first response, or expose a stable request

@@ -4,7 +4,34 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"statute.kjanat.dev/resolved"
 )
+
+func TestVerifiedIPv6RateLimitGroupsSubnet(t *testing.T) {
+	subnet := 64
+	for _, proxied := range []bool{false, true} {
+		h := chain(t, statusHandler(http.StatusNoContent), RateLimit("1/h").Burst(1).SelectIP(IPSelection{Mode: "verified", IPv6Subnet: &subnet}))
+		if proxied {
+			h = trustedProxyMiddleware(&resolved.Listener{TrustedProxies: []string{"192.0.2.0/24"}, ClientIPHeader: "X-Forwarded-For"}, h)
+		}
+		for _, tc := range []struct {
+			ip     string
+			status int
+		}{{"2001:db8:1::1", 204}, {"2001:db8:1::2", 429}, {"2001:db8:2::1", 204}} {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = "[" + tc.ip + "]:1234"
+			if proxied {
+				r.RemoteAddr = "192.0.2.1:1234"
+				r.Header.Set("X-Forwarded-For", tc.ip)
+			}
+			w := runRequest(t, h, r)
+			if w.Code != tc.status {
+				t.Fatalf("proxied=%t ip=%s status=%d want=%d", proxied, tc.ip, w.Code, tc.status)
+			}
+		}
+	}
+}
 
 func TestIPSelectionUsesDeclaredAddressSource(t *testing.T) {
 	subnet := 64

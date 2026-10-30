@@ -49,15 +49,18 @@ func resolveIPSelection(p *IPSelection) (*resolved.IPSelection, error) {
 }
 
 func selectedRequestIP(p *resolved.IPSelection, r *http.Request) string {
-	if p == nil || p.Mode == "verified" {
+	if p == nil {
 		return clientIP(r)
 	}
-	value := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(value); err == nil {
-		value = host
-	}
-	if p.Mode == "forwarded" {
-		value = forwardedSelection(p, r)
+	value := clientIP(r)
+	if p.Mode != "verified" {
+		value = r.RemoteAddr
+		if host, _, err := net.SplitHostPort(value); err == nil {
+			value = host
+		}
+		if p.Mode == "forwarded" {
+			value = forwardedSelection(p, r)
+		}
 	}
 	if p.IPv6Subnet != nil {
 		if ip, err := netip.ParseAddr(value); err == nil && ip.Is6() {

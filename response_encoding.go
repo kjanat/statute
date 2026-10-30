@@ -163,6 +163,9 @@ type responseEncodingWriter struct {
 
 func (w *responseEncodingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *responseEncodingWriter) WriteHeader(status int) {
+	if w.committed || w.statusSet {
+		return
+	}
 	if status >= 100 && status < 200 {
 		w.ResponseWriter.WriteHeader(status)
 		if status == http.StatusSwitchingProtocols {
@@ -171,13 +174,12 @@ func (w *responseEncodingWriter) WriteHeader(status int) {
 		}
 		return
 	}
-	if !w.statusSet {
-		w.status = status
-		w.statusSet = true
-	}
+	w.status = status
+	w.statusSet = true
 }
 
 func (w *responseEncodingWriter) Write(data []byte) (int, error) {
+	w.WriteHeader(http.StatusOK)
 	if w.committed {
 		if w.codec != nil {
 			return w.codec.Write(data)

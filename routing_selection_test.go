@@ -3,10 +3,32 @@ package statute
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"statute.kjanat.dev/resolved"
 )
+
+func TestDockerMiddlewareRejectsUnknownListener(t *testing.T) {
+	for _, defaults := range []bool{false, true} {
+		for _, name := range []string{"web", "weeb"} {
+			chain := OnListeners([]string{name}, InOrder(BasicAuth("private", map[string]string{"test": hunter2Hash})))
+			docker := Docker().TraefikLabels()
+			if defaults {
+				docker.DefaultMiddleware(chain)
+			} else {
+				docker.Middleware("auth", chain)
+			}
+			_, err := Resolve(Config{Listeners: Listeners{HTTP(":8080").Name("web")}, Docker: docker})
+			if name == "web" && err != nil {
+				t.Fatalf("valid listener rejected: %v", err)
+			}
+			if name == "weeb" && (err == nil || !strings.Contains(err.Error(), "unknown listener")) {
+				t.Fatalf("defaults=%t accepted unavailable auth listener: %v", defaults, err)
+			}
+		}
+	}
+}
 
 func TestRoutePriorityKeepsPeerPathAndListenerConstraints(t *testing.T) {
 	cfg := Config{PrioritizeRoutes: true, Listeners: Listeners{HTTP(":8080").Name("public"), HTTP(":8081").Name("private")}, Routes: Routes{
