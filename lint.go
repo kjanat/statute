@@ -94,7 +94,8 @@ func ruleReadHeaderTimeout(c *resolved.Config) []Finding {
 
 func ruleHealthCheck(c *resolved.Config) []Finding {
 	var out []Finding
-	for name, pool := range c.Upstreams {
+	for _, name := range slices.Sorted(maps.Keys(c.Upstreams)) {
+		pool := c.Upstreams[name]
 		// Passive health also detects dead backends — from real traffic —
 		// so a passive-only pool does not deserve this warning's claim.
 		if pool.HealthCheck.Enabled || pool.PassiveHealthCheck.Enabled {
@@ -147,7 +148,8 @@ func ruleObservability(c *resolved.Config) []Finding {
 
 func ruleSingleBackend(c *resolved.Config) []Finding {
 	var out []Finding
-	for name, pool := range c.Upstreams {
+	for _, name := range slices.Sorted(maps.Keys(c.Upstreams)) {
+		pool := c.Upstreams[name]
 		primary := 0
 		for _, b := range pool.Backends {
 			if !b.Backup {
@@ -186,7 +188,8 @@ func ruleAutoTLSStorage(c *resolved.Config) []Finding {
 
 func ruleInsecureUpstreamTLS(c *resolved.Config) []Finding {
 	var out []Finding
-	for name, pool := range c.Upstreams {
+	for _, name := range slices.Sorted(maps.Keys(c.Upstreams)) {
+		pool := c.Upstreams[name]
 		if pool.Transport.InsecureSkipVerify {
 			out = append(out, Finding{
 				Severity: SeverityWarning,
