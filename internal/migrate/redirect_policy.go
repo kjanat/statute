@@ -50,7 +50,7 @@ func (g *generator) redirectMiddleware(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, mw)
-	chain.code = append(chain.code, code)
+	chain.code = append(chain.code, textExpr(code))
 	fields := []string{"regex", "replacement", fieldPermanent, "statusCode"}
 	if family == redirectFamilyScheme {
 		fields = []string{"scheme", "port", fieldPermanent, "forcePermanentRedirect"}

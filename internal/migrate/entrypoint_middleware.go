@@ -30,7 +30,7 @@ func (g *generator) entrypointMiddleware() {
 			continue
 		}
 		g.entryDefaults.values = append(g.entryDefaults.values, statute.OnListeners([]string{name}, values...))
-		g.entryDefaults.code = append(g.entryDefaults.code, fmt.Sprintf("statute.OnListeners([]string{%q},%s)", name, variadicArgs(chain.parts)))
+		g.entryDefaults.code = append(g.entryDefaults.code, wrapExpr(fmt.Sprintf("statute.OnListeners([]string{%q},", name), []expr{variadicArgs(chain.parts)}, ")"))
 		origins = append(origins, o.identity())
 		o.mark("http.middlewares", Translated, "route-owned middleware selected by listener name")
 		for _, ref := range refs {

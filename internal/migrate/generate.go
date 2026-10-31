@@ -19,7 +19,7 @@ import (
 
 type middleware struct {
 	values []statute.Middleware
-	code   []string
+	code   []expr
 	parts  []middlewarePart
 }
 
@@ -56,7 +56,6 @@ type generator struct {
 	reusables       map[reusableKey]*reusable
 	simplePools     map[string]string
 	reusableNames   map[string]bool
-	constructors    map[string]*constructor
 }
 
 func generate(r *Result) error {
@@ -71,7 +70,6 @@ func generate(r *Result) error {
 	g.reusables = map[reusableKey]*reusable{}
 	g.simplePools = map[string]string{}
 	g.reusableNames = map[string]bool{}
-	g.constructors = map[string]*constructor{}
 	r.Config.Upstreams = statute.Upstreams{}
 	r.Config.PrioritizeRoutes = true
 	g.indexObjects()

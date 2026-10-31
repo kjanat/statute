@@ -18,7 +18,7 @@ func (g *generator) policyHeader(o *Object, chain *middleware, path, name, value
 		code += ".OnHTTPS()"
 	}
 	chain.values = append(chain.values, m)
-	chain.code = append(chain.code, code)
+	chain.code = append(chain.code, textExpr(code))
 	o.mark(path, Translated, "native response-header policy")
 }
 
@@ -171,16 +171,15 @@ func (g *generator) rateLimit(o *Object, chain *middleware) {
 		return
 	}
 	delay, ttl := sourceRateTiming(rate)
-	value := strconv.FormatFloat(rate, 'g', -1, 64) + "/s"
-	limiter := statute.RateLimit(value).Burst(burst).Reserve(delay.String()).ExpireIdle(ttl.String()).EvictOldest()
-	code := fmt.Sprintf("statute.RateLimit(%q).Burst(%d).Reserve(%q).ExpireIdle(%q).EvictOldest()", value, burst, delay.String(), ttl.String())
+	spec := rateLimitSpec{rate: strconv.FormatFloat(rate, 'g', -1, 64) + "/s", burst: burst, reserve: delay.String(), idle: ttl.String()}
+	limiter := statute.RateLimit(spec.rate).Burst(burst).Reserve(spec.reserve).ExpireIdle(spec.idle).EvictOldest()
 	if scalar(o.value("rateLimit.sourceCriterion.requestHost")) == trueValue {
 		limiter.Per(statute.HostHeader)
-		code += ".Per(statute.HostHeader)"
+		spec.key = hostRateKey
 		o.mark("rateLimit.sourceCriterion.requestHost", Translated, "request Host bucket key")
 	} else if header := o.text("rateLimit.sourceCriterion.requestHeaderName"); header != "" && literal(header) {
 		limiter.FromHeader(header)
-		code += fmt.Sprintf(".FromHeader(%q)", header)
+		spec.key, spec.header = headerRateKey, header
 		o.mark("rateLimit.sourceCriterion.requestHeaderName", Translated, "request header bucket key")
 	} else {
 		selection, selectionCode, ok := sourceIPSelection(o, "rateLimit.sourceCriterion.ipStrategy")
@@ -188,35 +187,78 @@ func (g *generator) rateLimit(o *Object, chain *middleware) {
 			return
 		}
 		limiter.SelectIP(selection)
-		code += ".SelectIP(" + selectionCode + ")"
+		spec.selection = selectionCode
 	}
 	chain.values = append(chain.values, limiter)
-	chain.code = append(chain.code, code)
-	g.shareRateLimit(code, value, burst, delay.String(), ttl.String())
+	chain.code = append(chain.code, expr{rate: &spec})
 	for _, key := range []string{"average", "period", "burst"} {
 		o.mark("rateLimit."+key, Translated, "token refill, burst, delayed reservation and bounded idle eviction")
 	}
 	classifyRateCriterion(o)
 }
 
-var constructorSignatures = map[string]string{
-	"makeRateLimit":       "(\nrate string,\nburst int,\nreserve, idle string,\nselection statute.IPSelection,\n)",
-	"makeHostRateLimit":   "(rate string, burst int, reserve, idle string)",
-	"makeHeaderRateLimit": "(\nrate string,\nburst int,\nreserve, idle, header string,\n)",
+type rateKey int
+
+const (
+	ipRateKey rateKey = iota
+	hostRateKey
+	headerRateKey
+)
+
+type rateLimitSpec struct {
+	rate      string
+	burst     int
+	reserve   string
+	idle      string
+	key       rateKey
+	selection string
+	header    string
 }
 
-func (g *generator) shareRateLimit(code, rate string, burst int, reserve, idle string) {
-	const base = "statute.RateLimit(rate).Burst(burst).Reserve(reserve).ExpireIdle(idle).EvictOldest()"
-	prefix := fmt.Sprintf("statute.RateLimit(%q).Burst(%d).Reserve(%q).ExpireIdle(%q).EvictOldest()", rate, burst, reserve, idle)
-	values := fmt.Sprintf("%q,%d,%q,%q", rate, burst, reserve, idle)
-	switch selector := strings.TrimPrefix(code, prefix); {
-	case selector == ".Per(statute.HostHeader)":
-		g.construct("makeHostRateLimit", base+selector, code, "makeHostRateLimit("+values+")")
-	case strings.HasPrefix(selector, ".FromHeader("):
-		g.construct("makeHeaderRateLimit", base+".FromHeader(header)", code, "makeHeaderRateLimit("+values+","+strings.TrimSuffix(strings.TrimPrefix(selector, ".FromHeader("), ")")+")")
+const rateLimitBase = "statute.RateLimit(rate).\nBurst(burst).\nReserve(reserve).\nExpireIdle(idle).\nEvictOldest()."
+
+var rateLimitConstructors = map[string]struct{ signature, body string }{
+	"makeRateLimit":       {"(\nrate string,\nburst int,\nreserve, idle string,\nselection statute.IPSelection,\n)", rateLimitBase + "\nSelectIP(selection)"},
+	"makeHostRateLimit":   {"(rate string, burst int, reserve, idle string)", rateLimitBase + "\nPer(statute.HostHeader)"},
+	"makeHeaderRateLimit": {"(\nrate string,\nburst int,\nreserve, idle, header string,\n)", rateLimitBase + "\nFromHeader(header)"},
+}
+
+func (s *rateLimitSpec) constructor() string {
+	switch s.key {
+	case hostRateKey:
+		return "makeHostRateLimit"
+	case headerRateKey:
+		return "makeHeaderRateLimit"
 	default:
-		g.construct("makeRateLimit", base+".SelectIP(selection)", code, "makeRateLimit("+values+","+strings.TrimSuffix(strings.TrimPrefix(selector, ".SelectIP("), ")")+")")
+		return "makeRateLimit"
 	}
+}
+
+func (s *rateLimitSpec) selector() string {
+	switch s.key {
+	case hostRateKey:
+		return "Per(statute.HostHeader)"
+	case headerRateKey:
+		return fmt.Sprintf("FromHeader(%q)", s.header)
+	default:
+		return "SelectIP(" + s.selection + ")"
+	}
+}
+
+func (s *rateLimitSpec) inline() string {
+	return fmt.Sprintf("statute.RateLimit(%q).Burst(%d).Reserve(%q).ExpireIdle(%q).EvictOldest().%s", s.rate, s.burst, s.reserve, s.idle, s.selector())
+}
+
+func (s *rateLimitSpec) call() string {
+	args := fmt.Sprintf("%q,%d,%q,%q", s.rate, s.burst, s.reserve, s.idle)
+	switch s.key {
+	case hostRateKey:
+	case headerRateKey:
+		args += fmt.Sprintf(",%q", s.header)
+	default:
+		args += "," + s.selection
+	}
+	return s.constructor() + "(" + args + ")"
 }
 
 func sourceRateLimit(o *Object) (float64, bool) {

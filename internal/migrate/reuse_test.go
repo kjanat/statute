@@ -158,15 +158,15 @@ func TestReusableHelperNames(t *testing.T) {
 		{"make-rate-limit@file", "makeRateLimit", "makeRateLimit2()"},
 		{"migration-candidate0@file", "migrationCandidate0", "sourceMigrationCandidate0()"},
 	} {
-		if got := g.reuse(singleMiddlewareType, step.key, step.base, "statute.Retry(1)", "middlewares:"+step.key); got != step.want {
+		if got := g.reuse(singleMiddlewareType, step.key, step.base, textExpr("statute.Retry(1)"), "middlewares:"+step.key); got != step.want {
 			t.Errorf("reuse(%q) = %q, want %q", step.key, got, step.want)
 		}
 	}
 }
 
 func TestMalformedReusableSourceFails(t *testing.T) {
-	g := &generator{r: &Result{}, defaults: "statute.Defaults{}", reusableNames: map[string]bool{}, constructors: map[string]*constructor{}}
-	g.reusables = map[reusableKey]*reusable{{singleMiddlewareType, "broken"}: {name: "broken", typ: singleMiddlewareType, body: "statute.("}}
+	g := &generator{r: &Result{}, defaults: "statute.Defaults{}", reusableNames: map[string]bool{}}
+	g.reusables = map[reusableKey]*reusable{{singleMiddlewareType, "broken"}: {name: "broken", typ: singleMiddlewareType, body: textExpr("statute.(")}}
 	if _, err := g.reusableSource("func f() {"); err == nil {
 		t.Fatal("malformed generated body accepted")
 	}
@@ -177,35 +177,58 @@ func TestMalformedReusableSourceFails(t *testing.T) {
 	if _, err := g.source(); err == nil {
 		t.Fatal("source accepted a malformed helper")
 	}
-	g.reusables = map[reusableKey]*reusable{
-		{singleMiddlewareType, "a"}: {name: "a", typ: singleMiddlewareType, body: "statute.Retry(1)"},
-		{singleMiddlewareType, "b"}: {name: "b", typ: singleMiddlewareType, body: "statute.Retry(1)"},
-	}
-	g.constructors = map[string]*constructor{"makeRetry": {body: "statute.(", expansions: map[string]string{"statute.Retry(1)": "makeRetry(1)"}}}
-	if _, err := g.reusableSource("func f() { a(); b() }"); err == nil {
-		t.Fatal("malformed constructor accepted")
-	}
-	g.constructors["makeRetry"] = &constructor{body: "statute.Retry(n)", expansions: map[string]string{"statute.Retry(1)": "makeRetry("}}
-	if _, err := g.reusableSource("func f() { a(); b() }"); err == nil {
-		t.Fatal("malformed constructor call accepted")
+	g.reusables = map[reusableKey]*reusable{{singleMiddlewareType, "partial"}: {name: "partial", typ: singleMiddlewareType, body: wrapExpr("statute.InOrder(", []expr{textExpr("statute.Retry(1)")}, "")}}
+	if _, err := g.reusableSource("func f() { partial() }"); err == nil {
+		t.Fatal("unterminated helper body accepted")
 	}
 }
 
 func TestMiddlewarePartRendering(t *testing.T) {
 	single := middlewarePart{call: "secure()", single: true}
 	slice := middlewarePart{call: "stack()"}
-	inline := middlewarePart{code: []string{"statute.Retry(1)", "statute.Retry(2)"}}
+	direct := middlewarePart{code: []expr{textExpr("statute.Retry(1)"), textExpr("statute.Retry(2)")}}
 	for _, check := range []struct{ got, want string }{
-		{sliceExpr([]middlewarePart{single, inline}), "[]statute.Middleware{secure(),statute.Retry(1),statute.Retry(2)}"},
-		{sliceExpr([]middlewarePart{single, slice, inline}), "slices.Concat([]statute.Middleware{secure()},stack(),[]statute.Middleware{statute.Retry(1),statute.Retry(2)})"},
-		{variadicArgs([]middlewarePart{single, inline}), "secure(),statute.Retry(1),statute.Retry(2)"},
-		{variadicArgs([]middlewarePart{single, slice}), "slices.Concat([]statute.Middleware{secure()},stack())..."},
-		{withCalls("With", []middlewarePart{single, slice, inline}), ".With(secure()).With(stack()...).With(statute.Retry(1),statute.Retry(2))"},
+		{inline.render(sliceExpr([]middlewarePart{single, direct})), "[]statute.Middleware{secure(),statute.Retry(1),statute.Retry(2)}"},
+		{inline.render(sliceExpr([]middlewarePart{single, slice, direct})), "slices.Concat([]statute.Middleware{secure()},stack(),[]statute.Middleware{statute.Retry(1),statute.Retry(2)})"},
+		{inline.render(variadicArgs([]middlewarePart{single, direct})), "secure(),statute.Retry(1),statute.Retry(2)"},
+		{inline.render(variadicArgs([]middlewarePart{single, slice})), "slices.Concat([]statute.Middleware{secure()},stack())..."},
+		{withCalls("With", []middlewarePart{single, slice, direct}), ".With(secure()).With(stack()...).With(statute.Retry(1),statute.Retry(2))"},
 		{middlewareArguments(nil), ""},
 		{middlewareArguments([]middlewarePart{single}), ",secure()"},
 	} {
 		if check.got != check.want {
 			t.Errorf("got %s, want %s", check.got, check.want)
+		}
+	}
+}
+
+func TestRateLimitSpecSurvivesWrappers(t *testing.T) {
+	specs := []*rateLimitSpec{
+		{rate: "20/s", burst: 40, reserve: "25ms", idle: "2s", selection: `statute.IPSelection{Mode:"peer"}`},
+		{rate: "5/s", burst: 10, reserve: "100ms", idle: "2s", key: hostRateKey},
+		{rate: "5/s", burst: 10, reserve: "100ms", idle: "2s", key: headerRateKey, header: "X-Client"},
+	}
+	leaves := make([]expr, 0, len(specs))
+	for _, spec := range specs {
+		leaves = append(leaves, wrapExpr("statute.InOrder(", []expr{{rate: spec}}, ")"))
+	}
+	group := middlewarePart{code: leaves}
+	nested := wrapExpr(`statute.OnListeners([]string{"web"},`, []expr{variadicArgs([]middlewarePart{{call: "stack()"}, group})}, ")")
+	found := map[string]bool{}
+	nested.constructors(found)
+	if len(found) != 3 || !found["makeRateLimit"] || !found["makeHostRateLimit"] || !found["makeHeaderRateLimit"] {
+		t.Fatalf("constructors through wrappers: %v", found)
+	}
+	shared := renderer{"makeRateLimit": true, "makeHostRateLimit": true, "makeHeaderRateLimit": true}
+	for _, check := range []struct {
+		r    renderer
+		want string
+	}{
+		{inline, `statute.OnListeners([]string{"web"},slices.Concat(stack(),[]statute.Middleware{statute.InOrder(statute.RateLimit("20/s").Burst(40).Reserve("25ms").ExpireIdle("2s").EvictOldest().SelectIP(statute.IPSelection{Mode:"peer"})),statute.InOrder(statute.RateLimit("5/s").Burst(10).Reserve("100ms").ExpireIdle("2s").EvictOldest().Per(statute.HostHeader)),statute.InOrder(statute.RateLimit("5/s").Burst(10).Reserve("100ms").ExpireIdle("2s").EvictOldest().FromHeader("X-Client"))})...)`},
+		{shared, `statute.OnListeners([]string{"web"},slices.Concat(stack(),[]statute.Middleware{statute.InOrder(makeRateLimit("20/s",40,"25ms","2s",statute.IPSelection{Mode:"peer"})),statute.InOrder(makeHostRateLimit("5/s",10,"100ms","2s")),statute.InOrder(makeHeaderRateLimit("5/s",10,"100ms","2s","X-Client"))})...)`},
+	} {
+		if got := check.r.render(nested); got != check.want {
+			t.Errorf("render:\n got %s\nwant %s", got, check.want)
 		}
 	}
 }

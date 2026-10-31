@@ -25,25 +25,19 @@ var generatedIdentifiers = map[string]bool{
 type middlewarePart struct {
 	call   string
 	single bool
-	code   []string
+	code   []expr
 }
 
 type reusable struct {
 	name    string
 	typ     string
-	body    string
+	body    expr
 	origins []string
 }
 
 type reusableKey struct {
 	typ string
 	key string
-}
-
-type constructor struct {
-	signature  string
-	body       string
-	expansions map[string]string
 }
 
 func (m middleware) segments() []middlewarePart {
@@ -53,22 +47,22 @@ func (m middleware) segments() []middlewarePart {
 	return append([]middlewarePart{{code: m.code}}, m.parts...)
 }
 
-func (p middlewarePart) elements() ([]string, bool) {
+func (p middlewarePart) elements() ([]expr, bool) {
 	switch {
 	case p.call == "":
 		return p.code, true
 	case p.single:
-		return []string{p.call}, true
+		return []expr{textExpr(p.call)}, true
 	default:
 		return nil, false
 	}
 }
 
-func sliceExpr(parts []middlewarePart) string {
-	var exprs, run []string
+func sliceExpr(parts []middlewarePart) expr {
+	var exprs, run []expr
 	flush := func() {
 		if len(run) > 0 {
-			exprs = append(exprs, middlewareType+"{"+strings.Join(run, ",")+"}")
+			exprs = append(exprs, wrapExpr(middlewareType+"{", run, "}"))
 			run = nil
 		}
 	}
@@ -78,33 +72,33 @@ func sliceExpr(parts []middlewarePart) string {
 			continue
 		}
 		flush()
-		exprs = append(exprs, p.call)
+		exprs = append(exprs, textExpr(p.call))
 	}
 	flush()
 	if len(exprs) == 1 {
 		return exprs[0]
 	}
-	return "slices.Concat(" + strings.Join(exprs, ",") + ")"
+	return wrapExpr("slices.Concat(", exprs, ")")
 }
 
-func variadicArgs(parts []middlewarePart) string {
-	var args []string
+func variadicArgs(parts []middlewarePart) expr {
+	var args []expr
 	for _, p := range parts {
 		elements, ok := p.elements()
 		if !ok {
-			return sliceExpr(parts) + "..."
+			return wrapExpr("", []expr{sliceExpr(parts)}, "...")
 		}
 		args = append(args, elements...)
 	}
-	return strings.Join(args, ",")
+	return wrapExpr("", args, "")
 }
 
 func withCalls(method string, parts []middlewarePart) string {
 	var b strings.Builder
-	var run []string
+	var run []expr
 	flush := func() {
 		if len(run) > 0 {
-			b.WriteString("." + method + "(" + strings.Join(run, ",") + ")")
+			b.WriteString(inline.render(wrapExpr("."+method+"(", run, ")")))
 			run = nil
 		}
 	}
@@ -129,7 +123,7 @@ func (g *generator) middlewareHelper(key string, parts []middlewarePart, origins
 	return middlewarePart{call: g.reuse(middlewareType, key, helperIdentifier(key), sliceExpr(parts), origins...)}
 }
 
-func (g *generator) reuse(typ, key, base, body string, origins ...string) string {
+func (g *generator) reuse(typ, key, base string, body expr, origins ...string) string {
 	if h := g.reusables[reusableKey{typ, key}]; h != nil {
 		return h.name + "()"
 	}
@@ -147,17 +141,8 @@ func (g *generator) reuse(typ, key, base, body string, origins ...string) string
 
 func (g *generator) reservedName(name string) bool {
 	_, imported := importedPackages[name]
-	_, shared := constructorSignatures[name]
+	_, shared := rateLimitConstructors[name]
 	return g.reusableNames[name] || generatedIdentifiers[name] || shared || imported || token.IsKeyword(name) || types.Universe.Lookup(name) != nil
-}
-
-func (g *generator) construct(name, body, expansion, call string) {
-	c := g.constructors[name]
-	if c == nil {
-		c = &constructor{signature: constructorSignatures[name], body: body, expansions: map[string]string{}}
-		g.constructors[name] = c
-	}
-	c.expansions[expansion] = call
 }
 
 func helperIdentifier(source string) string {
@@ -192,11 +177,11 @@ func (g *generator) reusableSource(body string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	bodies, shared := g.sharedConstruction(used)
+	shared := sharedConstructors(used)
 	var b strings.Builder
 	for _, name := range keys(used) {
 		h := used[name]
-		code, err := layoutExpr(bodies[name])
+		code, err := layoutExpr(shared.render(h.body))
 		if err != nil {
 			return "", err
 		}
@@ -206,13 +191,9 @@ func (g *generator) reusableSource(body string) (string, error) {
 		}
 		b.WriteString("func " + h.name + "() " + h.typ + " {\nreturn " + code + "\n}\n")
 	}
-	for _, name := range shared {
-		c := g.constructors[name]
-		code, err := layoutExpr(c.body)
-		if err != nil {
-			return "", err
-		}
-		b.WriteString("\nfunc " + name + c.signature + " " + singleMiddlewareType + " {\nreturn " + code + "\n}\n")
+	for _, name := range keys(shared) {
+		c := rateLimitConstructors[name]
+		b.WriteString("\nfunc " + name + c.signature + " " + singleMiddlewareType + " {\nreturn " + c.body + "\n}\n")
 	}
 	return b.String(), nil
 }
@@ -234,7 +215,7 @@ func (g *generator) usedReusables(body string) (map[string]*reusable, error) {
 			if h == nil || used[name] != nil {
 				continue
 			}
-			expr, err := parser.ParseExpr(h.body)
+			expr, err := parser.ParseExpr(inline.render(h.body))
 			if err != nil {
 				return nil, err
 			}
@@ -246,34 +227,22 @@ func (g *generator) usedReusables(body string) (map[string]*reusable, error) {
 	return used, nil
 }
 
-func (g *generator) sharedConstruction(used map[string]*reusable) (map[string]string, []string) {
-	bodies := map[string]string{}
-	for name, h := range used {
-		bodies[name] = h.body
-	}
-	var shared []string
-	for _, name := range keys(g.constructors) {
-		c := g.constructors[name]
-		var users []string
-		for _, helper := range keys(bodies) {
-			for expansion := range c.expansions {
-				if strings.Contains(bodies[helper], expansion) {
-					users = append(users, helper)
-					break
-				}
-			}
-		}
-		if len(users) < 2 {
-			continue
-		}
-		shared = append(shared, name)
-		for _, helper := range users {
-			for expansion, call := range c.expansions {
-				bodies[helper] = strings.ReplaceAll(bodies[helper], expansion, call)
-			}
+func sharedConstructors(used map[string]*reusable) renderer {
+	users := map[string]int{}
+	for _, h := range used {
+		found := map[string]bool{}
+		h.body.constructors(found)
+		for name := range found {
+			users[name]++
 		}
 	}
-	return bodies, shared
+	shared := renderer{}
+	for name, n := range users {
+		if n > 1 {
+			shared[name] = true
+		}
+	}
+	return shared
 }
 
 func calledFunctions(node ast.Node) map[string]bool {

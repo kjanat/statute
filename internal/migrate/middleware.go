@@ -44,7 +44,7 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	classifyEmptyHeaders(o, chain)
 	if len(chain.values) > 0 && o.value("chain.middlewares") == nil {
 		chain.values = []statute.Middleware{statute.InOrder(chain.values...)}
-		chain.code = []string{"statute.InOrder(" + strings.Join(chain.code, ",") + ")"}
+		chain.code = []expr{wrapExpr("statute.InOrder(", chain.code, ")")}
 	}
 	if nativeMiddlewareReady(o, chain) {
 		registered := middleware{values: chain.values}
@@ -170,7 +170,7 @@ func (g *generator) ipAllowList(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, statute.AllowIPs(cidrs...).SelectIP(selection))
-	chain.code = append(chain.code, "statute.AllowIPs("+quoted(cidrs)+").SelectIP("+code+")")
+	chain.code = append(chain.code, textExpr("statute.AllowIPs("+quoted(cidrs)+").SelectIP("+code+")"))
 	o.mark(path, Translated, "route-owned client-IP allow list; listener trusted-proxy policy remains explicit")
 }
 
@@ -228,7 +228,7 @@ func middlewareArguments(parts []middlewarePart) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "," + variadicArgs(parts)
+	return "," + inline.render(variadicArgs(parts))
 }
 
 func classifyEmptyHeaders(o *Object, chain middleware) {
