@@ -186,7 +186,8 @@ apply to both tables, using `fallback_routes[i].middleware[j]` for terminal rout
 catch-all in `FallbackRoutes` is valid. With `PrioritizeRoutes`, the warning
 names only Docker routes and refusals at or below the catch-all's priority,
 including native `statute.*` label routes at priority 0. A negative priority
-leaves default-priority Docker routes reachable; the fallback stages stay
-shadowed.
+still shadows Traefik routers with an equal or lower explicit priority; native
+label routes and default-priority Traefik routers stay reachable. The fallback
+stages stay shadowed.
 Move the whole route into `Config.FallbackRoutes`, creating that table if needed,
 to retain its named pool and middleware while allowing Docker routes to match first.

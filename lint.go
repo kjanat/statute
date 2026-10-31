@@ -530,6 +530,8 @@ func shadowedTiers(c *resolved.Config, route *resolved.Route) string {
 		tiers = append(tiers, dockerTiers)
 	case route.Priority >= 0:
 		tiers = append(tiers, fmt.Sprintf("every Docker-discovered route and refusal with priority %d or lower, including every native statute.* label route", route.Priority))
+	default:
+		tiers = append(tiers, fmt.Sprintf("every Docker-discovered route and refusal with priority %d or lower", route.Priority))
 	}
 	if len(c.FallbackRoutes) > 0 {
 		tiers = append(tiers, "the terminal fallback routes")

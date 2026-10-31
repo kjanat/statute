@@ -3,6 +3,7 @@ package statute
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -21,8 +22,8 @@ func TestLint_FB001FollowsPrioritizedSelection(t *testing.T) {
 	}{
 		{name: "declaration order", priority: 1, want: []string{"every Docker-discovered route, and the refusals"}},
 		{name: "prioritized docker", priority: 1, prioritize: true, want: []string{"priority 1 or lower", "native statute.* label route"}, unwant: []string{"every Docker-discovered route,"}},
-		{name: "prioritized below docker defaults", priority: -1, prioritize: true},
-		{name: "prioritized terminal stages", priority: -1, prioritize: true, terminal: true, want: []string{"terminal fallback routes", "the fallback"}, unwant: []string{"Docker"}},
+		{name: "prioritized below docker defaults", priority: -1, prioritize: true, want: []string{"priority -1 or lower"}, unwant: []string{"native statute.* label route"}},
+		{name: "prioritized terminal stages", priority: -1, prioritize: true, terminal: true, want: []string{"priority -1 or lower", "terminal fallback routes", "the fallback"}, unwant: []string{"native statute.* label route"}},
 		{name: "prioritized docker and terminal", priority: 5, prioritize: true, terminal: true, want: []string{"priority 5 or lower", "terminal fallback routes", "the fallback"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,21 +84,32 @@ func assertFB001Message(t *testing.T, cfg Config, want, unwant []string) {
 }
 
 func TestPrioritizedCatchAllShadowsOnlyLowerDockerPriorities(t *testing.T) {
-	cfg, err := resolveDocker(Docker().TraefikLabels())
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
-		{name: "traefik", ip: "127.0.0.1", port: 1, labels: map[string]string{"traefik.enable": "true", "traefik.http.routers.app.rule": "Host(`traefik.example`)"}},
-		{name: "native", ip: "127.0.0.1", port: 1, labels: map[string]string{"statute.host": "native.example"}},
-	})
-	srv.cfg.PrioritizeRoutes = true
-	srv.cfg.Routes = []*resolved.Route{{Pattern: "/*", Priority: 1, HandlerRoute: true, Handler: statusHandler(http.StatusTeapot)}}
-	mustSync(t, p)
-	for host, static := range map[string]bool{"traefik.example": false, "native.example": true} {
-		w := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil))
-		if (w.Code == http.StatusTeapot) != static {
-			t.Errorf("%s status=%d static=%v", host, w.Code, static)
-		}
+	for _, tc := range []struct {
+		priority int
+		static   map[string]bool
+	}{
+		{priority: 1, static: map[string]bool{"traefik.example": false, "low.example": true, "native.example": true}},
+		{priority: -1, static: map[string]bool{"traefik.example": false, "low.example": true, "native.example": false}},
+	} {
+		t.Run(strconv.Itoa(tc.priority), func(t *testing.T) {
+			cfg, err := resolveDocker(Docker().TraefikLabels())
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{
+				{name: "traefik", ip: "127.0.0.1", port: 1, labels: map[string]string{"traefik.enable": "true", "traefik.http.routers.app.rule": "Host(`traefik.example`)"}},
+				{name: "low", ip: "127.0.0.1", port: 1, labels: map[string]string{"traefik.enable": "true", "traefik.http.routers.low.rule": "Host(`low.example`)", "traefik.http.routers.low.priority": "-2"}},
+				{name: "native", ip: "127.0.0.1", port: 1, labels: map[string]string{"statute.host": "native.example"}},
+			})
+			srv.cfg.PrioritizeRoutes = true
+			srv.cfg.Routes = []*resolved.Route{{Pattern: "/*", Priority: tc.priority, HandlerRoute: true, Handler: statusHandler(http.StatusTeapot)}}
+			mustSync(t, p)
+			for host, static := range tc.static {
+				w := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil))
+				if (w.Code == http.StatusTeapot) != static {
+					t.Errorf("%s status=%d static=%v", host, w.Code, static)
+				}
+			}
+		})
 	}
 }
