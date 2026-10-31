@@ -55,8 +55,7 @@ can live in different dynamic files. Each resource retains its source filename
 and field paths; duplicate definitions of the same store or option remain blocking.
 
 The generated `main.go` has one function per section: `generatedListeners`,
-`generatedUpstreams`, `generatedRoutes`, `generatedFallbackRoutes` and
-`generatedDocker`. A comment naming the source object, such as
+`generatedUpstreams`, `generatedRoutes` and `generatedDocker`. A comment naming the source object, such as
 `// routers:api@file`, precedes each listener, pool and route. Long method chains
 and structs with several fields put each call or field on its own line, and
 zero-valued fields are omitted. Identical inputs produce byte-identical source.

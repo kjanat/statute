@@ -31,7 +31,6 @@ type generator struct {
 	internalRoutes  []*statute.Route
 	internalCode    []fragment
 	disabledRouters map[*Object]bool
-	fallbacks       []fragment
 	docker          string
 	dockerOrigin    string
 	objects         map[string]*Object
@@ -613,13 +612,8 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware, 
 		route.Hosts(hosts...)
 		item = fragment{origin: origin, code: code, hosts: hosts, tail: withCalls("With", chain.parts)}
 	}
-	if g.terminalMatcher(m) {
-		g.r.Config.FallbackRoutes = append(g.r.Config.FallbackRoutes, route)
-		g.fallbacks = append(g.fallbacks, item)
-	} else {
-		g.r.Config.Routes = append(g.r.Config.Routes, route)
-		g.routes = append(g.routes, item)
-	}
+	g.r.Config.Routes = append(g.r.Config.Routes, route)
+	g.routes = append(g.routes, item)
 	g.r.Report.GeneratedRoutes += max(1, len(hosts))
 }
 
@@ -798,7 +792,6 @@ func (g *generator) configurationSource(b *strings.Builder) error {
 		{"Listeners", "generatedListeners", "statute.Listeners", g.listeners},
 		{"Upstreams", "generatedUpstreams", "statute.Upstreams", g.poolFragments()},
 		{"Routes", "generatedRoutes", "statute.Routes", g.routes},
-		{"FallbackRoutes", "generatedFallbackRoutes", "statute.Routes", g.fallbacks},
 	} {
 		if len(section.items) == 0 {
 			continue
@@ -888,8 +881,4 @@ func (g *generator) hasImplementationGaps() bool {
 func (g *generator) serviceAvailable(name string) bool {
 	_, ok := g.pools[name]
 	return ok || name == serviceNoop || g.discoveredService(name)
-}
-
-func (g *generator) terminalMatcher(m docker.Matcher) bool {
-	return !g.r.Config.PrioritizeRoutes && m.Host == "" && m.PathKind == docker.PathAny
 }

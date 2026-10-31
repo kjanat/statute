@@ -19,7 +19,7 @@ const (
 
 var generatedIdentifiers = map[string]bool{
 	"main": true, "init": true, "configuration": true, "migrationEnv": true, "migrationUsersFile": true, "migrationNoop": true, "makePool": true, "statute": true,
-	"generatedListeners": true, "generatedUpstreams": true, "generatedRoutes": true, "generatedFallbackRoutes": true, "generatedDocker": true,
+	"generatedListeners": true, "generatedUpstreams": true, "generatedRoutes": true, "generatedDocker": true,
 }
 
 type middlewarePart struct {
