@@ -279,13 +279,13 @@ func (g *generator) retry(o *Object, chain *middleware) {
 }
 
 func (g *generator) retainMiddlewareCandidate(o *Object, chain middleware) {
-	if o.ready() || len(chain.code) == 0 {
+	if o.ready() || len(chain.segments()) == 0 {
 		return
 	}
 	// A blocked candidate remains reviewable without being registered on a route.
 	// The whole generated program is additionally guarded by the audit result.
 	name := fmt.Sprintf("migrationCandidate%d", len(g.candidates))
-	g.candidates[name] = fragment{origin: o.identity(), code: "[]statute.Middleware{" + strings.Join(chain.code, ",") + "}"}
+	g.candidates[name] = fragment{origin: o.identity(), code: sliceExpr(chain.segments())}
 }
 
 func hasFieldPrefix(o *Object, prefix string) bool {

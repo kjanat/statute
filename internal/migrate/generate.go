@@ -19,6 +19,7 @@ import (
 type middleware struct {
 	values []statute.Middleware
 	code   []string
+	parts  []middlewarePart
 }
 
 type generator struct {
@@ -52,6 +53,8 @@ type generator struct {
 	defaults        string
 	defaultEntries  []string
 	entryDefaults   middleware
+	reusables       map[string]*reusable
+	reusableNames   map[string]bool
 }
 
 func generate(r *Result) error {
@@ -63,6 +66,8 @@ func generate(r *Result) error {
 	g.entryTLS = map[string]bool{}
 	g.routerEntries = map[*Object][]string{}
 	g.disabledRouters = map[*Object]bool{}
+	g.reusables = map[string]*reusable{}
+	g.reusableNames = map[string]bool{}
 	r.Config.Upstreams = statute.Upstreams{}
 	r.Config.PrioritizeRoutes = true
 	g.indexObjects()
@@ -84,7 +89,7 @@ func generate(r *Result) error {
 	if len(g.entryDefaults.values) > 0 {
 		for i, route := range g.internalRoutes {
 			route.WithOuter(g.entryDefaults.values...)
-			g.internalCode[i].code += ".WithOuter(" + strings.Join(g.entryDefaults.code, ",") + ")"
+			g.internalCode[i].code += withCalls("WithOuter", g.entryDefaults.parts)
 		}
 	}
 	r.Config.Routes = append(r.Config.Routes, g.internalRoutes...)
@@ -235,7 +240,8 @@ func (g *generator) service(o *Object) {
 	if o.Provider != providerFile {
 		return
 	}
-	pool := statute.Pool{Transport: g.transports["default@internal"]}
+	pool := statute.Pool{Transport: g.transports[defaultTransportID]}
+	source := defaultTransportID
 	backends, ok := serviceBackends(o, &pool)
 	if !ok {
 		return
@@ -254,11 +260,11 @@ func (g *generator) service(o *Object) {
 			return
 		}
 		pool.Transport = t
-
+		source = id
 		o.mark("loadBalancer.serversTransport", Translated, "provider-qualified code-owned pool transport")
 	}
 	serviceFlush(o, &pool.Transport)
-	parts = append(parts, "Transport:"+transportLiteral(pool.Transport))
+	parts = append(parts, "Transport:"+g.transportCall(o, source, pool.Transport))
 	if !o.readyWithBindings() {
 		return
 	}
@@ -478,7 +484,7 @@ func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 	var chain middleware
 	if o.Provider != providerDocker {
 		chain.values = append(chain.values, g.entryDefaults.values...)
-		chain.code = append(chain.code, g.entryDefaults.code...)
+		chain.parts = append(chain.parts, g.entryDefaults.parts...)
 	}
 	g.checkDefaultMiddleware(o)
 	for _, ref := range refs {
@@ -499,7 +505,7 @@ func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 			return chain
 		}
 		chain.values = append(chain.values, mw.values...)
-		chain.code = append(chain.code, mw.code...)
+		chain.parts = append(chain.parts, mw.parts...)
 	}
 	if len(refs) > 0 {
 		o.mark("middlewares", Translated, "ordered code-owned middleware chain, scoped to this router")
@@ -595,9 +601,7 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware, 
 		route.Hosts(hosts...)
 		code += ".Hosts(" + quoted(hosts) + ")"
 	}
-	if len(chain.code) > 0 {
-		code += ".With(" + strings.Join(chain.code, ",") + ")"
-	}
+	code += withCalls("With", chain.parts)
 	if g.terminalMatcher(m) {
 		g.r.Config.FallbackRoutes = append(g.r.Config.FallbackRoutes, route)
 		g.fallbacks = append(g.fallbacks, fragment{origin: origin, code: code})
@@ -710,6 +714,11 @@ func (g *generator) source() ([]byte, error) {
 	if err := g.configurationSource(&b); err != nil {
 		return nil, err
 	}
+	helpers, err := g.reusableSource(b.String())
+	if err != nil {
+		return nil, err
+	}
+	b.WriteString(helpers)
 	b.WriteString("\nfunc main(){\n")
 	if g.hasImplementationGaps() {
 		b.WriteString("// TODO: resolve every blocking audit finding and validate the completed configuration.\npanic(\"migration incomplete: resolve blocking findings before serving\")\n")

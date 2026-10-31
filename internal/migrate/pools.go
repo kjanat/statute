@@ -8,6 +8,11 @@ import (
 	statute "statute.kjanat.dev"
 )
 
+const (
+	defaultTransportID = "default@internal"
+	staticTransportID  = "setting:serversTransport@static"
+)
+
 // Traefik's transport and health defaults differ from Statute's. Emit them
 // explicitly so an omitted source setting does not silently change behavior.
 func sourceTransportDefaults() statute.Transport {
@@ -150,7 +155,8 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 		o.note("$provider", Manual, "explicit Docker provider is required for exact-service policy registration")
 		return
 	}
-	p := statute.Pool{Transport: g.transports["default@internal"]}
+	p := statute.Pool{Transport: g.transports[defaultTransportID]}
+	source := defaultTransportID
 	parts := serviceHost(o, &p)
 	parts = append(parts, g.serviceHealth(o, &p)...)
 	parts = append(parts, servicePassiveHealth(o, &p)...)
@@ -163,13 +169,14 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 			return
 		}
 		p.Transport = t
+		source = id
 		o.mark("loadBalancer.serversTransport", Translated, "exact-service compiled transport policy")
 		if transport := g.objects["serversTransports:"+id]; transport != nil {
 			transport.Generated = true
 		}
 	}
 	serviceFlush(o, &p.Transport)
-	parts = append(parts, "Transport:"+transportLiteral(p.Transport))
+	parts = append(parts, "Transport:"+g.transportCall(o, source, p.Transport))
 	if !o.readyWithBindings() {
 		return
 	}
@@ -181,16 +188,30 @@ func (g *generator) dockerPoolPolicy(o *Object) {
 func (g *generator) defaultTransport() {
 	t := sourceTransportDefaults()
 	t.MaxIdleConnsPerHost = 200
-	g.transports["default@internal"] = t
-	o := g.objects["setting:serversTransport@static"]
+	g.transports[defaultTransportID] = t
+	o := g.objects[staticTransportID]
 	if o == nil {
 		return
 	}
 	g.transport(o)
 	if t, ok := g.transports[o.Name+"@"+o.Provider]; ok {
-		g.transports["default@internal"] = t
+		g.transports[defaultTransportID] = t
 		o.Generated = true
 	}
+}
+
+func (g *generator) transportCall(service *Object, source string, t statute.Transport) string {
+	name, origin := source, "serversTransports:"+source
+	if source == defaultTransportID {
+		name, origin = "default", "Traefik default serversTransport"
+		if o := g.objects[staticTransportID]; o != nil && o.Generated {
+			origin = o.identity()
+		}
+	}
+	if transportLiteral(t) != transportLiteral(g.transports[source]) {
+		name, origin = service.Name+"@"+service.Provider, service.identity()
+	}
+	return g.reuse(transportType, name, origin, transportLiteral(t))
 }
 
 func (g *generator) healthHeaders(o *Object, h *statute.HealthCheck) map[string]string {

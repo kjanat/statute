@@ -8,6 +8,7 @@ import (
 )
 
 func (g *generator) entrypointMiddleware() {
+	var origins []string
 	for _, name := range keys(g.entrypoints) {
 		o := g.entrypoints[name]
 		if o.value("http.middlewares") == nil {
@@ -19,7 +20,7 @@ func (g *generator) entrypointMiddleware() {
 			continue
 		}
 		chain, valid := g.entrypointChain(refs)
-		values, code := chain.values, chain.code
+		values := chain.values
 		if !valid {
 			o.mark("http.middlewares", Manual, "entrypoint references a missing or blocked middleware")
 			continue
@@ -29,15 +30,24 @@ func (g *generator) entrypointMiddleware() {
 			continue
 		}
 		g.entryDefaults.values = append(g.entryDefaults.values, statute.OnListeners([]string{name}, values...))
-		g.entryDefaults.code = append(g.entryDefaults.code, fmt.Sprintf("statute.OnListeners([]string{%q},%s)", name, strings.Join(code, ",")))
+		g.entryDefaults.code = append(g.entryDefaults.code, fmt.Sprintf("statute.OnListeners([]string{%q},%s)", name, variadicArgs(chain.parts)))
+		origins = append(origins, o.identity())
 		o.mark("http.middlewares", Translated, "route-owned middleware selected by listener name")
 		for _, ref := range refs {
 			g.markMiddlewareUsed(ref)
 		}
 	}
-	if g.r.Config.Docker != nil && len(g.entryDefaults.values) > 0 {
+	if len(g.entryDefaults.values) == 0 {
+		return
+	}
+	call := ""
+	for _, origin := range origins {
+		call = g.reuse(middlewareType, "entrypoint", origin, sliceExpr([]middlewarePart{{code: g.entryDefaults.code}}))
+	}
+	g.entryDefaults.parts = []middlewarePart{{call: call}}
+	if g.r.Config.Docker != nil {
 		g.r.Config.Docker.DefaultMiddleware(g.entryDefaults.values...)
-		g.docker += ".DefaultMiddleware(" + strings.Join(g.entryDefaults.code, ",") + ")"
+		g.docker += withCalls("DefaultMiddleware", g.entryDefaults.parts)
 	}
 }
 
@@ -70,7 +80,7 @@ func (g *generator) entrypointChain(refs []string) (middleware, bool) {
 			return middleware{}, false
 		}
 		values.values = append(values.values, chain.values...)
-		values.code = append(values.code, chain.code...)
+		values.parts = append(values.parts, chain.parts...)
 	}
 	return values, true
 }

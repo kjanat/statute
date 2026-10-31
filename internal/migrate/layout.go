@@ -59,7 +59,7 @@ func statusCode(status int) string {
 	return strconv.Itoa(status)
 }
 
-var importedPackages = map[string]string{"http": "net/http", "math": "math", "os": "os", "strings": "strings"}
+var importedPackages = map[string]string{"http": "net/http", "math": "math", "os": "os", "slices": "slices", "strings": "strings"}
 
 func usedImports(source string) (map[string]bool, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), "", source, parser.SkipObjectResolution)
