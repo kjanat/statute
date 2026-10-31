@@ -49,7 +49,7 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	if nativeMiddlewareReady(o, chain) {
 		registered := middleware{values: chain.values}
 		if len(chain.values) > 0 {
-			registered.parts = []middlewarePart{{call: g.reuse(middlewareType, id, o.identity(), sliceExpr(chain.segments()))}}
+			registered.parts = []middlewarePart{g.middlewareHelper(o.Name, o.identity(), chain.segments())}
 		}
 		g.chains[id] = registered
 		return registered, true

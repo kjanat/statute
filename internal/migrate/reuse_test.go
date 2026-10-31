@@ -48,9 +48,9 @@ func TestSharedHelpersKeepRouteState(t *testing.T) {
 		text  string
 		count int
 	}{
-		{"func limitFileMiddleware() []statute.Middleware {", 1},
-		{"func tagFileMiddleware() []statute.Middleware {", 1},
-		{"With(tagFileMiddleware()...).\n\t\t\tWith(limitFileMiddleware()...)", 2},
+		{"func limit() statute.Middleware {", 1},
+		{"func tag() statute.Middleware {", 1},
+		{"With(tag(), limit()),", 2},
 	} {
 		if got := strings.Count(source, want.text); got != want.count {
 			t.Fatalf("%q occurs %d times, want %d\n%s", want.text, got, want.count, source)
@@ -124,7 +124,7 @@ func TestBlockedCandidateCallsSharedHelper(t *testing.T) {
 `
 	result := audit(t, basicInputs(t, body))
 	source := string(result.Go)
-	if !strings.Contains(source, "func migrationCandidate0() []statute.Middleware {\n\treturn limitFileMiddleware()\n}") || strings.Count(source, "func limitFileMiddleware()") != 1 {
+	if !strings.Contains(source, "func migrationCandidate0() []statute.Middleware {\n\treturn []statute.Middleware{limit()}\n}") || strings.Count(source, "func limit()") != 1 {
 		t.Fatalf("blocked chain candidate does not reuse the shared helper:\n%s", source)
 	}
 	binary := compileGenerated(t, result)
@@ -137,9 +137,9 @@ func TestBlockedCandidateCallsSharedHelper(t *testing.T) {
 
 func TestReusableHelperNames(t *testing.T) {
 	for source, want := range map[string]string{
-		"common-headers@file": "commonHeadersFile",
-		"1api@docker":         "source1apiDocker",
-		"cafés@file":          "cafSFile",
+		"common-headers@file": "commonHeaders",
+		"1api@docker":         "source1api",
+		"cafés@file":          "cafS",
 		"@@":                  "source",
 	} {
 		if got := helperIdentifier(source); got != want {
@@ -147,13 +147,80 @@ func TestReusableHelperNames(t *testing.T) {
 		}
 	}
 	g := &generator{reusables: map[string]*reusable{}, reusableNames: map[string]bool{}}
-	first := g.reuse(middlewareType, "a-b@file", "middlewares:a-b@file", "[]statute.Middleware{statute.Retry(1)}")
-	second := g.reuse(middlewareType, "a.b@file", "middlewares:a.b@file", "[]statute.Middleware{statute.Retry(2)}")
-	same := g.reuse(middlewareType, "c@file", "middlewares:c@file", "[]statute.Middleware{statute.Retry(1)}")
-	if first != "aBFileMiddleware()" || second != "aBFileMiddleware2()" || same != first {
-		t.Fatalf("names: %s %s %s", first, second, same)
+	for _, step := range []struct{ base, body, want string }{
+		{"aB", "statute.Retry(1)", "aB()"},
+		{"aB", "statute.Retry(2)", "aB2()"},
+		{"c", "statute.Retry(1)", "aB()"},
+		{"strings", "statute.Retry(3)", "strings2()"},
+		{"panic", "statute.Retry(4)", "panic2()"},
+		{"type", "statute.Retry(5)", "type2()"},
+		{"configuration", "statute.Retry(6)", "configuration2()"},
+		{"migrationCandidate0", "statute.Retry(7)", "sourceMigrationCandidate0()"},
+	} {
+		if got := g.reuse(singleMiddlewareType, step.base, "middlewares:"+step.base+"@file", step.body); got != step.want {
+			t.Errorf("reuse(%q) = %q, want %q", step.base, got, step.want)
+		}
 	}
-	if origins := g.reusables[middlewareType+"\x00[]statute.Middleware{statute.Retry(1)}"].origins; len(origins) != 2 {
+	if origins := g.reusables[singleMiddlewareType+"\x00statute.Retry(1)"].origins; len(origins) != 2 {
 		t.Fatalf("origins: %v", origins)
 	}
+}
+
+func TestMalformedReusableSourceFails(t *testing.T) {
+	g := &generator{r: &Result{}, defaults: "statute.Defaults{}", reusableNames: map[string]bool{}}
+	g.reusables = map[string]*reusable{"broken": {name: "broken", typ: singleMiddlewareType, body: "statute.("}}
+	if _, err := g.reusableSource("func f() {"); err == nil {
+		t.Fatal("malformed generated body accepted")
+	}
+	if _, err := g.reusableSource("func f() { broken() }"); err == nil {
+		t.Fatal("malformed helper body accepted")
+	}
+	g.candidates = map[string]fragment{"migrationCandidate0": {origin: "middlewares:x@file", code: "broken()"}}
+	if _, err := g.source(); err == nil {
+		t.Fatal("source accepted a malformed helper")
+	}
+}
+
+func TestMiddlewarePartRendering(t *testing.T) {
+	single := middlewarePart{call: "secure()", single: true}
+	slice := middlewarePart{call: "stack()"}
+	inline := middlewarePart{code: []string{"statute.Retry(1)", "statute.Retry(2)"}}
+	for _, check := range []struct{ got, want string }{
+		{sliceExpr([]middlewarePart{single, inline}), "[]statute.Middleware{secure(),statute.Retry(1),statute.Retry(2)}"},
+		{sliceExpr([]middlewarePart{single, slice, inline}), "slices.Concat([]statute.Middleware{secure()},stack(),[]statute.Middleware{statute.Retry(1),statute.Retry(2)})"},
+		{variadicArgs([]middlewarePart{single, inline}), "secure(),statute.Retry(1),statute.Retry(2)"},
+		{variadicArgs([]middlewarePart{single, slice}), "slices.Concat([]statute.Middleware{secure()},stack())..."},
+		{withCalls("With", []middlewarePart{single, slice, inline}), ".With(secure()).With(stack()...).With(statute.Retry(1),statute.Retry(2))"},
+		{middlewareArguments(nil), ""},
+		{middlewareArguments([]middlewarePart{single}), ",secure()"},
+	} {
+		if check.got != check.want {
+			t.Errorf("got %s, want %s", check.got, check.want)
+		}
+	}
+}
+
+func TestSliceHelpersSpreadAtEveryUseSite(t *testing.T) {
+	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: [stack]", 1) + `  middlewares:
+    limit:
+      rateLimit: {average: 20, burst: 40}
+    stack:
+      chain: {middlewares: [limit, limit]}
+`
+	in := basicInputs(t, body)
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n    http: {sanitizePath: false, middlewares: [stack@file]}\nproviders:\n  docker: {exposedByDefault: false}\n")}
+	in.Compose = []string{fixture(t, "compose.yml", "services:\n  app:\n    labels:\n      traefik.enable: 'true'\n      traefik.http.routers.app.rule: Host(`app.example`)\n      traefik.http.routers.app.middlewares: stack@file\n      traefik.http.services.app.loadbalancer.server.port: '8080'\n")}
+	result := audit(t, in)
+	source := string(result.Go)
+	for _, want := range []string{
+		"func stack() []statute.Middleware {",
+		`statute.OnListeners([]string{"web"}, stack()...)`,
+		`Middleware("stack@file", stack()...)`,
+		"With(stack()...)",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("missing %q:\n%s", want, source)
+		}
+	}
+	assertGeneratedParity(t, result)
 }

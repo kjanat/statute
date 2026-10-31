@@ -211,7 +211,7 @@ func (g *generator) transportCall(service *Object, source string, t statute.Tran
 	if transportLiteral(t) != transportLiteral(g.transports[source]) {
 		name, origin = service.Name+"@"+service.Provider, service.identity()
 	}
-	return g.reuse(transportType, name, origin, transportLiteral(t))
+	return g.reuse(transportType, helperIdentifier(name)+"Transport", origin, transportLiteral(t))
 }
 
 func (g *generator) healthHeaders(o *Object, h *statute.HealthCheck) map[string]string {

@@ -88,14 +88,16 @@ func assertReusedFragments(t *testing.T, source string) {
 		text  string
 		count int
 	}{
-		{"// middlewares:limit@file\n// middlewares:twin@file\nfunc limitFileMiddleware() []statute.Middleware {", 1},
-		{"// middlewares:other@file\nfunc otherFileMiddleware() []statute.Middleware {", 1},
-		{"// serversTransports:backend@file\nfunc backendFileTransport() statute.Transport {", 1},
-		{"With(limitFileMiddleware()...)", largeFileRouters + twins},
-		{"With(otherFileMiddleware()...)", others},
-		{`Middleware("limit@file", limitFileMiddleware()...)`, 1},
-		{"backendFileTransport(),", largeFileRouters + largeDockerRouters},
-		{"twinFileMiddleware", 0},
+		{"// middlewares:limit@file\n// middlewares:twin@file\nfunc limit() statute.Middleware {", 1},
+		{"// middlewares:other@file\nfunc other() statute.Middleware {", 1},
+		{"// serversTransports:backend@file\nfunc backendTransport() statute.Transport {", 1},
+		{"With(limit()),", largeFileRouters - twins - others},
+		{"With(limit(), limit()),", twins},
+		{"With(limit(), other()),", others},
+		{`Middleware("limit@file", limit())`, 1},
+		{"backendTransport()", largeFileRouters + largeDockerRouters + 1},
+		{"func twin", 0},
+		{"...)", 0},
 		{"statute.RateLimit(", 2},
 		{"statute.Transport{", 1},
 	} {

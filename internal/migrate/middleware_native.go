@@ -284,7 +284,7 @@ func (g *generator) retainMiddlewareCandidate(o *Object, chain middleware) {
 	}
 	// A blocked candidate remains reviewable without being registered on a route.
 	// The whole generated program is additionally guarded by the audit result.
-	name := fmt.Sprintf("migrationCandidate%d", len(g.candidates))
+	name := candidatePrefix + strconv.Itoa(len(g.candidates))
 	g.candidates[name] = fragment{origin: o.identity(), code: sliceExpr(chain.segments())}
 }
 

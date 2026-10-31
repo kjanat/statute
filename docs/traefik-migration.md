@@ -62,14 +62,17 @@ and structs with several fields put each call or field on its own line, and
 zero-valued fields are omitted. Identical inputs produce byte-identical source.
 
 Each middleware a route uses becomes one function named after its source, such
-as `commonFileMiddleware()` for `common@file`. Routes, entrypoint defaults and
-the Docker middleware registry call that function. A Traefik `chain` becomes
-`slices.Concat` of its members' functions. Each distinct pool transport becomes
-a function such as `backendFileTransport()`, shared by upstream pools and
-Docker pool policies. Sources whose generated expressions are identical share
-one function, and comments above it list every source. Each call returns new
-values, so routes using the same function keep separate rate limits, caches and
-buffers.
+as `securityHeaders()` for `security-headers@file`. It returns one
+`statute.Middleware`, or a `[]statute.Middleware` for a Traefik `chain` that
+yields several. Routes, entrypoint defaults and the Docker middleware registry
+call that function; consecutive single middleware share one argument list, as
+in `With(securityHeaders(), rateLimit())`. Each distinct pool transport becomes
+a function such as `backendTransport()`, shared by upstream pools and Docker
+pool policies. A name that collides with another helper, an import, a Go
+identifier or a generated function receives a numeric suffix. Sources whose
+generated expressions are identical share one function, and comments above it
+list every source. Each call returns new values, so routes using the same
+function keep separate rate limits, caches and buffers.
 
 Output files must be new, distinct paths. They are created with mode `0600` and
 never overwrite existing files. Parsing/writing failures remove newly reserved

@@ -40,11 +40,9 @@ func (g *generator) entrypointMiddleware() {
 	if len(g.entryDefaults.values) == 0 {
 		return
 	}
-	call := ""
 	for _, origin := range origins {
-		call = g.reuse(middlewareType, "entrypoint", origin, sliceExpr([]middlewarePart{{code: g.entryDefaults.code}}))
+		g.entryDefaults.parts = []middlewarePart{g.middlewareHelper("entrypointMiddleware", origin, []middlewarePart{{code: g.entryDefaults.code}})}
 	}
-	g.entryDefaults.parts = []middlewarePart{{call: call}}
 	if g.r.Config.Docker != nil {
 		g.r.Config.Docker.DefaultMiddleware(g.entryDefaults.values...)
 		g.docker += withCalls("DefaultMiddleware", g.entryDefaults.parts)
