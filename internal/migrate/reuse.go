@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -34,6 +33,12 @@ type reusable struct {
 	typ     string
 	body    string
 	origins []string
+}
+
+type constructor struct {
+	signature  string
+	body       string
+	expansions map[string]string
 }
 
 func (m middleware) segments() []middlewarePart {
@@ -110,21 +115,17 @@ func withCalls(method string, parts []middlewarePart) string {
 	return b.String()
 }
 
-func (g *generator) middlewareHelper(name, origin string, parts []middlewarePart) middlewarePart {
+func (g *generator) middlewareHelper(key string, parts []middlewarePart, origins ...string) middlewarePart {
 	if len(parts) == 1 {
 		if elements, ok := parts[0].elements(); ok && len(elements) == 1 {
-			return middlewarePart{call: g.reuse(singleMiddlewareType, helperIdentifier(name), origin, elements[0]), single: true}
+			return middlewarePart{call: g.reuse(singleMiddlewareType, key, helperIdentifier(key), elements[0], origins...), single: true}
 		}
 	}
-	return middlewarePart{call: g.reuse(middlewareType, helperIdentifier(name), origin, sliceExpr(parts))}
+	return middlewarePart{call: g.reuse(middlewareType, key, helperIdentifier(key), sliceExpr(parts), origins...)}
 }
 
-func (g *generator) reuse(typ, base, origin, body string) string {
-	key := typ + "\x00" + body
+func (g *generator) reuse(typ, key, base, body string, origins ...string) string {
 	if h := g.reusables[key]; h != nil {
-		if !slices.Contains(h.origins, origin) {
-			h.origins = append(h.origins, origin)
-		}
 		return h.name + "()"
 	}
 	if strings.HasPrefix(base, candidatePrefix) {
@@ -135,13 +136,23 @@ func (g *generator) reuse(typ, base, origin, body string) string {
 		name = base + strconv.Itoa(n)
 	}
 	g.reusableNames[name] = true
-	g.reusables[key] = &reusable{name: name, typ: typ, body: body, origins: []string{origin}}
+	g.reusables[key] = &reusable{name: name, typ: typ, body: body, origins: origins}
 	return name + "()"
 }
 
 func (g *generator) reservedName(name string) bool {
 	_, imported := importedPackages[name]
-	return g.reusableNames[name] || generatedIdentifiers[name] || imported || token.IsKeyword(name) || types.Universe.Lookup(name) != nil
+	_, shared := constructorSignatures[name]
+	return g.reusableNames[name] || generatedIdentifiers[name] || shared || imported || token.IsKeyword(name) || types.Universe.Lookup(name) != nil
+}
+
+func (g *generator) construct(name, body, expansion, call string) {
+	c := g.constructors[name]
+	if c == nil {
+		c = &constructor{signature: constructorSignatures[name], body: body, expansions: map[string]string{}}
+		g.constructors[name] = c
+	}
+	c.expansions[expansion] = call
 }
 
 func helperIdentifier(source string) string {
@@ -172,42 +183,92 @@ func helperIdentifier(source string) string {
 }
 
 func (g *generator) reusableSource(body string) (string, error) {
+	used, err := g.usedReusables(body)
+	if err != nil {
+		return "", err
+	}
+	bodies, shared := g.sharedConstruction(used)
+	var b strings.Builder
+	for _, name := range keys(used) {
+		h := used[name]
+		code, err := layoutExpr(bodies[name])
+		if err != nil {
+			return "", err
+		}
+		b.WriteString("\n")
+		for _, origin := range h.origins {
+			b.WriteString(originComment(origin) + "\n")
+		}
+		b.WriteString("func " + h.name + "() " + h.typ + " {\nreturn " + code + "\n}\n")
+	}
+	for _, name := range shared {
+		c := g.constructors[name]
+		code, err := layoutExpr(c.body)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString("\nfunc " + name + c.signature + " " + singleMiddlewareType + " {\nreturn " + code + "\n}\n")
+	}
+	return b.String(), nil
+}
+
+func (g *generator) usedReusables(body string) (map[string]*reusable, error) {
 	byName := map[string]*reusable{}
 	for _, h := range g.reusables {
 		byName[h.name] = h
 	}
 	file, err := parser.ParseFile(token.NewFileSet(), "", "package main\n"+body, parser.SkipObjectResolution)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	code := map[string]string{}
+	used := map[string]*reusable{}
 	pending := []ast.Node{file}
 	for len(pending) > 0 {
 		for name := range calledFunctions(pending[0]) {
 			h := byName[name]
-			if h == nil || code[name] != "" {
+			if h == nil || used[name] != nil {
 				continue
 			}
-			l := layout{fset: token.NewFileSet()}
-			expr, err := parser.ParseExprFrom(l.fset, "", h.body, 0)
+			expr, err := parser.ParseExpr(h.body)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
-			code[name] = l.expr(expr)
+			used[name] = h
 			pending = append(pending, expr)
 		}
 		pending = pending[1:]
 	}
-	var b strings.Builder
-	for _, name := range keys(code) {
-		h := byName[name]
-		b.WriteString("\n")
-		for _, origin := range h.origins {
-			b.WriteString(originComment(origin) + "\n")
-		}
-		b.WriteString("func " + h.name + "() " + h.typ + " {\nreturn " + code[name] + "\n}\n")
+	return used, nil
+}
+
+func (g *generator) sharedConstruction(used map[string]*reusable) (map[string]string, []string) {
+	bodies := map[string]string{}
+	for name, h := range used {
+		bodies[name] = h.body
 	}
-	return b.String(), nil
+	var shared []string
+	for _, name := range keys(g.constructors) {
+		c := g.constructors[name]
+		var users []string
+		for _, helper := range keys(bodies) {
+			for expansion := range c.expansions {
+				if strings.Contains(bodies[helper], expansion) {
+					users = append(users, helper)
+					break
+				}
+			}
+		}
+		if len(users) < 2 {
+			continue
+		}
+		shared = append(shared, name)
+		for _, helper := range users {
+			for expansion, call := range c.expansions {
+				bodies[helper] = strings.ReplaceAll(bodies[helper], expansion, call)
+			}
+		}
+	}
+	return bodies, shared
 }
 
 func calledFunctions(node ast.Node) map[string]bool {

@@ -66,13 +66,16 @@ as `securityHeaders()` for `security-headers@file`. It returns one
 `statute.Middleware`, or a `[]statute.Middleware` for a Traefik `chain` that
 yields several. Routes, entrypoint defaults and the Docker middleware registry
 call that function; consecutive single middleware share one argument list, as
-in `With(securityHeaders(), rateLimit())`. Each distinct pool transport becomes
-a function such as `backendTransport()`, shared by upstream pools and Docker
-pool policies. A name that collides with another helper, an import, a Go
-identifier or a generated function receives a numeric suffix. Sources whose
-generated expressions are identical share one function, and comments above it
-list every source. Each call returns new values, so routes using the same
-function keep separate rate limits, caches and buffers.
+in `With(securityHeaders(), rateLimit())`. Each `serversTransport`, the default
+transport, and each service that overrides its flush interval becomes a
+function such as `backendTransport()`, shared by the upstream pools and Docker
+pool policies that use it. Every source keeps its own function, even when two
+sources have the same settings, so each one remains separately editable. When
+at least two emitted functions build the same kind of rate limit, they call one
+shared constructor, such as `makeRateLimit("20/s", 40, "25ms", "2s", ...)`,
+with their own values. A name that collides with another function, an import
+or a Go identifier receives a numeric suffix. Each call returns new values, so
+routes using the same function keep separate rate limits, caches and buffers.
 
 Output files must be new, distinct paths. They are created with mode `0600` and
 never overwrite existing files. Parsing/writing failures remove newly reserved

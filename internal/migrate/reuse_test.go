@@ -43,19 +43,7 @@ func TestSharedHelpersKeepRouteState(t *testing.T) {
 	in := basicInputs(t, strings.ReplaceAll(sharedPolicyDynamic, "http://127.0.0.1:9000", backend.URL))
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: '"+address+"', http: {sanitizePath: false}}\n")}
 	result := audit(t, in)
-	source := string(result.Go)
-	for _, want := range []struct {
-		text  string
-		count int
-	}{
-		{"func limit() statute.Middleware {", 1},
-		{"func tag() statute.Middleware {", 1},
-		{"With(tag(), limit()),", 2},
-	} {
-		if got := strings.Count(source, want.text); got != want.count {
-			t.Fatalf("%q occurs %d times, want %d\n%s", want.text, got, want.count, source)
-		}
-	}
+	assertSharedPolicySource(t, string(result.Go))
 	binary := compileGenerated(t, result)
 	// #nosec G204 -- Execute only the generated test binary.
 	missing := exec.CommandContext(t.Context(), binary, "-validate")
@@ -96,6 +84,18 @@ func TestSharedHelpersKeepRouteState(t *testing.T) {
 		if status != step.status || policy != "shared" {
 			t.Fatalf("%s: status=%d policy=%q, want %d with shared policy", step.host, status, policy, step.status)
 		}
+	}
+}
+
+func assertSharedPolicySource(t *testing.T, source string) {
+	t.Helper()
+	for _, want := range []string{"func limit() statute.Middleware {", "func tag() statute.Middleware {"} {
+		if got := strings.Count(source, want); got != 1 {
+			t.Fatalf("%q occurs %d times, want 1\n%s", want, got, source)
+		}
+	}
+	if got := strings.Count(source, "With(tag(), limit()),"); got != 2 || strings.Contains(source, "makeRateLimit") {
+		t.Fatalf("shared calls occur %d times, want 2 without a constructor\n%s", got, source)
 	}
 }
 
@@ -147,27 +147,25 @@ func TestReusableHelperNames(t *testing.T) {
 		}
 	}
 	g := &generator{reusables: map[string]*reusable{}, reusableNames: map[string]bool{}}
-	for _, step := range []struct{ base, body, want string }{
-		{"aB", "statute.Retry(1)", "aB()"},
-		{"aB", "statute.Retry(2)", "aB2()"},
-		{"c", "statute.Retry(1)", "aB()"},
-		{"strings", "statute.Retry(3)", "strings2()"},
-		{"panic", "statute.Retry(4)", "panic2()"},
-		{"type", "statute.Retry(5)", "type2()"},
-		{"configuration", "statute.Retry(6)", "configuration2()"},
-		{"migrationCandidate0", "statute.Retry(7)", "sourceMigrationCandidate0()"},
+	for _, step := range []struct{ key, base, want string }{
+		{"a-b@file", "aB", "aB()"},
+		{"a.b@file", "aB", "aB2()"},
+		{"a-b@file", "other", "aB()"},
+		{"strings@file", "strings", "strings2()"},
+		{"panic@file", "panic", "panic2()"},
+		{"type@file", "type", "type2()"},
+		{"configuration@file", "configuration", "configuration2()"},
+		{"make-rate-limit@file", "makeRateLimit", "makeRateLimit2()"},
+		{"migration-candidate0@file", "migrationCandidate0", "sourceMigrationCandidate0()"},
 	} {
-		if got := g.reuse(singleMiddlewareType, step.base, "middlewares:"+step.base+"@file", step.body); got != step.want {
-			t.Errorf("reuse(%q) = %q, want %q", step.base, got, step.want)
+		if got := g.reuse(singleMiddlewareType, step.key, step.base, "statute.Retry(1)", "middlewares:"+step.key); got != step.want {
+			t.Errorf("reuse(%q) = %q, want %q", step.key, got, step.want)
 		}
-	}
-	if origins := g.reusables[singleMiddlewareType+"\x00statute.Retry(1)"].origins; len(origins) != 2 {
-		t.Fatalf("origins: %v", origins)
 	}
 }
 
 func TestMalformedReusableSourceFails(t *testing.T) {
-	g := &generator{r: &Result{}, defaults: "statute.Defaults{}", reusableNames: map[string]bool{}}
+	g := &generator{r: &Result{}, defaults: "statute.Defaults{}", reusableNames: map[string]bool{}, constructors: map[string]*constructor{}}
 	g.reusables = map[string]*reusable{"broken": {name: "broken", typ: singleMiddlewareType, body: "statute.("}}
 	if _, err := g.reusableSource("func f() {"); err == nil {
 		t.Fatal("malformed generated body accepted")
@@ -178,6 +176,18 @@ func TestMalformedReusableSourceFails(t *testing.T) {
 	g.candidates = map[string]fragment{"migrationCandidate0": {origin: "middlewares:x@file", code: "broken()"}}
 	if _, err := g.source(); err == nil {
 		t.Fatal("source accepted a malformed helper")
+	}
+	g.reusables = map[string]*reusable{
+		"a": {name: "a", typ: singleMiddlewareType, body: "statute.Retry(1)"},
+		"b": {name: "b", typ: singleMiddlewareType, body: "statute.Retry(1)"},
+	}
+	g.constructors = map[string]*constructor{"makeRetry": {body: "statute.(", expansions: map[string]string{"statute.Retry(1)": "makeRetry(1)"}}}
+	if _, err := g.reusableSource("func f() { a(); b() }"); err == nil {
+		t.Fatal("malformed constructor accepted")
+	}
+	g.constructors["makeRetry"] = &constructor{body: "statute.Retry(n)", expansions: map[string]string{"statute.Retry(1)": "makeRetry("}}
+	if _, err := g.reusableSource("func f() { a(); b() }"); err == nil {
+		t.Fatal("malformed constructor call accepted")
 	}
 }
 
@@ -220,6 +230,46 @@ func TestSliceHelpersSpreadAtEveryUseSite(t *testing.T) {
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("missing %q:\n%s", want, source)
+		}
+	}
+	assertGeneratedParity(t, result)
+}
+
+func TestRateLimitConstructionIsShared(t *testing.T) {
+	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: [a, b, c, d, e, f]", 1) + `  middlewares:
+    a:
+      rateLimit: {average: 10, burst: 20}
+    b:
+      rateLimit: {average: 10, burst: 20}
+    c:
+      rateLimit: {average: 5, burst: 5, sourceCriterion: {requestHost: true}}
+    d:
+      rateLimit: {average: 5, burst: 6, sourceCriterion: {requestHost: true}}
+    e:
+      rateLimit: {average: 1, burst: 1, sourceCriterion: {requestHeaderName: X-Key}}
+    f:
+      rateLimit: {average: 1, burst: 1, sourceCriterion: {requestHeaderName: Y-Key}}
+`
+	result := audit(t, basicInputs(t, body))
+	source := string(result.Go)
+	for _, want := range []struct {
+		text  string
+		count int
+	}{
+		{"With(a(), b(), c(), d(), e(), f())", 1},
+		{"// middlewares:a@file\nfunc a() statute.Middleware {", 1},
+		{"// middlewares:b@file\nfunc b() statute.Middleware {", 1},
+		{"func makeRateLimit(\n\trate string,\n\tburst int,\n\treserve, idle string,\n\tselection statute.IPSelection,\n) statute.Middleware {", 1},
+		{"func makeHostRateLimit(rate string, burst int, reserve, idle string) statute.Middleware {", 1},
+		{"func makeHeaderRateLimit(\n\trate string,\n\tburst int,\n\treserve, idle, header string,\n) statute.Middleware {", 1},
+		{`makeRateLimit("10/s", 20, `, 2},
+		{`makeHostRateLimit("5/s", `, 2},
+		{`, "X-Key")`, 1},
+		{`, "Y-Key")`, 1},
+		{"statute.RateLimit(", 3},
+	} {
+		if got := strings.Count(source, want.text); got != want.count {
+			t.Errorf("%q occurs %d times, want %d\n%s", want.text, got, want.count, source)
 		}
 	}
 	assertGeneratedParity(t, result)

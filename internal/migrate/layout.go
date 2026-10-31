@@ -121,10 +121,11 @@ func (l layout) call(e *ast.CallExpr) string {
 		chain = append(chain, base)
 		base = inner
 	}
-	head := l.expr(base.Fun) + l.arguments(base)
-	segments := []string{head}
+	fun := l.expr(base.Fun)
+	segments := []string{fun + l.arguments(fun, base)}
 	for _, call := range slices.Backward(chain) {
-		segments = append(segments, call.Fun.(*ast.SelectorExpr).Sel.Name+l.arguments(call))
+		name := call.Fun.(*ast.SelectorExpr).Sel.Name
+		segments = append(segments, name+l.arguments(name, call))
 	}
 	if inline := strings.Join(segments, "."); len(chain) <= inlineChains && fits(inline) {
 		return inline
@@ -132,7 +133,7 @@ func (l layout) call(e *ast.CallExpr) string {
 	return strings.Join(segments, ".\n")
 }
 
-func (l layout) arguments(e *ast.CallExpr) string {
+func (l layout) arguments(fun string, e *ast.CallExpr) string {
 	args := make([]string, len(e.Args))
 	for i, arg := range e.Args {
 		args[i] = l.expr(arg)
@@ -141,7 +142,7 @@ func (l layout) arguments(e *ast.CallExpr) string {
 		args[len(args)-1] += "..."
 	}
 	inline := "(" + strings.Join(args, ", ") + ")"
-	if fits(inline) {
+	if fits(fun + inline) {
 		return inline
 	}
 	return "(\n" + strings.Join(args, ",\n") + ",\n)"

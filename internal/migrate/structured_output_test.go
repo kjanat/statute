@@ -88,18 +88,20 @@ func assertReusedFragments(t *testing.T, source string) {
 		text  string
 		count int
 	}{
-		{"// middlewares:limit@file\n// middlewares:twin@file\nfunc limit() statute.Middleware {", 1},
+		{"// middlewares:limit@file\nfunc limit() statute.Middleware {", 1},
+		{"// middlewares:twin@file\nfunc twin() statute.Middleware {", 1},
 		{"// middlewares:other@file\nfunc other() statute.Middleware {", 1},
-		{"// serversTransports:backend@file\nfunc backendTransport() statute.Transport {", 1},
+		{"func makeRateLimit(", 1},
+		{"makeRateLimit(", 4},
+		{"statute.RateLimit(", 1},
 		{"With(limit()),", largeFileRouters - twins - others},
-		{"With(limit(), limit()),", twins},
+		{"With(limit(), twin()),", twins},
 		{"With(limit(), other()),", others},
 		{`Middleware("limit@file", limit())`, 1},
-		{"backendTransport()", largeFileRouters + largeDockerRouters + 1},
-		{"func twin", 0},
-		{"...)", 0},
-		{"statute.RateLimit(", 2},
+		{"// serversTransports:backend@file\nfunc backendTransport() statute.Transport {", 1},
+		{"backendTransport(),", largeFileRouters + largeDockerRouters},
 		{"statute.Transport{", 1},
+		{"...", 0},
 	} {
 		if got := strings.Count(source, want.text); got != want.count {
 			t.Errorf("%q occurs %d times, want %d", want.text, got, want.count)
