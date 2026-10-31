@@ -21,7 +21,7 @@ jobs:
         with: { name: cover.out, path: cover.out, if-no-files-found: error, retention-days: 14 }
   format:
     name: format
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       # This job runs repository-controlled commands, so the checkout must
       # not leave a usable token in .git/config for them to reach.
@@ -31,7 +31,7 @@ jobs:
       - { name: format check, run: make fmt-check }
   lint:
     name: lint
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
@@ -40,7 +40,7 @@ jobs:
   lifecycle_lint:
     name: lifecycle lint
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { fetch-depth: 0 }
