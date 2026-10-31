@@ -1224,12 +1224,20 @@ func (p *dockerProvider) normalizeRouteConstraints(routes []compiledRoute) {
 		if p.srv != nil && p.srv.cfg != nil {
 			m.PriorityOrder = p.srv.cfg.PrioritizeRoutes
 		}
-		if !p.cfg.RouterConstraints {
-			m.ListenerNames = nil
-		} else if len(m.ListenerNames) == 0 {
-			m.ListenerNames = append([]string(nil), p.cfg.DefaultListeners...)
-		}
+		m.ListenerNames = p.routeListeners(m.ListenerNames)
 	}
+}
+
+func (p *dockerProvider) routeListeners(names []string) []string {
+	if !p.cfg.RouterConstraints {
+		return nil
+	}
+	if len(names) == 0 {
+		names = p.cfg.DefaultListeners
+	}
+	out := slices.Clone(names)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func retiredServicePools(prev, next *dynamicTable) []*runningPool {

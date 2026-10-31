@@ -51,10 +51,7 @@ func (p *dockerProvider) coalesceRouteChains(service string, chains []routeChain
 		if p.srv != nil && p.srv.cfg != nil && p.srv.cfg.PrioritizeRoutes {
 			priority = m.Priority
 		}
-		listeners := ""
-		if p.cfg.RouterConstraints {
-			listeners = strings.Join(m.ListenerNames, ",")
-		}
+		listeners := strings.Join(p.routeListeners(m.ListenerNames), ",")
 		key := dockerRoutePredicate{m.Host, m.HostKind, m.Path, m.PathKind, strings.Join(m.PeerIPCIDRs, ","), listeners, priority}
 		chain.mws = canonicalDockerMiddleware(chain.mws)
 		if i, ok := indices[key]; ok {

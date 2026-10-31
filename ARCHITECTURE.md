@@ -633,7 +633,8 @@ equivalent resolved chains coalesce into one route and one middleware instance.
 Conflicting chains reject that entire predicate group through parsed rejection
 precedence; unrelated predicates and shared backend pools remain independent.
 Compression algorithms compare as a set; middleware order and multiplicity stay
-significant. Unknown references and invalid chains still fail closed before
+significant. With router constraints, effective listener sets compare after
+defaulting, ordering and deduplication. Unknown references and invalid chains still fail closed before
 coalescing. Workload routing revisions cover accepted predicates and effective
 chains, excluding raw hint spelling and registry aliases. Quarantine exclusion
 still precedes serving merges, and static routes retain their priority.

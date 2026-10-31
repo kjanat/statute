@@ -370,6 +370,8 @@ native hints last. Identical host/path predicates within one service coalesce
 only when their complete resolved middleware chains are equivalent. Different
 duration/rate spellings and compression algorithm ordering or duplicates do not
 create conflicts; middleware ordering and repeated middleware do matter.
+Entrypoint lists compare as sets, and a router without entrypoints uses the
+default listeners in that comparison.
 
 If identical predicates request different policies, Statute refuses that
 predicate. Healthy unrelated routes
