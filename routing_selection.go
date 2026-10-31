@@ -67,7 +67,7 @@ func compileRouteMatcher(r *resolved.Route, prioritized bool) docker.Matcher {
 	switch r.PathMatch {
 	case "exact":
 		m.PathKind = docker.PathExact
-	case "byte_prefix":
+	case pathMatchBytePrefix:
 		m.PathKind = docker.PathByte
 	}
 	m.Priority, m.PriorityOrder = r.Priority, prioritized

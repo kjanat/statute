@@ -146,6 +146,10 @@ func TestFallbackRoutesShadowLint(t *testing.T) {
 		{"host constrained", Match("/*").Host("app.example").Handle(noContentHandler), 0},
 		{"path constrained", Match("/api/*").Handle(noContentHandler), 0},
 		{"client constrained", Match("/*").ClientIPs("192.0.2.0/24").Handle(noContentHandler), 0},
+		{"peer constrained", Match("/*").PeerIPs("192.0.2.0/24").Handle(noContentHandler), 0},
+		{"exact wildcard path", MatchExact("/*").Handle(noContentHandler), 0},
+		{"root byte prefix", MatchPrefix("/").Handle(noContentHandler), 1},
+		{"narrow byte prefix", MatchPrefix("/api").Handle(noContentHandler), 0},
 		{"terminal catchall only", nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

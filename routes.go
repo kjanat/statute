@@ -37,7 +37,9 @@ func Match(pattern string) *Route {
 func MatchExact(path string) *Route { return &Route{pattern: path, pathMatch: "exact"} }
 
 // MatchPrefix matches a byte prefix, including prefixes inside a segment.
-func MatchPrefix(prefix string) *Route { return &Route{pattern: prefix, pathMatch: "byte_prefix"} }
+func MatchPrefix(prefix string) *Route {
+	return &Route{pattern: prefix, pathMatch: pathMatchBytePrefix}
+}
 
 // Priority participates in selection when Config.PrioritizeRoutes is enabled.
 func (r *Route) Priority(priority int) *Route { r.priority = priority; return r }
