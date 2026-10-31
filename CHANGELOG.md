@@ -6,11 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-31
+
 ### Added
 
-- Translate Traefik ingress policy, security headers and method-specific redirects. Compose complete middleware chains with mandatory bindings on guarded route candidates, infer unambiguous Docker services, and report concrete routing, TLS, DNS and health differences.
+- Translate Traefik ingress policy, security headers and method-specific redirects. Compose complete middleware chains with mandatory bindings on guarded route candidates, infer unambiguous Docker services, and report concrete routing, TLS, DNS and health differences. Generate native ordered middleware, conditional redirects, path operations, response encoding, body buffering, scoped TLS and ACME options, DNS propagation controls, health and rate-limit policies and file access logs. See the [migration guide](docs/traefik-migration.md).
+
+- Add `IngressPolicy` for listeners. It replaces untrusted forwarded headers with direct-peer values, normalizes and sanitizes paths before routing, and keeps, deletes or rejects header aliases. See [listener ingress policy](docs/production.md#listener-ingress-policy).
+
+- Add route selection controls: `MatchExact`, byte-prefix `MatchPrefix`, `Route.Priority` with `Config.PrioritizeRoutes`, `Route.PeerIPs` for the direct connection address, and `Route.OnListeners` with `Listener.Name`. `Route.ProxyToDiscovered` selects a Docker pool from the current discovery generation, and `Route.WithOuter` prepends middleware to a route's chain.
+
+- Add the `InOrder` and `OnListeners` middleware groups and the `PrefixPath`, `ReplaceEscapedPath`, `RewriteEscapedPath` and `StripBytePrefixes` path middleware.
+
+- Add `RedirectScheme` and `RedirectRegex` middleware, `RedirectNonGET` statuses for redirect routes and listeners, `Listener.RedirectStatus`, and `.OnHTTPS()` for response-header operations. See [redirect methods and HTTPS headers](docs/routing.md#redirect-methods-and-https-headers).
+
+- Add `EncodeResponse` for gzip, Brotli and zstd with Traefik-compatible negotiation, media-type filters and a minimum body size. See [response encoding](docs/production.md#traefik-compatible-response-encoding).
+
+- Add `BufferBodies` for request and response buffering with spill files and a retry expression. Each route admits `MaxInFlight` buffered requests, 128 by default, and every admission reserves its maximums from `RequestBuffers.BufferBodiesBudget`, 1 GiB by default across the server. Zero maximums become 8 MiB. Lint reports `RBF002` when one middleware's reservation exceeds the budget. See [per-request body buffering](docs/production.md#per-request-body-buffering).
+
+- Add rate-limit `Burst`, `Reserve`, `ExpireIdle`, `EvictOldest`, `FromHeader` and `SelectIP`, plus the `PeerIP` and `RequestHeader` keys.
+
+- Add `TLSPolicyFor` for per-SNI protocol, cipher and strict-SNI policy, the `TLSPolicy.StrictSNI` and `TLSPolicy.Identity` fields, and `AutoTLSConfig.KeyType` for EC256, EC384 and RSA leaf keys on HTTP-01 and DNS-01 sources.
+
+- Add DNS-01 propagation options for authoritative nameserver checks, explicit discovery resolvers, requiring every recursive resolver, and disabling checks.
+
+- Add health-check `Method`, `Headers`, `Redirects` and `ResolvePath`, passive-health `ResetOnSuccess` and `HoldDown`, `RejectUnhealthy` on `Pool` and `PoolPolicy`, and `Pool.AllowEmpty`.
+
+- Add Docker `RouterConstraints` and `DefaultListeners` to enforce router entrypoints, and `BindUpstream` and `BindHandler` to let routers select a declared upstream or application handler.
+
+- Add `CommonLog`, `LogFile`, a bounded access-log queue through `Buffer`, and a `Ping` handler that answers 503 after shutdown starts. See [observability](docs/observability.md).
 
 - Add configurable programs and Go callback sessions to the HTML rewriting research engine, with native/Wasm comparisons, resource limits and cleanup tests. See #114 for HTTP and public API integration.
+
+### Changed
+
+- Include the listener name in response cache keys.
+
+- Reject a TLS 1.2-only cipher list that cannot authenticate the leaf key type of a pinned HTTP-01 or DNS-01 source during `Resolve`.
+
+- Add `github.com/klauspost/compress`, `github.com/miekg/dns`, `github.com/vulcand/oxy/v2` and `golang.org/x/time` as direct dependencies.
+
+### Fixed
+
+- `Compress` adds `Accept-Encoding` to `Vary` only when no existing token names it.
 
 ## [0.11.0] - 2026-10-28
 
@@ -521,7 +559,8 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/kjanat/statute/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kjanat/statute/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kjanat/statute/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kjanat/statute/compare/v0.8.3...v0.9.0
