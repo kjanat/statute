@@ -23,7 +23,7 @@ var generatedIdentifiers = map[string]bool{
 }
 
 type middlewarePart struct {
-	call   string
+	ref    *reusable
 	single bool
 	code   []expr
 }
@@ -49,10 +49,10 @@ func (m middleware) segments() []middlewarePart {
 
 func (p middlewarePart) elements() ([]expr, bool) {
 	switch {
-	case p.call == "":
+	case p.ref == nil:
 		return p.code, true
 	case p.single:
-		return []expr{textExpr(p.call)}, true
+		return []expr{{ref: p.ref}}, true
 	default:
 		return nil, false
 	}
@@ -72,7 +72,7 @@ func sliceExpr(parts []middlewarePart) expr {
 			continue
 		}
 		flush()
-		exprs = append(exprs, textExpr(p.call))
+		exprs = append(exprs, expr{ref: p.ref})
 	}
 	flush()
 	if len(exprs) == 1 {
@@ -108,7 +108,7 @@ func withCalls(method string, parts []middlewarePart) string {
 			continue
 		}
 		flush()
-		b.WriteString("." + method + "(" + p.call + "...)")
+		b.WriteString("." + method + "(" + p.ref.call() + "...)")
 	}
 	flush()
 	return b.String()
@@ -117,15 +117,15 @@ func withCalls(method string, parts []middlewarePart) string {
 func (g *generator) middlewareHelper(key string, parts []middlewarePart, origins ...string) middlewarePart {
 	if len(parts) == 1 {
 		if elements, ok := parts[0].elements(); ok && len(elements) == 1 {
-			return middlewarePart{call: g.reuse(singleMiddlewareType, key, helperIdentifier(key), elements[0], origins...), single: true}
+			return middlewarePart{ref: g.reuse(singleMiddlewareType, key, helperIdentifier(key), elements[0], origins...), single: true}
 		}
 	}
-	return middlewarePart{call: g.reuse(middlewareType, key, helperIdentifier(key), sliceExpr(parts), origins...)}
+	return middlewarePart{ref: g.reuse(middlewareType, key, helperIdentifier(key), sliceExpr(parts), origins...)}
 }
 
-func (g *generator) reuse(typ, key, base string, body expr, origins ...string) string {
+func (g *generator) reuse(typ, key, base string, body expr, origins ...string) *reusable {
 	if h := g.reusables[reusableKey{typ, key}]; h != nil {
-		return h.name + "()"
+		return h
 	}
 	if strings.HasPrefix(base, candidatePrefix) {
 		base = "source" + strings.ToUpper(base[:1]) + base[1:]
@@ -135,8 +135,9 @@ func (g *generator) reuse(typ, key, base string, body expr, origins ...string) s
 		name = base + strconv.Itoa(n)
 	}
 	g.reusableNames[name] = true
-	g.reusables[reusableKey{typ, key}] = &reusable{name: name, typ: typ, body: body, origins: origins}
-	return name + "()"
+	h := &reusable{name: name, typ: typ, body: body, origins: origins}
+	g.reusables[reusableKey{typ, key}] = h
+	return h
 }
 
 func (g *generator) reservedName(name string) bool {
@@ -210,21 +211,26 @@ func (g *generator) usedReusables(body string) (map[string]*reusable, error) {
 		return nil, err
 	}
 	used := map[string]*reusable{}
-	pending := []ast.Node{file}
-	for len(pending) > 0 {
-		for name := range calledFunctions(pending[0]) {
-			h := byName[name]
-			if h == nil || used[name] != nil {
-				continue
-			}
-			expr, err := parser.ParseExpr(inline.render(h.body))
-			if err != nil {
-				return nil, err
-			}
-			used[name] = h
-			pending = append(pending, expr)
+	var pending []*reusable
+	mark := func(h *reusable) {
+		if used[h.name] == nil {
+			used[h.name] = h
+			pending = append(pending, h)
 		}
+	}
+	for name := range calledFunctions(file) {
+		if h := byName[name]; h != nil {
+			mark(h)
+		}
+	}
+	for len(pending) > 0 {
+		h := pending[0]
 		pending = pending[1:]
+		h.body.visit(func(e expr) {
+			if e.ref != nil {
+				mark(e.ref)
+			}
+		})
 	}
 	return used, nil
 }

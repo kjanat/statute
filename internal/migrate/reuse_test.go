@@ -167,7 +167,7 @@ func TestReusableHelperNames(t *testing.T) {
 		{"make-rate-limit@file", "makeRateLimit", "makeRateLimit2()"},
 		{"migration-candidate0@file", "migrationCandidate0", "sourceMigrationCandidate0()"},
 	} {
-		if got := g.reuse(singleMiddlewareType, step.key, step.base, textExpr("statute.Retry(1)"), "middlewares:"+step.key); got != step.want {
+		if got := g.reuse(singleMiddlewareType, step.key, step.base, textExpr("statute.Retry(1)"), "middlewares:"+step.key).call(); got != step.want {
 			t.Errorf("reuse(%q) = %q, want %q", step.key, got, step.want)
 		}
 	}
@@ -200,9 +200,25 @@ func TestMalformedReusableSourceFails(t *testing.T) {
 	}
 }
 
+func TestReachabilityFollowsHelperReferences(t *testing.T) {
+	g := &generator{reusables: map[reusableKey]*reusable{}, reusableNames: map[string]bool{}}
+	inner := g.middlewareHelper("inner@file", []middlewarePart{{code: []expr{textExpr("statute.Retry(1)")}}}, "middlewares:inner@file")
+	stack := g.middlewareHelper("stack@file", []middlewarePart{inner, inner}, "middlewares:stack@file")
+	edge := g.middlewareHelper("edge@file", []middlewarePart{{code: []expr{textExpr("statute.Retry(2)")}}}, "middlewares:edge@file")
+	entry := g.middlewareHelper("entrypointMiddleware", []middlewarePart{{code: []expr{wrapExpr(`statute.OnListeners([]string{"web"},`, []expr{variadicArgs([]middlewarePart{edge})}, ")")}}}, "entrypoints:web@static")
+	g.middlewareHelper("orphan@file", []middlewarePart{{code: []expr{textExpr("statute.Retry(3)")}}}, "middlewares:orphan@file")
+	used, err := g.usedReusables("func f() { _ = " + inline.render(sliceExpr([]middlewarePart{entry, stack})) + " }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(keys(used), ","); got != "edge,entrypointMiddleware,inner,stack" {
+		t.Fatalf("reachable helpers = %s, want edge,entrypointMiddleware,inner,stack", got)
+	}
+}
+
 func TestMiddlewarePartRendering(t *testing.T) {
-	single := middlewarePart{call: "secure()", single: true}
-	slice := middlewarePart{call: "stack()"}
+	single := middlewarePart{ref: &reusable{name: "secure"}, single: true}
+	slice := middlewarePart{ref: &reusable{name: "stack"}}
 	direct := middlewarePart{code: []expr{textExpr("statute.Retry(1)"), textExpr("statute.Retry(2)")}}
 	for _, check := range []struct{ got, want string }{
 		{inline.render(sliceExpr([]middlewarePart{single, direct})), "[]statute.Middleware{secure(),statute.Retry(1),statute.Retry(2)}"},
@@ -230,7 +246,7 @@ func TestRateLimitSpecSurvivesWrappers(t *testing.T) {
 		leaves = append(leaves, wrapExpr("statute.InOrder(", []expr{{rate: spec}}, ")"))
 	}
 	group := middlewarePart{code: leaves}
-	nested := wrapExpr(`statute.OnListeners([]string{"web"},`, []expr{variadicArgs([]middlewarePart{{call: "stack()"}, group})}, ")")
+	nested := wrapExpr(`statute.OnListeners([]string{"web"},`, []expr{variadicArgs([]middlewarePart{{ref: &reusable{name: "stack"}}, group})}, ")")
 	found := map[string]bool{}
 	nested.constructors(found)
 	if len(found) != 3 || !found["makeRateLimit"] || !found["makeHostRateLimit"] || !found["makeHeaderRateLimit"] {
