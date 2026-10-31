@@ -177,7 +177,30 @@ func nameservers(response *dns.Msg) []string {
 }
 
 func (s *dns01Solver) authoritativeTXT(ctx context.Context, server, name, value string) bool {
-	addresses := s.nameserverAddresses(ctx, server)
+	ctx, cancel := context.WithCancel(ctx)
+	kinds := []uint16{dns.TypeA, dns.TypeAAAA}
+	matches := make(chan bool, len(kinds))
+	var families sync.WaitGroup
+	defer func() { cancel(); families.Wait() }()
+	for _, kind := range kinds {
+		families.Go(func() {
+			matches <- s.addressesTXT(ctx, s.nameserverAddresses(ctx, server, kind), name, value)
+		})
+	}
+	for range kinds {
+		select {
+		case match := <-matches:
+			if match {
+				return true
+			}
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return false
+}
+
+func (s *dns01Solver) addressesTXT(ctx context.Context, addresses []string, name, value string) bool {
 	ctx, cancel := context.WithCancel(ctx)
 	matches := make(chan bool, len(addresses))
 	var queries sync.WaitGroup
@@ -220,20 +243,18 @@ func (s *dns01Solver) exchangeDNS(ctx context.Context, server, name string, kind
 	return dnsExchange(ctx, server, name, kind, recursive)
 }
 
-func (s *dns01Solver) nameserverAddresses(ctx context.Context, name string) []string {
+func (s *dns01Solver) nameserverAddresses(ctx context.Context, name string, kind uint16) []string {
+	response, err := s.recursiveQuery(ctx, name, kind)
+	if err != nil {
+		return nil
+	}
 	var addresses []string
-	for _, kind := range []uint16{dns.TypeA, dns.TypeAAAA} {
-		response, err := s.recursiveQuery(ctx, name, kind)
-		if err != nil {
-			continue
-		}
-		for _, record := range response.Answer {
-			switch record := record.(type) {
-			case *dns.A:
-				addresses = append(addresses, record.A.String())
-			case *dns.AAAA:
-				addresses = append(addresses, record.AAAA.String())
-			}
+	for _, record := range response.Answer {
+		switch record := record.(type) {
+		case *dns.A:
+			addresses = append(addresses, record.A.String())
+		case *dns.AAAA:
+			addresses = append(addresses, record.AAAA.String())
 		}
 	}
 	return addresses

@@ -41,7 +41,7 @@ func (f *authoritativeZoneFixture) query(ctx context.Context, server, name strin
 	case dns.TypeNS:
 		return f.ns()
 	case dns.TypeA, dns.TypeAAAA:
-		return f.address(name, kind)
+		return f.address(ctx, name, kind)
 	default:
 		return &dns.Msg{}, nil
 	}
@@ -73,7 +73,11 @@ func (f *authoritativeZoneFixture) ns() (*dns.Msg, error) {
 	return &dns.Msg{Answer: []dns.RR{&dns.NS{Ns: "ns1.test."}, &dns.NS{Ns: "ns2.test."}}}, nil
 }
 
-func (f *authoritativeZoneFixture) address(name string, kind uint16) (*dns.Msg, error) {
+func (f *authoritativeZoneFixture) address(ctx context.Context, name string, kind uint16) (*dns.Msg, error) {
+	if kind == dns.TypeAAAA && f.broken == "AAAA black hole" {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if kind == dns.TypeAAAA {
 		return nil, errors.New("no IPv6 answer")
 	}
@@ -134,13 +138,17 @@ func TestAuthoritativeDNSPollingDeadline(t *testing.T) {
 }
 
 func TestAuthoritativeDNSUnresponsiveAddressKeepsAlternatives(t *testing.T) {
-	fixture := &authoritativeZoneFixture{broken: "black hole"}
-	solver := &dns01Solver{queryDNS: fixture.query, prop: &resolved.DNSPropagation{Authoritative: true, Timeout: time.Second, Interval: 50 * time.Millisecond, DiscoveryResolvers: []string{"recursive:53"}}}
-	if err := solver.pollAuthoritative(t.Context(), "_acme-challenge.example.", "propagated"); err != nil {
-		t.Fatal(err)
-	}
-	if fixture.checks.Load() != 2 {
-		t.Fatalf("authoritative checks=%d", fixture.checks.Load())
+	for _, broken := range []string{"black hole", "AAAA black hole"} {
+		t.Run(broken, func(t *testing.T) {
+			fixture := &authoritativeZoneFixture{broken: broken}
+			solver := &dns01Solver{queryDNS: fixture.query, prop: &resolved.DNSPropagation{Authoritative: true, Timeout: time.Second, Interval: 50 * time.Millisecond, DiscoveryResolvers: []string{"recursive:53"}}}
+			if err := solver.pollAuthoritative(t.Context(), "_acme-challenge.example.", "propagated"); err != nil {
+				t.Fatal(err)
+			}
+			if fixture.checks.Load() != 2 {
+				t.Fatalf("authoritative checks=%d", fixture.checks.Load())
+			}
+		})
 	}
 }
 
