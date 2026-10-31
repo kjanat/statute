@@ -7,7 +7,7 @@ monorepo_root = true
 config_roots = ["research/htmlrewrite"]
 
 [tools]
-node = "latest"
+node = "26"
 npm  = "12"
 
 [tools."github:microsoft/TypeScript"]
