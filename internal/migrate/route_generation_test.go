@@ -11,7 +11,7 @@ func TestGeneratedRoutesPreserveBytePrefixAndPeerRestrictions(t *testing.T) {
 	if r.Report.Blocking || r.Report.GeneratedRoutes == 0 {
 		t.Fatalf("supported route blocked: %s", findings(r))
 	}
-	if !strings.Contains(string(r.Go), "MatchPrefix") || !strings.Contains(string(r.Go), `.PeerIPs("192.0.2.0/24")`) {
+	if !strings.Contains(string(r.Go), "MatchPrefix") || !strings.Contains(string(r.Go), `PeerIPs("192.0.2.0/24")`) {
 		t.Fatal("generated route lost its prefix or peer restriction")
 	}
 	assertGeneratedParity(t, r)

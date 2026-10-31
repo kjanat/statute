@@ -101,7 +101,7 @@ func (g *generator) listener(o *Object) {
 	code += fmt.Sprintf(".Name(%q)", o.Name)
 	l, code = g.listenerIngress(o, l, code)
 	g.r.Config.Listeners = append(g.r.Config.Listeners, l)
-	g.listeners = append(g.listeners, code)
+	g.listeners = append(g.listeners, fragment{origin: o.identity(), code: code})
 	o.Generated = true
 }
 
@@ -137,7 +137,7 @@ func (g *generator) listenerRedirect(o *Object) {
 	route := statute.Match("/*").OnListeners(o.Name).Priority(order).Handle(migrationNoop).With(policy)
 	g.internalRoutes = append(g.internalRoutes, route)
 	g.imports["net/http"] = true
-	g.internalCode = append(g.internalCode, fmt.Sprintf("statute.Match(\"/*\").OnListeners(%q).Priority(%d).Handle(http.HandlerFunc(func(w http.ResponseWriter,_ *http.Request){w.WriteHeader(http.StatusTeapot)})).With(%s)", o.Name, order, code))
+	g.internalCode = append(g.internalCode, fragment{origin: o.identity(), code: fmt.Sprintf("statute.Match(\"/*\").OnListeners(%q).Priority(%s).Handle(http.HandlerFunc(func(w http.ResponseWriter,_ *http.Request){w.WriteHeader(http.StatusTeapot)})).With(%s)", o.Name, g.priorityCode(order), code)})
 	for _, key := range []string{"to", "scheme", fieldPermanent, "priority"} {
 		o.mark(base+"."+key, Translated, "listener-scoped conditional redirect at source priority")
 	}

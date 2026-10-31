@@ -54,6 +54,13 @@ TLS stores and named TLS options are inventoried separately, so their definition
 can live in different dynamic files. Each resource retains its source filename
 and field paths; duplicate definitions of the same store or option remain blocking.
 
+The generated `main.go` has one function per section: `generatedListeners`,
+`generatedUpstreams`, `generatedRoutes`, `generatedFallbackRoutes` and
+`generatedDocker`. A comment naming the source object, such as
+`// routers:api@file`, precedes each listener, pool and route. Long method chains
+and structs with several fields put each call or field on its own line, and
+zero-valued fields are omitted. Identical inputs produce byte-identical source.
+
 Output files must be new, distinct paths. They are created with mode `0600` and
 never overwrite existing files. Parsing/writing failures remove newly reserved
 outputs. Inputs are bounded to 256 files of at most 8 MiB each. Directory symlinks

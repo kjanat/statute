@@ -119,7 +119,7 @@ func sourceSchemeRedirect(o *Object, family string, status, other int) (statute.
 		code += codePermanent
 	} else if status == other {
 		value.Status(status)
-		code += fmt.Sprintf(".Status(%d)", status)
+		code += ".Status(" + statusCode(status) + ")"
 	}
 	return value, code, true
 }
@@ -141,7 +141,7 @@ func sourceRegexRedirect(o *Object, family string, status, other int) (statute.M
 		code += codePermanent
 	} else if status == other {
 		value.Status(status)
-		code += fmt.Sprintf(".Status(%d)", status)
+		code += ".Status(" + statusCode(status) + ")"
 	}
 	return value, code, true
 }

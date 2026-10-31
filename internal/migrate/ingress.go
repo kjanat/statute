@@ -20,7 +20,7 @@ func (g *generator) listenerIngress(o *Object, l *statute.Listener, code string)
 	}
 	p.HeaderAliases = ingressAliasPolicy(o)
 	l.With(p)
-	code += fmt.Sprintf(".With(statute.IngressPolicy{ForwardedHeaders:true,NormalizePath:true,SanitizePath:%t,HeaderAliases:statute.HeaderAliasPolicy(%q)})", p.SanitizePath, p.HeaderAliases)
+	code += fmt.Sprintf(".With(statute.IngressPolicy{ForwardedHeaders:true,NormalizePath:true,SanitizePath:%t,HeaderAliases:%s})", p.SanitizePath, headerAliasCode(p.HeaderAliases))
 	if cidrs, ok := ingressProxyRanges(o); ok && len(cidrs) > 0 {
 		l.With(statute.TrustedProxy(cidrs...))
 		code += ".With(statute.TrustedProxy(" + quoted(cidrs) + "))"
@@ -114,4 +114,21 @@ func ingressProxyRanges(o *Object) ([]string, bool) {
 	}
 	o.mark("forwardedHeaders.trustedIPs", Translated, "listener-owned direct-peer trust ranges")
 	return cidrs, true
+}
+
+func headerAliasCode(policy statute.HeaderAliasPolicy) string {
+	switch policy {
+	case statute.HeaderAliasesKeep:
+		return "statute.HeaderAliasesKeep"
+	case statute.HeaderAliasesDelete:
+		return "statute.HeaderAliasesDelete"
+	case statute.HeaderAliasesReject:
+		return "statute.HeaderAliasesReject"
+	case statute.HeaderUnderscoresDelete:
+		return "statute.HeaderUnderscoresDelete"
+	case statute.HeaderUnderscoresReject:
+		return "statute.HeaderUnderscoresReject"
+	default:
+		return fmt.Sprintf("statute.HeaderAliasPolicy(%q)", policy)
+	}
 }

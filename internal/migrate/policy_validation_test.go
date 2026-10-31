@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -154,7 +155,7 @@ func TestPassiveHealthValidationKeepsInvalidPolicyBlocked(t *testing.T) {
 		} else if !r.Report.Blocking {
 			t.Fatal("invalid passive policy accepted")
 		}
-		if policy == "{}" && !strings.Contains(string(r.Go), "MaxFailures: 1") {
+		if policy == "{}" && !regexp.MustCompile(`MaxFailures:\s+1,`).Match(r.Go) {
 			t.Fatal("source passive defaults missing")
 		}
 	}

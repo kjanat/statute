@@ -283,6 +283,7 @@ const (
 	fieldDirectory  = "directory"
 	defaultName     = "default"
 	falseValue      = "false"
+	nilValue        = "nil"
 	removeOperation = "Remove"
 )
 

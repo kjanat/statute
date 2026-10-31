@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,7 @@ func TestDockerRouterCanSelectFilePoolOrInternalHandler(t *testing.T) {
 		in.Dynamic = []string{fixture(t, "dynamic.yml", "http:\n  services:\n    api:\n      loadBalancer:\n        servers: [{url: 'http://127.0.0.1:9000'}]\n")}
 		r := audit(t, in)
 		requireMigrationGaps(t, r)
-		if !strings.Contains(string(r.Go), ".Bind") {
+		if !regexp.MustCompile(`\.\s*Bind(Upstream|Handler)\(`).Match(r.Go) {
 			t.Fatal("cross-provider binding missing")
 		}
 		assertGeneratedParity(t, r)
