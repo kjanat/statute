@@ -50,6 +50,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `Compress` adds `Accept-Encoding` to `Vary` only when no existing token names it.
 
+### Security
+
+- Update `github.com/go-jose/go-jose/v4` to v4.1.6 in the Traefik compatibility oracle.
+
 ## [0.11.0] - 2026-10-28
 
 ### Added
