@@ -35,4 +35,6 @@ const (
 	// labelValueTrue is the canonical truthy docker label value; labels
 	// are strings, so booleans arrive spelled out.
 	labelValueTrue = "true"
+
+	pathMatchBytePrefix = "byte_prefix"
 )

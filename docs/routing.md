@@ -181,7 +181,12 @@ Export includes the normalized `FallbackRoutes` collection; `HasFallback` still
 marks only an application-owned `Fallback` handler. Graph renders a separate
 ordered terminal stage with edges to the same pool nodes. `AUTH001` and `RL001`
 apply to both tables, using `fallback_routes[i].middleware[j]` for terminal routes.
-`FB001` warns when an ordinary hostless, client-unconstrained catch-all shadows
-Docker or either fallback stage; a final catch-all in `FallbackRoutes` is valid.
+`FB001` warns when an ordinary hostless, client- and peer-unconstrained `/*` or
+`MatchPrefix("/")` route shadows Docker or either fallback stage; a final
+catch-all in `FallbackRoutes` is valid. With `PrioritizeRoutes`, the warning
+names only Docker routes and refusals at or below the catch-all's priority,
+including native `statute.*` label routes at priority 0. A negative priority
+leaves default-priority Docker routes reachable; the fallback stages stay
+shadowed.
 Move the whole route into `Config.FallbackRoutes`, creating that table if needed,
 to retain its named pool and middleware while allowing Docker routes to match first.

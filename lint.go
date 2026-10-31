@@ -457,11 +457,14 @@ func weakClientAuthFinding(policy *resolved.ClientAuth, path string) *Finding {
 const catchAllPattern = "/*"
 
 // ruleCatchAllShadowsFallback reports a static route that matches every
-// request (no host, the catch-all pattern, no client constraint) declared
-// in a config that also configures Docker discovery or a fallback. Static
-// routes are consulted before the Docker generation, before that
-// generation's tombstones, FallbackRoutes, and Config.Fallback, so such a route
-// answers first for every request and nothing behind it is ever reached.
+// request (no host, the catch-all pattern or root byte prefix, no client or
+// peer constraint) declared in a config that also configures Docker discovery
+// or a fallback. Static routes are consulted before the Docker generation,
+// before that generation's tombstones, FallbackRoutes, and Config.Fallback, so
+// such a route answers first for every request and nothing behind it is ever
+// reached. With PrioritizeRoutes, it still precedes both fallback stages but
+// loses to Docker candidates with a higher priority. Native statute.* label
+// routes have priority 0.
 //
 // The finding is a warning: the route is legal and still serves. A
 // declaration cannot distinguish a deliberate single-route deployment from
@@ -469,27 +472,45 @@ const catchAllPattern = "/*"
 // fires without Docker or a fallback. With neither, the only thing a
 // catch-all shadows is the terminal 404.
 func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
-	shadowed := shadowedTiers(c)
-	if shadowed == "" {
-		return nil
-	}
 	const remedy = "move the whole route into Config.FallbackRoutes, preserving its upstream and middleware for unmatched requests."
 	var out []Finding
 	for i, route := range c.Routes {
-		if route.Host != "" || route.Pattern != catchAllPattern || len(route.ClientIPCIDRs) > 0 {
+		if !catchAllRoute(route) {
 			continue
+		}
+		shadowed := shadowedTiers(c, route)
+		if shadowed == "" {
+			continue
+		}
+		selection := "static routes are consulted before every tier behind them"
+		if c.PrioritizeRoutes {
+			selection = fmt.Sprintf("PrioritizeRoutes selects it over every candidate with priority %d or lower and ahead of the terminal stages", route.Priority)
 		}
 		out = append(out, Finding{
 			Severity: SeverityWarning,
 			Code:     "FB001",
 			Message: fmt.Sprintf(
-				"Route matches every request (no host, %q, no ClientIPs) and static routes are consulted before every tier behind them, so %s can never be reached. Give it a host, a narrower pattern, or a ClientIPs constraint — or %s",
-				catchAllPattern, shadowed, remedy,
+				"Route matches every request (no host, %q, no ClientIPs) and %s, so %s can never be reached. Give it a host, a narrower pattern, or a ClientIPs constraint — or %s",
+				route.Pattern, selection, shadowed, remedy,
 			),
 			Path: fmt.Sprintf("routes[%d]", i),
 		})
 	}
 	return out
+}
+
+func catchAllRoute(route *resolved.Route) bool {
+	if route.Host != "" || len(route.ClientIPCIDRs) > 0 || len(route.PeerIPCIDRs) > 0 {
+		return false
+	}
+	switch route.PathMatch {
+	case "":
+		return route.Pattern == catchAllPattern
+	case pathMatchBytePrefix:
+		return route.Pattern == "/"
+	default:
+		return false
+	}
 }
 
 // shadowedTiers names the dispatch tiers a hostless catch-all would hide,
@@ -500,11 +521,15 @@ func ruleCatchAllShadowsFallback(c *resolved.Config) []Finding {
 // router whose auth chain statute could not supply is refused by a
 // tombstone, and a catch-all ahead of it serves the request the refusal
 // existed to stop.
-func shadowedTiers(c *resolved.Config) string {
+func shadowedTiers(c *resolved.Config, route *resolved.Route) string {
 	const dockerTiers = "every Docker-discovered route, and the refusals standing in for the routers statute had to drop"
 	var tiers []string
-	if c.Docker != nil {
+	switch {
+	case c.Docker == nil:
+	case !c.PrioritizeRoutes:
 		tiers = append(tiers, dockerTiers)
+	case route.Priority >= 0:
+		tiers = append(tiers, fmt.Sprintf("every Docker-discovered route and refusal with priority %d or lower, including every native statute.* label route", route.Priority))
 	}
 	if len(c.FallbackRoutes) > 0 {
 		tiers = append(tiers, "the terminal fallback routes")
