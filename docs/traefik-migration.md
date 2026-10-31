@@ -55,11 +55,33 @@ can live in different dynamic files. Each resource retains its source filename
 and field paths; duplicate definitions of the same store or option remain blocking.
 
 The generated `main.go` has one function per section: `generatedListeners`,
-`generatedUpstreams`, `generatedRoutes`, `generatedFallbackRoutes` and
-`generatedDocker`. A comment naming the source object, such as
+`generatedUpstreams`, `generatedRoutes` and `generatedDocker`. A comment naming the source object, such as
 `// routers:api@file`, precedes each listener, pool and route. Long method chains
 and structs with several fields put each call or field on its own line, and
 zero-valued fields are omitted. Identical inputs produce byte-identical source.
+
+Each middleware a route uses becomes one function named after its source, such
+as `securityHeaders()` for `security-headers@file`. It returns one
+`statute.Middleware`, or a `[]statute.Middleware` for a Traefik `chain` that
+yields several. Routes, entrypoint defaults and the Docker middleware registry
+call that function; consecutive single middleware share one argument list, as
+in `With(securityHeaders(), rateLimit())`. Each `serversTransport`, the default
+transport, and each service that overrides its flush interval becomes a
+function such as `backendTransport()`, shared by the upstream pools and Docker
+pool policies that use it. Every source keeps its own function, even when two
+sources have the same settings, so each one remains separately editable. When
+at least two emitted functions build the same kind of rate limit, they call one
+shared constructor, such as `makeRateLimit(rateLimitSettings{Rate: "20/s", ...})`,
+with their own values in named fields. A name that collides with another function, an import
+or a Go identifier receives a numeric suffix. Each call returns new values, so
+routes using the same function keep separate rate limits, caches and buffers.
+
+A router whose rule names several hosts becomes one route listing all of them in
+`Hosts(...)` when the routes for those hosts differ only by host. Statute expands
+that list into one route per host, each with its own middleware state. When at
+least two file pools have one backend and only a transport, they call
+`makePool(address, transport)`. Routes and Docker bindings for `noop@internal`
+share one `migrationNoop()` handler.
 
 Output files must be new, distinct paths. They are created with mode `0600` and
 never overwrite existing files. Parsing/writing failures remove newly reserved

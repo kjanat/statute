@@ -11,24 +11,32 @@ import (
 const (
 	largeFileRouters   = 300
 	largeDockerRouters = 120
+	largeReuseStride   = 10
 	maxGeneratedWidth  = 100
 )
 
 func largeMigrationInputs(t *testing.T) Inputs {
 	t.Helper()
 	var dynamic strings.Builder
-	dynamic.WriteString("http:\n  middlewares:\n    limit:\n      rateLimit: {average: 20, burst: 40}\n  routers:\n")
+	dynamic.WriteString("http:\n  middlewares:\n    limit:\n      rateLimit: {average: 20, burst: 40}\n    twin:\n      rateLimit: {average: 20, burst: 40}\n    other:\n      rateLimit: {average: 20, burst: 41}\n  serversTransports:\n    backend:\n      forwardingTimeouts: {dialTimeout: 5s}\n  routers:\n")
 	for i := range largeFileRouters {
-		fmt.Fprintf(&dynamic, "    router%03d:\n      rule: Host(`svc%03d.example.test`) && PathPrefix(`/api`)\n      service: svc%03d\n      middlewares: [limit]\n", i, i, i)
+		refs := "limit"
+		switch i % largeReuseStride {
+		case 0:
+			refs += ", twin"
+		case 1:
+			refs += ", other"
+		}
+		fmt.Fprintf(&dynamic, "    router%03d:\n      rule: Host(`svc%03d.example.test`) && PathPrefix(`/api`)\n      service: svc%03d\n      middlewares: [%s]\n", i, i, i, refs)
 	}
 	dynamic.WriteString("  services:\n")
 	for i := range largeFileRouters {
-		fmt.Fprintf(&dynamic, "    svc%03d:\n      loadBalancer:\n        passHostHeader: false\n        servers: [{url: 'http://127.0.0.1:%d'}]\n", i, 20000+i)
+		fmt.Fprintf(&dynamic, "    svc%03d:\n      loadBalancer:\n        passHostHeader: false\n        serversTransport: backend\n        servers: [{url: 'http://127.0.0.1:%d'}]\n", i, 20000+i)
 	}
 	var compose strings.Builder
 	compose.WriteString("services:\n")
 	for i := range largeDockerRouters {
-		fmt.Fprintf(&compose, "  app%03d:\n    labels:\n      traefik.enable: 'true'\n      traefik.http.routers.app%03d.rule: Host(`app%03d.example.test`)\n      traefik.http.routers.app%03d.service: app%03d\n      traefik.http.services.app%03d.loadbalancer.server.port: '8080'\n      traefik.http.services.app%03d.loadbalancer.passhostheader: 'false'\n", i, i, i, i, i, i, i)
+		fmt.Fprintf(&compose, "  app%03d:\n    labels:\n      traefik.enable: 'true'\n      traefik.http.routers.app%03d.rule: Host(`app%03d.example.test`)\n      traefik.http.routers.app%03d.service: app%03d\n      traefik.http.routers.app%03d.middlewares: limit@file\n      traefik.http.services.app%03d.loadbalancer.server.port: '8080'\n      traefik.http.services.app%03d.loadbalancer.passhostheader: 'false'\n      traefik.http.services.app%03d.loadbalancer.serverstransport: backend@file\n", i, i, i, i, i, i, i, i, i)
 	}
 	static := "entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false}}\nproviders:\n  docker: {exposedByDefault: false}\n"
 	return Inputs{
@@ -61,12 +69,42 @@ func TestLargeMigrationEmitsStructuredGo(t *testing.T) {
 		}
 	}
 	assertGeneratedWidth(t, source)
+	assertReusedFragments(t, source)
 	assertGeneratedParity(t, r)
 	binary := compileGenerated(t, r)
 	for _, flag := range []string{"-validate", "-lint", "-export", "-graph"} {
 		// #nosec G204 -- Execute only the generated test binary.
 		if out, err := exec.CommandContext(t.Context(), binary, flag).CombinedOutput(); err != nil {
 			t.Fatalf("%s: %v\n%s", flag, err, out)
+		}
+	}
+}
+
+func assertReusedFragments(t *testing.T, source string) {
+	t.Helper()
+	twins := (largeFileRouters + largeReuseStride - 1) / largeReuseStride
+	others := (largeFileRouters + largeReuseStride - 2) / largeReuseStride
+	for _, want := range []struct {
+		text  string
+		count int
+	}{
+		{"// middlewares:limit@file\nfunc limit() statute.Middleware {", 1},
+		{"// middlewares:twin@file\nfunc twin() statute.Middleware {", 1},
+		{"// middlewares:other@file\nfunc other() statute.Middleware {", 1},
+		{"func makeRateLimit(", 1},
+		{"makeRateLimit(", 4},
+		{"statute.RateLimit(", 1},
+		{"With(limit()),", largeFileRouters - twins - others},
+		{"With(limit(), twin()),", twins},
+		{"With(limit(), other()),", others},
+		{`Middleware("limit@file", limit())`, 1},
+		{"// serversTransports:backend@file\nfunc backendTransport() statute.Transport {", 1},
+		{"backendTransport(),", largeFileRouters + largeDockerRouters},
+		{"statute.Transport{", 1},
+		{"...", 0},
+	} {
+		if got := strings.Count(source, want.text); got != want.count {
+			t.Errorf("%q occurs %d times, want %d", want.text, got, want.count)
 		}
 	}
 }

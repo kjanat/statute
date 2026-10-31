@@ -26,7 +26,7 @@ func (g *generator) basicAuth(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, statute.BasicAuth(realm, map[string]string{"migration-placeholder": validationHash}))
-	chain.code = append(chain.code, fmt.Sprintf("statute.BasicAuth(%q,%s)", realm, g.usersFile(path)))
+	chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.BasicAuth(%q,%s)", realm, g.usersFile(path))))
 	o.mark("basicAuth.usersFile", Translated, "authentication file reference retained; generated startup validates bcrypt hashes; audit does not read credentials")
 	o.mark("basicAuth.realm", Translated, "explicit authentication realm including Traefik default")
 	if scalar(o.value("basicAuth.removeHeader")) == falseValue {
@@ -60,7 +60,7 @@ func (g *generator) inlineBasicAuth(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, statute.BasicAuth(realm, users))
-	chain.code = append(chain.code, fmt.Sprintf("statute.BasicAuth(%q,map[string]string{%s})", realm, strings.Join(entries, ",")))
+	chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.BasicAuth(%q,map[string]string{%s})", realm, strings.Join(entries, ","))))
 	o.mark("basicAuth.realm", Translated, "explicit authentication realm")
 	classifyInlineUsers(o, values)
 }
@@ -115,19 +115,19 @@ func (g *generator) header(o *Object, chain *middleware, direction, name, value,
 			chain.values = append(chain.values, statute.SetResponseHeader(name, value))
 		}
 	}
-	chain.code = append(chain.code, fmt.Sprintf("statute.%s%sHeader(%q%s)", operation, direction, name, codeValue))
+	chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.%s%sHeader(%q%s)", operation, direction, name, codeValue)))
 }
 
 func (g *generator) nativeRewrite(o *Object, chain *middleware) {
 	if prefix := o.text("addPrefix.prefix"); prefix != "" && literal(prefix) {
 		chain.values = append(chain.values, statute.PrefixPath(prefix))
-		chain.code = append(chain.code, fmt.Sprintf("statute.PrefixPath(%q)", prefix))
+		chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.PrefixPath(%q)", prefix)))
 		o.mark("addPrefix.prefix", Translated, "prefix applied at its declared middleware position")
 	}
 	if path := o.text("replacePath.path"); path != "" && literal(path) {
 		if _, err := url.PathUnescape(path); err == nil {
 			chain.values = append(chain.values, statute.ReplaceEscapedPath(path).RecordOriginal())
-			chain.code = append(chain.code, fmt.Sprintf("statute.ReplaceEscapedPath(%q).RecordOriginal()", path))
+			chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.ReplaceEscapedPath(%q).RecordOriginal()", path)))
 			o.mark("replacePath.path", Translated, "escaped replacement with X-Replaced-Path at its declared middleware position")
 		}
 	}
@@ -145,7 +145,7 @@ func (g *generator) nativeRewrite(o *Object, chain *middleware) {
 			code += ".ForceSlash()"
 		}
 		chain.values = append(chain.values, value)
-		chain.code = append(chain.code, code)
+		chain.code = append(chain.code, textExpr(code))
 		o.mark("stripPrefix.prefixes", Translated, "ordered byte-prefix stripping with X-Forwarded-Prefix")
 		o.mark("stripPrefix.forceSlash", Translated, "explicit empty-path slash behavior")
 	}
@@ -177,7 +177,7 @@ func (g *generator) compression(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, statute.EncodeResponse(p))
-	chain.code = append(chain.code, fmt.Sprintf("statute.EncodeResponse(statute.EncodingPolicy{Encodings:[]string{%s},MinimumBytes:%d,DefaultEncoding:%q,IncludedTypes:[]string{%s},ExcludedTypes:[]string{%s}})", quoted(p.Encodings), p.MinimumBytes, p.DefaultEncoding, quoted(p.IncludedTypes), quoted(p.ExcludedTypes)))
+	chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.EncodeResponse(statute.EncodingPolicy{Encodings:[]string{%s},MinimumBytes:%d,DefaultEncoding:%q,IncludedTypes:[]string{%s},ExcludedTypes:[]string{%s}})", quoted(p.Encodings), p.MinimumBytes, p.DefaultEncoding, quoted(p.IncludedTypes), quoted(p.ExcludedTypes))))
 	o.markConsumed("compress", []string{"encodings", "defaultEncoding", "minResponseBodyBytes", "includedContentTypes", "excludedContentTypes"}, "response encoding, media filters and minimum body size")
 }
 
@@ -224,7 +224,7 @@ func (g *generator) buffering(o *Object, chain *middleware) {
 	p.RetryExpression = retry
 	noteBufferBounds(o, p)
 	chain.values = append(chain.values, statute.BufferBodies(p))
-	chain.code = append(chain.code, fmt.Sprintf("statute.BufferBodies(statute.BodyBufferPolicy{MaxRequestBytes:%d,MemoryRequestBytes:%d,MaxResponseBytes:%d,MemoryResponseBytes:%d,DisableRequest:%t,DisableResponse:%t,RetryExpression:%q})", p.MaxRequestBytes, p.MemoryRequestBytes, p.MaxResponseBytes, p.MemoryResponseBytes, p.DisableRequest, p.DisableResponse, p.RetryExpression))
+	chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.BufferBodies(statute.BodyBufferPolicy{MaxRequestBytes:%d,MemoryRequestBytes:%d,MaxResponseBytes:%d,MemoryResponseBytes:%d,DisableRequest:%t,DisableResponse:%t,RetryExpression:%q})", p.MaxRequestBytes, p.MemoryRequestBytes, p.MaxResponseBytes, p.MemoryResponseBytes, p.DisableRequest, p.DisableResponse, p.RetryExpression)))
 	o.markConsumed("buffering", []string{"maxRequestBodyBytes", "memRequestBodyBytes", "maxResponseBodyBytes", "memResponseBodyBytes", "disableRequestBuffer", "disableResponseBuffer", "retryExpression"}, "request and response buffering with disk spill and retry predicate")
 }
 
@@ -274,18 +274,18 @@ func (g *generator) retry(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, statute.Retry(attempts))
-	chain.code = append(chain.code, fmt.Sprintf("statute.Retry(%d)", attempts))
+	chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.Retry(%d)", attempts)))
 	o.mark("retry.attempts", Manual, "candidate attempt budget; native Retry buffers responses, retries configured statuses and bypasses streaming/non-idempotent requests, whereas Traefik tracks transport failures before response commit")
 }
 
 func (g *generator) retainMiddlewareCandidate(o *Object, chain middleware) {
-	if o.ready() || len(chain.code) == 0 {
+	if o.ready() || len(chain.segments()) == 0 {
 		return
 	}
 	// A blocked candidate remains reviewable without being registered on a route.
 	// The whole generated program is additionally guarded by the audit result.
-	name := fmt.Sprintf("migrationCandidate%d", len(g.candidates))
-	g.candidates[name] = fragment{origin: o.identity(), code: "[]statute.Middleware{" + strings.Join(chain.code, ",") + "}"}
+	name := candidatePrefix + strconv.Itoa(len(g.candidates))
+	g.candidates[name] = fragment{origin: o.identity(), code: inline.render(sliceExpr(chain.segments()))}
 }
 
 func hasFieldPrefix(o *Object, prefix string) bool {
@@ -337,7 +337,7 @@ func (g *generator) regexRewrite(o *Object, chain *middleware) {
 		pattern, replacement := o.text("replacePathRegex.regex"), o.text("replacePathRegex.replacement")
 		if _, err := regexp.Compile(strings.TrimSpace(pattern)); err == nil && !strings.Contains(pattern, "${") && !strings.Contains(pattern+replacement, "{{") {
 			chain.values = append(chain.values, statute.RewriteEscapedPath(pattern, replacement).RecordOriginal())
-			chain.code = append(chain.code, fmt.Sprintf("statute.RewriteEscapedPath(%q,%q).RecordOriginal()", pattern, replacement))
+			chain.code = append(chain.code, textExpr(fmt.Sprintf("statute.RewriteEscapedPath(%q,%q).RecordOriginal()", pattern, replacement)))
 			o.mark("replacePathRegex.regex", Translated, "escaped path regexp")
 			o.mark("replacePathRegex.replacement", Translated, "capture replacement with X-Replaced-Path")
 		}

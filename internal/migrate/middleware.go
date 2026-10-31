@@ -44,11 +44,15 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	classifyEmptyHeaders(o, chain)
 	if len(chain.values) > 0 && o.value("chain.middlewares") == nil {
 		chain.values = []statute.Middleware{statute.InOrder(chain.values...)}
-		chain.code = []string{"statute.InOrder(" + strings.Join(chain.code, ",") + ")"}
+		chain.code = []expr{wrapExpr("statute.InOrder(", chain.code, ")")}
 	}
 	if nativeMiddlewareReady(o, chain) {
-		g.chains[id] = chain
-		return chain, true
+		registered := middleware{values: chain.values}
+		if len(chain.values) > 0 {
+			registered.parts = []middlewarePart{g.middlewareHelper(id, chain.segments(), o.identity())}
+		}
+		g.chains[id] = registered
+		return registered, true
 	}
 	g.retainMiddlewareCandidate(o, chain)
 	return middleware{}, false
@@ -112,7 +116,7 @@ func (g *generator) registerMiddleware(routers []*Object) {
 			}
 			registered[ref] = true
 			g.r.Config.Docker.Middleware(ref, mw.values...)
-			g.docker += fmt.Sprintf(".Middleware(%q%s)", ref, middlewareArguments(mw.code))
+			g.docker += fmt.Sprintf(".Middleware(%q%s)", ref, middlewareArguments(mw.parts))
 			g.markMiddlewareUsed(qualified(ref, providerDocker))
 		}
 	}
@@ -166,7 +170,7 @@ func (g *generator) ipAllowList(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, statute.AllowIPs(cidrs...).SelectIP(selection))
-	chain.code = append(chain.code, "statute.AllowIPs("+quoted(cidrs)+").SelectIP("+code+")")
+	chain.code = append(chain.code, textExpr("statute.AllowIPs("+quoted(cidrs)+").SelectIP("+code+")"))
 	o.mark(path, Translated, "route-owned client-IP allow list; listener trusted-proxy policy remains explicit")
 }
 
@@ -195,7 +199,7 @@ func (g *generator) expandChain(o *Object, chain *middleware) {
 			return
 		}
 		chain.values = append(chain.values, child.values...)
-		chain.code = append(chain.code, child.code...)
+		chain.parts = append(chain.parts, child.parts...)
 	}
 	if ok {
 		o.mark(path, Translated, "provider-qualified middleware chain expanded in declaration order")
@@ -220,11 +224,11 @@ func classifyMiddlewareDifferences(o *Object) {
 	}
 }
 
-func middlewareArguments(code []string) string {
-	if len(code) == 0 {
+func middlewareArguments(parts []middlewarePart) string {
+	if len(parts) == 0 {
 		return ""
 	}
-	return "," + strings.Join(code, ",")
+	return "," + inline.render(variadicArgs(parts))
 }
 
 func classifyEmptyHeaders(o *Object, chain middleware) {

@@ -21,6 +21,42 @@ type fragment struct {
 	origin string
 	code   string
 	key    string
+	hosts  []string
+	tail   string
+}
+
+func (f fragment) render() string {
+	if f.hosts == nil {
+		return f.code
+	}
+	return f.code + ".Hosts(" + quoted(f.hosts) + ")" + f.tail
+}
+
+func mergeHosts(items []fragment) []fragment {
+	var out []fragment
+	for _, item := range items {
+		if n := len(out); n > 0 && item.hosts != nil && sameRoute(out[n-1], item) && !sharedHost(out[n-1].hosts, item.hosts) {
+			out[n-1].hosts = append(slices.Clone(out[n-1].hosts), item.hosts...)
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func sameRoute(a, b fragment) bool {
+	return a.hosts != nil && a.origin == b.origin && a.code == b.code && a.tail == b.tail
+}
+
+func sharedHost(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if strings.EqualFold(x, y) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type layout struct {
@@ -59,7 +95,7 @@ func statusCode(status int) string {
 	return strconv.Itoa(status)
 }
 
-var importedPackages = map[string]string{"http": "net/http", "math": "math", "os": "os", "strings": "strings"}
+var importedPackages = map[string]string{"http": "net/http", "math": "math", "os": "os", "slices": "slices", "strings": "strings"}
 
 func usedImports(source string) (map[string]bool, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), "", source, parser.SkipObjectResolution)
@@ -121,10 +157,11 @@ func (l layout) call(e *ast.CallExpr) string {
 		chain = append(chain, base)
 		base = inner
 	}
-	head := l.expr(base.Fun) + l.arguments(base)
-	segments := []string{head}
+	fun := l.expr(base.Fun)
+	segments := []string{fun + l.arguments(fun, base)}
 	for _, call := range slices.Backward(chain) {
-		segments = append(segments, call.Fun.(*ast.SelectorExpr).Sel.Name+l.arguments(call))
+		name := call.Fun.(*ast.SelectorExpr).Sel.Name
+		segments = append(segments, name+l.arguments(name, call))
 	}
 	if inline := strings.Join(segments, "."); len(chain) <= inlineChains && fits(inline) {
 		return inline
@@ -132,7 +169,7 @@ func (l layout) call(e *ast.CallExpr) string {
 	return strings.Join(segments, ".\n")
 }
 
-func (l layout) arguments(e *ast.CallExpr) string {
+func (l layout) arguments(fun string, e *ast.CallExpr) string {
 	args := make([]string, len(e.Args))
 	for i, arg := range e.Args {
 		args[i] = l.expr(arg)
@@ -141,7 +178,10 @@ func (l layout) arguments(e *ast.CallExpr) string {
 		args[len(args)-1] += "..."
 	}
 	inline := "(" + strings.Join(args, ", ") + ")"
-	if fits(inline) {
+	if len(args) == 0 || fits(fun+inline) {
+		return inline
+	}
+	if _, composite := e.Args[0].(*ast.CompositeLit); composite && len(args) == 1 {
 		return inline
 	}
 	return "(\n" + strings.Join(args, ",\n") + ",\n)"
@@ -160,7 +200,7 @@ func (l layout) composite(e *ast.CompositeLit) string {
 		elts = append(elts, l.expr(elt))
 	}
 	inline := typ + "{" + strings.Join(elts, ", ") + "}"
-	if len(elts) <= 1 && fits(inline) {
+	if len(elts) == 0 || len(elts) == 1 && fits(inline) {
 		return inline
 	}
 	return typ + "{\n" + strings.Join(elts, ",\n") + ",\n}"

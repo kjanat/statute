@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,7 +19,8 @@ import (
 
 type middleware struct {
 	values []statute.Middleware
-	code   []string
+	code   []expr
+	parts  []middlewarePart
 }
 
 type generator struct {
@@ -29,7 +31,6 @@ type generator struct {
 	internalRoutes  []*statute.Route
 	internalCode    []fragment
 	disabledRouters map[*Object]bool
-	fallbacks       []fragment
 	docker          string
 	dockerOrigin    string
 	objects         map[string]*Object
@@ -52,6 +53,9 @@ type generator struct {
 	defaults        string
 	defaultEntries  []string
 	entryDefaults   middleware
+	reusables       map[reusableKey]*reusable
+	simplePools     map[string]string
+	reusableNames   map[string]bool
 }
 
 func generate(r *Result) error {
@@ -63,6 +67,9 @@ func generate(r *Result) error {
 	g.entryTLS = map[string]bool{}
 	g.routerEntries = map[*Object][]string{}
 	g.disabledRouters = map[*Object]bool{}
+	g.reusables = map[reusableKey]*reusable{}
+	g.simplePools = map[string]string{}
+	g.reusableNames = map[string]bool{}
 	r.Config.Upstreams = statute.Upstreams{}
 	r.Config.PrioritizeRoutes = true
 	g.indexObjects()
@@ -84,7 +91,7 @@ func generate(r *Result) error {
 	if len(g.entryDefaults.values) > 0 {
 		for i, route := range g.internalRoutes {
 			route.WithOuter(g.entryDefaults.values...)
-			g.internalCode[i].code += ".WithOuter(" + strings.Join(g.entryDefaults.code, ",") + ")"
+			g.internalCode[i].code += withCalls("WithOuter", g.entryDefaults.parts)
 		}
 	}
 	r.Config.Routes = append(r.Config.Routes, g.internalRoutes...)
@@ -235,7 +242,8 @@ func (g *generator) service(o *Object) {
 	if o.Provider != providerFile {
 		return
 	}
-	pool := statute.Pool{Transport: g.transports["default@internal"]}
+	pool := statute.Pool{Transport: g.transports[defaultTransportID]}
+	source := defaultTransportID
 	backends, ok := serviceBackends(o, &pool)
 	if !ok {
 		return
@@ -254,22 +262,29 @@ func (g *generator) service(o *Object) {
 			return
 		}
 		pool.Transport = t
-
+		source = id
 		o.mark("loadBalancer.serversTransport", Translated, "provider-qualified code-owned pool transport")
 	}
 	serviceFlush(o, &pool.Transport)
-	parts = append(parts, "Transport:"+transportLiteral(pool.Transport))
+	transport := g.transportCall(o, source, pool.Transport)
+	parts = append(parts, "Transport:"+transport)
 	if !o.readyWithBindings() {
 		return
 	}
-	id := o.Name + "@file"
-	g.r.Config.Upstreams[id] = pool
-	g.pools[id] = "statute.Pool{" + strings.Join(parts, ",") + "}"
+	g.registerPool(o.Name+"@file", pool, "statute.Pool{"+strings.Join(parts, ",")+"}", transport)
 	o.Generated = true
 	if name := o.text("loadBalancer.serversTransport"); name != "" {
 		if transport := g.objects["serversTransports:"+qualified(name, o.Provider)]; transport != nil {
 			transport.Generated = true
 		}
+	}
+}
+
+func (g *generator) registerPool(id string, pool statute.Pool, code, transport string) {
+	g.r.Config.Upstreams[id] = pool
+	g.pools[id] = code
+	if len(pool.Backends) == 1 && reflect.DeepEqual(pool, statute.Pool{Backends: []statute.Backend{{Address: pool.Backends[0].Address}}, Transport: pool.Transport}) {
+		g.simplePools[id] = fmt.Sprintf("makePool(%q,%s)", pool.Backends[0].Address, transport)
 	}
 }
 
@@ -478,7 +493,7 @@ func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 	var chain middleware
 	if o.Provider != providerDocker {
 		chain.values = append(chain.values, g.entryDefaults.values...)
-		chain.code = append(chain.code, g.entryDefaults.code...)
+		chain.parts = append(chain.parts, g.entryDefaults.parts...)
 	}
 	g.checkDefaultMiddleware(o)
 	for _, ref := range refs {
@@ -499,7 +514,7 @@ func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 			return chain
 		}
 		chain.values = append(chain.values, mw.values...)
-		chain.code = append(chain.code, mw.code...)
+		chain.parts = append(chain.parts, mw.parts...)
 	}
 	if len(refs) > 0 {
 		o.mark("middlewares", Translated, "ordered code-owned middleware chain, scoped to this router")
@@ -583,28 +598,20 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware, 
 		code = fmt.Sprintf("statute.%s(%q).ProxyToDiscovered(%q).Priority(%d).OnListeners(%s)", constructor, m.Path, target, m.Priority, quoted(m.ListenerNames))
 	}
 	if name == serviceNoop {
-		g.imports["net/http"] = true
 		route = newRoute(m.Path).Handle(migrationNoop).With(chain.values...).Priority(m.Priority).OnListeners(m.ListenerNames...)
-		code = fmt.Sprintf("statute.%s(%q).Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request){w.WriteHeader(http.StatusTeapot)})).Priority(%d).OnListeners(%s)", constructor, m.Path, m.Priority, quoted(m.ListenerNames))
+		code = fmt.Sprintf("statute.%s(%q).Handle(%s).Priority(%d).OnListeners(%s)", constructor, m.Path, g.noopHandler(), m.Priority, quoted(m.ListenerNames))
 	}
 	if len(m.PeerIPCIDRs) > 0 {
 		route.PeerIPs(m.PeerIPCIDRs...)
 		code += ".PeerIPs(" + quoted(m.PeerIPCIDRs) + ")"
 	}
+	item := fragment{origin: origin, code: code + withCalls("With", chain.parts)}
 	if len(hosts) > 0 {
 		route.Hosts(hosts...)
-		code += ".Hosts(" + quoted(hosts) + ")"
+		item = fragment{origin: origin, code: code, hosts: hosts, tail: withCalls("With", chain.parts)}
 	}
-	if len(chain.code) > 0 {
-		code += ".With(" + strings.Join(chain.code, ",") + ")"
-	}
-	if g.terminalMatcher(m) {
-		g.r.Config.FallbackRoutes = append(g.r.Config.FallbackRoutes, route)
-		g.fallbacks = append(g.fallbacks, fragment{origin: origin, code: code})
-	} else {
-		g.r.Config.Routes = append(g.r.Config.Routes, route)
-		g.routes = append(g.routes, fragment{origin: origin, code: code})
-	}
+	g.r.Config.Routes = append(g.r.Config.Routes, route)
+	g.routes = append(g.routes, item)
 	g.r.Report.GeneratedRoutes += max(1, len(hosts))
 }
 
@@ -710,6 +717,11 @@ func (g *generator) source() ([]byte, error) {
 	if err := g.configurationSource(&b); err != nil {
 		return nil, err
 	}
+	helpers, err := g.reusableSource(b.String())
+	if err != nil {
+		return nil, err
+	}
+	b.WriteString(helpers + g.poolConstructor())
 	b.WriteString("\nfunc main(){\n")
 	if g.hasImplementationGaps() {
 		b.WriteString("// TODO: resolve every blocking audit finding and validate the completed configuration.\npanic(\"migration incomplete: resolve blocking findings before serving\")\n")
@@ -778,7 +790,6 @@ func (g *generator) configurationSource(b *strings.Builder) error {
 		{"Listeners", "generatedListeners", "statute.Listeners", g.listeners},
 		{"Upstreams", "generatedUpstreams", "statute.Upstreams", g.poolFragments()},
 		{"Routes", "generatedRoutes", "statute.Routes", g.routes},
-		{"FallbackRoutes", "generatedFallbackRoutes", "statute.Routes", g.fallbacks},
 	} {
 		if len(section.items) == 0 {
 			continue
@@ -804,15 +815,26 @@ func (g *generator) configurationSource(b *strings.Builder) error {
 func (g *generator) poolFragments() []fragment {
 	out := make([]fragment, 0, len(g.pools))
 	for _, name := range keys(g.pools) {
-		out = append(out, fragment{origin: "services:" + name, code: g.pools[name], key: strconv.Quote(name) + ": "})
+		code := g.pools[name]
+		if call, ok := g.simplePools[name]; ok && len(g.simplePools) > 1 {
+			code = call
+		}
+		out = append(out, fragment{origin: "services:" + name, code: code, key: strconv.Quote(name) + ": "})
 	}
 	return out
 }
 
+func (g *generator) poolConstructor() string {
+	if len(g.simplePools) < 2 {
+		return ""
+	}
+	return "\nfunc makePool(address string, transport statute.Transport) statute.Pool {\nreturn statute.Pool{\nBackends: []statute.Backend{{Address: address}},\nTransport: transport,\n}\n}\n"
+}
+
 func writeSection(b *strings.Builder, name, typ string, items []fragment) error {
 	b.WriteString("\nfunc " + name + "() " + typ + " {\nreturn " + typ + "{\n")
-	for i, item := range items {
-		code, err := layoutExpr(item.code)
+	for i, item := range mergeHosts(items) {
+		code, err := layoutExpr(item.render())
 		if err != nil {
 			return err
 		}
@@ -857,8 +879,4 @@ func (g *generator) hasImplementationGaps() bool {
 func (g *generator) serviceAvailable(name string) bool {
 	_, ok := g.pools[name]
 	return ok || name == serviceNoop || g.discoveredService(name)
-}
-
-func (g *generator) terminalMatcher(m docker.Matcher) bool {
-	return !g.r.Config.PrioritizeRoutes && m.Host == "" && m.PathKind == docker.PathAny
 }

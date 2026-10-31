@@ -13,7 +13,7 @@ import (
 // Check source-derived edges so route permutations and policies attached
 // to the wrong shared pool fail even when route and pool counts match.
 func (g *generator) checkSourceTopology(c *resolved.Config) {
-	routes, fallbacks := slices.Clone(c.Routes[:len(c.Routes)-len(g.internalRoutes)]), slices.Clone(c.FallbackRoutes)
+	routes := slices.Clone(c.Routes[:len(c.Routes)-len(g.internalRoutes)])
 	failed := false
 	for _, o := range g.orderedRouters() {
 		if !g.activeFileRouter(o) {
@@ -25,14 +25,10 @@ func (g *generator) checkSourceTopology(c *resolved.Config) {
 			continue
 		}
 		for _, m := range ms {
-			target := &routes
-			if g.terminalMatcher(m) {
-				target = &fallbacks
-			}
-			failed = g.checkSourceMatcher(c, o, m, target) || failed
+			failed = g.checkSourceMatcher(c, o, m, &routes) || failed
 		}
 	}
-	if len(routes)+len(fallbacks) != 0 {
+	if len(routes)+len(c.FallbackRoutes) != 0 {
 		failed = true
 	}
 	code := "source-route-order-matcher-action-policy-edges-match"
@@ -124,7 +120,6 @@ func (g *generator) checkRoutePolicy(c *resolved.Config, o *Object, r *resolved.
 		route = statute.Match("/*").ProxyToDiscovered(strings.TrimSuffix(name, "@docker") + "@traefik").With(chain...)
 	}
 	plan.Routes = statute.Routes{route}
-	plan.FallbackRoutes = nil
 	expected, err := statute.Resolve(plan)
 	if err != nil || len(expected.Routes) != 1 {
 		return true

@@ -18,6 +18,12 @@ const (
 
 var migrationNoop = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 
+func (g *generator) noopHandler() string {
+	g.imports["net/http"] = true
+	g.helpers["noop"] = "func migrationNoop() http.Handler {\nreturn http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })\n}\n"
+	return "migrationNoop()"
+}
+
 func (g *generator) redirectMiddleware(o *Object, chain *middleware) {
 	family := ""
 	for _, name := range []string{redirectFamilyScheme, redirectFamilyRegex} {
@@ -44,7 +50,7 @@ func (g *generator) redirectMiddleware(o *Object, chain *middleware) {
 		return
 	}
 	chain.values = append(chain.values, mw)
-	chain.code = append(chain.code, code)
+	chain.code = append(chain.code, textExpr(code))
 	fields := []string{"regex", "replacement", fieldPermanent, "statusCode"}
 	if family == redirectFamilyScheme {
 		fields = []string{"scheme", "port", fieldPermanent, "forcePermanentRedirect"}

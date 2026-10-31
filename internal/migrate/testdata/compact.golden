@@ -1,0 +1,217 @@
+// Generated migration configuration. Review the accompanying audit before deployment.
+package main
+
+import (
+	"os"
+	"strings"
+
+	statute "statute.kjanat.dev"
+)
+
+func migrationEnv(name string) string {
+	value, ok := os.LookupEnv(name)
+	if !ok || value == "" {
+		panic("missing required migration environment binding: " + name)
+	}
+	if strings.ContainsAny(value, "\r\n\x00") {
+		panic("invalid migration environment binding: " + name)
+	}
+	return value
+}
+
+func configuration() statute.Config {
+	return statute.Config{
+		PrioritizeRoutes: true,
+		Defaults: statute.Defaults{
+			ReadTimeout:       "60s",
+			ReadHeaderTimeout: "60s",
+			WriteTimeout:      "0s",
+			IdleTimeout:       "180s",
+			MaxHeaderBytes:    1048576,
+		},
+		Listeners: generatedListeners(),
+		Upstreams: generatedUpstreams(),
+		Routes:    generatedRoutes(),
+	}
+}
+
+func generatedListeners() statute.Listeners {
+	return statute.Listeners{
+		// entrypoints:web@static
+		statute.HTTP(":8080").
+			Name("web").
+			With(statute.IngressPolicy{
+				ForwardedHeaders: true,
+				NormalizePath:    true,
+				HeaderAliases:    statute.HeaderAliasesKeep,
+			}),
+	}
+}
+
+func generatedUpstreams() statute.Upstreams {
+	return statute.Upstreams{
+		// services:app@file
+		"app@file": makePool("http://127.0.0.1:9000", defaultTransport()),
+
+		// services:spare@file
+		"spare@file": makePool("http://127.0.0.1:9001", defaultTransport()),
+
+		// services:stream@file
+		"stream@file": makePool("http://127.0.0.1:9002", streamTransport()),
+	}
+}
+
+func generatedRoutes() statute.Routes {
+	return statute.Routes{
+		// routers:admin@file
+		statute.MatchPrefix("/api").
+			ProxyTo("stream@file").
+			Priority(43).
+			OnListeners("web").
+			Hosts("admin.example", "admin.example.").
+			With(entrypointMiddleware(), byHost(), byHeader()),
+
+		// routers:app@file
+		statute.Match("/*").
+			ProxyTo("app@file").
+			Priority(38).
+			OnListeners("web").
+			Hosts("a.example", "a.example.", "b.example", "b.example.").
+			With(entrypointMiddleware()).
+			With(stack()...).
+			With(twin()),
+	}
+}
+
+// middlewares:by-header@file
+func byHeader() statute.Middleware {
+	return statute.InOrder(
+		statute.RateLimit("5/s").
+			Burst(10).
+			Reserve("100ms").
+			ExpireIdle("2s").
+			EvictOldest().
+			FromHeader("X-Client"),
+	)
+}
+
+// middlewares:by-host@file
+func byHost() statute.Middleware {
+	return statute.InOrder(
+		statute.RateLimit("5/s").
+			Burst(10).
+			Reserve("100ms").
+			ExpireIdle("2s").
+			EvictOldest().
+			Per(statute.HostHeader),
+	)
+}
+
+// Traefik default serversTransport
+func defaultTransport() statute.Transport {
+	return statute.Transport{
+		MaxIdleConnsPerHost: 200,
+		DialTimeout:         "30s",
+		IdleConnTimeout:     "90s",
+		TLSHandshakeTimeout: "10s",
+		FlushInterval:       "100ms",
+	}
+}
+
+// middlewares:edge@file
+func edge() statute.Middleware {
+	return statute.InOrder(
+		makeRateLimit(rateLimitSettings{
+			Rate:       "50/s",
+			Burst:      100,
+			Reserve:    "10ms",
+			ExpireIdle: "2s",
+			Selection:  statute.IPSelection{Mode: "peer"},
+		}),
+	)
+}
+
+// entrypoints:web@static
+func entrypointMiddleware() statute.Middleware {
+	return statute.OnListeners([]string{"web"}, edge())
+}
+
+// middlewares:limit@file
+func limit() statute.Middleware {
+	return statute.InOrder(
+		makeRateLimit(rateLimitSettings{
+			Rate:       "20/s",
+			Burst:      40,
+			Reserve:    "25ms",
+			ExpireIdle: "2s",
+			Selection:  statute.IPSelection{Mode: "peer"},
+		}),
+	)
+}
+
+// middlewares:stack@file
+func stack() []statute.Middleware {
+	return []statute.Middleware{
+		tag(),
+		limit(),
+	}
+}
+
+// services:stream@file
+func streamTransport() statute.Transport {
+	return statute.Transport{
+		MaxIdleConnsPerHost: 200,
+		DialTimeout:         "30s",
+		IdleConnTimeout:     "90s",
+		TLSHandshakeTimeout: "10s",
+		FlushInterval:       "50ms",
+	}
+}
+
+// middlewares:tag@file
+func tag() statute.Middleware {
+	return statute.InOrder(
+		statute.SetResponseHeader("X-Policy", migrationEnv("GOLDEN_POLICY")),
+	)
+}
+
+// middlewares:twin@file
+func twin() statute.Middleware {
+	return statute.InOrder(
+		makeRateLimit(rateLimitSettings{
+			Rate:       "20/s",
+			Burst:      40,
+			Reserve:    "25ms",
+			ExpireIdle: "2s",
+			Selection:  statute.IPSelection{Mode: "peer"},
+		}),
+	)
+}
+
+type rateLimitSettings struct {
+	Rate                string
+	Burst               int
+	Reserve, ExpireIdle string
+	Selection           statute.IPSelection
+	Header              string
+}
+
+func makeRateLimit(s rateLimitSettings) statute.Middleware {
+	return statute.RateLimit(s.Rate).
+		Burst(s.Burst).
+		Reserve(s.Reserve).
+		ExpireIdle(s.ExpireIdle).
+		EvictOldest().
+		SelectIP(s.Selection)
+}
+
+func makePool(address string, transport statute.Transport) statute.Pool {
+	return statute.Pool{
+		Backends:  []statute.Backend{{Address: address}},
+		Transport: transport,
+	}
+}
+
+func main() {
+	statute.Main(configuration())
+}

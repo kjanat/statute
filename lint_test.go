@@ -96,6 +96,30 @@ func TestLint_HC001SkippedWhenPassiveEnabled(t *testing.T) {
 	}
 }
 
+func TestLint_UpstreamFindingsSortedByPool(t *testing.T) {
+	t.Parallel()
+	cfg := Config{Listeners: Listeners{HTTP(":80")}, Upstreams: Upstreams{}}
+	for _, name := range []string{"h", "c", "f", "a", "g", "d", "b", "e"} {
+		cfg.Upstreams[name] = Pool{Backends: []Backend{{Address: "https://10.0.0.1"}}, Transport: Transport{InsecureSkipVerify: true}}
+		cfg.Routes = append(cfg.Routes, Match("/"+name+"/*").ProxyTo(name))
+	}
+	for range 20 {
+		findings, err := Lint(cfg)
+		if err != nil {
+			t.Fatalf("Lint: %v", err)
+		}
+		paths := map[string][]string{}
+		for _, f := range findings {
+			paths[f.Code] = append(paths[f.Code], f.Path)
+		}
+		for _, code := range []string{"HC001", "LB001", "TLS002"} {
+			if len(paths[code]) != 8 || !slices.IsSorted(paths[code]) {
+				t.Fatalf("%s paths: %v, want 8 in pool-name order", code, paths[code])
+			}
+		}
+	}
+}
+
 func TestLint_DockerPoolPolicyHealthAndTLS(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
