@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -278,7 +279,7 @@ providers:
 		b, _ := json.Marshal(r.Report)
 		t.Fatalf("blocked: %s", b)
 	}
-	if !bytes.Contains(r.Go, []byte(`Middleware("allow@docker"`)) || !bytes.Contains(r.Go, []byte(`PoolPolicy("api@traefik"`)) {
+	if !regexp.MustCompile(`Middleware\(\s*"allow@docker"`).Match(r.Go) || !regexp.MustCompile(`PoolPolicy\(\s*"api@traefik"`).Match(r.Go) {
 		t.Fatalf("registrations missing: %s", r.Go)
 	}
 	assertGeneratedParity(t, r)

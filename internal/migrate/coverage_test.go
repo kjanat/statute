@@ -240,6 +240,9 @@ func TestGuardedMiddlewareCandidatesCompile(t *testing.T) {
 		r := audit(t, basicInputs(t, body))
 		if strings.HasPrefix(definition, "retry:") {
 			requireMigrationGaps(t, r, "middlewares.retry.attempts", "routers.$middleware:candidate@file")
+			if !strings.Contains(string(r.Go), "// migrationCandidate0 is incomplete; see the audit for \"middlewares:candidate@file\".\nfunc migrationCandidate0() []statute.Middleware {") {
+				t.Fatalf("guarded candidate helper missing:\n%s", r.Go)
+			}
 		} else {
 			requireMigrationGaps(t, r)
 			if r.Report.GeneratedRoutes == 0 {

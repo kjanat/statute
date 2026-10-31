@@ -175,7 +175,7 @@ func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []
 	suites, code := tlsSuites(object, base)
 	p.CipherSuites = suites
 	opts := []statute.ListenerOption{p}
-	codes := []string{fmt.Sprintf("statute.TLSPolicy{MinVersion:statute.TLSVersion(%d),MaxVersion:statute.TLSVersion(%d),CipherSuites:[]statute.CipherSuite{%s},StrictSNI:%t,Identity:%q}", p.MinVersion, p.MaxVersion, code, p.StrictSNI, name)}
+	codes := []string{fmt.Sprintf("statute.TLSPolicy{MinVersion:%s,MaxVersion:%s,CipherSuites:[]statute.CipherSuite{%s},StrictSNI:%t,Identity:%q}", tlsVersionCode(p.MinVersion), tlsVersionCode(p.MaxVersion), code, p.StrictSNI, name)}
 	opts, codes = clientAuthentication(object, base, opts, codes)
 	if scalar(object.value(base+".sniStrict")) == falseValue {
 		object.mark(base+".sniStrict", Exact, "unknown SNI may use the fallback certificate")
@@ -185,6 +185,39 @@ func (g *generator) selectedTLSPolicy(name string) ([]statute.ListenerOption, []
 	}
 	object.Generated = true
 	return opts, codes, true
+}
+
+var cipherSuiteNames = map[statute.CipherSuite]string{
+	statute.TLSECDHEECDSAWithAES128GCM: "TLSECDHEECDSAWithAES128GCM",
+	statute.TLSECDHERSAWithAES128GCM:   "TLSECDHERSAWithAES128GCM",
+	statute.TLSECDHEECDSAWithAES256GCM: "TLSECDHEECDSAWithAES256GCM",
+	statute.TLSECDHERSAWithAES256GCM:   "TLSECDHERSAWithAES256GCM",
+	statute.TLSECDHEECDSAWithChaCha20:  "TLSECDHEECDSAWithChaCha20",
+	statute.TLSECDHERSAWithChaCha20:    "TLSECDHERSAWithChaCha20",
+	statute.TLSECDHEECDSAWithAES128CBC: "TLSECDHEECDSAWithAES128CBC",
+	statute.TLSECDHERSAWithAES128CBC:   "TLSECDHERSAWithAES128CBC",
+	statute.TLSECDHEECDSAWithAES256CBC: "TLSECDHEECDSAWithAES256CBC",
+	statute.TLSECDHERSAWithAES256CBC:   "TLSECDHERSAWithAES256CBC",
+}
+
+func cipherSuiteCode(suite statute.CipherSuite) string {
+	if name, ok := cipherSuiteNames[suite]; ok {
+		return "statute." + name
+	}
+	return fmt.Sprintf("statute.CipherSuite(%d)", suite)
+}
+
+func tlsVersionCode(version statute.TLSVersion) string {
+	switch version {
+	case statute.TLS12:
+		return "statute.TLS12"
+	case statute.TLS13:
+		return "statute.TLS13"
+	case 0:
+		return "0"
+	default:
+		return fmt.Sprintf("statute.TLSVersion(%d)", version)
+	}
 }
 
 func tlsSuites(o *Object, base string) ([]statute.CipherSuite, string) {
@@ -199,7 +232,7 @@ func tlsSuites(o *Object, base string) ([]statute.CipherSuite, string) {
 		for _, suite := range append(tls.CipherSuites(), tls.InsecureCipherSuites()...) {
 			if suite.Name == name {
 				out = append(out, statute.CipherSuite(suite.ID))
-				code = append(code, fmt.Sprintf("statute.CipherSuite(%d)", suite.ID))
+				code = append(code, cipherSuiteCode(statute.CipherSuite(suite.ID)))
 				found = true
 				break
 			}

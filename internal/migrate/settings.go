@@ -103,7 +103,7 @@ func (g *generator) ping(o *Object) {
 		}
 		route := statute.MatchExact("/ping").OnListeners(entry).Priority(math.MaxInt).Handle(statute.Ping(status))
 		g.internalRoutes = append(g.internalRoutes, route)
-		g.internalCode = append(g.internalCode, "statute.MatchExact(\"/ping\").OnListeners("+strconv.Quote(entry)+").Priority("+strconv.Itoa(math.MaxInt)+").Handle(statute.Ping("+strconv.Itoa(status)+"))")
+		g.internalCode = append(g.internalCode, fragment{origin: o.identity(), code: "statute.MatchExact(\"/ping\").OnListeners(" + strconv.Quote(entry) + ").Priority(" + g.priorityCode(math.MaxInt) + ").Handle(statute.Ping(" + statusCode(status) + "))"})
 	}
 	for _, key := range []string{"entryPoint", "manualRouting", "terminatingStatusCode"} {
 		o.mark(key, Translated, "listener-scoped process ping with shutdown status")

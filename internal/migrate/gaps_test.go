@@ -3,6 +3,7 @@ package migrate
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +185,7 @@ func TestDockerPolicyFamiliesUseCaseInsensitiveLabelPaths(t *testing.T) {
 `)
 	r := audit(t, in)
 	requireMigrationGaps(t, r)
-	if !strings.Contains(string(r.Go), `statute.RateLimit("20/s")`) || !strings.Contains(string(r.Go), "MaxFailures: 3") {
+	if !strings.Contains(string(r.Go), `statute.RateLimit("20/s")`) || !regexp.MustCompile(`MaxFailures:\s+3,`).Match(r.Go) {
 		t.Fatal("Docker policy candidates missing")
 	}
 	assertGeneratedParity(t, r)

@@ -37,7 +37,7 @@ func sourceIPSelection(o *Object, base string) (statute.IPSelection, string, boo
 }
 
 func sourceIPv6Subnet(o *Object, base string, p *statute.IPSelection) (string, bool) {
-	subnet := "nil"
+	subnet := nilValue
 	if value := o.value(base + ".ipv6Subnet"); value != nil {
 		n, err := integer(value)
 		if err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"io"
+	"math"
 	"net/url"
 	"slices"
 	"strconv"
@@ -22,14 +23,15 @@ type middleware struct {
 
 type generator struct {
 	r               *Result
-	listeners       []string
+	listeners       []fragment
 	pools           map[string]string
-	routes          []string
+	routes          []fragment
 	internalRoutes  []*statute.Route
-	internalCode    []string
+	internalCode    []fragment
 	disabledRouters map[*Object]bool
-	fallbacks       []string
+	fallbacks       []fragment
 	docker          string
+	dockerOrigin    string
 	objects         map[string]*Object
 	chains          map[string]middleware
 	visiting        map[string]bool
@@ -41,6 +43,7 @@ type generator struct {
 	keyFile         string
 	imports         map[string]bool
 	helpers         map[string]string
+	candidates      map[string]fragment
 	entrypoints     map[string]*Object
 	entryTLS        map[string]bool
 	routerEntries   map[*Object][]string
@@ -55,6 +58,7 @@ func generate(r *Result) error {
 	g := &generator{r: r, pools: map[string]string{}, objects: map[string]*Object{}, chains: map[string]middleware{}, visiting: map[string]bool{}, attempted: map[string]bool{}, transports: map[string]statute.Transport{}, transportCode: map[string]string{}, hosts: map[string]bool{}}
 	g.imports = map[string]bool{}
 	g.helpers = map[string]string{}
+	g.candidates = map[string]fragment{}
 	g.entrypoints = map[string]*Object{}
 	g.entryTLS = map[string]bool{}
 	g.routerEntries = map[*Object][]string{}
@@ -80,7 +84,7 @@ func generate(r *Result) error {
 	if len(g.entryDefaults.values) > 0 {
 		for i, route := range g.internalRoutes {
 			route.WithOuter(g.entryDefaults.values...)
-			g.internalCode[i] += ".WithOuter(" + strings.Join(g.entryDefaults.code, ",") + ")"
+			g.internalCode[i].code += ".WithOuter(" + strings.Join(g.entryDefaults.code, ",") + ")"
 		}
 	}
 	r.Config.Routes = append(r.Config.Routes, g.internalRoutes...)
@@ -195,6 +199,7 @@ func (g *generator) dockerProvider(o *Object) {
 	}
 	g.r.Config.Docker = d
 	g.docker = code
+	g.dockerOrigin = o.identity()
 	o.Generated = true
 }
 
@@ -445,7 +450,7 @@ func (g *generator) router(o *Object) {
 	for _, m := range ms {
 		m.Priority = priority(o)
 		m.ListenerNames = append([]string(nil), g.routerEntries[o]...)
-		g.proxyRoute(m, name, chain)
+		g.proxyRoute(m, name, chain, o.identity())
 	}
 	g.markMiddlewaresUsed(refs, o.Provider)
 	o.Generated = true
@@ -557,7 +562,7 @@ func (g *generator) dockerDependencies(o *Object) {
 	}
 }
 
-func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) {
+func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware, origin string) {
 	hosts := hostSpellings(m.Host)
 	constructor := "Match"
 	newRoute := statute.Match
@@ -595,10 +600,10 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 	}
 	if g.terminalMatcher(m) {
 		g.r.Config.FallbackRoutes = append(g.r.Config.FallbackRoutes, route)
-		g.fallbacks = append(g.fallbacks, code)
+		g.fallbacks = append(g.fallbacks, fragment{origin: origin, code: code})
 	} else {
 		g.r.Config.Routes = append(g.r.Config.Routes, route)
-		g.routes = append(g.routes, code)
+		g.routes = append(g.routes, fragment{origin: origin, code: code})
 	}
 	g.r.Report.GeneratedRoutes += max(1, len(hosts))
 }
@@ -692,13 +697,8 @@ func (g *generator) checkTopology(routes, pools int) {
 
 func (g *generator) source() ([]byte, error) {
 	var b strings.Builder
-	b.WriteString("// Generated migration configuration. Review the accompanying audit before deployment.\npackage main\n\nimport statute \"statute.kjanat.dev\"\n")
-	for _, name := range keys(g.imports) {
-		fmt.Fprintf(&b, "import %q\n", name)
-	}
-	for _, name := range keys(g.helpers) {
-		b.WriteString(g.helpers[name])
-		b.WriteString("\n")
+	if err := g.helperSource(&b); err != nil {
+		return nil, err
 	}
 	for _, o := range g.r.Report.Objects {
 		for _, f := range o.Fields {
@@ -707,39 +707,135 @@ func (g *generator) source() ([]byte, error) {
 			}
 		}
 	}
-	b.WriteString("\nfunc configuration() statute.Config {\nreturn statute.Config{\n")
-	b.WriteString("PrioritizeRoutes:true,\nDefaults:")
-	b.WriteString(g.defaults)
-	b.WriteString(",\n")
-	if g.observability != "" {
-		b.WriteString("Observability:")
-		b.WriteString(g.observability)
-		b.WriteString(",\n")
+	if err := g.configurationSource(&b); err != nil {
+		return nil, err
 	}
-	b.WriteString("Listeners:statute.Listeners{")
-	b.WriteString(strings.Join(g.listeners, ","))
-	b.WriteString("},\nUpstreams:statute.Upstreams{\n")
-	for _, name := range keys(g.pools) {
-		fmt.Fprintf(&b, "%q:%s,\n", name, g.pools[name])
-	}
-	b.WriteString("},\nRoutes:statute.Routes{")
-	b.WriteString(strings.Join(g.routes, ","))
-	b.WriteString("},\nFallbackRoutes:statute.Routes{")
-	b.WriteString(strings.Join(g.fallbacks, ","))
-	b.WriteString("},\n")
-	if g.docker != "" {
-		b.WriteString("Docker:")
-		b.WriteString(g.docker)
-		b.WriteString(",\n")
-	}
-	b.WriteString("}\n}\n\nfunc main(){\n")
+	b.WriteString("\nfunc main(){\n")
 	if g.hasImplementationGaps() {
 		b.WriteString("// TODO: resolve every blocking audit finding and validate the completed configuration.\npanic(\"migration incomplete: resolve blocking findings before serving\")\n")
 	} else {
 		b.WriteString("statute.Main(configuration())\n")
 	}
 	b.WriteString("}\n")
-	return format.Source([]byte(b.String()))
+	header, err := g.importHeader(b.String())
+	if err != nil {
+		return nil, err
+	}
+	return format.Source([]byte(header + b.String()))
+}
+
+func (g *generator) helperSource(b *strings.Builder) error {
+	for _, name := range keys(g.helpers) {
+		b.WriteString(g.helpers[name])
+		b.WriteString("\n")
+	}
+	for _, name := range keys(g.candidates) {
+		candidate := g.candidates[name]
+		code, err := layoutExpr(candidate.code)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(b, "// %s is incomplete; see the audit for %s.\nfunc %s() []statute.Middleware {\nreturn %s\n}\n", name, strconv.Quote(candidate.origin), name, code)
+	}
+	return nil
+}
+
+func (g *generator) importHeader(body string) (string, error) {
+	used, err := usedImports("package main\n" + body)
+	if err != nil {
+		return "", err
+	}
+	for name := range g.imports {
+		used[name] = true
+	}
+	var header strings.Builder
+	header.WriteString("// Generated migration configuration. Review the accompanying audit before deployment.\npackage main\n\nimport (\n")
+	for _, name := range keys(used) {
+		fmt.Fprintf(&header, "%q\n", name)
+	}
+	header.WriteString("\nstatute \"statute.kjanat.dev\"\n)\n")
+	return header.String(), nil
+}
+
+func (g *generator) configurationSource(b *strings.Builder) error {
+	defaults, err := layoutExpr(g.defaults)
+	if err != nil {
+		return err
+	}
+	b.WriteString("\nfunc configuration() statute.Config {\nreturn statute.Config{\nPrioritizeRoutes: true,\nDefaults: " + defaults + ",\n")
+	if g.observability != "" {
+		observability, err := layoutExpr(g.observability)
+		if err != nil {
+			return err
+		}
+		b.WriteString("Observability: " + observability + ",\n")
+	}
+	var sections strings.Builder
+	for _, section := range []struct {
+		field, name, typ string
+		items            []fragment
+	}{
+		{"Listeners", "generatedListeners", "statute.Listeners", g.listeners},
+		{"Upstreams", "generatedUpstreams", "statute.Upstreams", g.poolFragments()},
+		{"Routes", "generatedRoutes", "statute.Routes", g.routes},
+		{"FallbackRoutes", "generatedFallbackRoutes", "statute.Routes", g.fallbacks},
+	} {
+		if len(section.items) == 0 {
+			continue
+		}
+		b.WriteString(section.field + ": " + section.name + "(),\n")
+		if err := writeSection(&sections, section.name, section.typ, section.items); err != nil {
+			return err
+		}
+	}
+	if g.docker != "" {
+		docker, err := layoutExpr(g.docker)
+		if err != nil {
+			return err
+		}
+		b.WriteString("Docker: generatedDocker(),\n")
+		sections.WriteString("\nfunc generatedDocker() *statute.DockerConfig {\n" + originComment(g.dockerOrigin) + "\nreturn " + docker + "\n}\n")
+	}
+	b.WriteString("}\n}\n")
+	b.WriteString(sections.String())
+	return nil
+}
+
+func (g *generator) poolFragments() []fragment {
+	out := make([]fragment, 0, len(g.pools))
+	for _, name := range keys(g.pools) {
+		out = append(out, fragment{origin: "services:" + name, code: g.pools[name], key: strconv.Quote(name) + ": "})
+	}
+	return out
+}
+
+func writeSection(b *strings.Builder, name, typ string, items []fragment) error {
+	b.WriteString("\nfunc " + name + "() " + typ + " {\nreturn " + typ + "{\n")
+	for i, item := range items {
+		code, err := layoutExpr(item.code)
+		if err != nil {
+			return err
+		}
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(originComment(item.origin) + "\n" + item.key + code + ",\n")
+	}
+	b.WriteString("}\n}\n")
+	return nil
+}
+
+func (g *generator) priorityCode(n int) string {
+	switch n {
+	case math.MaxInt:
+		g.imports["math"] = true
+		return "math.MaxInt"
+	case math.MaxInt - 1:
+		g.imports["math"] = true
+		return "math.MaxInt - 1"
+	default:
+		return strconv.Itoa(n)
+	}
 }
 
 func (g *generator) hasImplementationGaps() bool {
