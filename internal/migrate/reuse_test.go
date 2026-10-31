@@ -218,7 +218,7 @@ func TestSliceHelpersSpreadAtEveryUseSite(t *testing.T) {
       chain: {middlewares: [limit, limit]}
 `
 	in := basicInputs(t, body)
-	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n    http: {sanitizePath: false, middlewares: [stack@file]}\nproviders:\n  docker: {exposedByDefault: false}\n")}
+	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web:\n    address: ':8080'\n    http: {sanitizePath: false, middlewares: [stack@file]}\nping: {entryPoint: web}\nproviders:\n  docker: {exposedByDefault: false}\n")}
 	in.Compose = []string{fixture(t, "compose.yml", "services:\n  app:\n    labels:\n      traefik.enable: 'true'\n      traefik.http.routers.app.rule: Host(`app.example`)\n      traefik.http.routers.app.middlewares: stack@file\n      traefik.http.services.app.loadbalancer.server.port: '8080'\n")}
 	result := audit(t, in)
 	source := string(result.Go)
@@ -227,6 +227,7 @@ func TestSliceHelpersSpreadAtEveryUseSite(t *testing.T) {
 		`statute.OnListeners([]string{"web"}, stack()...)`,
 		`Middleware("stack@file", stack()...)`,
 		"With(stack()...)",
+		"WithOuter(entrypointMiddleware())",
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("missing %q:\n%s", want, source)
