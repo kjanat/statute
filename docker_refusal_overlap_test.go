@@ -1,6 +1,7 @@
 package statute
 
 import (
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"statute.kjanat.dev/internal/docker"
+	"statute.kjanat.dev/resolved"
 )
 
 func TestDockerRejectedAuthRouteCannotFallThrough(t *testing.T) {
@@ -53,6 +55,43 @@ func TestDockerRejectedAuthRouteCannotFallThrough(t *testing.T) {
 				t.Fatalf("status=%d backend calls=%d body=%q; want status=%d without backend access", rec.Code, calls.Load(), rec.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestDockerRejectedAuthIgnoresDisabledListenerConstraints(t *testing.T) {
+	cfg, err := resolveDocker(Docker().TraefikLabels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{
+		"traefik.enable":                           "true",
+		"traefik.http.routers.private.rule":        "Host(`app.example.com`) && PathPrefix(`/admin`)",
+		"traefik.http.routers.private.entrypoints": "web",
+		"traefik.http.routers.private.middlewares": "missing-auth",
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{name: "app", ip: "127.0.0.1", port: 8080, labels: labels}})
+	srv.cfg.Fallback = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	mustSync(t, p)
+	w := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://app.example.com/admin/secret", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("rejected auth route reached fallback: status=%d", w.Code)
+	}
+}
+
+func TestCompiledRouteUsesDockerServiceWithoutRouter(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) }))
+	t.Cleanup(backend.Close)
+	host, port := backendHostPort(t, backend)
+	cfg, err := resolveDocker(Docker().TraefikLabels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{name: "api", ip: host, port: port, labels: map[string]string{"traefik.enable": "true", "traefik.http.services.api.loadbalancer.server.port": fmt.Sprint(port)}}})
+	srv.cfg.Routes = []*resolved.Route{{Host: "api.example", Pattern: "/*", DiscoveredUpstream: "api@traefik"}}
+	mustSync(t, p)
+	w := runRequest(t, srv.buildRouter(), httptest.NewRequest(http.MethodGet, "http://api.example/", nil))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("service-only backend unavailable: %d %s", w.Code, w.Body.String())
 	}
 }
 

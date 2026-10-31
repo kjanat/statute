@@ -23,8 +23,9 @@ const (
 // pool. The provider merges Services with the same name across containers
 // into one pool.
 type Service struct {
-	Name   string
-	Routes []Matcher
+	BoundService string
+	Name         string
+	Routes       []Matcher
 	// Backend is this container's address, "ip:port" or "https://ip:port".
 	// It is empty for a dormant contribution: a stopped container has no
 	// network IP, so its address exists only once it runs.
@@ -59,6 +60,9 @@ type Backend struct {
 
 // ExtractOptions steer label extraction.
 type ExtractOptions struct {
+	BoundServices map[string]bool
+	// ReferencedServices names backend-only services used by compiled routes.
+	ReferencedServices map[string]bool
 	// Network is the preferred docker network to take container IPs from.
 	Network string
 	// ExposedByDefault registers containers that carry no enable label.
@@ -112,7 +116,9 @@ func traefikRouteClaims(c Container, opts ExtractOptions) []RouteClaim {
 		if service == "" {
 			service = defaultServiceName(c)
 		}
-		out = append(out, routeClaims(service+"@traefik", RuleEnvelope(router.rule))...)
+		matchers := RuleEnvelope(router.rule)
+		_ = traefikRouterConstraints(router, matchers)
+		out = append(out, routeClaims(service+"@traefik", matchers)...)
 	}
 	return out
 }
@@ -646,6 +652,8 @@ type traefikRouter struct {
 	rule        string
 	service     string
 	middlewares string
+	entrypoints string
+	priority    string
 }
 
 // traefikService accumulates traefik.http.services.<name>.loadbalancer.*.
@@ -699,7 +707,7 @@ func extractTraefik(c Container, opts ExtractOptions, rejected *[]Matcher) ([]Se
 	var tombs []Matcher
 	for _, rn := range routerNames {
 		r := routers[rn]
-		svc, env, w := bindTraefikRouter(c, r, services, serviceNames, ip, rejected)
+		svc, env, w := bindTraefikRouter(c, r, services, serviceNames, ip, rejected, opts.BoundServices)
 		warns = append(warns, w...)
 		tombs = append(tombs, env...)
 		if svc == nil {
@@ -711,6 +719,7 @@ func extractTraefik(c Container, opts ExtractOptions, rejected *[]Matcher) ([]Se
 			out[svc.Name] = svc
 		}
 	}
+	warns = append(warns, addReferencedTraefikServices(c, opts, services, ip, out)...)
 	var list []Service
 	for _, n := range sortedKeys(out) {
 		list = append(list, *out[n])
@@ -730,9 +739,11 @@ func traefikTombstones(c Container, rejected *[]Matcher) ([]Matcher, []string) {
 	var warns []string
 	for _, rn := range sortedKeys(routers) {
 		if matchers, err := ParseRule(routers[rn].rule); err == nil {
+			_ = traefikRouterConstraints(routers[rn], matchers)
 			*rejected = append(*rejected, matchers...)
 		}
 		env := RuleEnvelope(routers[rn].rule)
+		_ = traefikRouterConstraints(routers[rn], env)
 		if len(env) == 0 {
 			continue
 		}
@@ -779,7 +790,11 @@ func traefikRouterLabel(c Container, routers map[string]*traefikRouter, k, v str
 		r.rule = v
 	case "service":
 		r.service = v
-	case "entrypoints", "entryPoints", "tls", "tls.certresolver", "tls.certResolver", "priority":
+	case "priority":
+		r.priority = v
+	case "entrypoints", "entryPoints":
+		r.entrypoints = v
+	case "tls", "tls.certresolver", "tls.certResolver":
 		// Entrypoints and TLS are listener-level concerns in statute;
 		// harmless to ignore.
 	case "middlewares":
@@ -841,10 +856,11 @@ func traefikServiceName(c Container, r *traefikRouter, serviceNames []string) (s
 // bindTraefikRouter resolves one router into a Service carrying its
 // matchers and this container's backend. When the router cannot be bound it
 // returns the refusal envelope covering the traffic its rule claimed.
-func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string, rejected *[]Matcher) (*Service, []Matcher, []string) {
+func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traefikService, serviceNames []string, ip string, rejected *[]Matcher, bound map[string]bool) (*Service, []Matcher, []string) {
 	var warns []string
 	var parsed []Matcher
 	refuse := func(env []Matcher) (*Service, []Matcher, []string) {
+		_ = traefikRouterConstraints(r, env)
 		*rejected = append(*rejected, parsed...)
 		return nil, env, append(warns, RefusalWarning(fmt.Sprintf("container %s: router %q", c.Name, r.name), env))
 	}
@@ -859,8 +875,11 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 		warns = append(warns, fmt.Sprintf("container %s: router %q: %v, dropping its routes", c.Name, r.name, err))
 		return refuse(RuleEnvelope(r.rule))
 	}
+	if !traefikRouterConstraints(r, matchers) {
+		return refuse(EnvelopeOf(matchers))
+	}
 	parsed = matchers
-	if ip == "" && c.Running {
+	if traefikMissingAddress(c, r, ip, bound) {
 		return refuse(EnvelopeOf(matchers))
 	}
 	stampMiddlewares(matchers, r.middlewares)
@@ -872,39 +891,38 @@ func bindTraefikRouter(c Container, r *traefikRouter, services map[string]*traef
 	if svcName == "" {
 		return refuse(EnvelopeOf(matchers))
 	}
+	if bound[svcName] {
+		return &Service{Name: svcName + "@traefik", BoundService: svcName, Routes: matchers, Container: c.Name, ContainerID: c.ID, Running: c.Running, Contributors: 1}, nil, warns
+	}
 	ts := services[svcName]
 	if ts == nil {
 		ts = &traefikService{}
 	}
 
-	// A stopped container contributes no address; see Service.Backend.
-	var backend Backend
-	if c.Running {
-		addr, bw := traefikBackend(c, ts, ip)
-		warns = append(warns, bw...)
-		if addr == "" {
-			return refuse(EnvelopeOf(matchers))
-		}
-		backend = Backend{Address: addr, Weight: 1}
+	svc, warnings := traefikContribution(c, svcName, ts, ip)
+	warns = append(warns, warnings...)
+	if svc == nil {
+		return refuse(EnvelopeOf(matchers))
 	}
-
-	// Namespace traefik-defined pools so they cannot collide with pools
-	// from native statute labels on sibling containers.
-	svc := &Service{
-		Name:    svcName + "@traefik",
-		Routes:  matchers,
-		Backend: backend,
-
-		Container:    c.Name,
-		ContainerID:  c.ID,
-		Running:      c.Running,
-		Contributors: 1,
-
-		HealthCheckPath:     ts.hcPath,
-		HealthCheckInterval: ts.hcInterval,
-		HealthCheckTimeout:  ts.hcTimeout,
-	}
+	svc.Routes = matchers
 	return svc, nil, warns
+}
+
+func traefikContribution(c Container, name string, ts *traefikService, ip string) (*Service, []string) {
+	var backend Backend
+	var warnings []string
+	if c.Running {
+		if ip == "" {
+			return nil, nil
+		}
+		address, w := traefikBackend(c, ts, ip)
+		warnings = append(warnings, w...)
+		if address == "" {
+			return nil, warnings
+		}
+		backend = Backend{Address: address, Weight: 1}
+	}
+	return &Service{Name: name + "@traefik", Backend: backend, Container: c.Name, ContainerID: c.ID, Running: c.Running, Contributors: 1, HealthCheckPath: ts.hcPath, HealthCheckInterval: ts.hcInterval, HealthCheckTimeout: ts.hcTimeout}, warnings
 }
 
 // traefikBackend resolves the service's backend address for this container.
@@ -958,4 +976,46 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func addReferencedTraefikServices(c Container, opts ExtractOptions, services map[string]*traefikService, ip string, out map[string]*Service) []string {
+	var warningsOut []string
+	for _, name := range sortedKeys(services) {
+		if out[name+"@traefik"] != nil || opts.BoundServices[name] || !opts.ReferencedServices[name+"@traefik"] {
+			continue
+		}
+		svc, warnings := traefikContribution(c, name, services[name], ip)
+		warningsOut = append(warningsOut, warnings...)
+		if svc != nil {
+			out[svc.Name] = svc
+		}
+	}
+	return warningsOut
+}
+
+func traefikRouterConstraints(r *traefikRouter, matchers []Matcher) bool {
+	priority := len(r.rule)
+	if r.priority != "" {
+		n, err := strconv.Atoi(r.priority)
+		if err != nil {
+			return false
+		}
+		if n != 0 {
+			priority = n
+		}
+	}
+	for i := range matchers {
+		matchers[i].Priority = priority
+		matchers[i].ListenerNames = nil
+		for name := range strings.SplitSeq(r.entrypoints, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				matchers[i].ListenerNames = append(matchers[i].ListenerNames, name)
+			}
+		}
+	}
+	return true
+}
+
+func traefikMissingAddress(c Container, r *traefikRouter, ip string, bound map[string]bool) bool {
+	return ip == "" && c.Running && !bound[r.service]
 }

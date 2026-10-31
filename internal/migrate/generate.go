@@ -21,29 +21,34 @@ type middleware struct {
 }
 
 type generator struct {
-	r              *Result
-	listeners      []string
-	pools          map[string]string
-	routes         []string
-	fallbacks      []string
-	docker         string
-	objects        map[string]*Object
-	chains         map[string]middleware
-	visiting       map[string]bool
-	attempted      map[string]bool
-	transports     map[string]statute.Transport
-	transportCode  map[string]string
-	hosts          map[string]bool
-	certFile       string
-	keyFile        string
-	imports        map[string]bool
-	helpers        map[string]string
-	entrypoints    map[string]*Object
-	entryTLS       map[string]bool
-	routerEntries  map[*Object][]string
-	contentEntries []string
-	defaults       string
-	defaultEntries []string
+	r               *Result
+	listeners       []string
+	pools           map[string]string
+	routes          []string
+	internalRoutes  []*statute.Route
+	internalCode    []string
+	disabledRouters map[*Object]bool
+	fallbacks       []string
+	docker          string
+	objects         map[string]*Object
+	chains          map[string]middleware
+	visiting        map[string]bool
+	attempted       map[string]bool
+	transports      map[string]statute.Transport
+	transportCode   map[string]string
+	hosts           map[string]bool
+	certFile        string
+	keyFile         string
+	imports         map[string]bool
+	helpers         map[string]string
+	entrypoints     map[string]*Object
+	entryTLS        map[string]bool
+	routerEntries   map[*Object][]string
+	contentEntries  []string
+	observability   string
+	defaults        string
+	defaultEntries  []string
+	entryDefaults   middleware
 }
 
 func generate(r *Result) error {
@@ -53,7 +58,9 @@ func generate(r *Result) error {
 	g.entrypoints = map[string]*Object{}
 	g.entryTLS = map[string]bool{}
 	g.routerEntries = map[*Object][]string{}
+	g.disabledRouters = map[*Object]bool{}
 	r.Config.Upstreams = statute.Upstreams{}
+	r.Config.PrioritizeRoutes = true
 	g.indexObjects()
 	g.each(kindTLS, g.certificates)
 	g.planListeners()
@@ -70,14 +77,23 @@ func generate(r *Result) error {
 	for _, o := range routers {
 		g.router(o)
 	}
-	g.checkPrecedence(routers)
+	if len(g.entryDefaults.values) > 0 {
+		for i, route := range g.internalRoutes {
+			route.WithOuter(g.entryDefaults.values...)
+			g.internalCode[i] += ".WithOuter(" + strings.Join(g.entryDefaults.code, ",") + ")"
+		}
+	}
+	r.Config.Routes = append(r.Config.Routes, g.internalRoutes...)
+	g.routes = append(g.routes, g.internalCode...)
+	r.Report.GeneratedRoutes += len(g.internalRoutes)
+	g.unusedTLSPolicies()
+	g.checkPrecedence()
 	if r.Config.Docker != nil {
 		g.registerMiddleware(routers)
 	}
 	r.Report.Hosts = len(g.hosts)
 	g.validate()
 	g.bindingChecks()
-	g.each("services", checkDegradedHealthPolicy)
 	finish(&r.Report)
 	source, err := g.source()
 	if err != nil {
@@ -115,13 +131,10 @@ func (g *generator) infrastructure(o *Object) {
 		g.provider(o)
 	case "serversTransports":
 		g.transport(o)
-	case "tcp", "udp":
+	case protocolTCP, "udp":
 		o.mark("", OutOfScope, "TCP/UDP migration is outside the HTTP MVP")
-		o.note("$parity", Manual, "non-HTTP traffic requires a separate migration")
 	case "setting":
-		if o.Name == "api" || o.Name == "dashboard" {
-			o.mark("", OutOfScope, "Traefik dashboard is outside Statute's scope")
-		}
+		g.setting(o)
 	case kindTLS, "certificatesresolvers":
 		// These objects are consumed by the listeners that select them.
 	}
@@ -156,8 +169,9 @@ func (g *generator) provider(o *Object) {
 }
 
 func (g *generator) dockerProvider(o *Object) {
-	d := statute.Docker().TraefikLabels()
-	code := "statute.Docker().TraefikLabels()" + dockerEndpoint(o, d) + dockerNetwork(o, d)
+	d := statute.Docker().TraefikLabels().RouterConstraints()
+	d.DefaultListeners(g.defaultEntries...)
+	code := "statute.Docker().TraefikLabels().RouterConstraints().DefaultListeners(" + quoted(g.defaultEntries) + ")" + dockerEndpoint(o, d) + dockerNetwork(o, d)
 	exposed := true
 	if v := o.value("exposedByDefault"); v != nil {
 		var err error
@@ -221,9 +235,11 @@ func (g *generator) service(o *Object) {
 	if !ok {
 		return
 	}
-	parts := []string{"Backends:[]statute.Backend{" + strings.Join(backends, ",") + "}"}
+	parts := []string{"Backends:[]statute.Backend{" + strings.Join(backends, ",") + "}", fmt.Sprintf("AllowEmpty:%t", pool.AllowEmpty)}
 	parts = append(parts, serviceHost(o, &pool)...)
-	parts = append(parts, serviceHealth(o, &pool)...)
+	parts = append(parts, g.serviceHealth(o, &pool)...)
+	parts = append(parts, servicePassiveHealth(o, &pool)...)
+	parts = append(parts, fmt.Sprintf("RejectUnhealthy:%t", pool.RejectUnhealthy))
 	if name := o.text("loadBalancer.serversTransport"); name != "" {
 		o.reference("loadBalancer.serversTransport", "transport", name)
 		id := qualified(name, o.Provider)
@@ -238,7 +254,7 @@ func (g *generator) service(o *Object) {
 	}
 	serviceFlush(o, &pool.Transport)
 	parts = append(parts, "Transport:"+transportLiteral(pool.Transport))
-	if !o.ready() {
+	if !o.readyWithBindings() {
 		return
 	}
 	id := o.Name + "@file"
@@ -254,8 +270,13 @@ func (g *generator) service(o *Object) {
 
 func serviceBackends(o *Object, pool *statute.Pool) ([]string, bool) {
 	servers, ok := o.value("loadBalancer.servers").([]any)
-	if !ok || len(servers) == 0 {
+	if !ok {
 		return nil, false
+	}
+	if len(servers) == 0 {
+		pool.AllowEmpty = true
+		o.mark("loadBalancer.servers", Translated, "empty upstream returns 503")
+		return nil, true
 	}
 	var backends []string
 	for i, item := range servers {
@@ -305,7 +326,7 @@ func serviceHost(o *Object, pool *statute.Pool) []string {
 }
 
 func (g *generator) dockerService(o *Object) {
-	for _, key := range []string{"loadbalancer.server.port", "loadbalancer.server.scheme"} {
+	for _, key := range []string{dockerServerPort, "loadbalancer.server.scheme"} {
 		classifyDockerServiceField(o, key)
 	}
 	g.dockerPoolPolicy(o)
@@ -325,7 +346,7 @@ func classifyDockerServiceField(o *Object, key string) {
 			o.mark(key, Unsupported, "backend protocol is unsupported")
 			return
 		}
-	case "loadbalancer.server.port":
+	case dockerServerPort:
 		if !validPort(v) {
 			return
 		}
@@ -382,8 +403,17 @@ func priority(o *Object) int {
 
 func (g *generator) router(o *Object) {
 	g.r.Report.Routes++
+	if g.disabledRouters[o] {
+		o.mark("", OutOfScope, "router disabled by source strict TLS conflict policy")
+		o.Generated = true
+		return
+	}
 	ms, ok := g.parseRouter(o)
 	if !ok {
+		return
+	}
+	if qualified(o.text("service"), o.Provider) == "api@internal" {
+		o.mark("", OutOfScope, "Traefik API and dashboard routes are outside HTTP proxy migration")
 		return
 	}
 	g.classifyRouterPolicy(o)
@@ -400,25 +430,21 @@ func (g *generator) router(o *Object) {
 	if o.Provider != providerFile {
 		return
 	}
-	if target, status, ok := g.redirect(o, refs); ok {
-		g.redirectRoutes(o, ms, target, status)
-		return
-	}
 	name := qualified(o.text("service"), o.Provider)
 	o.reference("service", "service", o.text("service"))
-	if _, ok := g.pools[name]; !ok {
+	if !g.serviceAvailable(name) {
+		o.mark("service", Exact, "provider-qualified service reference inventoried; unresolved service is reported separately")
 		o.note("$service", Manual, "service reference is missing, unsupported or blocked")
 		return
 	}
-	o.mark("service", Translated, "provider-qualified native upstream pool")
-	if !nativePaths(ms) {
-		o.mark("rule", Manual, "Traefik PathPrefix is a byte prefix (/api includes /api-secret); native wildcard paths are segment-aware")
-		return
-	}
+	o.mark("service", Translated, "provider-qualified native route action")
+
 	if !o.ready() {
 		return
 	}
 	for _, m := range ms {
+		m.Priority = priority(o)
+		m.ListenerNames = append([]string(nil), g.routerEntries[o]...)
 		g.proxyRoute(m, name, chain)
 	}
 	g.markMiddlewaresUsed(refs, o.Provider)
@@ -430,8 +456,8 @@ func (g *generator) parseRouter(o *Object) ([]docker.Matcher, bool) {
 	ms, err := docker.ParseRule(rule)
 	if err != nil || !literal(rule) {
 		g.r.Report.UnknownRouteCounts++
-		o.mark("rule", Unsupported, "unsupported or unresolved matcher; rule text withheld")
-		o.note("$rule", Unsupported, "router rule cannot be translated")
+		o.mark("rule", Unsupported, unsupportedRuleReason(rule))
+		g.accountBlockedRouter(o)
 		return nil, false
 	}
 	for _, m := range ms {
@@ -445,8 +471,11 @@ func (g *generator) parseRouter(o *Object) ([]docker.Matcher, bool) {
 
 func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 	var chain middleware
-	g.checkDefaultMiddleware(o, refs)
-	g.checkMiddlewareOrder(o, refs)
+	if o.Provider != providerDocker {
+		chain.values = append(chain.values, g.entryDefaults.values...)
+		chain.code = append(chain.code, g.entryDefaults.code...)
+	}
+	g.checkDefaultMiddleware(o)
 	for _, ref := range refs {
 		if !literal(ref) {
 			o.note("$middleware", Manual, "unresolved middleware reference; interpolation is not evaluated")
@@ -456,7 +485,8 @@ func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 		id := qualified(ref, o.Provider)
 		mw, found := g.chains[id]
 		if !found {
-			o.note("$middleware:"+id, Manual, "missing or blocked provider-qualified middleware; route must not serve")
+			o.mark("middlewares", Exact, "provider-qualified dependencies are reported in route impact findings")
+			o.note("$middleware:"+id, Manual, "route blocked by middleware "+id+"; see its field findings")
 			continue
 		}
 		if len(chain.values)+len(mw.values) > 256 {
@@ -466,26 +496,37 @@ func (g *generator) routerMiddleware(o *Object, refs []string) middleware {
 		chain.values = append(chain.values, mw.values...)
 		chain.code = append(chain.code, mw.code...)
 	}
-	if len(refs) > 0 && len(chain.code) > 0 {
+	if len(refs) > 0 {
 		o.mark("middlewares", Translated, "ordered code-owned middleware chain, scoped to this router")
 	}
 	return chain
 }
 
 func (g *generator) dockerRouter(o *Object, count int) {
+	if !g.inferDockerService(o) {
+		return
+	}
 	o.reference("service", "service", o.text("service"))
 	if name := o.text("service"); name != "" {
 		if !strings.Contains(name, "@") {
 			o.mark("service", Exact, "retained Docker service reference")
+		} else if g.bindService(o, name) {
+			o.mark("service", Translated, "code-owned handler or static upstream binding")
+			if o.ready() {
+				o.Generated = true
+				g.r.Report.GeneratedRoutes += count
+			}
+			return
 		} else {
-			o.mark("service", Manual, "cross-provider Docker service references require explicit migration")
+			o.note("$service", Manual, "referenced service is absent or blocked")
+			return
 		}
 	}
 	if g.r.Config.Docker == nil {
 		o.note("$provider", Manual, "supply static Docker provider settings before enabling discovery")
 	}
 	if o.value("priority") != nil {
-		o.mark("priority", Manual, "Docker runtime uses matcher specificity, not Traefik numeric priority")
+		o.mark("priority", Exact, "source priority is checked against overlapping routes")
 	}
 	g.dockerDependencies(o)
 	if o.ready() {
@@ -501,7 +542,7 @@ func (g *generator) dockerDependencies(o *Object) {
 		o.note("$service", Manual, "implicit or missing Docker service requires port and service-name review")
 		return
 	}
-	if !service.ready() || service.value("loadbalancer.server.port") == nil {
+	if !service.ready() || service.value(dockerServerPort) == nil {
 		o.note("$service", Manual, "Docker service has unresolved policy or port")
 	}
 	enabled := false
@@ -516,19 +557,35 @@ func (g *generator) dockerDependencies(o *Object) {
 	}
 }
 
-func nativePaths(ms []docker.Matcher) bool {
-	for _, m := range ms {
-		if m.PathKind == docker.PathByte || (m.PathKind == docker.PathExact && strings.HasSuffix(m.Path, "/*")) {
-			return false
-		}
-	}
-	return true
-}
-
 func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) {
 	hosts := hostSpellings(m.Host)
-	route := statute.Match(m.Path).ProxyTo(name).With(chain.values...)
-	code := fmt.Sprintf("statute.Match(%q).ProxyTo(%q)", m.Path, name)
+	constructor := "Match"
+	newRoute := statute.Match
+	switch m.PathKind {
+	case docker.PathExact:
+		constructor = "MatchExact"
+		newRoute = statute.MatchExact
+	case docker.PathByte:
+		constructor = "MatchPrefix"
+		newRoute = statute.MatchPrefix
+	default:
+	}
+	route := newRoute(m.Path).ProxyTo(name).With(chain.values...).Priority(m.Priority).OnListeners(m.ListenerNames...)
+	code := fmt.Sprintf("statute.%s(%q).ProxyTo(%q).Priority(%d).OnListeners(%s)", constructor, m.Path, name, m.Priority, quoted(m.ListenerNames))
+	if g.discoveredService(name) {
+		target := strings.TrimSuffix(name, "@docker") + "@traefik"
+		route = newRoute(m.Path).ProxyToDiscovered(target).With(chain.values...).Priority(m.Priority).OnListeners(m.ListenerNames...)
+		code = fmt.Sprintf("statute.%s(%q).ProxyToDiscovered(%q).Priority(%d).OnListeners(%s)", constructor, m.Path, target, m.Priority, quoted(m.ListenerNames))
+	}
+	if name == serviceNoop {
+		g.imports["net/http"] = true
+		route = newRoute(m.Path).Handle(migrationNoop).With(chain.values...).Priority(m.Priority).OnListeners(m.ListenerNames...)
+		code = fmt.Sprintf("statute.%s(%q).Handle(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request){w.WriteHeader(http.StatusTeapot)})).Priority(%d).OnListeners(%s)", constructor, m.Path, m.Priority, quoted(m.ListenerNames))
+	}
+	if len(m.PeerIPCIDRs) > 0 {
+		route.PeerIPs(m.PeerIPCIDRs...)
+		code += ".PeerIPs(" + quoted(m.PeerIPCIDRs) + ")"
+	}
 	if len(hosts) > 0 {
 		route.Hosts(hosts...)
 		code += ".Hosts(" + quoted(hosts) + ")"
@@ -536,7 +593,7 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 	if len(chain.code) > 0 {
 		code += ".With(" + strings.Join(chain.code, ",") + ")"
 	}
-	if m.Host == "" && m.PathKind == docker.PathAny {
+	if g.terminalMatcher(m) {
 		g.r.Config.FallbackRoutes = append(g.r.Config.FallbackRoutes, route)
 		g.fallbacks = append(g.fallbacks, code)
 	} else {
@@ -544,61 +601,6 @@ func (g *generator) proxyRoute(m docker.Matcher, name string, chain middleware) 
 		g.routes = append(g.routes, code)
 	}
 	g.r.Report.GeneratedRoutes += max(1, len(hosts))
-}
-
-func (g *generator) redirect(o *Object, refs []string) (string, int, bool) {
-	if len(refs) != 1 {
-		return "", 0, false
-	}
-	m := g.objects["middlewares:"+qualified(refs[0], o.Provider)]
-	if m == nil {
-		return "", 0, false
-	}
-	scheme := m.text("redirectScheme.scheme")
-	if scheme != protocolHTTPS && scheme != protocolHTTP {
-		return "", 0, false
-	}
-	if m.value("redirectScheme.port") != nil {
-		return "", 0, false
-	}
-	status := 302
-	if v := m.value("redirectScheme.permanent"); v != nil {
-		b, err := strconv.ParseBool(scalar(v))
-		if err != nil {
-			return "", 0, false
-		}
-		if b {
-			status = 301
-		}
-	}
-	// The candidate is useful for review but scheme detection/trusted forwarded
-	// headers and HTTPS listeners prevent a general exact substitution.
-	m.note("$redirect", Manual, "review forwarded-scheme trust and listener reachability before accepting redirect action")
-	o.note("$redirect", Manual, "candidate redirect action requires scheme and listener review")
-	m.Generated = true
-	return scheme + "://{host}{request_uri}", status, true
-}
-
-func (g *generator) redirectRoutes(o *Object, ms []docker.Matcher, target string, status int) {
-	for _, m := range ms {
-		if m.PathKind == docker.PathByte || (m.PathKind == docker.PathExact && strings.HasSuffix(m.Path, "/*")) {
-			return
-		}
-	}
-	for _, m := range ms {
-		r := statute.Match(m.Path).RedirectTo(target, status)
-		code := fmt.Sprintf("statute.Match(%q).RedirectTo(%q,%d)", m.Path, target, status)
-		if hosts := hostSpellings(m.Host); len(hosts) > 0 {
-			r.Hosts(hosts...)
-			code += ".Hosts(" + quoted(hosts) + ")"
-			g.r.Report.GeneratedRoutes += len(hosts)
-		} else {
-			g.r.Report.GeneratedRoutes++
-		}
-		g.r.Config.Routes = append(g.r.Config.Routes, r)
-		g.routes = append(g.routes, code)
-	}
-	o.Generated = true
 }
 
 func hostSpellings(host string) []string {
@@ -628,85 +630,26 @@ func middlewareRefs(o *Object) ([]string, bool) {
 	return stringList(v, o.Provider == providerDocker)
 }
 
-func (g *generator) checkPrecedence(routers []*Object) {
-	for i, a := range routers {
-		if i != len(routers)-1 && generatedCatchAll(a) {
-			a.note("$fallback", Manual, "catch-all is not last in source priority; moving it to fallback changes precedence")
-		}
-		for _, b := range routers[i+1:] {
-			if needsPrecedenceReview(a, b) && rulesMayOverlap(a, b) {
-				a.note("$precedence:"+b.Name+"@"+b.Provider, Manual, "overlapping routes require explicit priority/static-Docker precedence review")
-			}
-		}
-	}
-}
-
-func generatedCatchAll(o *Object) bool {
-	if o.Provider != providerFile || !o.Generated {
-		return false
-	}
-	ms, _ := docker.ParseRule(o.text("rule"))
-	for _, m := range ms {
-		if m.Host == "" && m.PathKind == docker.PathAny {
-			return true
-		}
-	}
-	return false
-}
-
-func needsPrecedenceReview(a, b *Object) bool {
-	return a.Provider != b.Provider || priority(a) == priority(b) || a.Provider == providerDocker
-}
-
-func rulesMayOverlap(a, b *Object) bool {
-	x, ex := docker.ParseRule(a.text("rule"))
-	y, ey := docker.ParseRule(b.text("rule"))
-	if ex != nil || ey != nil {
-		return true
-	}
-	for _, m := range x {
-		for _, n := range y {
-			if matchersMayOverlap(m, n) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func matchersMayOverlap(m, n docker.Matcher) bool {
-	if m.PathKind == docker.PathExact && n.PathKind == docker.PathExact && m.Path != n.Path {
-		return false
-	}
-	if m.Host == "" || n.Host == "" {
-		return true
-	}
-	for _, a := range hostSpellings(m.Host) {
-		for _, b := range hostSpellings(n.Host) {
-			if strings.EqualFold(a, b) {
-				return true
-			}
-		}
-	}
-	return false
+func (g *generator) checkPrecedence() {
+	g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: "routing", Code: "source-route-priority-enabled"})
 }
 
 func (g *generator) validate() {
 	resolved, err := statute.Resolve(g.r.Config)
 	if err != nil {
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{toolResolve, "invalid-generated-config", true, false})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: toolResolve, Code: "invalid-generated-config", Blocking: true})
 		for _, tool := range []string{toolLint, toolExport, toolGraph, toolTopology} {
 			g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: tool, Code: "not-run-invalid-generated-config", Blocking: true})
 		}
 		return
 	}
-	g.r.Report.Checks = append(g.r.Report.Checks, Check{toolResolve, "ok", false, false})
+	g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: toolResolve, Code: "ok"})
 	findings, err := statute.Lint(g.r.Config)
 	if err != nil {
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{toolLint, "failed", true, false})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: toolLint, Code: "failed", Blocking: true})
 	}
 	for _, f := range findings {
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{toolLint, f.Code, f.Severity == statute.SeverityError, false})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: toolLint, Code: f.Code, Blocking: f.Severity == statute.SeverityError})
 	}
 	for _, check := range []struct {
 		name string
@@ -717,7 +660,7 @@ func (g *generator) validate() {
 		if failed {
 			code = "failed"
 		}
-		g.r.Report.Checks = append(g.r.Report.Checks, Check{check.name, code, failed, false})
+		g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: check.name, Code: code, Blocking: failed})
 	}
 	g.checkTopology(len(resolved.Routes)+len(resolved.FallbackRoutes), len(resolved.Upstreams))
 	g.checkSourceTopology(resolved)
@@ -728,7 +671,7 @@ func (g *generator) validate() {
 func (g *generator) checkTopology(routes, pools int) {
 	want := 0
 	for _, o := range g.r.Report.Objects {
-		if o.Kind != "routers" || o.Provider != providerFile || !o.Generated {
+		if o.Kind != "routers" || o.Provider != providerFile || !o.Generated || g.disabledRouters[o] {
 			continue
 		}
 		ms, err := docker.ParseRule(o.text("rule"))
@@ -739,12 +682,12 @@ func (g *generator) checkTopology(routes, pools int) {
 			want += max(1, len(hostSpellings(m.Host)))
 		}
 	}
-	failed := routes != want || pools != len(g.pools)
+	failed := routes != want+len(g.internalRoutes) || pools != len(g.pools)
 	code := "generated-route-and-pool-counts-match"
 	if failed {
 		code = "generated-topology-mismatch"
 	}
-	g.r.Report.Checks = append(g.r.Report.Checks, Check{toolTopology, code, failed, false})
+	g.r.Report.Checks = append(g.r.Report.Checks, Check{Tool: toolTopology, Code: code, Blocking: failed})
 }
 
 func (g *generator) source() ([]byte, error) {
@@ -765,21 +708,61 @@ func (g *generator) source() ([]byte, error) {
 		}
 	}
 	b.WriteString("\nfunc configuration() statute.Config {\nreturn statute.Config{\n")
-	b.WriteString("Defaults:" + g.defaults + ",\n")
-	b.WriteString("Listeners:statute.Listeners{" + strings.Join(g.listeners, ",") + "},\nUpstreams:statute.Upstreams{\n")
+	b.WriteString("PrioritizeRoutes:true,\nDefaults:")
+	b.WriteString(g.defaults)
+	b.WriteString(",\n")
+	if g.observability != "" {
+		b.WriteString("Observability:")
+		b.WriteString(g.observability)
+		b.WriteString(",\n")
+	}
+	b.WriteString("Listeners:statute.Listeners{")
+	b.WriteString(strings.Join(g.listeners, ","))
+	b.WriteString("},\nUpstreams:statute.Upstreams{\n")
 	for _, name := range keys(g.pools) {
 		fmt.Fprintf(&b, "%q:%s,\n", name, g.pools[name])
 	}
-	b.WriteString("},\nRoutes:statute.Routes{" + strings.Join(g.routes, ",") + "},\nFallbackRoutes:statute.Routes{" + strings.Join(g.fallbacks, ",") + "},\n")
+	b.WriteString("},\nRoutes:statute.Routes{")
+	b.WriteString(strings.Join(g.routes, ","))
+	b.WriteString("},\nFallbackRoutes:statute.Routes{")
+	b.WriteString(strings.Join(g.fallbacks, ","))
+	b.WriteString("},\n")
 	if g.docker != "" {
-		b.WriteString("Docker:" + g.docker + ",\n")
+		b.WriteString("Docker:")
+		b.WriteString(g.docker)
+		b.WriteString(",\n")
 	}
 	b.WriteString("}\n}\n\nfunc main(){\n")
-	if g.r.Report.Blocking {
+	if g.hasImplementationGaps() {
 		b.WriteString("// TODO: resolve every blocking audit finding and validate the completed configuration.\npanic(\"migration incomplete: resolve blocking findings before serving\")\n")
 	} else {
 		b.WriteString("statute.Main(configuration())\n")
 	}
 	b.WriteString("}\n")
 	return format.Source([]byte(b.String()))
+}
+
+func (g *generator) hasImplementationGaps() bool {
+	for _, object := range g.r.Report.Objects {
+		for _, field := range object.Fields {
+			if blocked(field.Classification) && !object.bindingFields[strings.ToLower(field.Path)] {
+				return true
+			}
+		}
+	}
+	for _, check := range g.r.Report.Checks {
+		if check.Blocking {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *generator) serviceAvailable(name string) bool {
+	_, ok := g.pools[name]
+	return ok || name == serviceNoop || g.discoveredService(name)
+}
+
+func (g *generator) terminalMatcher(m docker.Matcher) bool {
+	return !g.r.Config.PrioritizeRoutes && m.Host == "" && m.PathKind == docker.PathAny
 }

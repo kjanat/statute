@@ -5,11 +5,11 @@ plus a JSON audit. It does not start a proxy, contact Docker, acquire certificat
 interpolate environment variables, or perform a cutover. Traefik files do not
 become a Statute runtime input format.
 
-Generated listeners currently require manual review of forwarded-header handling.
-Traefik sanitizes untrusted proxy headers and derives `X-Real-IP` from the peer;
-native listeners do not provide equivalent behavior. This produces a blocking
-finding even when the source omits `forwardedHeaders`. Review and implement the
-required ingress policy before enabling the generated candidate.
+Generated listeners select `IngressPolicy` explicitly: untrusted forwarded
+headers are replaced with direct-peer values, paths are normalized before routing,
+and source alias-header and `sanitizePath` settings are applied. Configured
+trusted proxies may supply forwarded identity. Existing native listener defaults
+are unchanged. See [listener ingress policy](production.md#listener-ingress-policy).
 
 From a checkout:
 
@@ -80,8 +80,9 @@ An object's classification reflects its most restrictive field. `generated`
 means it contributed a fragment or retained Docker setting. Check the field
 classifications separately for blocking gaps. TLS paths, for example, can contribute an HTTPS candidate while coverage
 remains blocking. `unmatched_objects` lists objects without a contribution.
-Disjunctions and host spelling expansion can produce several native routes from
-one router. Docker counts describe parsed labels; live discovery is outside the audit.
+Generated route counts describe candidates, including host spelling expansion
+and disjunctions. They do not count accepted source routers or prove readiness
+to serve. A generated candidate can still have blocking findings. Docker counts describe parsed labels; live discovery is outside the audit.
 
 | Exit status | Meaning                                                       |
 | ----------- | ------------------------------------------------------------- |
@@ -89,104 +90,110 @@ one router. Docker counts describe parsed labels; live discovery is outside the 
 | `1`         | Artifacts were written, but migration gaps remain.            |
 | `2`         | Invalid invocation/input or artifact I/O failure.             |
 
-Blocking findings cause generated `main` to panic before invoking Statute.
-`configuration()` remains available for review and compilation. Complete the
-configuration and resolve every blocking finding before replacing the guard with
-`statute.Main(configuration())`.
+Unsupported behavior guards generated startup. Fix the source inputs or supply
+missing inputs and regenerate; keep that guard in place. Credential relocation
+uses required environment bindings. The generated program validates those
+bindings before opening listeners, so a binding-only audit can produce a usable
+program while still reporting `blocking: true` until its inputs are supplied.
 
 ## Translation coverage
 
-- Static addresses become explicit HTTP or HTTPS listeners. The tool resolves
-  router entrypoint membership and default entrypoints before generating listeners.
-  A router restricted to only part of the native shared content-listener set is
-  blocked. Common entrypoint middleware is prepended to file routes and registered
-  as Docker `DefaultMiddleware`; different per-listener chains remain blocked.
-  Traefik enables `http.sanitizePath` by default, cleaning dot segments and repeated
-  slashes before routing and forwarding. Statute preserves those paths, so an
-  omitted or enabled setting produces a blocking finding. An explicit boolean
-  `sanitizePath: false` is supported. Review the routing and upstream impact before
-  changing this policy in the source configuration.
-- Named ACME resolvers generate `AutoTLS` sources using declared domains or literal
-  `Host` matchers. HTTP-01 and Cloudflare DNS-01 are supported. Cloudflare uses a
-  required `CF_DNS_API_TOKEN` environment binding. Source ACME JSON storage becomes
-  a new sibling `.statute` directory: this starts new native account/certificate
-  state and does not import Traefik's account keys. Review issuance and CA limits
-  before deploying. Other challenge providers and TLS-ALPN-only requirements remain
-  explicit gaps. Native pinned ACME sources issue ECDSA P-256 certificates, requiring
-  an explicit source `keyType: EC256`. An omitted key type defaults to RSA4096 in
-  Traefik and blocks migration until certificate algorithm compatibility is reviewed.
-- Default certificate file references become `StaticTLS`. A single certificate
-  from a source certificate list produces a guarded candidate because its SAN
-  mapping and fallback selection cannot be determined without reading material.
-  Named TLS version/cipher policies and client authentication become listener
-  options when all routers on that listener select the same policy. Distinct
-  per-SNI protocol policies cannot be collapsed into one listener-wide policy.
-  Named options on a rule without literal Host coverage are blocked: Traefik uses
-  its default TLS policy for hostless rules, while a native listener-wide option
-  would change version or client-authentication requirements.
-  A router inherits the complete entrypoint TLS object only when its own TLS object
-  is absent. Explicit router TLS, including an empty object, prevents inheritance
-  of entrypoint options, certificate resolvers and certificate domains.
-- File-provider load balancers become named pools. Backend URLs, Host forwarding,
-  named/default transports, timeouts, idle connection limits, root CA files,
-  client certificate files and response flushing are translated. Proxy and probe
-  traffic share the selected transport. Credential-bearing URLs, base-path
-  rewriting and unknown service fields remain blocking.
-  Explicit `default@internal` transport references use the audited static transport
-  defaults for both file services and Docker service policies.
-- Health checks preserve source intervals, timeouts and one-success/one-failure
-  transition thresholds. Explicit `followRedirects: false`, accepted status and
-  probe Host are supported. Traefik's default cross-origin redirect following
-  differs from native same-origin probes and requires a decision.
-  Probe paths must preserve their URL meaning as native literal paths. Query
-  strings, fragments, percent escapes, authority changes and dot-segment resolution
-  produce blocking findings because Traefik resolves these as relative URLs.
-  Health-check candidates always report the all-unhealthy behavior difference:
-  Traefik stops forwarding and returns 503, while Statute's degraded mode continues
-  trying primary backends. This requires a migration decision for file and Docker
-  services, including single-backend services. Probe settings remain in the guarded
-  candidate for review.
-- Docker services receive one exact-service `PoolPolicy` containing Host, health
-  and transport together. Middleware registrations retain the exact label
-  reference. Retained Compose labels are checked with the existing Docker parser
-  using a synthetic address; this validates label interpretation without contacting
-  a daemon or claiming knowledge of the live network.
-- `Host`, `Path`, `PathPrefix`, conjunctions and disjunctions use the shared
-  Traefik parser. Native routes represent exact paths, catch-all paths and finite
-  Traefik host spellings, including trailing-dot variants. File-provider byte
-  prefixes and literal paths ending in `/*` are refused because native segment
-  matching would change their coverage. Docker retains its byte-prefix matcher.
-- File routes follow source priority. Equal-priority overlaps, overlapping
-  file/Docker routes and Docker numeric-priority differences remain explicit
-  findings. Catch-all candidates become fallback routes only with a precedence
-  check. Unmatched traffic retains the native terminal 404.
-- IP allow lists, ordered chains, request/response header operations, BasicAuth
-  file or environment bindings and canonical `AddPrefix` prefixes become compiled
-  route policy. Header values are bound through environment variables; inline
-  values are withheld and require relocation. Auth files must contain bcrypt
-  hashes; validation is deferred until the generated program loads them.
-- Header/path operations after other middleware remain blocked because Statute
-  hoists them before authentication, denial and retry paths. Conflicting operations
-  on the same response header also block: Traefik applies nested response modifiers
-  from the inner middleware outward, while Statute applies operations in declaration
-  order. This check includes nested chains and entrypoint defaults for file and
-  Docker routes, and compares header names case-insensitively. ReplacePath and
-  StripPrefix candidates identify missing Traefik metadata headers and matching
-  differences. RequestBuffer, Retry and gzip/Brotli candidates identify concrete
-  resource, response-buffering and negotiation differences. Incomplete middleware
-  candidates are emitted as separate review functions and never registered.
-- Redirect middleware and entrypoint redirects produce guarded native candidates.
-  Traefik uses method-dependent 301/308 or 302/307 statuses, while native redirect
-  listeners always return 301. Non-default target ports and custom redirect
-  precedence are separately reported; these differences are not silently accepted.
-- Shared incoming timeout/header limits become explicit `Defaults`. Different
-  per-entrypoint limits remain blocked. File-provider paths are accepted when the
-  exact file or complete directory was explicitly supplied; hot reload is replaced
-  by regeneration and compilation.
+- Listeners have names matching source entrypoints. Router membership and
+  entrypoint middleware use those names, so private routes and different
+  listener chains stay scoped. Shared timeout/header limits become explicit
+  `Defaults`; differing per-entrypoint limits remain blocking.
+- Ingress replaces untrusted forwarded headers with direct-peer values and
+  accepts configured trusted proxies. Escape normalization precedes routing.
+  Source `sanitizePath` additionally cleans dot segments and repeated slashes;
+  query text is preserved. Alias headers can be kept, deleted or rejected.
+- `Host`, `Path`, `PathPrefix` and `ClientIP`, with conjunctions and disjunctions,
+  use the shared rule parser. Exact paths and byte prefixes have native matchers.
+  `ClientIP` checks the connection peer. Source priorities apply across file and
+  Docker routes; equal priorities have deterministic declaration order. A
+  rejected security policy still refuses its traffic before broader routes or
+  application fallback can serve it.
+- Middleware groups execute in source order. Header and path operations run at
+  each group's position, including on Retry re-entry. `ReplacePath` and
+  `ReplacePathRegex` preserve escaped captures and `X-Replaced-Path`;
+  `StripPrefix` preserves byte-prefix matching and `X-Forwarded-Prefix`.
+- Redirect middleware expands regex captures over the full request URL. A
+  non-match or unchanged target continues through the chain. GET uses 301/302
+  and other methods use 308/307 unless the source selects a fixed status.
+  Entrypoint redirects use listener-scoped routes at their source priority.
+  Trusted forwarded schemes suppress redirects when the target already matches.
+- Security headers, custom header operations, IP allow lists and BasicAuth
+  become route middleware. Standard public policy values can appear in Go;
+  arbitrary header values and inline bcrypt hashes use required environment
+  bindings. Auth files are loaded by the generated program, and must contain
+  bcrypt hashes. The offline audit does not load credentials.
+- Rate limits preserve independent burst capacity, delayed reservations and
+  source key selection: peer address, forwarded-chain depth/exclusions, Host or
+  a request header. State belongs to each route. Idle expiry and oldest-bucket
+  replacement bound the native store.
+- Body buffering supports request/response limits, memory spill thresholds and
+  the source retry expression. Spill files belong to the request. An unlimited
+  source maximum becomes the native 8 MiB bound, and each route admits 128
+  concurrent buffered requests; the report notes both. All routes share the
+  server's 1 GiB `BufferBodiesBudget`. Response
+  encoding supports gzip, Brotli and zstd, media-type filters and a minimum body
+  size. A standalone Traefik Retry policy remains blocking where its transport
+  failure behavior differs from native buffered Retry.
+- File load balancers become named pools. Host forwarding, transport timeouts,
+  idle limits, root CA files, client certificates and response flushing are
+  translated. Proxy and probe traffic share the pool transport. Credential URLs,
+  upstream base-path rewriting and unknown service fields remain blocking.
+- Health checks preserve URL-reference resolution, method, accepted status,
+  headers and redirect policy. Probe credentials use required environment
+  bindings. `RejectUnhealthy` produces 503 when no backend is healthy; passive
+  health can reset on success and hold exclusion for the source failure window.
+- Docker policies use exact service names. Routers with no service reference use
+  the container's sole declared service or one explicit Compose TCP target port.
+  Ambiguous services and missing ports remain blocking. Docker routers can bind
+  a compiled file-provider pool; compiled routes can select a Docker service.
+  A service with no Docker router is discovered when a compiled route names it.
+  Label validation uses a synthetic address and makes no claim about live
+  container networking.
+- TLS version/cipher policies and client authentication are selected by SNI.
+  TLS 1.2 cipher restrictions must support the selected pinned ACME source's key
+  type; incompatible policies fail `Resolve`.
+  Selected hostname policies replace the listener defaults. HTTP Host reuse
+  across different TLS policies returns 421. Hostless rules use the default
+  source policy. Router TLS inherits the complete entrypoint object only when
+  the router has no TLS object; an explicit empty object prevents inheritance.
+  Strict TLS conflicts between Docker routers block migration: discovery cannot
+  enforce the source's router exclusions. File-router exclusions are generated.
+  TLS options from providers other than `file` block migration.
+- ACME supports HTTP-01 and Cloudflare DNS-01. Source key types include EC256,
+  EC384 and RSA2048/3072/4096/8192; omission selects Traefik's RSA4096 default.
+  DNS propagation can verify authoritative servers and recursive resolvers,
+  apply a delay, or explicitly disable checks. Discovery queries, the IPv4
+  and IPv6 lookups for each authoritative nameserver, and its addresses run
+  concurrently; one matching authoritative answer verifies that nameserver.
+  Cloudflare requires `CF_DNS_API_TOKEN`.
+- ACME storage uses a new sibling `.statute` directory and starts fresh account
+  and certificate state. Traefik account keys and certificates are not imported.
+  Review issuance and CA limits before deploying. Other DNS providers and
+  TLS-ALPN-only requirements remain explicit gaps.
+- Default certificate references become `StaticTLS`. Certificate lists whose
+  hostname selection requires reading certificate material remain guarded;
+  supply explicit native host mappings. The audit never reads private keys.
+- Access logs support common/JSON output, files, a bounded queue and status
+  filters. Ping routes preserve listener membership and shutdown status.
+  Internal Traefik diagnostic levels, update checks and usage reporting are
+  reported as out of scope.
 
-Unrecognized fields default to `manual`; they are not discarded to make validation
-pass. See [Docker compatibility](docker.md#traefik-compatibility-traefiklabels) for
-the runtime label subset and its refusal behavior.
+For provider paths inside a container, supply `--path-map SOURCE=LOCAL`. An
+explicit mapping takes precedence over Compose bind mounts, and the longest
+matching source prefix wins. Inferred mounts keep their Compose service scope:
+a nested mount shadows its parent within that service. Mount inference uses only services that mount a
+supplied static file. Provider inputs must still be supplied explicitly with
+`--dynamic`; mappings do not authorize reading arbitrary container paths.
+
+Unsupported middleware is reported at its definition with one dependency finding
+per affected route. Unsupported matchers identify the matcher kind. Dashboard
+routes, file watching and TCP/UDP are outside the HTTP migration. Plugins cannot
+become empty chains: a route referencing an unavailable plugin stays blocked.
+Unrecognized fields remain `manual`.
 
 ## Secrets and validation
 

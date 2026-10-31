@@ -110,7 +110,7 @@ func (p *cacheProxyPolicy) allowsVary(names []string) bool {
 
 func (p *cacheProxyPolicy) forbidsVaryField(name string) bool {
 	switch name {
-	case "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto":
+	case headerForwardedLower, "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto":
 		return true
 	default:
 		return slices.Contains(p.fields, name)

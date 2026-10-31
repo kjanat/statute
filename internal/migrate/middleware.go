@@ -30,7 +30,10 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	checkMiddlewareShape(o)
 	classifyMiddlewareDifferences(o)
 	var chain middleware
+	g.redirectMiddleware(o, &chain)
+	g.securityHeaders(o, &chain)
 	g.headers(o, &chain)
+	g.rateLimit(o, &chain)
 	g.basicAuth(o, &chain)
 	g.nativeRewrite(o, &chain)
 	g.buffering(o, &chain)
@@ -38,11 +41,16 @@ func (g *generator) chain(o *Object) (middleware, bool) {
 	g.compression(o, &chain)
 	g.ipAllowList(o, &chain)
 	g.expandChain(o, &chain)
-	g.retainMiddlewareCandidate(o, chain)
-	if o.ready() && len(chain.values) > 0 {
+	classifyEmptyHeaders(o, chain)
+	if len(chain.values) > 0 && o.value("chain.middlewares") == nil {
+		chain.values = []statute.Middleware{statute.InOrder(chain.values...)}
+		chain.code = []string{"statute.InOrder(" + strings.Join(chain.code, ",") + ")"}
+	}
+	if nativeMiddlewareReady(o, chain) {
 		g.chains[id] = chain
 		return chain, true
 	}
+	g.retainMiddlewareCandidate(o, chain)
 	return middleware{}, false
 }
 
@@ -104,7 +112,7 @@ func (g *generator) registerMiddleware(routers []*Object) {
 			}
 			registered[ref] = true
 			g.r.Config.Docker.Middleware(ref, mw.values...)
-			g.docker += fmt.Sprintf(".Middleware(%q,%s)", ref, strings.Join(mw.code, ","))
+			g.docker += fmt.Sprintf(".Middleware(%q%s)", ref, middlewareArguments(mw.code))
 			g.markMiddlewareUsed(qualified(ref, providerDocker))
 		}
 	}
@@ -153,8 +161,12 @@ func (g *generator) ipAllowList(o *Object, chain *middleware) {
 			return
 		}
 	}
-	chain.values = append(chain.values, statute.AllowIPs(cidrs...))
-	chain.code = append(chain.code, "statute.AllowIPs("+quoted(cidrs)+")")
+	selection, code, ok := sourceIPSelection(o, "ipAllowList.ipStrategy")
+	if !ok {
+		return
+	}
+	chain.values = append(chain.values, statute.AllowIPs(cidrs...).SelectIP(selection))
+	chain.code = append(chain.code, "statute.AllowIPs("+quoted(cidrs)+").SelectIP("+code+")")
 	o.mark(path, Translated, "route-owned client-IP allow list; listener trusted-proxy policy remains explicit")
 }
 
@@ -173,6 +185,8 @@ func (g *generator) expandChain(o *Object, chain *middleware) {
 		}
 		child, valid := g.chain(dep)
 		if !valid {
+			o.mark(path, Exact, "provider-qualified chain dependencies are reported separately")
+			o.note("$middleware:"+qualified(ref, o.Provider), Manual, "chain blocked by referenced middleware; see its field findings")
 			ok = false
 			continue
 		}
@@ -199,9 +213,26 @@ func classifyMiddlewareDifferences(o *Object) {
 		case "stripprefix", "addprefix", "replacepath", "replacepathregex":
 			o.mark(f.Path, Manual, "native rewrites are hoisted once at route entry; verify headers, middleware order and Retry re-entry")
 		case "plugin":
-			o.mark(f.Path, Unsupported, "Traefik plugins cannot become runtime configuration; supply compiled Go behavior")
+			o.mark(f.Path, OutOfScope, "plugins require compiled Go behavior outside HTTP migration")
 		case "basicauth", "forwardauth", "digestauth":
 			o.mark(f.Path, Manual, "security policy requires explicit compiled registration and secret references; credentials are withheld")
 		}
 	}
+}
+
+func middlewareArguments(code []string) string {
+	if len(code) == 0 {
+		return ""
+	}
+	return "," + strings.Join(code, ",")
+}
+
+func classifyEmptyHeaders(o *Object, chain middleware) {
+	if len(chain.values) == 0 && o.value("headers.stsSeconds") == nil && (o.value("headers") != nil || hasFieldPrefix(o, "headers.")) && o.ready() {
+		o.note("$empty-header-policy", Manual, "source header middleware with every feature disabled is invalid; remove it or select an active header policy")
+	}
+}
+
+func nativeMiddlewareReady(o *Object, chain middleware) bool {
+	return o.readyWithBindings() && (len(chain.values) > 0 || o.value("headers.stsSeconds") != nil || o.value("chain.middlewares") != nil)
 }

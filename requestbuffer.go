@@ -14,10 +14,14 @@ import (
 // limits. The zero value allows memory-only buffering with a 64 MiB budget. Writing
 // to disk requires an existing Storage directory and a positive DiskBudget.
 // At most 128 buffers may be open, including readers still running after Timeout.
+// BufferBodiesBudget limits every admitted BufferBodies request on the server to
+// its request and response maximums, memory and spill files together. It
+// defaults to 1 GiB.
 type RequestBufferResources struct {
-	MemoryBudget string
-	Storage      string
-	DiskBudget   string
+	MemoryBudget       string
+	Storage            string
+	DiskBudget         string
+	BufferBodiesBudget string
 }
 
 type requestBufferMW struct{ maximum, threshold string }
@@ -67,10 +71,16 @@ func (m *requestBufferMW) resolve() (resolved.Middleware, error) {
 }
 
 func resolveRequestBufferResources(c RequestBufferResources) (resolved.RequestBufferResources, error) {
-	out := resolved.RequestBufferResources{MemoryBudgetBytes: 64 << 20, MaxInFlight: requestBufferMaxInFlight}
+	out := resolved.RequestBufferResources{MemoryBudgetBytes: 64 << 20, MaxInFlight: requestBufferMaxInFlight, BufferBodiesBudgetBytes: defaultBufferBodiesBudget}
 	var err error
 	if c.MemoryBudget != "" {
 		out.MemoryBudgetBytes, err = requestBufferSize("request_buffers.memory_budget", c.MemoryBudget)
+	}
+	if err != nil {
+		return out, err
+	}
+	if c.BufferBodiesBudget != "" {
+		out.BufferBodiesBudgetBytes, err = requestBufferSize("request_buffers.buffer_bodies_budget", c.BufferBodiesBudget)
 	}
 	if err != nil {
 		return out, err

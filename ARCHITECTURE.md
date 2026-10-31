@@ -47,6 +47,13 @@ acquire a Traefik input format or new matcher semantics.
 Help performs no migration I/O. Input flags preserve literal, repeatable paths;
 the migration engine owns file inventory and artifact generation.
 
+Listener ingress policy is opt-in and resolves into the canonical model.
+Sanitation runs before routing and route middleware, using existing trusted-proxy
+context for client identity. Access logs retain the original path while observing
+sanitized headers; rejection remains inside listener observability. Per-method
+redirect statuses belong to their route or redirect listener. HTTPS-only response
+operations are selected per request before cache and upgrade header projection.
+
 ## Ownership model
 
 | Layer           | Owns                                                                                                                  | Must not absorb                                                             |
@@ -160,7 +167,10 @@ to 65,536 unless explicitly positive; negative values fail resolution. Each stor
 retains only fixed-size hashes of the existing effective client-IP or exact Host
 key, with one indexed refill-deadline entry per bucket. One mutex owns admission,
 refill, and retirement; it is released before response writing or downstream work.
-Only fully replenished buckets may retire; outstanding token debt retains its slot.
+By default, only fully replenished buckets may retire; outstanding token debt
+retains its slot. Explicit `ExpireIdle` permits resets after inactivity, and
+`EvictOldest` permits replacing the oldest key at capacity. These options apply
+to both immediate admission and reservation mode.
 Existing keys retain their token policy at capacity (including 429 and Retry-After);
 new keys with no reclaimable slot fail closed with 503 and Cache-Control: no-store.
 No timer, worker, or shutdown owner is added. Handler retirement releases the store.
@@ -247,7 +257,10 @@ Changed or unrepresentable committed policy disables admission monotonically,
 including discarded Retry attempts. The observer carries only an earliest
 timestamp and an unsafe flag, synchronized for late Timeout producers; it owns
 no cache entries, header maps or allocation leases. Hidden ETag/Retry/Timeout
-buffering consumes the same header-time TTL, and missing Date uses that receipt.
+and BufferBodies buffering consumes the same header-time TTL, and missing Date
+uses that receipt. EncodeResponse gives its producer a private header map. The
+first final status, write, flush or return publishes it once to the encoder and
+reports that commitment to the observer; later producer edits reach only trailers.
 
 Response-cache admission belongs to each route's Cache instance. Request or
 downstream response `Cache-Control: no-store` prohibits new storage. Cache also
@@ -263,6 +276,9 @@ presence in the effective request bypasses both lookup and storage. Origin or
 projected response private directives (including qualified forms) and Set-Cookie
 fields prohibit storage; raw response-header operations cannot erase an origin
 privacy restriction. Public anonymous entries remain independently reusable.
+Grouped header operations report origin policy before editing headers. Erased
+privacy restrictions, changed freshness, lost Vary dimensions and partial
+metadata disable admission through the existing request-owned cache observer.
 Requests carrying TLS peer certificates or verified client chains also bypass
 lookup and storage: certificate identity is not part of the shared key. This
 includes optional and application-verified client certificates. Ordinary HTTPS
@@ -290,7 +306,8 @@ variance at commitment even when it negotiates identity, so an outer cache sees
 the same selection dimensions for every encoding.
 
 Cache keys distinguish the effective URL target, original RequestURI, request
-Host, method, URL scheme, and TLS presence. Custom handlers inspecting the original
+Host, method, URL scheme, listener name, and TLS presence. Listener names partition
+responses selected by `OnListeners`, including with an outer Cache. Custom handlers inspecting the original
 target therefore remain isolated after a route path rewrite. Application context
 and arbitrary connection identity are not inferred: personalized handlers must
 omit Cache, prevent storage from their first response, or expose a stable request
@@ -536,6 +553,21 @@ transports that return before closing request bodies. Close/Read overlap,
 GetBody replacement and duplicate Close prove final-owner retirement. Export,
 fallback and Docker generation tests prove route scope and configuration parity.
 
+### Traefik-compatible body buffering
+
+Each compiled `BufferBodies` instance owns its admission slots: 128 by default,
+configured by MaxInFlight. Resolve normalizes zero request and response maximums
+to 8 MiB; negative values fail resolution. Static, fallback and Docker routes keep
+these limits, and shared pools never share slots. Admission never queues;
+exhaustion returns empty 503 with no-store. A slot stays held until Oxy's handler
+returns or panics, covering its retry attempts and request-owned spill files.
+Each admission also reserves its enabled request and response maximums from
+the server's RequestBuffers manager, 1 GiB by default. Static, fallback and Docker
+routes, including retired generations, share that reservation budget; it covers
+memory and spill files together. Exhaustion and stopped admission at shutdown
+return the same 503. Reservations release when the handler returns or panics.
+No worker or shutdown owner is added.
+
 ### Strict request buffering
 
 `RequestBuffer` belongs to the route. Each resolved middleware declaration carries
@@ -601,7 +633,8 @@ equivalent resolved chains coalesce into one route and one middleware instance.
 Conflicting chains reject that entire predicate group through parsed rejection
 precedence; unrelated predicates and shared backend pools remain independent.
 Compression algorithms compare as a set; middleware order and multiplicity stay
-significant. Unknown references and invalid chains still fail closed before
+significant. With router constraints, effective listener sets compare after
+defaulting, ordering and deduplication. Unknown references and invalid chains still fail closed before
 coalescing. Workload routing revisions cover accepted predicates and effective
 chains, excluding raw hint spelling and registry aliases. Quarantine exclusion
 still precedes serving merges, and static routes retain their priority.

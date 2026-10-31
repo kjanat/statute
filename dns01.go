@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/miekg/dns"
+
 	"golang.org/x/crypto/acme"
 
 	"statute.kjanat.dev/internal/cloudflare"
@@ -50,6 +52,7 @@ type dns01Solver struct {
 	// lookupTXT queries one resolver for a name's TXT records. Nil uses
 	// lookupTXTAt, which dials the resolver directly; tests substitute it.
 	lookupTXT func(ctx context.Context, resolver, name string) ([]string, error)
+	queryDNS  func(context.Context, string, string, uint16, bool) (*dns.Msg, error)
 }
 
 func (*dns01Solver) challengeType() string { return "dns-01" }
@@ -119,10 +122,10 @@ func (s *dns01Solver) awaitPropagation(ctx context.Context, recordName, value st
 			return err
 		}
 	}
-	if len(s.prop.Resolvers) == 0 {
+	if s.prop.DisableChecks {
 		return nil
 	}
-	return s.pollResolvers(ctx, recordName, value)
+	return s.verifyPropagation(ctx, recordName, value)
 }
 
 // sleepContext waits for d, or returns the context's error if it is
@@ -240,4 +243,28 @@ func lookupTXTAt(ctx context.Context, resolver, name string) ([]string, error) {
 		},
 	}
 	return r.LookupTXT(ctx, name)
+}
+
+func (s *dns01Solver) verifyPropagation(ctx context.Context, recordName, value string) error {
+	if s.prop.Authoritative && s.prop.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.prop.Timeout)
+		defer cancel()
+	}
+	if s.prop.Authoritative {
+		if err := s.pollAuthoritative(ctx, recordName, value); err != nil {
+			return err
+		}
+	}
+	if s.prop.RequireAllRecursive && len(s.prop.Resolvers) == 0 {
+		clone := *s
+		policy := *s.prop
+		policy.Resolvers = s.recursiveServers()
+		clone.prop = &policy
+		return clone.pollResolvers(ctx, recordName, value)
+	}
+	if len(s.prop.Resolvers) == 0 {
+		return nil
+	}
+	return s.pollResolvers(ctx, recordName, value)
 }

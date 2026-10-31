@@ -56,8 +56,14 @@ safe to cache.
 
 ## Representation identity and native proxies
 
+Header edits inside `InOrder` and `OnListeners` preserve origin cache policy.
+Removing privacy restrictions, changing freshness, or erasing an origin `Vary`
+dimension prevents storage for that request. Unrelated header edits remain cacheable.
+
 Cache keys include the method, request Host, effective URL target (path and query),
-original `RequestURI`, URL scheme, and presence of downstream TLS. Hoisted path
+original `RequestURI`, URL scheme, listener name, and presence of downstream TLS.
+Listener names isolate responses selected by `OnListeners` middleware, including
+when Cache wraps that middleware. Hoisted path
 rewrites preserve the original target as a separate key dimension. Two requests
 rewritten to the same URL therefore remain distinct when a `Handle` inspects
 their original targets.

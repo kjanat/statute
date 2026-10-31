@@ -7,6 +7,7 @@ import (
 	"time"
 
 	statute "statute.kjanat.dev"
+	"statute.kjanat.dev/resolved"
 )
 
 func dockerServiceInputs(t *testing.T, labels string) Inputs {
@@ -27,7 +28,7 @@ func TestDockerBuiltinTransportHasNoInventoryObject(t *testing.T) {
 	in := dockerServiceInputs(t, "      traefik.http.services.api.loadbalancer.serverstransport: default@internal\n")
 	in.Static = append(in.Static, fixture(t, "transport.yml", "serversTransport:\n  forwardingTimeouts: {dialTimeout: 9s}\n"))
 	r := audit(t, in)
-	requireForwardedHeaderGap(t, r)
+	requireMigrationGaps(t, r)
 	c, err := statute.Resolve(r.Config)
 	if err != nil {
 		t.Fatal(err)
@@ -48,12 +49,19 @@ func TestHealthURLSemanticsCannotBecomeLiteralPath(t *testing.T) {
 					in = dockerServiceInputs(t, fmt.Sprintf("      traefik.http.services.api.loadbalancer.healthcheck.path: %q\n      traefik.http.services.api.loadbalancer.healthcheck.followredirects: 'false'\n", path))
 				}
 				r := audit(t, in)
-				if path == "/ready" {
-					requireForwardedHeaderGap(t, r, "services.$health-degraded")
-					return
+				requireMigrationGaps(t, r)
+				c, err := statute.Resolve(r.Config)
+				if err != nil {
+					t.Fatal(err)
 				}
-				if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "$health-path") || !strings.Contains(string(r.Go), "panic(") {
-					t.Fatal("health URL semantics changed without blocking")
+				var h resolved.HealthCheck
+				if provider == providerDocker {
+					h = c.Docker.PoolPolicy["api@traefik"].HealthCheck
+				} else {
+					h = c.Upstreams["api@file"].HealthCheck
+				}
+				if h.Path != path || !h.ResolvePath {
+					t.Fatalf("health URL policy lost: %+v", h)
 				}
 			})
 		}
@@ -105,7 +113,7 @@ certificatesResolvers:
 			t.Fatal(err)
 		}
 		l := c.Listeners[0]
-		got := selection{clientAuth: l.ClientAuth != nil, policy: l.TLSPolicy != nil, sources: len(l.AutoTLSSources)}
+		got := selection{clientAuth: l.ClientAuth != nil || len(l.ClientAuthPolicies) > 0, policy: l.TLSPolicy != nil || len(l.TLSPolicies) > 0, sources: len(l.AutoTLSSources)}
 		if len(l.AutoTLSSources) > 0 {
 			got.domain = l.AutoTLSSources[0].Domains[0]
 		}
@@ -143,23 +151,4 @@ providers:
 		t.Fatal("Docker router with explicit TLS inherited entrypoint options")
 	}
 	assertGeneratedParity(t, r)
-}
-
-func TestACMEDefaultKeyTypeRequiresMigrationDecision(t *testing.T) {
-	for _, keyType := range []string{"", "RSA4096", "EC384", "EC256"} {
-		in := basicInputs(t, strings.Replace(simpleDynamic, "service: api", "service: api\n      tls: {certResolver: cloud}", 1))
-		setting := ""
-		if keyType != "" {
-			setting = "      keyType: " + keyType + "\n"
-		}
-		in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  secure: {address: ':8443', http: {sanitizePath: false}}\ncertificatesResolvers:\n  cloud:\n    acme:\n      email: ops@example.com\n      storage: /acme/state.json\n      dnsChallenge: {provider: cloudflare}\n"+setting)}
-		r := audit(t, in)
-		if keyType == "EC256" {
-			requireForwardedHeaderGap(t, r)
-			continue
-		}
-		if !hasOtherBlockingGaps(r) || !strings.Contains(findings(r), "keyType") || !strings.Contains(string(r.Go), "panic(") {
-			t.Fatalf("incompatible ACME key type accepted: %q", keyType)
-		}
-	}
 }

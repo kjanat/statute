@@ -106,6 +106,8 @@ func compileClientAuth(policy *resolved.ClientAuth) (*compiledClientAuth, error)
 
 func compileClientAuthMode(mode resolved.ClientAuthMode) (tls.ClientAuthType, error) {
 	switch mode {
+	case resolved.ClientAuthNone:
+		return tls.NoClientCert, nil
 	case resolved.ClientAuthRequest:
 		return tls.RequestClientCert, nil
 	case resolved.ClientAuthRequireAny:

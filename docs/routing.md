@@ -70,6 +70,26 @@ Place it after a path or explicit `?` boundary instead:
 and `https://{host}/?{query}` remain supported. Query text after an explicit `?`
 is carried unchanged.
 
+## Redirect methods and HTTPS headers
+
+`RedirectTo(target, status).RedirectNonGET(status)` selects a separate status for
+all methods other than GET, including HEAD. For example,
+`RedirectTo("https://example.com{request_uri}", 301).RedirectNonGET(308)` preserves
+non-GET methods. Redirect listeners support `.RedirectStatus(301)` and
+`.RedirectNonGET(308)` after `.RedirectTo("https")`. With no method override,
+redirects use their existing status for every method; listener default is 301.
+Statuses must be 301, 302, 303, 307 or 308.
+
+Response-header operations accept `.OnHTTPS()`:
+
+```go
+statute.SetResponseHeader("Strict-Transport-Security", "max-age=31536000").OnHTTPS()
+```
+
+The operation applies only when the downstream request uses TLS. HTTP requests
+keep any upstream value. Selection happens per request before buffering, cache
+projection and upgrade commitment. Request-header operations reject this option.
+
 ## Terminal native routes
 
 `Config.FallbackRoutes` handles routing misses with the same native route actions

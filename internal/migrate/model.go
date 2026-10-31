@@ -10,6 +10,15 @@ import (
 	statute "statute.kjanat.dev"
 )
 
+const (
+	serviceNoop        = "noop@internal"
+	sourceTraefik      = "traefik"
+	codePermanent      = ".Permanent()"
+	frameDenyValue     = "DENY"
+	xssBlockValue      = "1; mode=block"
+	frameOptionsHeader = "x-frame-options"
+)
+
 // Classification describes the disposition of a source field or object.
 type Classification string
 
@@ -41,14 +50,19 @@ type Object struct {
 	Fields         []Field        `json:"fields"`
 	data           map[string]any
 	labels         map[string]string
+	containerName  string
+	exposedPorts   []int
+	bindingFields  map[string]bool
 }
 
 // Check is a bounded diagnostic from the canonical configuration tools.
 type Check struct {
-	Tool     string `json:"tool"`
-	Code     string `json:"code"`
-	Blocking bool   `json:"blocking"`
-	Deferred bool   `json:"deferred,omitempty"`
+	Tool       string   `json:"tool"`
+	Code       string   `json:"code"`
+	Blocking   bool     `json:"blocking"`
+	Deferred   bool     `json:"deferred,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+	References []string `json:"references,omitempty"`
 }
 
 // Report is a versioned, deterministic audit; source values are excluded.
@@ -66,11 +80,12 @@ type Report struct {
 
 // Result contains the review artifacts and the exact configuration being checked.
 type Result struct {
-	Report    Report
-	Go        []byte
-	Config    statute.Config
-	inputs    Inputs
-	documents map[string]string
+	Report       Report
+	Go           []byte
+	Config       statute.Config
+	inputs       Inputs
+	documents    map[string]string
+	pathMappings []map[string]string
 }
 
 // WriteHuman prints every classified field and explicitly lists omissions.
@@ -79,18 +94,36 @@ func (r Report) WriteHuman(w io.Writer) error {
 	fmt.Fprintf(&b, "Traefik migration: routes=%d hosts=%d unknown-rule-counts=%d generated-routes=%d blocking=%t\n", r.Routes, r.Hosts, r.UnknownRouteCounts, r.GeneratedRoutes, r.Blocking)
 	for _, o := range r.Objects {
 		fmt.Fprintf(&b, "%s %s %q@%s (%q), generated=%t\n", o.Classification, o.Kind, o.Name, o.Provider, o.Source, o.Generated)
+		if outOfScopeOnly(o) {
+			if len(o.Fields) > 0 {
+				fmt.Fprintf(&b, "  %s\n", o.Fields[0].Reason)
+			}
+			continue
+		}
 		for _, f := range o.Fields {
 			fmt.Fprintf(&b, "  %s %q: %s\n", f.Classification, f.Path, f.Reason)
 		}
 	}
 	for _, c := range r.Checks {
 		fmt.Fprintf(&b, "check %s: %s (blocking=%t, deferred=%t)\n", c.Tool, c.Code, c.Blocking, c.Deferred)
+		if c.Reason != "" {
+			fmt.Fprintf(&b, "  %s\n", c.Reason)
+		}
 	}
 	for _, u := range r.Unmatched {
 		fmt.Fprintf(&b, "unmatched: %q\n", u)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+func outOfScopeOnly(o *Object) bool {
+	for _, field := range o.Fields {
+		if field.Classification != OutOfScope {
+			return false
+		}
+	}
+	return len(o.Fields) > 0
 }
 
 func (o *Object) mark(prefix string, c Classification, reason string) {
@@ -108,7 +141,41 @@ func (o *Object) mark(prefix string, c Classification, reason string) {
 }
 
 func (o *Object) note(path string, c Classification, reason string) {
+	for _, field := range o.Fields {
+		if field.Path == path && field.Classification == c && field.Reason == reason {
+			return
+		}
+	}
 	o.Fields = append(o.Fields, Field{Path: path, Classification: c, Reason: reason})
+}
+
+func (o *Object) markConsumed(base string, keys []string, reason string) {
+	if value, ok := o.value(base).(map[string]any); ok && len(value) == 0 {
+		o.markConsumedValue(base, reason)
+		return
+	}
+	for _, key := range keys {
+		path := base + "." + key
+		value := o.value(path)
+		if value == nil {
+			continue
+		}
+		o.markConsumedValue(path, reason)
+		if values, ok := value.([]any); ok {
+			for index := range values {
+				o.markConsumedValue(fmt.Sprintf("%s[%d]", path, index), reason)
+			}
+		}
+	}
+}
+
+func (o *Object) markConsumedValue(path, reason string) {
+	for i := range o.Fields {
+		field := &o.Fields[i]
+		if field.Path == path || (o.Provider == providerDocker && strings.EqualFold(field.Path, path)) {
+			field.Classification, field.Reason = Translated, reason
+		}
+	}
 }
 
 func (o *Object) reference(path, kind, name string) {
@@ -135,6 +202,15 @@ func blocked(c Classification) bool { return c == Manual || c == Unsupported }
 func (o *Object) ready() bool {
 	for _, f := range o.Fields {
 		if blocked(f.Classification) {
+			return false
+		}
+	}
+	return true
+}
+
+func (o *Object) readyWithBindings() bool {
+	for _, f := range o.Fields {
+		if blocked(f.Classification) && (f.Classification != Manual || !o.bindingFields[strings.ToLower(f.Path)]) {
 			return false
 		}
 	}

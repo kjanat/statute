@@ -18,7 +18,7 @@ func (g *generator) fileProvider(o *Object) {
 		}
 	}
 	if o.value("watch") != nil {
-		o.mark("watch", Translated, "configuration changes require regeneration and recompilation; no runtime file watcher is generated")
+		o.mark("watch", OutOfScope, "runtime file watching is omitted; regenerate and recompile configuration changes")
 	}
 	if o.ready() {
 		o.Generated = true
@@ -26,6 +26,19 @@ func (g *generator) fileProvider(o *Object) {
 }
 
 func (g *generator) suppliedProviderPath(path string, directory bool) bool {
+	if g.suppliedProviderPathExact(path, directory) {
+		return true
+	}
+	count := 0
+	for _, mapped := range g.mappedProviderPaths(path) {
+		if g.suppliedProviderPathExact(mapped, directory) {
+			count++
+		}
+	}
+	return count == 1
+}
+
+func (g *generator) suppliedProviderPathExact(path string, directory bool) bool {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return false

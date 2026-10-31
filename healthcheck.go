@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -58,6 +59,14 @@ func newHealthChecker(cfg resolved.HealthCheck, backends []*backendState, transp
 		}
 	} else {
 		client.CheckRedirect = sameOriginHealthRedirect
+	}
+	switch cfg.Redirects {
+	case "none":
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	case "same_origin":
+		client.CheckRedirect = sameOriginHealthRedirect
+	case "any_origin":
+		client.CheckRedirect = nil
 	}
 	return &healthChecker{
 		cfg:      cfg,
@@ -183,17 +192,29 @@ func (r *healthRun) probe(ctx context.Context, b *backendState) {
 		r.recordFailure(b)
 		return
 	}
-	target.Path = h.cfg.Path
+	if h.cfg.ResolvePath {
+		reference, err := url.Parse(h.cfg.Path)
+		if err != nil {
+			r.recordFailure(b)
+			return
+		}
+		target = target.ResolveReference(reference)
+	} else {
+		target.Path = h.cfg.Path
+	}
 
 	pCtx, cancel := context.WithTimeout(ctx, h.cfg.Timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(pCtx, http.MethodGet, target.String(), nil)
+	req, err := http.NewRequestWithContext(pCtx, probeMethod(h.cfg.Method), target.String(), nil)
 	if err != nil {
 		r.recordFailure(b)
 		return
 	}
 	if h.host != "" {
 		req.Host = h.host
+	}
+	for name, value := range h.cfg.Headers {
+		req.Header.Set(name, value)
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -250,4 +271,11 @@ func (r *healthRun) recordFailure(b *backendState) {
 	if r.failures[b] >= r.checker.cfg.Unhealthy {
 		b.markHealthy(false)
 	}
+}
+
+func probeMethod(method string) string {
+	if method == "" {
+		return http.MethodGet
+	}
+	return method
 }

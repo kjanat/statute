@@ -6,18 +6,22 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 )
 
 type passiveAttemptKey struct{}
 
-type passiveAttempt struct{ once sync.Once }
+type passiveAttempt struct {
+	once   sync.Once
+	failed atomic.Bool
+}
 
 func recordPassiveAttempt(r *http.Request, record func(*http.Request)) {
 	if errors.Is(r.Context().Err(), context.Canceled) {
 		return
 	}
 	if attempt, _ := r.Context().Value(passiveAttemptKey{}).(*passiveAttempt); attempt != nil {
-		attempt.once.Do(func() { record(r) })
+		attempt.once.Do(func() { attempt.failed.Store(true); record(r) })
 	} else {
 		record(r)
 	}

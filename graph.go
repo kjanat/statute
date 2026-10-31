@@ -107,7 +107,7 @@ func readinessPolicyString(r resolved.WorkloadReadiness) string {
 	case resolved.ReadinessDockerHealth:
 		return "docker_health"
 	case resolved.ReadinessTCP:
-		return "tcp"
+		return networkTCP
 	case resolved.ReadinessHTTP:
 		return "http:" + r.Path
 	default:
@@ -194,19 +194,7 @@ func transportPolicyString(transport resolved.Transport) string {
 func graphListeners(d *dotWriter, r *resolved.Config) {
 	d.printf("  // listeners\n")
 	for i, l := range r.Listeners {
-		label := fmt.Sprintf("%s %s", strings.ToUpper(l.Scheme), l.Addr)
-		if l.Redirect != "" {
-			label = fmt.Sprintf("%s -> %s (redirect)", strings.ToUpper(l.Scheme), l.Redirect)
-		}
-		if l.ClientAuth != nil {
-			label += fmt.Sprintf("\\nclient-auth=%s\\nclient-ca=%v", l.ClientAuth.Mode, l.ClientAuth.CAFiles)
-		}
-		for _, binding := range l.ClientAuthPolicies {
-			label += fmt.Sprintf("\\nclient-auth-for=%v: %s\\nclient-ca=%v", binding.Hosts, binding.Policy.Mode, binding.Policy.CAFiles)
-		}
-		if l.CloudflareTrustedProxy {
-			label += graphCloudflarePolicy(l)
-		}
+		label := graphListenerLabel(l)
 		d.printf("  L%d [shape=Mrecord, style=filled, fillcolor=\"#cfe2ff\", label=%q];\n", i, label)
 	}
 
@@ -217,7 +205,7 @@ func graphListeners(d *dotWriter, r *resolved.Config) {
 		}
 		for j, target := range r.Listeners {
 			if target.Scheme == l.Redirect {
-				d.printf("  L%d -> L%d [label=\"redirect 301\", style=dashed];\n", i, j)
+				d.printf("  L%d -> L%d [label=%q, style=dashed];\n", i, j, graphListenerRedirectStatus(l))
 			}
 		}
 	}
@@ -234,6 +222,60 @@ func graphCloudflarePolicy(listener *resolved.Listener) string {
 	return fmt.Sprintf("\\ntrusted-proxy=cloudflare (startup + periodic)\\nfallback=%s fetched_at=%s (IPv4=%d IPv6=%d)", provenance, snapshot.FetchedAt.Format(time.RFC3339Nano), len(snapshot.IPv4), len(snapshot.IPv6))
 }
 
+func graphIngressPolicy(l *resolved.Listener) string {
+	if p := l.Ingress; p != nil {
+		return fmt.Sprintf("\\nforwarded-headers=%t normalize-path=%t sanitize-path=%t aliases=%s", p.ForwardedHeaders, p.NormalizePath, p.SanitizePath, p.HeaderAliases)
+	}
+	return ""
+}
+
+func graphListenerRedirectStatus(l *resolved.Listener) string {
+	status := l.RedirectStatus
+	if status == 0 {
+		status = 301
+	}
+	label := fmt.Sprintf("redirect %d", status)
+	if l.RedirectNonGETStatus != 0 {
+		label += fmt.Sprintf(" (non-GET %d)", l.RedirectNonGETStatus)
+	}
+	return label
+}
+
+func graphRoutePolicy(route *resolved.Route) string {
+	var label strings.Builder
+	if len(route.Listeners) > 0 {
+		fmt.Fprintf(&label, "\\nlisteners=%v", route.Listeners)
+	}
+	if route.Priority != 0 {
+		fmt.Fprintf(&label, "\\npriority=%d", route.Priority)
+	}
+	if route.PathMatch != "" {
+		label.WriteString("\\npath-match=")
+		label.WriteString(route.PathMatch)
+	}
+	if route.DiscoveredUpstream != "" {
+		label.WriteString("\\ndiscovered-upstream=")
+		label.WriteString(route.DiscoveredUpstream)
+	}
+	if len(route.PeerIPCIDRs) > 0 {
+		fmt.Fprintf(&label, "\\npeer=%v", route.PeerIPCIDRs)
+	}
+	if r := route.Redirect; r != nil {
+		fmt.Fprintf(&label, "\\nredirect %d -> %s", r.Status, r.Target)
+		if r.NonGETStatus != 0 {
+			fmt.Fprintf(&label, " (non-GET %d)", r.NonGETStatus)
+		}
+	}
+	for _, m := range middlewareLeaves(route.Middleware) {
+		label.WriteString(graphMiddlewarePolicy(m))
+		if m.HeaderHTTPSOnly {
+			label.WriteString("\\nHTTPS header: ")
+			label.WriteString(m.HeaderName)
+		}
+	}
+	return label.String()
+}
+
 func graphRoutes(d *dotWriter, r *resolved.Config) {
 	d.printf("\n  // routes\n")
 	for i, route := range r.Routes {
@@ -242,6 +284,7 @@ func graphRoutes(d *dotWriter, r *resolved.Config) {
 			host = "*"
 		}
 		label := fmt.Sprintf("%s %s", host, route.Pattern)
+		label += graphRoutePolicy(route)
 		d.printf("  R%d [shape=box, style=\"filled,rounded\", fillcolor=\"#fff3cd\", label=%q];\n", i, label)
 	}
 
@@ -290,6 +333,7 @@ func graphFallbackRoutes(d *dotWriter, r *resolved.Config) {
 			host = "*"
 		}
 		label := fmt.Sprintf("terminal #%d: %s %s", i+1, host, route.Pattern)
+		label += graphRoutePolicy(route)
 		d.printf("  FR%d [shape=box, style=\"filled,rounded\", fillcolor=\"#f8d7da\", label=%q];\n", i, label)
 		if i > 0 {
 			d.printf("  FR%d -> FR%d [label=\"no match\", style=dashed];\n", i-1, i)
@@ -378,4 +422,50 @@ func strategyString(s resolved.Strategy) string {
 	default:
 		return enumUnknown
 	}
+}
+
+func graphListenerLabel(l *resolved.Listener) string {
+	label := fmt.Sprintf("%s %s", strings.ToUpper(l.Scheme), l.Addr)
+	if l.Name != "" {
+		label += "\\nname=" + l.Name
+	}
+	for _, binding := range l.TLSPolicies {
+		label += fmt.Sprintf("\\nTLS for %v: min=%s max=%s strict-SNI=%t", binding.Hosts, binding.Policy.MinVersion, binding.Policy.MaxVersion, binding.Policy.StrictSNI)
+	}
+	if l.Redirect != "" {
+		label = fmt.Sprintf("%s -> %s (redirect)", strings.ToUpper(l.Scheme), l.Redirect)
+	}
+	if l.ClientAuth != nil {
+		label += fmt.Sprintf("\\nclient-auth=%s\\nclient-ca=%v", l.ClientAuth.Mode, l.ClientAuth.CAFiles)
+	}
+	for _, binding := range l.ClientAuthPolicies {
+		label += fmt.Sprintf("\\nclient-auth-for=%v: %s\\nclient-ca=%v", binding.Hosts, binding.Policy.Mode, binding.Policy.CAFiles)
+	}
+	if l.CloudflareTrustedProxy {
+		label += graphCloudflarePolicy(l)
+	}
+	label += graphIngressPolicy(l)
+	return label
+}
+
+func graphMiddlewarePolicy(m resolved.Middleware) string {
+	label := ""
+	switch m.Type {
+	case resolved.MWEncodeResponse:
+		if m.Encoding != nil {
+			label += fmt.Sprintf("\\nencodings=%v min=%d include=%v exclude=%v", m.Encoding.Encodings, m.Encoding.MinimumBytes, m.Encoding.IncludedTypes, m.Encoding.ExcludedTypes)
+		}
+	case resolved.MWBufferBodies:
+		if m.BodyBuffers != nil {
+			label += fmt.Sprintf("\\nbody-buffers request=%d/%d response=%d/%d in-flight=%d", m.BodyBuffers.MemoryRequestBytes, m.BodyBuffers.MaxRequestBytes, m.BodyBuffers.MemoryResponseBytes, m.BodyBuffers.MaxResponseBytes, m.BodyBuffers.MaxInFlight)
+		}
+	case resolved.MWReplaceEscapedPath, resolved.MWRewriteEscapedPath, resolved.MWStripBytePrefixes, resolved.MWPrefixPath:
+		label += fmt.Sprintf("\\nrequest-path op=%d original-header=%t", m.Type, m.PathRecordOriginal)
+	case resolved.MWRedirectRegex:
+		label += fmt.Sprintf("\\nredirect regexp %s -> %s (%d/non-GET %d)", m.RedirectPattern, m.RedirectReplacement, m.RedirectStatus, m.RedirectNonGETStatus)
+	case resolved.MWRedirectScheme:
+		label += fmt.Sprintf("\\nredirect scheme %s port=%s (%d/non-GET %d)", m.RedirectScheme, m.RedirectPort, m.RedirectStatus, m.RedirectNonGETStatus)
+	default:
+	}
+	return label
 }

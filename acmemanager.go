@@ -2,9 +2,11 @@ package statute
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -85,6 +87,7 @@ type acmeManager struct {
 	domains []string
 	email   string
 	storage string
+	keyType string
 	solver  acmeSolver
 
 	// issueTimeout caps one whole order, validation included. It is
@@ -156,6 +159,7 @@ func newACMEManager(cfg *resolved.AutoTLS, name string, solver acmeSolver) (*acm
 		domains:         cfg.Domains,
 		email:           cfg.Email,
 		storage:         dir,
+		keyType:         cfg.KeyType,
 		solver:          solver,
 		issueTimeout:    acmeIssueTimeout + dns01PropagationBudget(cfg),
 		directoryURL:    directory,
@@ -355,11 +359,11 @@ func (m *acmeManager) usable(host string) *tls.Certificate {
 	m.mu.RLock()
 	cert, ok := m.cache[host]
 	m.mu.RUnlock()
-	if ok && usableCert(cert) {
+	if ok && usableCert(cert) && leafKeyMatches(m.keyType, cert) {
 		return cert
 	}
 	cert = m.loadCert(host)
-	if !usableCert(cert) {
+	if !usableCert(cert) || !leafKeyMatches(m.keyType, cert) {
 		return nil
 	}
 	m.mu.Lock()
@@ -618,7 +622,7 @@ func findChallenge(typ string, challenges []*acme.Challenge) *acme.Challenge {
 // finalizeOrder generates a key + CSR, finalizes the ACME order, and
 // best-effort persists the issued certificate.
 func (m *acmeManager) finalizeOrder(ctx context.Context, host string, order *acme.Order) (*tls.Certificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := generateLeafKey(m.keyType)
 	if err != nil {
 		return nil, fmt.Errorf("cert key: %w", err)
 	}
@@ -769,7 +773,7 @@ func (m *acmeManager) loadCert(host string) *tls.Certificate {
 // key and chain in a single cache entry; we keep the operator-readable
 // two-file layout and order the renames so the chain, the file loadCert
 // opens first, is the last to change.
-func (m *acmeManager) persistCert(host string, chain [][]byte, key *ecdsa.PrivateKey) error {
+func (m *acmeManager) persistCert(host string, chain [][]byte, key crypto.Signer) error {
 	// Pre-allocate to roughly the encoded size: PEM adds ~1/3 overhead on
 	// base64 plus header/footer bytes. The exact size is unimportant; we just
 	// want to avoid the growth-and-copy cycle for typical 3-cert chains.
@@ -780,7 +784,7 @@ func (m *acmeManager) persistCert(host string, chain [][]byte, key *ecdsa.Privat
 			Bytes: der,
 		})...)
 	}
-	keyPEM, err := encodeECPrivateKey(key)
+	keyPEM, err := encodeLeafPrivateKey(key)
 	if err != nil {
 		return err
 	}
@@ -854,4 +858,60 @@ func writeECPrivateKey(path string, key *ecdsa.PrivateKey) error {
 		return err
 	}
 	return os.WriteFile(path, pemBytes, 0o600)
+}
+
+const (
+	acmeKeyEC256   = "EC256"
+	acmeKeyEC384   = "EC384"
+	acmeKeyRSA2048 = "RSA2048"
+	acmeKeyRSA3072 = "RSA3072"
+	acmeKeyRSA4096 = "RSA4096"
+	acmeKeyRSA8192 = "RSA8192"
+)
+
+func generateLeafKey(kind string) (crypto.Signer, error) {
+	switch kind {
+	case "", acmeKeyEC256:
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	case acmeKeyEC384:
+		return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	case acmeKeyRSA2048:
+		return rsa.GenerateKey(rand.Reader, 2048)
+	case acmeKeyRSA3072:
+		return rsa.GenerateKey(rand.Reader, 3072)
+	case acmeKeyRSA4096:
+		return rsa.GenerateKey(rand.Reader, 4096)
+	case acmeKeyRSA8192:
+		return rsa.GenerateKey(rand.Reader, 8192)
+	default:
+		return nil, errors.New("unsupported certificate key type")
+	}
+}
+
+func encodeLeafPrivateKey(key crypto.Signer) ([]byte, error) {
+	if ec, ok := key.(*ecdsa.PrivateKey); ok {
+		return encodeECPrivateKey(ec)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+}
+
+func leafKeyMatches(kind string, cert *tls.Certificate) bool {
+	if cert == nil {
+		return false
+	}
+	switch key := cert.PrivateKey.(type) {
+	case *ecdsa.PrivateKey:
+		if kind == "" || kind == acmeKeyEC256 {
+			return key.Curve == elliptic.P256()
+		}
+		return kind == acmeKeyEC384 && key.Curve == elliptic.P384()
+	case *rsa.PrivateKey:
+		bits := map[string]int{acmeKeyRSA2048: 2048, acmeKeyRSA3072: 3072, acmeKeyRSA4096: 4096, acmeKeyRSA8192: 8192}
+		return key.N.BitLen() == bits[kind]
+	}
+	return false
 }

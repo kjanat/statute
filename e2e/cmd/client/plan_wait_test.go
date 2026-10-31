@@ -82,6 +82,7 @@ func TestPlanWaitRejectsInvalidSteps(t *testing.T) {
 		func(s *report.Step) { s.Method = http.MethodPost },
 		func(s *report.Step) { s.Headers = map[string]string{"Host": "example.test"} },
 		func(s *report.Step) { s.Body = "content" },
+		func(s *report.Step) { s.Trailers = map[string]string{"X-Final": "complete"} },
 		func(s *report.Step) { s.Expect.Status = 200 },
 	} {
 		step := report.Step{URL: "http://example.test", Wait: &report.WaitStep{}}

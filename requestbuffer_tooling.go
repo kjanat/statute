@@ -30,11 +30,11 @@ func requestBufferChains(c *resolved.Config, visit func(string, []resolved.Middl
 
 func graphRequestBuffers(d *dotWriter, c *resolved.Config) {
 	resources := c.RequestBuffers
-	label := fmt.Sprintf("RequestBuffer resources\\nmemory=%d\\ndisk=%d\\nstorage=%s\\nmax_in_flight=%d", resources.MemoryBudgetBytes, resources.DiskBudgetBytes, resources.Storage, resources.MaxInFlight)
+	label := fmt.Sprintf("RequestBuffer resources\\nmemory=%d\\ndisk=%d\\nstorage=%s\\nmax_in_flight=%d\\nbuffer_bodies=%d", resources.MemoryBudgetBytes, resources.DiskBudgetBytes, resources.Storage, resources.MaxInFlight, resources.BufferBodiesBudgetBytes)
 	d.printf("  RB [shape=box, label=%q];\n", label)
 	index := 0
 	requestBufferChains(c, func(path string, chain []resolved.Middleware) {
-		for i, mw := range chain {
+		for i, mw := range middlewareLeaves(chain) {
 			if mw.Type != resolved.MWRequestBuffer {
 				continue
 			}
@@ -49,7 +49,12 @@ func ruleRequestBuffers(c *resolved.Config) []Finding {
 	var out []Finding
 	resources := c.RequestBuffers
 	requestBufferChains(c, func(path string, chain []resolved.Middleware) {
-		for i, mw := range chain {
+		for i, mw := range middlewareLeaves(chain) {
+			if mw.Type == resolved.MWBufferBodies && mw.BodyBuffers != nil {
+				if reserved := bodyBufferReservation(*mw.BodyBuffers); reserved > resources.BufferBodiesBudgetBytes {
+					out = append(out, Finding{Severity: SeverityWarning, Code: "RBF002", Path: fmt.Sprintf("%s.middleware[%d]", path, i), Message: fmt.Sprintf("BufferBodies reserves %d bytes per request, more than server request_buffers.buffer_bodies_budget=%d; every buffered request receives 503", reserved, resources.BufferBodiesBudgetBytes)})
+				}
+			}
 			if mw.Type != resolved.MWRequestBuffer {
 				continue
 			}

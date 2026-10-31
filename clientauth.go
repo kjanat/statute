@@ -19,6 +19,8 @@ const (
 	RequireAnyClientCert
 	VerifyClientCertIfGiven
 	RequireAndVerifyClientCert
+	// NoClientCert clears a listener default for selected SNI names.
+	NoClientCert
 )
 
 // ClientAuth configures client-certificate authentication for one HTTPS
@@ -209,6 +211,8 @@ func resolvedClientAuthMode(mode ClientAuthMode) (resolved.ClientAuthMode, error
 		return "", fmt.Errorf("client_auth: mode is required")
 	}
 	switch mode {
+	case NoClientCert:
+		return resolved.ClientAuthNone, nil
 	case RequestClientCert:
 		return resolved.ClientAuthRequest, nil
 	case RequireAnyClientCert:
@@ -230,5 +234,5 @@ func clientAuthRequiresCertificate(policy *resolved.ClientAuth) bool {
 	if policy == nil {
 		return false
 	}
-	return policy.Mode != resolved.ClientAuthRequest && policy.Mode != resolved.ClientAuthVerifyIfGiven
+	return policy.Mode == resolved.ClientAuthRequireAny || policy.Mode == resolved.ClientAuthRequireAndVerify
 }

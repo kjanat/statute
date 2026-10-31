@@ -7,7 +7,10 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
-const codingGzip = "gzip"
+const (
+	codingGzip = "gzip"
+	codingZstd = "zstd"
+)
 
 type encodingPreferences struct {
 	present bool
@@ -113,6 +116,10 @@ func (p encodingPreferences) weight(name string) int {
 type compressionNegotiator struct {
 	prefs                   encodingPreferences
 	gzip, brotli, transform bool
+}
+
+func (n *compressionNegotiator) selectETagEncoding(buf *responseBuffer) (string, bool) {
+	return n.selectCoding(buf.header, buf.status)
 }
 
 // selectCoding returns a new coding, or an empty coding to preserve the

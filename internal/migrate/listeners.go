@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"slices"
 	"strings"
@@ -15,9 +16,7 @@ func (g *generator) planListeners() {
 		if scalar(o.value("asDefault")) == trueValue {
 			g.defaultEntries = append(g.defaultEntries, o.Name)
 		}
-		if o.value("http.redirections.entryPoint") == nil {
-			g.contentEntries = append(g.contentEntries, o.Name)
-		}
+		g.contentEntries = append(g.contentEntries, o.Name)
 	})
 	slices.Sort(g.contentEntries)
 	slices.Sort(g.defaultEntries)
@@ -57,11 +56,7 @@ func (g *generator) classifyRouterPolicy(o *Object) {
 		o.mark("ruleSyntax", Exact, "Traefik v3 literal matcher grammar")
 	}
 	entries := g.routerEntries[o]
-	if !slices.Equal(entries, g.contentEntries) {
-		o.note("$reachability", Manual, "source router is not attached to every content listener; Statute shares one route table across content listeners")
-		return
-	}
-	o.mark("entryPoints", Translated, "router membership equals the generated content-listener set")
+	o.mark("entryPoints", Translated, "named listener route constraints")
 	g.checkRouterProtocols(o, entries)
 	// Specific TLS fields are consumed only when constructing selected listeners.
 	if scalar(o.value("tls")) == trueValue {
@@ -73,8 +68,6 @@ func (g *generator) classifyRouterPolicy(o *Object) {
 }
 
 func (g *generator) listener(o *Object) {
-	checkPathSanitization(o)
-	o.note("$forwarded-headers", Manual, "Traefik sanitizes untrusted forwarded headers by default and derives X-Real-IP from the connection peer; native listeners do not reproduce this header policy; review client identity and trusted proxy handling before serving")
 	addr := o.text("address")
 	if !literal(addr) || addr == "" {
 		return
@@ -87,9 +80,7 @@ func (g *generator) listener(o *Object) {
 	if o.value("asDefault") != nil {
 		o.mark("asDefault", Translated, "default entrypoint membership expanded into router inventory")
 	}
-	if g.listenerRedirect(o, addr) {
-		return
-	}
+	g.listenerRedirect(o)
 	var l *statute.Listener
 	var code string
 	if g.entryTLS[o.Name] || o.value("http.tls") != nil {
@@ -106,47 +97,50 @@ func (g *generator) listener(o *Object) {
 		l = statute.HTTP(addr)
 		code = fmt.Sprintf("statute.HTTP(%q)", addr)
 	}
+	l.Name(o.Name)
+	code += fmt.Sprintf(".Name(%q)", o.Name)
+	l, code = g.listenerIngress(o, l, code)
 	g.r.Config.Listeners = append(g.r.Config.Listeners, l)
 	g.listeners = append(g.listeners, code)
 	o.Generated = true
 }
 
-func checkPathSanitization(o *Object) {
-	const path = "http.sanitizePath"
-	if enabled, ok := o.value(path).(bool); ok && !enabled {
-		o.mark(path, Exact, "explicitly disabled source path sanitization; native routing preserves dot segments and duplicate slashes")
-		return
-	}
-	const reason = "Traefik enables pre-routing path sanitization by default; native routing and upstream paths retain dot segments and duplicate slashes; choose an explicit migration policy"
-	if o.value(path) == nil {
-		o.note("$"+path, Manual, reason)
-	} else {
-		o.mark(path, Manual, reason)
-	}
-}
-
-func (g *generator) listenerRedirect(o *Object, addr string) bool {
+func (g *generator) listenerRedirect(o *Object) {
 	const base = "http.redirections.entryPoint"
 	if o.value(base) == nil {
-		return false
+		return
 	}
-	scheme := o.text(base + ".scheme")
-	if scheme == "" {
-		scheme = protocolHTTPS
+	scheme, port, ok := g.listenerRedirectTarget(o)
+	if !ok {
+		return
 	}
-	if scheme != protocolHTTP && scheme != protocolHTTPS {
-		return true
+	permanent, ok := sourceBoolValue(o.value(base+".permanent"), true)
+	if !ok {
+		o.mark(base+".permanent", Manual, "invalid redirect permanence")
+		return
 	}
-	g.checkRedirectTarget(o, base, scheme)
-	o.mark(base, Translated, "candidate native redirect-only listener; source redirect priority and status differences are reported separately")
-	o.note("$redirect-method", Manual, "Traefik redirects GET with 301/302 and other methods with 308/307; native redirect-only listeners always return 301")
-	if o.value(base+".priority") != nil {
-		o.note("$redirect-priority", Manual, "custom source redirect priority can allow content routers to win; native redirect listeners never dispatch content")
+	order := math.MaxInt - 1
+	if value := o.value(base + ".priority"); value != nil {
+		var err error
+		order, err = integer(value)
+		if err != nil {
+			o.mark(base+".priority", Manual, "invalid redirect priority")
+			return
+		}
 	}
-	g.r.Config.Listeners = append(g.r.Config.Listeners, statute.HTTP(addr).RedirectTo(scheme))
-	g.listeners = append(g.listeners, fmt.Sprintf("statute.HTTP(%q).RedirectTo(%q)", addr, scheme))
-	o.Generated = true
-	return true
+	policy := statute.RedirectScheme(scheme).Port(port)
+	code := fmt.Sprintf("statute.RedirectScheme(%q).Port(%q)", scheme, port)
+	if permanent {
+		policy.Permanent()
+		code += codePermanent
+	}
+	route := statute.Match("/*").OnListeners(o.Name).Priority(order).Handle(migrationNoop).With(policy)
+	g.internalRoutes = append(g.internalRoutes, route)
+	g.imports["net/http"] = true
+	g.internalCode = append(g.internalCode, fmt.Sprintf("statute.Match(\"/*\").OnListeners(%q).Priority(%d).Handle(http.HandlerFunc(func(w http.ResponseWriter,_ *http.Request){w.WriteHeader(http.StatusTeapot)})).With(%s)", o.Name, order, code))
+	for _, key := range []string{"to", "scheme", fieldPermanent, "priority"} {
+		o.mark(base+"."+key, Translated, "listener-scoped conditional redirect at source priority")
+	}
 }
 
 func (g *generator) listenerTLS(ep *Object) ([]statute.ListenerOption, []string) {
@@ -218,18 +212,6 @@ func (g *generator) checkRouterProtocols(o *Object, entries []string) {
 	}
 }
 
-func (g *generator) checkRedirectTarget(o *Object, base, scheme string) {
-	to := o.text(base + ".to")
-	if ep := g.entrypoints[to]; ep != nil {
-		_, port, err := net.SplitHostPort(ep.text("address"))
-		if err != nil || (scheme == protocolHTTPS && port != "443") || (scheme == protocolHTTP && port != "80") {
-			o.note("$redirect-port", Manual, "native listener redirects do not retain a non-default target port")
-		}
-	} else if to != ":443" && to != ":80" {
-		o.note("$redirect-target", Manual, "redirect target is not a supplied entrypoint or standard port")
-	}
-}
-
 func certificateDomains(values []any) ([]string, bool) {
 	var out []string
 	for _, value := range values {
@@ -254,4 +236,27 @@ func certificateDomains(values []any) ([]string, bool) {
 		out = append(out, sans...)
 	}
 	return out, true
+}
+
+func (g *generator) listenerRedirectTarget(o *Object) (string, string, bool) {
+	const base = "http.redirections.entryPoint"
+	scheme := o.text(base + ".scheme")
+	if scheme == "" {
+		scheme = protocolHTTPS
+	}
+	if scheme != protocolHTTP && scheme != protocolHTTPS {
+		o.mark(base, Manual, "invalid redirect scheme")
+		return "", "", false
+	}
+	to := o.text(base + ".to")
+	address := to
+	if target := g.entrypoints[to]; target != nil {
+		address = target.text("address")
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil || !validPort(port) {
+		o.mark(base+".to", Manual, "redirect target must name an entrypoint or valid port")
+		return "", "", false
+	}
+	return scheme, port, true
 }

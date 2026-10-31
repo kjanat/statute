@@ -65,6 +65,9 @@ func TestCommandInvalidInvocationDoesNotCreateArtifacts(t *testing.T) {
 		{"positional", []string{"migrate", "traefik", "--out", out, "--report", report, "unexpected"}, "unexpected argument"},
 		{"missing-output", []string{"migrate", "traefik", "--static", "missing.yml", "--out", out}, "--report"},
 		{"missing-input", []string{"migrate", "traefik", "--out", out, "--report", report}, "provide at least one"},
+		{"path-map-relative", []string{"migrate", "traefik", "--static", "missing.yml", "--out", out, "--report", report, "--path-map", "relative=local"}, "--path-map"},
+		{"path-map-empty", []string{"migrate", "traefik", "--static", "missing.yml", "--out", out, "--report", report, "--path-map", "/source="}, "--path-map"},
+		{"path-map-no-equals", []string{"migrate", "traefik", "--static", "missing.yml", "--out", out, "--report", report, "--path-map", "/source"}, "--path-map"},
 		{"same-output", []string{"migrate", "traefik", "--static", "missing.yml", "--out", out, "--report", out}, "paths must be distinct"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,6 +106,22 @@ func TestCommandRepeatableInputPathsRemainLiteral(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), first) || !strings.Contains(stdout.String(), second) {
 		t.Fatalf("repeatable inputs not both audited: %s", &stdout)
+	}
+}
+
+func TestCommandAppliesExplicitProviderPathMap(t *testing.T) {
+	dir := t.TempDir()
+	static, dynamic := filepath.Join(dir, "static.yml"), filepath.Join(dir, "dynamic.yml")
+	if err := os.WriteFile(static, []byte("entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false}}\nproviders:\n  file: {filename: /container/dynamic.yml}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dynamic, []byte("http:\n  routers:\n    api: {rule: 'Host(`api.example`)', service: api}\n  services:\n    api: {loadBalancer: {servers: [{url: 'http://127.0.0.1:9000'}]}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"migrate", "traefik", "--static", static, "--dynamic", dynamic, "--path-map", "/container/dynamic.yml=" + dynamic, "--out", filepath.Join(dir, "main.go"), "--report", filepath.Join(dir, "report.json")}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("mapped audit exited %d: %s\n%s", code, &stdout, &stderr)
 	}
 }
 

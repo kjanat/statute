@@ -36,8 +36,9 @@ type HealthEndpoint interface {
 
 // LogWriter identifies a destination for structured logs.
 type LogWriter struct {
-	w    io.Writer
-	name string
+	w        io.Writer
+	name     string
+	filePath string
 }
 
 // Stdout writes logs to process stdout.
@@ -45,6 +46,10 @@ var Stdout = LogWriter{w: os.Stdout, name: "stdout"}
 
 // Stderr writes logs to process stderr.
 var Stderr = LogWriter{w: os.Stderr, name: "stderr"}
+
+// LogFile opens an append-only log file when the server starts and closes it
+// after request draining. Resolve and export do not open the file.
+func LogFile(path string) LogWriter { return LogWriter{name: path, filePath: path} }
 
 // Writer returns the underlying io.Writer. Useful when constructing the
 // resolved configuration.
@@ -57,6 +62,8 @@ type jsonLog struct {
 	dest       LogWriter
 	sampleRate float64
 	statuses   []string
+	bufferSize int
+	format     string
 }
 
 func (jsonLog) statuteAccessLog() {}
@@ -65,6 +72,12 @@ func (jsonLog) statuteAccessLog() {}
 // destination. By default every request is logged; use Sample to record only
 // a fraction of requests at high traffic volumes.
 func JSONLog(dest LogWriter) *jsonLog { return &jsonLog{dest: dest, sampleRate: 1.0} }
+
+// CommonLog writes common access-log records to the selected destination.
+func CommonLog(dest LogWriter) *jsonLog { return &jsonLog{dest: dest, sampleRate: 1, format: "common"} }
+
+// Buffer queues up to records access-log entries before writes block.
+func (j *jsonLog) Buffer(records int) *jsonLog { j.bufferSize = records; return j }
 
 // Sample records a fraction of requests, in the range (0.0, 1.0]. A rate of
 // 0.1 logs ten percent of requests; a rate of 1.0 (the default) logs every

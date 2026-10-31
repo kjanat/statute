@@ -105,6 +105,14 @@ without a client certificate, and 421 responses for protected HTTP authorities
 sent over public-SNI connections. It runs in `make test-e2e-regression` alongside
 the listener-wide `TestRegression_ClientMTLS` scenario.
 
+`TestRegression_IngressBeforeRoutingAndPolicy` checks path normalization before
+routing and rewrites, unchanged query escapes, alias rejection, and resistance to
+forged forwarded headers at ACL and rate-limit boundaries.
+`TestRegression_IngressTrailersAndForwardedOperations` checks normalized uploads
+through Retry and exactly-once forwarded-header edits. Origins verify trailer
+values on every attempt; the journal records each request and its complete
+forwarded chain. Both run in `make test-e2e-regression`.
+
 Every run writes `e2e/artifacts/<run-id>/<scenario>/<topology>/`:
 
 - `compose.rendered.yml` — the fully resolved stack,
@@ -211,7 +219,8 @@ A plan step with `wait` polls its URL using the client's existing status, body,
 and JSON predicates. Set `wait.timeout` to a positive duration (default `30s`)
 and put the predicates in `wait.spec`. A successful wait records its final body
 in the result and immediately advances to the next step. A failed wait stops the
-plan. Wait steps use GET; use ordinary steps for request counts, headers,
+plan. Ordinary request steps accept a `trailers` map alongside `body`; the client
+sends those fields at body EOF. Wait steps use GET; use ordinary steps for request counts, headers,
 bodies, and concurrency.
 
 The `upstream-tls` regression uses the lane PKI in both directions: Statute

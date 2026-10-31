@@ -12,11 +12,11 @@ import (
 	"statute.kjanat.dev/resolved"
 )
 
-func requireForwardedHeaderGap(t *testing.T, r *Result, extra ...string) {
+func requireMigrationGaps(t *testing.T, r *Result, expected ...string) {
 	t.Helper()
-	want := append([]string{"entrypoints.$forwarded-headers"}, extra...)
+	want := slices.Clone(expected)
 	slices.Sort(want)
-	if !r.Report.Blocking || !strings.Contains(string(r.Go), "panic(") || !slices.Equal(blockingGaps(r), want) {
+	if r.Report.Blocking != (len(want) > 0) || strings.Contains(string(r.Go), "migration incomplete") != (&generator{r: r}).hasImplementationGaps() || !slices.Equal(blockingGaps(r), want) {
 		var b bytes.Buffer
 		_ = r.Report.WriteHuman(&b)
 		t.Fatalf("expected only %v; got %v\n%s", want, blockingGaps(r), b.String())
@@ -41,13 +41,8 @@ func blockingGaps(r *Result) []string {
 	return slices.Compact(gaps)
 }
 
-func hasOtherBlockingGaps(r *Result) bool {
-	for _, gap := range blockingGaps(r) {
-		if gap != "entrypoints.$forwarded-headers" {
-			return true
-		}
-	}
-	return false
+func hasBlockingGaps(r *Result) bool {
+	return len(blockingGaps(r)) > 0
 }
 
 func TestMixedProviderTLSHealthAndMiddleware(t *testing.T) {
@@ -123,10 +118,10 @@ certificatesResolvers:
       traefik.http.services.worker.loadbalancer.healthcheck.status: '200'
 `)
 	r := audit(t, Inputs{Static: []string{static}, Dynamic: []string{dynamic}, Compose: []string{compose}})
-	requireForwardedHeaderGap(t, r, "services.$health-degraded")
+	requireMigrationGaps(t, r)
 	t.Setenv("CF_DNS_API_TOKEN", "migration-binding")
 	assertGeneratedParity(t, r)
-	for _, want := range []string{"PoolPolicy", "HealthCheck", "TargetHost", "ServerName", "CloudflareDNS01", "TLSPolicy", "AddPrefix", "Middleware"} {
+	for _, want := range []string{"PoolPolicy", "HealthCheck", "TargetHost", "ServerName", "CloudflareDNS01", "TLSPolicy", "PrefixPath", "Middleware"} {
 		if !strings.Contains(string(r.Go), want) {
 			t.Errorf("missing %s", want)
 		}
@@ -147,7 +142,7 @@ func TestAuthenticationFileBindingIsDeferred(t *testing.T) {
 	in := basicInputs(t, body+"tls:\n  stores: {default: {defaultCertificate: {certFile: /cert.pem, keyFile: /key.pem}}}\n")
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: ':8443', http: {sanitizePath: false, tls: {}}}\n")}
 	r := audit(t, in)
-	requireForwardedHeaderGap(t, r)
+	requireMigrationGaps(t, r)
 	assertGeneratedParity(t, r)
 	if strings.Contains(string(r.Go), validationHash) {
 		t.Fatal("credential copied into generated source")
@@ -165,8 +160,15 @@ func TestListenerIsolationCannotBecomeSharedPolicy(t *testing.T) {
 	in := basicInputs(t, strings.Replace(simpleDynamic, "service: api", "service: api\n      entryPoints: [private]", 1))
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  public: {address: ':8080', http: {sanitizePath: false}}\n  private: {address: ':8081', http: {sanitizePath: false}}\n")}
 	r := audit(t, in)
-	if !hasOtherBlockingGaps(r) || !strings.Contains(string(r.Go), "migration incomplete") {
-		t.Fatal("listener restriction silently dropped")
+	requireMigrationGaps(t, r)
+	c, err := statute.Resolve(r.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range c.Routes {
+		if !slices.Equal(route.Listeners, []string{"private"}) {
+			t.Fatalf("listener restriction lost: %v", route.Listeners)
+		}
 	}
 }
 
@@ -180,10 +182,10 @@ func TestHeaderBindingsDoNotCopyCredentials(t *testing.T) {
 			t.Fatal("secret leak")
 		}
 		if value == "${API_SECRET}" {
-			requireForwardedHeaderGap(t, r)
+			requireMigrationGaps(t, r)
 			t.Setenv("API_SECRET", "migration-binding")
 			assertGeneratedParity(t, r)
-		} else if !hasOtherBlockingGaps(r) {
+		} else if !hasBlockingGaps(r) {
 			t.Fatal("inline credential relocation must block")
 		}
 	}
@@ -193,7 +195,7 @@ func TestHoistedHeaderAfterAuthenticationBlocks(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: [auth, headers]", 1)
 	body += "  middlewares:\n    auth:\n      basicAuth: {usersFile: /not/read/by/audit}\n    headers:\n      headers:\n        customResponseHeaders: {Server: ''}\n"
 	r := audit(t, basicInputs(t, body))
-	if !hasOtherBlockingGaps(r) {
+	if !hasBlockingGaps(r) {
 		t.Fatal("header middleware moved before auth without a finding")
 	}
 }
@@ -214,7 +216,7 @@ serversTransport:
   forwardingTimeouts: {dialTimeout: 9s}
 `)}
 	result := audit(t, in)
-	requireForwardedHeaderGap(t, result)
+	requireMigrationGaps(t, result)
 	assertGeneratedParity(t, result)
 	c, err := statute.Resolve(result.Config)
 	if err != nil {
@@ -236,8 +238,13 @@ func TestGuardedMiddlewareCandidatesCompile(t *testing.T) {
 		body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: [candidate]", 1)
 		body += "  middlewares:\n    candidate:\n      " + definition + "\n"
 		r := audit(t, basicInputs(t, body))
-		if !hasOtherBlockingGaps(r) || !strings.Contains(string(r.Go), "func migrationCandidate") {
-			t.Fatalf("missing guarded native candidate for %s", definition)
+		if strings.HasPrefix(definition, "retry:") {
+			requireMigrationGaps(t, r, "middlewares.retry.attempts", "routers.$middleware:candidate@file")
+		} else {
+			requireMigrationGaps(t, r)
+			if r.Report.GeneratedRoutes == 0 {
+				t.Fatalf("middleware missing: %s", definition)
+			}
 		}
 		compileGenerated(t, r)
 	}
@@ -247,7 +254,7 @@ func TestIncompleteFileProviderInventoryBlocks(t *testing.T) {
 	in := basicInputs(t, simpleDynamic)
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: ':8080', http: {sanitizePath: false}}\nproviders:\n  file: {directory: /not-supplied-to-audit}\n")}
 	r := audit(t, in)
-	if !hasOtherBlockingGaps(r) {
+	if !hasBlockingGaps(r) {
 		t.Fatal("unsupplied provider inputs accepted")
 	}
 }
@@ -255,7 +262,7 @@ func TestIncompleteFileProviderInventoryBlocks(t *testing.T) {
 func TestMissingNamedTLSResolverBlocks(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      tls: {certResolver: missing}", 1)
 	r := audit(t, basicInputs(t, body))
-	if !hasOtherBlockingGaps(r) {
+	if !hasBlockingGaps(r) {
 		t.Fatal("missing certificate resolver accepted")
 	}
 }
@@ -281,7 +288,7 @@ func TestInlineAuthenticationRelocationRemainsBlocking(t *testing.T) {
 	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: [auth]", 1)
 	body += "  middlewares:\n    auth:\n      basicAuth:\n        users: ['alice:" + validationHash + "', 'bob:${AUTH_HASH}']\n"
 	r := audit(t, basicInputs(t, body))
-	if !hasOtherBlockingGaps(r) || strings.Contains(string(r.Go), validationHash) {
+	if !hasBlockingGaps(r) || strings.Contains(string(r.Go), validationHash) {
 		t.Fatal("inline credential was copied or its relocation was accepted")
 	}
 	compileGenerated(t, r)
@@ -301,7 +308,7 @@ certificatesResolvers:
 `)}
 	r := audit(t, in)
 	report, _ := json.Marshal(r.Report)
-	if !hasOtherBlockingGaps(r) || strings.Contains(string(r.Go), "secret-password") || strings.Contains(string(report), "secret-password") {
+	if !hasBlockingGaps(r) || strings.Contains(string(r.Go), "secret-password") || strings.Contains(string(report), "secret-password") {
 		t.Fatal("ACME directory credential was accepted or exposed")
 	}
 }

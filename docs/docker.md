@@ -40,6 +40,10 @@ statute.Main(statute.Config{
 | `PoolPolicy(name, policy)` | Attach code-owned transport, Host, and health policy to one exact discovered-service identity. Re-registering a name replaces it.     |
 | `Workload(name, policy)`   | Grant on-demand activation for one exact discovered-service identity: start its container on routed demand, stop it when idle.        |
 
+`OnListeners` inside named or default middleware must reference listeners declared
+with `Listener.Name`. An unknown listener name fails `Resolve`, including inside
+nested middleware groups.
+
 > **Warning — TCP endpoints are unauthenticated.** The client speaks plain
 > HTTP with no TLS or client certificates, and whoever can answer on that
 > socket controls your routing. Use `tcp://` only for loopback addresses or
@@ -366,6 +370,8 @@ native hints last. Identical host/path predicates within one service coalesce
 only when their complete resolved middleware chains are equivalent. Different
 duration/rate spellings and compression algorithm ordering or duplicates do not
 create conflicts; middleware ordering and repeated middleware do matter.
+Entrypoint lists compare as sets, and a router without entrypoints uses the
+default listeners in that comparison.
 
 If identical predicates request different policies, Statute refuses that
 predicate. Healthy unrelated routes

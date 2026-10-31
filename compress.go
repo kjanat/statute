@@ -26,7 +26,7 @@ func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Hand
 	if !wantGzip && !wantBrotli {
 		return next
 	}
-	vary := []headerOp{{op: resolved.MWAddResponseHeader, name: "Vary", value: "Accept-Encoding"}}
+	vary := encodingVarianceOps()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Upgrade") != "" {
 			next.ServeHTTP(w, r)
@@ -44,6 +44,10 @@ func compressHandler(algos []resolved.CompressAlgo, next http.Handler) http.Hand
 		serveCompressed(ww, r, next, n)
 		ww.applyOps() // A normal empty response commits after the handler returns.
 	})
+}
+
+func encodingVarianceOps() []headerOp {
+	return []headerOp{{value: "Accept-Encoding", ensureVary: true}}
 }
 
 func compressionAlgorithms(algos []resolved.CompressAlgo) (gzipEnabled, brotliEnabled bool) {
@@ -170,17 +174,8 @@ func (c *compressResponseWriter) startEncoding() {
 	c.coding = coding
 	c.encoded = true
 	c.droppedTrailers = stripCompressionTrailers(h)
-	deleteHeaderFold(h, "Content-Length")
-	for _, name := range []string{"Content-Encoding", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, "Accept-Ranges"} {
-		deleteHeaderFold(h, name)
-	}
+	prepareEncodedMetadata(h)
 	h.Set("Content-Encoding", c.coding)
-	tags, _ := cacheHeaderValues(h, "ETag")
-	if len(tags) == 1 && strings.HasPrefix(tags[0], `"`) {
-		tag := tags[0]
-		deleteHeaderFold(h, "ETag")
-		h.Set("ETag", "W/"+tag)
-	}
 	if c.head {
 		return
 	}
@@ -192,6 +187,17 @@ func (c *compressResponseWriter) startEncoding() {
 		c.brotli = brotliPool.Get().(*brotli.Writer)
 		c.brotli.Reset(c.ResponseWriter)
 		c.w = c.brotli
+	}
+}
+
+func prepareEncodedMetadata(h http.Header) {
+	for _, name := range []string{headerContentLength, "Content-Encoding", headerContentMD5, headerDigest, headerContentDigest, headerReprDigest, "Accept-Ranges"} {
+		deleteHeaderFold(h, name)
+	}
+	tags, _ := cacheHeaderValues(h, "ETag")
+	if len(tags) == 1 && strings.HasPrefix(tags[0], `"`) {
+		deleteHeaderFold(h, "ETag")
+		h.Set("ETag", "W/"+tags[0])
 	}
 }
 

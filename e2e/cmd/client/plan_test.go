@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -29,10 +30,30 @@ func startEcho(t *testing.T, id string) string {
 	mux.HandleFunc("/broken", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusBadGateway)
 	})
+	mux.HandleFunc("/trailers", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil || r.Trailer.Get("X-Final") != "complete" {
+			http.Error(w, "missing trailer", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
 	return "http://" + ln.Addr().String()
+}
+
+func TestExecutePlanSendsTrailers(t *testing.T) {
+	base := startEcho(t, "origin-1")
+	for _, body := range []string{"", "pt"} {
+		result := doRequest(&http.Client{Timeout: time.Second}, &report.Plan{ClientID: "client-1"}, &report.Step{
+			Name: "trailers", URL: base + "/trailers", Proto: "h1", Method: http.MethodPut, Body: body,
+			Trailers: map[string]string{"X-Final": "complete"}, Expect: report.Expect{Status: http.StatusNoContent},
+		}, 0)
+		if !result.OK {
+			t.Fatalf("request trailers failed: %+v", result)
+		}
+	}
 }
 
 func TestExecutePlanEdgesAndFailures(t *testing.T) {

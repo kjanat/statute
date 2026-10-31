@@ -2,6 +2,7 @@ package statute
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"net/netip"
@@ -23,6 +24,7 @@ func accessLogMiddleware(cfg resolved.AccessLog, next http.Handler) http.Handler
 		return next
 	}
 	enc := newSafeEncoder(cfg.Writer)
+	enc.common = cfg.Format == "common"
 	rate := cfg.SampleRate
 	if rate <= 0 {
 		rate = 1
@@ -133,12 +135,14 @@ func statusAllowed(status int, statuses []resolved.StatusRange) bool {
 
 // safeEncoder serializes JSON writes so multiple goroutines do not interleave.
 type safeEncoder struct {
-	mu  sync.Mutex
-	enc *json.Encoder
+	mu     sync.Mutex
+	enc    *json.Encoder
+	writer jsonWriter
+	common bool
 }
 
 func newSafeEncoder(w jsonWriter) *safeEncoder {
-	return &safeEncoder{enc: json.NewEncoder(w)}
+	return &safeEncoder{enc: json.NewEncoder(w), writer: w}
 }
 
 // Encode serialises v as one JSON line under a mutex so concurrent
@@ -146,6 +150,20 @@ func newSafeEncoder(w jsonWriter) *safeEncoder {
 func (s *safeEncoder) Encode(v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.common {
+		if entry, ok := v.(map[string]any); ok {
+			target := fmt.Sprint(entry["path"])
+			if query, ok := entry["query"].(string); ok && query != "" {
+				target += "?" + query
+			}
+			stamp := fmt.Sprint(entry["ts"])
+			if parsed, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+				stamp = parsed.Format("02/Jan/2006:15:04:05 -0700")
+			}
+			_, _ = fmt.Fprintf(s.writer, "%s - - [%s] %q %v %v %q %q\n", entry["remote"], stamp, fmt.Sprintf("%v %s %v", entry["method"], target, entry["proto"]), entry["status"], entry["body_bytes"], entry["referer"], entry["user_agent"])
+			return
+		}
+	}
 	_ = s.enc.Encode(v) //nolint:errchkjson // best-effort access-log write; v is always the internal log entry and a failed line must not fail the request
 }
 

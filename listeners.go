@@ -4,12 +4,16 @@ import "bytes"
 
 // Listener is a surface listener declaration. Construct via HTTP or HTTPS.
 type Listener struct {
-	addr     string
-	scheme   string // "http" or "https"
-	redirect string // non-empty means this listener redirects to the named scheme
+	name                 string
+	addr                 string
+	scheme               string // "http" or "https"
+	redirect             string // non-empty means this listener redirects to the named scheme
+	redirectNonGETStatus int
+	redirectStatus       int
 
 	autoTLS            []*AutoTLSConfig
 	staticTLS          []*StaticTLSConfig
+	tlsPolicies        []hostTLSPolicy
 	tlsPolicy          []TLSPolicy  // slice so resolve can reject a second declaration
 	clientAuth         []ClientAuth // slice so resolve can reject a second declaration
 	clientAuthPolicies []clientAuthPolicy
@@ -17,6 +21,7 @@ type Listener struct {
 	http3Addr          string
 	behindCF           bool
 	trustedProxy       *TrustedProxyConfig
+	ingress            []IngressPolicy
 }
 
 // HTTP starts an HTTP/1.1 listener declaration on the given address.
@@ -41,6 +46,14 @@ func HTTP(addr string) *Listener {
 //	)
 func HTTPS(addr string, opts ...ListenerOption) *Listener {
 	l := &Listener{addr: addr, scheme: schemeHTTPS}
+	return l.With(opts...)
+}
+
+// Name identifies this listener for routes using OnListeners.
+func (l *Listener) Name(name string) *Listener { l.name = name; return l }
+
+// With applies listener options to an HTTP or HTTPS listener.
+func (l *Listener) With(opts ...ListenerOption) *Listener {
 	for _, o := range opts {
 		o.applyListener(l)
 	}
@@ -54,7 +67,13 @@ func (l *Listener) RedirectTo(scheme string) *Listener {
 	return l
 }
 
-// ListenerOption configures an HTTPS listener.
+// RedirectNonGET selects the redirect status for methods other than GET.
+func (l *Listener) RedirectNonGET(status int) *Listener { l.redirectNonGETStatus = status; return l }
+
+// RedirectStatus selects the GET status of a redirect listener (default 301).
+func (l *Listener) RedirectStatus(status int) *Listener { l.redirectStatus = status; return l }
+
+// ListenerOption configures a listener.
 type ListenerOption interface {
 	applyListener(l *Listener)
 }
@@ -69,6 +88,7 @@ type AutoTLSConfig struct {
 	dns01          *cloudflareDNS01Config
 	propagation    *DNSPropagation
 	explicitHTTP01 bool
+	keyType        string
 }
 
 // AutoTLS configures ACME auto-provisioning for the given domains. Each
@@ -80,6 +100,10 @@ type AutoTLSConfig struct {
 func AutoTLS(domains ...string) *AutoTLSConfig {
 	return &AutoTLSConfig{Domains: append([]string(nil), domains...)}
 }
+
+// KeyType selects EC256, EC384, RSA2048, RSA3072, RSA4096 or RSA8192 leaf keys.
+// Custom key types require an explicit HTTP01 or DNS01 challenge source.
+func (a *AutoTLSConfig) KeyType(kind string) *AutoTLSConfig { a.keyType = kind; return a }
 
 // Email sets the contact email registered with the ACME directory.
 func (a *AutoTLSConfig) Email(email string) *AutoTLSConfig {
@@ -196,6 +220,13 @@ type cloudflareDNS01Config struct {
 //	        Resolvers: []string{"192.0.2.53:53", "198.51.100.53:53"},
 //	    })
 type DNSPropagation struct {
+	// Authoritative checks every authoritative server for the challenge zone.
+	Authoritative       bool
+	RequireAllRecursive bool
+	// DiscoveryResolvers locate the challenge CNAME and authoritative zone.
+	DiscoveryResolvers []string
+	// DisableChecks explicitly disables DNS verification after Delay.
+	DisableChecks bool
 	// Delay is the fixed wait between publishing the TXT record and doing
 	// anything else. Empty or zero means none when Resolvers is set
 	// (polling replaces the sleep); with no Resolvers either, the policy
@@ -337,7 +368,7 @@ func (t *TrustedProxyConfig) FallbackSnapshot(snapshot []byte) *TrustedProxyConf
 // trusted proxies that is the address the proxy itself observed, while the
 // earlier values arrived from outside and remain client-controlled.
 func TrustedProxy(cidrs ...string) *TrustedProxyConfig {
-	return &TrustedProxyConfig{cidrs: cidrs, header: "X-Forwarded-For"}
+	return &TrustedProxyConfig{cidrs: cidrs, header: headerXForwardedFor}
 }
 
 // ClientIPHeader names the forwarded header consulted when the direct peer

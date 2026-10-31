@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestGuardedCandidateServesRewrittenRequests(t *testing.T) {
+func TestGeneratedCandidateServesSanitizedRequests(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", "backend")
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -36,8 +36,8 @@ func TestGuardedCandidateServesRewrittenRequests(t *testing.T) {
 	in := basicInputs(t, body)
 	in.Static = []string{fixture(t, "static.yml", "entryPoints:\n  web: {address: '"+address+"', http: {sanitizePath: false}}\n")}
 	result := audit(t, in)
-	requireForwardedHeaderGap(t, result)
-	binary := compileTestCandidate(t, result)
+	requireMigrationGaps(t, result)
+	binary := compileGenerated(t, result)
 	// A missing binding must fail validation before any listener starts.
 	// #nosec G204 -- Execute only the generated test binary.
 	missing := exec.CommandContext(t.Context(), binary, "-validate")
@@ -73,24 +73,10 @@ func TestGuardedCandidateServesRewrittenRequests(t *testing.T) {
 	if response.StatusCode != 200 {
 		t.Fatalf("status: %d", response.StatusCode)
 	}
-	if string(data) != "/v1/health?x=1|bound-token|198.51.100.123" || response.Header.Get("Server") != "" {
+	if string(data) != "/v1/health?x=1|bound-token|127.0.0.1" || response.Header.Get("Server") != "" {
 		t.Fatalf("generated route behavior: status=%d body=%q server=%q", response.StatusCode, data, response.Header.Get("Server"))
 	}
 	assertUnmatched(t, client, address)
-}
-
-func compileTestCandidate(t *testing.T, r *Result) string {
-	t.Helper()
-	guarded := compileGenerated(t, r)
-	// #nosec G204 -- Execute only the generated fixture to prove its startup guard.
-	cmd := exec.CommandContext(t.Context(), guarded)
-	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "migration incomplete") {
-		t.Fatalf("generated guard did not refuse startup: %v\n%s", err, out)
-	}
-	// A test-only entrypoint exercises the candidate after proving the emitted guard.
-	candidate := *r
-	candidate.Go = []byte(strings.Replace(string(r.Go), "func main()", "func auditedMain()", 1) + "\nfunc main() { statute.Main(configuration()) }\n")
-	return compileGenerated(t, &candidate)
 }
 
 func compileGenerated(t *testing.T, r *Result) string {

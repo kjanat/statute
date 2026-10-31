@@ -6,9 +6,13 @@ type Upstreams map[string]Pool
 
 // Pool is the surface upstream pool definition.
 type Pool struct {
-	Backends    []Backend
-	Strategy    Strategy
-	HealthCheck HealthCheck
+	// AllowEmpty serves 503 while this static pool has no backends.
+	AllowEmpty bool
+	// RejectUnhealthy returns 503 when every backend is unhealthy.
+	RejectUnhealthy bool
+	Backends        []Backend
+	Strategy        Strategy
+	HealthCheck     HealthCheck
 	// PassiveHealthCheck demotes backends based on real proxy traffic; it
 	// works with or without an active HealthCheck.
 	PassiveHealthCheck PassiveHealthCheck
@@ -23,6 +27,7 @@ type Pool struct {
 // this policy supplies only the transport, Host, and health behavior shared by
 // every route using that service's pool.
 type PoolPolicy struct {
+	RejectUnhealthy    bool
 	HealthCheck        HealthCheck
 	PassiveHealthCheck PassiveHealthCheck
 	Transport          Transport
@@ -145,6 +150,12 @@ type HealthCheck struct {
 	// a prohibited redirect counts as a failed probe. This applies whether
 	// or not the pool carries a client certificate.
 	Statuses []int
+	// Redirects is default, none, same_origin or any_origin.
+	Redirects string
+	// ResolvePath treats Path as a URL reference relative to the backend.
+	ResolvePath bool
+	Method      string
+	Headers     map[string]string
 }
 
 // PassiveHealthCheck configures passive backend demotion from proxy
@@ -159,8 +170,10 @@ type HealthCheck struct {
 // mode. Both fields must be set together; the zero value disables passive
 // health checks.
 type PassiveHealthCheck struct {
-	FailureWindow string // sliding window; e.g. "30s"
-	MaxFailures   int    // failures within the window that demote
+	FailureWindow  string // sliding window; e.g. "30s"
+	MaxFailures    int    // failures within the window that demote
+	ResetOnSuccess bool
+	HoldDown       string // exclusion duration after reaching the failure threshold
 }
 
 // Transport tunes the HTTP transport used to reach backends. The TLS fields

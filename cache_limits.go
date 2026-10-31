@@ -69,7 +69,8 @@ func cacheRequestKeyRemaining(r *http.Request) int {
 		return -1
 	}
 	remaining := cacheKeyBytes
-	for _, s := range []string{r.Method, r.Host, r.RequestURI, r.URL.Scheme, r.URL.RawQuery, r.URL.RawPath, r.URL.Opaque} {
+	listener, _ := r.Context().Value(listenerNameKey{}).(string)
+	for _, s := range []string{r.Method, r.Host, r.RequestURI, r.URL.Scheme, r.URL.RawQuery, r.URL.RawPath, r.URL.Opaque, listener} {
 		if len(s) > remaining {
 			return -1
 		}
@@ -170,12 +171,12 @@ func cacheCloneHeader(h http.Header) http.Header {
 }
 
 func cacheCloneKey(k cacheKey) cacheKey {
-	return cacheKey{method: strings.Clone(k.method), host: strings.Clone(k.host), target: strings.Clone(k.target), originalURI: strings.Clone(k.originalURI), scheme: strings.Clone(k.scheme), propagationFields: strings.Clone(k.propagationFields), tls: k.tls}
+	return cacheKey{method: strings.Clone(k.method), host: strings.Clone(k.host), target: strings.Clone(k.target), originalURI: strings.Clone(k.originalURI), scheme: strings.Clone(k.scheme), propagationFields: strings.Clone(k.propagationFields), listener: strings.Clone(k.listener), tls: k.tls}
 }
 
 func cacheMetadataCost(key cacheKey, request http.Header, names []string, response http.Header) (int64, bool) {
 	keySize := 0
-	for _, s := range []string{key.method, key.host, key.target, key.originalURI, key.scheme, key.propagationFields} {
+	for _, s := range []string{key.method, key.host, key.target, key.originalURI, key.scheme, key.propagationFields, key.listener} {
 		if len(s) > cacheKeyBytes-keySize {
 			return 0, false
 		}

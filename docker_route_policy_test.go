@@ -147,3 +147,43 @@ func TestDockerNativeHintRevisionFencesQueuedRequest(t *testing.T) {
 		t.Fatalf("current policy request=%d", got.Code)
 	}
 }
+
+func TestDockerRoutePolicyCanonicalizesListenerSets(t *testing.T) {
+	for _, tc := range []struct {
+		name, first, second string
+		conflict            bool
+	}{
+		{name: "reordered", first: "web,admin", second: "admin,web", conflict: true},
+		{name: "duplicated", first: "web,web,admin", second: "admin,web", conflict: true},
+		{name: "defaulted", first: "", second: "web,admin", conflict: true},
+		{name: "disjoint", first: "web", second: "admin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := resolveDocker(Docker().TraefikLabels().RouterConstraints().DefaultListeners("admin", "web").Middleware("limit@file", RateLimit("10/s")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			labels := map[string]string{
+				"traefik.enable":                           "true",
+				"traefik.http.routers.open.rule":           "Host(`app.example`)",
+				"traefik.http.routers.open.service":        "app",
+				"traefik.http.routers.limited.rule":        "Host(`app.example`)",
+				"traefik.http.routers.limited.service":     "app",
+				"traefik.http.routers.limited.middlewares": "limit@file",
+			}
+			if tc.first != "" {
+				labels["traefik.http.routers.open.entrypoints"] = tc.first
+			}
+			labels["traefik.http.routers.limited.entrypoints"] = tc.second
+			p, srv, _ := newFakeProvider(t, cfg, []fakeDaemonContainer{{name: "app", ip: "127.0.0.1", port: 8080, labels: labels}})
+			mustSync(t, p)
+			tab := srv.dynamic.Load()
+			if tc.conflict && (len(tab.routes) != 0 || len(tab.rejections) != 1) {
+				t.Fatalf("routes=%d rejections=%d", len(tab.routes), len(tab.rejections))
+			}
+			if !tc.conflict && (len(tab.routes) != 2 || len(tab.rejections) != 0) {
+				t.Fatalf("routes=%d rejections=%d", len(tab.routes), len(tab.rejections))
+			}
+		})
+	}
+}

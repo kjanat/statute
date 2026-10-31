@@ -34,7 +34,7 @@ var requestIDForbiddenOutputHeaders = map[string][]string{
 		"Origin", "Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "Access-Control-Allow-Headers",
 		"Access-Control-Allow-Methods", "Access-Control-Expose-Headers", "Access-Control-Max-Age", "Access-Control-Allow-Private-Network",
 		"Access-Control-Request-Headers", "Access-Control-Request-Method", "Access-Control-Request-Private-Network",
-		"Host", "Forwarded", headerXForwardedFor, "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port", "X-Real-IP",
+		"Host", "Forwarded", headerXForwardedFor, headerXForwardedHost, headerXForwardedProto, headerXForwardedPort, "X-Real-IP",
 	},
 }
 

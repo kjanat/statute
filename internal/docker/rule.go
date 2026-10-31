@@ -2,6 +2,7 @@ package docker
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -21,7 +22,11 @@ type Matcher struct {
 	// the provider.
 	Middlewares []string
 	// Hints are native middleware labels from this route's container.
-	Hints MiddlewareHints
+	Hints         MiddlewareHints
+	PeerIPCIDRs   []string
+	ListenerNames []string
+	Priority      int
+	PriorityOrder bool
 }
 
 // MiddlewareHints is the native route policy awaiting provider resolution.
@@ -34,7 +39,7 @@ type MiddlewareHints struct {
 // Equal reports whether two matchers match the same traffic and carry the
 // same middleware references and native hints.
 func (m Matcher) Equal(o Matcher) bool {
-	return m.Host == o.Host && m.HostKind == o.HostKind && m.Path == o.Path && m.PathKind == o.PathKind && slices.Equal(m.Middlewares, o.Middlewares) && m.Hints == o.Hints
+	return m.Host == o.Host && m.HostKind == o.HostKind && m.Path == o.Path && m.PathKind == o.PathKind && slices.Equal(m.Middlewares, o.Middlewares) && m.Hints == o.Hints && slices.Equal(m.PeerIPCIDRs, o.PeerIPCIDRs) && slices.Equal(m.ListenerNames, o.ListenerNames) && m.Priority == o.Priority
 }
 
 // maxRuleMatchers caps the disjunctive expansion of a single rule so a
@@ -48,7 +53,7 @@ const pathPrefixMatcher = "PathPrefix"
 // Supported: Host(`a`), Path(`/x`), PathPrefix(`/x`), the `&&` and `||`
 // operators, parentheses, and multi-argument matchers (Host(`a`,`b`) is a
 // disjunction, per Traefik v2). Unsupported matchers (HostRegexp, Query,
-// Header, ClientIP, negation, …) return an error so the caller can skip
+// Header, negation, …) return an error so the caller can skip
 // the router with a warning instead of silently mis-routing.
 func ParseRule(rule string) ([]Matcher, error) {
 	toks, err := lexRule(rule)
@@ -97,7 +102,7 @@ func conjsToMatchers(conjs []conj) ([]Matcher, error) {
 		}
 		for _, h := range hosts {
 			h = strings.ToLower(h)
-			m := Matcher{Path: path, PathKind: pathKind}
+			m := Matcher{Path: path, PathKind: pathKind, PeerIPCIDRs: append([]string(nil), c.peers...)}
 			if h != "" {
 				m.Host = h
 				m.HostKind = HostTraefik
@@ -252,6 +257,7 @@ type ruleExpr interface {
 // host), and at most one path constraint.
 type conj struct {
 	hosts   []string
+	peers   []string
 	path    string
 	prefix  bool
 	pathSet bool
@@ -309,23 +315,14 @@ func (e andExpr) expand() ([]conj, error) {
 // constraints on one conjunction are rejected.
 func mergeConj(a, b conj) (conj, error) {
 	out := a
-	if len(b.hosts) > 0 {
-		if len(out.hosts) == 0 {
-			out.hosts = b.hosts
-		} else {
-			var inter []string
-			for _, h := range out.hosts {
-				for _, g := range b.hosts {
-					if h == g {
-						inter = append(inter, h)
-					}
-				}
-			}
-			if len(inter) == 0 {
-				return conj{}, fmt.Errorf("rule: conjunction of disjoint Host() sets can never match")
-			}
-			out.hosts = inter
-		}
+	var err error
+	out.hosts, err = intersectRuleHosts(a.hosts, b.hosts)
+	if err != nil {
+		return conj{}, err
+	}
+	out.peers, err = intersectRulePeers(a.peers, b.peers)
+	if err != nil {
+		return conj{}, err
 	}
 	if b.pathSet {
 		if out.pathSet {
@@ -348,10 +345,24 @@ func (e fnExpr) expand() ([]conj, error) {
 			}
 		}
 		return []conj{{hosts: e.args}}, nil
+	case "ClientIP":
+		var cidrs []string
+		for _, value := range e.args {
+			if ip, err := netip.ParseAddr(value); err == nil {
+				value = netip.PrefixFrom(ip.Unmap(), ip.Unmap().BitLen()).String()
+			}
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil {
+				return nil, fmt.Errorf("rule: invalid ClientIP address or CIDR")
+			}
+			cidrs = append(cidrs, prefix.Masked().String())
+		}
+		slices.Sort(cidrs)
+		return []conj{{peers: slices.Compact(cidrs)}}, nil
 	case "Path", pathPrefixMatcher:
 		return expandPathMatcher(e.name, e.args, e.name == pathPrefixMatcher)
 	default:
-		return nil, fmt.Errorf("rule: matcher %s() is not supported (supported: Host, Path, PathPrefix)", e.name)
+		return nil, fmt.Errorf("rule: matcher %s() is not supported (supported: Host, Path, PathPrefix, ClientIP)", e.name)
 	}
 }
 
@@ -499,4 +510,51 @@ func (p *ruleParser) expect(kind int, what string) error {
 	}
 	p.pos++
 	return nil
+}
+
+func intersectRuleHosts(a, b []string) ([]string, error) {
+	if len(a) == 0 {
+		return b, nil
+	}
+	if len(b) == 0 {
+		return a, nil
+	}
+	var intersection []string
+	for _, left := range a {
+		for _, right := range b {
+			if left == right {
+				intersection = append(intersection, left)
+			}
+		}
+	}
+	if len(intersection) == 0 {
+		return nil, fmt.Errorf("rule: conjunction of disjoint Host() sets can never match")
+	}
+	return intersection, nil
+}
+
+func intersectRulePeers(a, b []string) ([]string, error) {
+	if len(a) == 0 {
+		return b, nil
+	}
+	if len(b) == 0 {
+		return a, nil
+	}
+	var intersection []string
+	for _, left := range a {
+		l, _ := netip.ParsePrefix(left)
+		for _, right := range b {
+			r, _ := netip.ParsePrefix(right)
+			if l.Bits() <= r.Bits() && l.Contains(r.Addr()) {
+				intersection = append(intersection, right)
+			} else if r.Bits() <= l.Bits() && r.Contains(l.Addr()) {
+				intersection = append(intersection, left)
+			}
+		}
+	}
+	if len(intersection) == 0 {
+		return nil, fmt.Errorf("rule: disjoint ClientIP constraints")
+	}
+	slices.Sort(intersection)
+	return slices.Compact(intersection), nil
 }

@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"maps"
 	"slices"
 
 	"statute.kjanat.dev/internal/docker"
@@ -16,14 +17,8 @@ func (g *generator) checkDockerExtraction(c *resolved.Config) {
 		if o.Provider != providerDocker || !o.Generated {
 			return
 		}
-		networks := map[string]string{"migration": "192.0.2.1"}
-		for _, name := range []string{c.Docker.Network, o.labels["traefik.docker.network"]} {
-			if name != "" {
-				networks[name] = "192.0.2.1"
-			}
-		}
-		container := docker.Container{ID: o.Source, Name: o.Source, Labels: o.labels, Networks: networks, Running: true}
-		services, _, _ := docker.Extract(container, docker.ExtractOptions{TraefikLabels: true, ExposedByDefault: c.Docker.ExposedByDefault, Network: c.Docker.Network})
+		container, bound := dockerAuditContainer(o, c.Docker)
+		services, _, _ := docker.Extract(container, docker.ExtractOptions{TraefikLabels: true, BoundServices: bound, ExposedByDefault: c.Docker.ExposedByDefault, Network: c.Docker.Network})
 		matchers, err := docker.ParseRule(o.text("rule"))
 		if err != nil {
 			failed = true
@@ -32,6 +27,10 @@ func (g *generator) checkDockerExtraction(c *resolved.Config) {
 		refs, _ := middlewareRefs(o)
 		for i := range matchers {
 			matchers[i].Middlewares = refs
+			matchers[i].Priority = priority(o)
+			if entries, ok := middlewareRefsForEntries(o); ok {
+				matchers[i].ListenerNames = entries
+			}
 		}
 		if !extractedRouteMatches(services, o.text("service")+"@traefik", matchers) {
 			o.note("$label-runtime", Manual, "retained labels do not reproduce the audited service/matcher/middleware edges in the shared Docker parser")
@@ -58,4 +57,28 @@ func extractedRouteMatches(services []docker.Service, name string, want []docker
 		return true
 	}
 	return false
+}
+
+func middlewareRefsForEntries(o *Object) ([]string, bool) {
+	if o.value("entryPoints") == nil {
+		return nil, true
+	}
+	return stringList(o.value("entryPoints"), o.Provider == providerDocker)
+}
+
+func dockerAuditContainer(o *Object, d *resolved.Docker) (docker.Container, map[string]bool) {
+	networks := map[string]string{"migration": "192.0.2.1"}
+	for _, name := range []string{d.Network, o.labels["traefik.docker.network"]} {
+		if name != "" {
+			networks[name] = "192.0.2.1"
+		}
+	}
+	labels := maps.Clone(o.labels)
+	labels["com.docker.compose.service"] = o.containerName
+	container := docker.Container{ID: o.Source, Name: o.containerName, Labels: labels, Ports: o.exposedPorts, Networks: networks, Running: true}
+	bound := map[string]bool{}
+	for name := range d.ServiceBindings {
+		bound[name] = true
+	}
+	return container, bound
 }

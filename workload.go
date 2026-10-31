@@ -894,7 +894,7 @@ func (p *dockerProvider) probeReady(ctx context.Context, w *workload, act *workl
 	case resolved.ReadinessTCP:
 		hostport := strings.TrimPrefix(addr, "https://")
 		dialer := net.Dialer{Timeout: workloadProbeTimeout}
-		conn, err := dialer.DialContext(ctx, "tcp", hostport)
+		conn, err := dialer.DialContext(ctx, networkTCP, hostport)
 		if err != nil {
 			return false, nil
 		}

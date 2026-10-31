@@ -3,6 +3,7 @@ package statute
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"statute.kjanat.dev/internal/docker"
 	"statute.kjanat.dev/resolved"
@@ -27,10 +28,13 @@ func (p *dockerProvider) resolveRouteMiddleware(svc *docker.Service, m docker.Ma
 
 // dockerRoutePredicate identifies exact traffic without its policy provenance.
 type dockerRoutePredicate struct {
-	host     string
-	hostKind docker.HostKind
-	path     string
-	pathKind docker.PathKind
+	host      string
+	hostKind  docker.HostKind
+	path      string
+	pathKind  docker.PathKind
+	peers     string
+	listeners string
+	priority  int
 }
 
 type dockerRoutePolicyGroup struct {
@@ -43,7 +47,12 @@ func (p *dockerProvider) coalesceRouteChains(service string, chains []routeChain
 	indices := make(map[dockerRoutePredicate]int)
 	for _, chain := range chains {
 		m := chain.m
-		key := dockerRoutePredicate{m.Host, m.HostKind, m.Path, m.PathKind}
+		priority := 0
+		if p.srv != nil && p.srv.cfg != nil && p.srv.cfg.PrioritizeRoutes {
+			priority = m.Priority
+		}
+		listeners := strings.Join(p.routeListeners(m.ListenerNames), ",")
+		key := dockerRoutePredicate{m.Host, m.HostKind, m.Path, m.PathKind, strings.Join(m.PeerIPCIDRs, ","), listeners, priority}
 		chain.mws = canonicalDockerMiddleware(chain.mws)
 		if i, ok := indices[key]; ok {
 			groups[i].conflict = groups[i].conflict || !reflect.DeepEqual(groups[i].chain.mws, chain.mws)
@@ -72,6 +81,9 @@ func canonicalDockerMiddleware(chain []resolved.Middleware) []resolved.Middlewar
 	out := make([]resolved.Middleware, len(chain))
 	copy(out, chain)
 	for i := range out {
+		if out[i].Type == resolved.MWInOrder || out[i].Type == resolved.MWOnListeners {
+			out[i].Group = canonicalDockerMiddleware(out[i].Group)
+		}
 		if out[i].Type != resolved.MWCompress {
 			continue
 		}

@@ -4,26 +4,48 @@ import "net/http"
 
 // Route is a surface route declaration. Construct via Match.
 type Route struct {
-	pattern        string
-	host           string
-	hostSet        bool
-	hosts          []string
-	hostsSet       bool
-	clientIPs      []string
-	clientIPsSet   bool
-	upstream       string
-	staticDir      string
-	redirectTo     string
-	redirectStatus int
-	handler        http.Handler
-	handlerSet     bool
-	middleware     []Middleware
+	priority             int
+	listeners            []string
+	pathMatch            string
+	pattern              string
+	host                 string
+	hostSet              bool
+	hosts                []string
+	hostsSet             bool
+	clientIPs            []string
+	clientIPsSet         bool
+	peerIPs              []string
+	peerIPsSet           bool
+	upstream             string
+	discoveredUpstream   string
+	staticDir            string
+	redirectTo           string
+	redirectStatus       int
+	redirectNonGETStatus int
+	handler              http.Handler
+	handlerSet           bool
+	middleware           []Middleware
 }
 
 // Match begins a route declaration matching the given path pattern.
 // Patterns support a trailing /* wildcard.
 func Match(pattern string) *Route {
 	return &Route{pattern: pattern}
+}
+
+// MatchExact matches a literal decoded path, including a trailing /*.
+func MatchExact(path string) *Route { return &Route{pattern: path, pathMatch: "exact"} }
+
+// MatchPrefix matches a byte prefix, including prefixes inside a segment.
+func MatchPrefix(prefix string) *Route { return &Route{pattern: prefix, pathMatch: "byte_prefix"} }
+
+// Priority participates in selection when Config.PrioritizeRoutes is enabled.
+func (r *Route) Priority(priority int) *Route { r.priority = priority; return r }
+
+// OnListeners limits this route to the named listeners.
+func (r *Route) OnListeners(names ...string) *Route {
+	r.listeners = append(r.listeners, names...)
+	return r
 }
 
 // Host scopes this route to the given Host header value. Empty means any host.
@@ -65,11 +87,23 @@ func (r *Route) ClientIPs(cidrs ...string) *Route {
 	return r
 }
 
+// PeerIPs matches the direct connection address, ignoring forwarded headers.
+// A non-matching peer falls through to the next route.
+func (r *Route) PeerIPs(cidrs ...string) *Route {
+	r.peerIPs = append(r.peerIPs, cidrs...)
+	r.peerIPsSet = true
+	return r
+}
+
 // ProxyTo proxies matching requests to the named upstream pool.
 func (r *Route) ProxyTo(upstream string) *Route {
 	r.upstream = upstream
 	return r
 }
+
+// ProxyToDiscovered selects a Docker pool from the current discovery generation.
+// The route keeps its own middleware; backend health and transport remain shared.
+func (r *Route) ProxyToDiscovered(name string) *Route { r.discoveredUpstream = name; return r }
 
 // Serve serves matching requests as static files from the given directory.
 func (r *Route) Serve(dir string) *Route {
@@ -98,6 +132,9 @@ func (r *Route) RedirectTo(target string, status int) *Route {
 	return r
 }
 
+// RedirectNonGET selects the redirect status for methods other than GET.
+func (r *Route) RedirectNonGET(status int) *Route { r.redirectNonGETStatus = status; return r }
+
 // Handle serves matching requests with an in-process http.Handler instead of
 // proxying, serving files, or redirecting. It is the fourth mutually
 // exclusive route action beside ProxyTo, Serve, and RedirectTo:
@@ -118,8 +155,13 @@ func (r *Route) Handle(h http.Handler) *Route {
 	return r
 }
 
-// With attaches middleware to the route. Middleware runs in declaration order
-// before the upstream proxy or static file handler.
+// WithOuter prepends middleware ahead of the route's existing chain.
+func (r *Route) WithOuter(mws ...Middleware) *Route {
+	r.middleware = append(append([]Middleware(nil), mws...), r.middleware...)
+	return r
+}
+
+// With attaches middleware in declaration order before the route handler.
 func (r *Route) With(mws ...Middleware) *Route {
 	r.middleware = append(r.middleware, mws...)
 	return r

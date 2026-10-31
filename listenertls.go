@@ -19,6 +19,7 @@ const (
 type listenerTLS struct {
 	certificates *certRouter
 	auth         *clientAuthTable
+	policies     *tlsPolicyTable
 }
 
 func (s *server) compileListenerTLS(l *resolved.Listener) (*listenerTLS, error) {
@@ -33,7 +34,11 @@ func (s *server) compileListenerTLS(l *resolved.Listener) (*listenerTLS, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &listenerTLS{certificates: certificates, auth: auth}, nil
+	policies, err := buildTLSPolicyTable(l)
+	if err != nil {
+		return nil, err
+	}
+	return &listenerTLS{certificates: certificates, auth: auth, policies: policies}, nil
 }
 
 // listenerTLSConfig combines certificate routing and authentication for an
@@ -41,17 +46,20 @@ func (s *server) compileListenerTLS(l *resolved.Listener) (*listenerTLS, error) 
 // advertise TLS-ALPN-01, subject to the selected authentication requirements.
 func listenerTLSConfig(state *listenerTLS, l *resolved.Listener, transport tlsTransport) *tls.Config {
 	cfg := &tls.Config{
-		GetCertificate: state.certificates.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return strictSNICertificate(state.certificates, state.policies, hello)
+		},
+		MinVersion: tls.VersionTLS12,
 	}
 	applyTLSPolicy(cfg, l.TLSPolicy)
 	state.auth.defaultAuth.apply(cfg)
 	cfg.NextProtos = listenerALPN(state, l, transport, state.auth.defaultAuth)
-	if state.auth.scoped {
+	if state.auth.scoped || len(l.TLSPolicies) > 0 {
 		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			selected := state.auth.selectPolicy(hello.ServerName)
 			handshake := cfg.Clone()
 			handshake.GetConfigForClient = nil
+			applyTLSPolicy(handshake, state.policies.selectPolicy(hello.ServerName))
 			selected.apply(handshake)
 			// Preserve net/http's final TCP protocol setup. QUIC's ALPN is
 			// explicit and never inferred from the config's protocol list.
@@ -88,6 +96,9 @@ func clientAuthALPN(protos []string, state *listenerTLS, l *resolved.Listener, a
 // applyTLSPolicy preserves defaults for unset bounds, including the TLS 1.2 floor.
 // Both TCP and QUIC use this resolved listener policy.
 func applyTLSPolicy(cfg *tls.Config, p *resolved.TLSPolicy) {
+	cfg.MinVersion = tls.VersionTLS12
+	cfg.MaxVersion = 0
+	cfg.CipherSuites = nil
 	if p == nil {
 		return
 	}

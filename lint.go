@@ -220,7 +220,7 @@ func ruleRateLimitMinimum(c *resolved.Config) []Finding {
 func rateLimitRouteFindings(routes []*resolved.Route, path string) []Finding {
 	var out []Finding
 	for i, route := range routes {
-		for j, mw := range route.Middleware {
+		for j, mw := range middlewareLeaves(route.Middleware) {
 			if mw.Type == resolved.MWRateLimit && mw.RateLimitPerSecond > 0 && mw.RateLimitPerSecond < 1 {
 				out = append(out, Finding{
 					Severity: SeverityWarning,
@@ -252,7 +252,7 @@ func ruleBasicAuthOverHTTP(c *resolved.Config) []Finding {
 func basicAuthRouteFindings(routes []*resolved.Route, path string) []Finding {
 	var out []Finding
 	for i, route := range routes {
-		for j, mw := range route.Middleware {
+		for j, mw := range middlewareLeaves(route.Middleware) {
 			if mw.Type == resolved.MWBasicAuth {
 				out = append(out, Finding{
 					Severity: SeverityError,

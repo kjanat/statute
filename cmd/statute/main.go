@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/alecthomas/kong"
 
@@ -23,11 +24,12 @@ type cli struct {
 }
 
 type traefikCommand struct {
-	Static  []string `help:"Traefik static YAML/TOML file (repeatable)."                            placeholder:"FILE"        sep:"none"`
-	Dynamic []string `help:"File-provider YAML/TOML file or directory (repeatable)."                placeholder:"FILE_OR_DIR" sep:"none"`
-	Compose []string `help:"Compose file containing Traefik labels (repeatable; no interpolation)." placeholder:"FILE"        sep:"none"`
-	Out     string   `help:"Write Go source to a new file; never overwrite an existing file."       placeholder:"FILE"        required:""`
-	Report  string   `help:"Write the JSON audit to a new file; never overwrite an existing file."  placeholder:"FILE"        required:""`
+	PathMap []string `help:"Map a source provider path to a supplied local path (repeatable)."      placeholder:"SOURCE=LOCAL" sep:"none"`
+	Static  []string `help:"Traefik static YAML/TOML file (repeatable)."                            placeholder:"FILE"         sep:"none"`
+	Dynamic []string `help:"File-provider YAML/TOML file or directory (repeatable)."                placeholder:"FILE_OR_DIR"  sep:"none"`
+	Compose []string `help:"Compose file containing Traefik labels (repeatable; no interpolation)." placeholder:"FILE"         sep:"none"`
+	Out     string   `help:"Write Go source to a new file; never overwrite an existing file."       placeholder:"FILE"         required:""`
+	Report  string   `help:"Write the JSON audit to a new file; never overwrite an existing file."  placeholder:"FILE"         required:""`
 }
 
 type commandOutput struct{ stdout io.Writer }
@@ -74,6 +76,12 @@ func (c *traefikCommand) Validate() error {
 	if len(c.Static)+len(c.Dynamic)+len(c.Compose) == 0 {
 		return errors.New("provide at least one of --static, --dynamic or --compose")
 	}
+	for _, mapping := range c.PathMap {
+		from, to, ok := strings.Cut(mapping, "=")
+		if !ok || !filepath.IsAbs(from) || to == "" {
+			return errors.New("--path-map requires an absolute SOURCE and nonempty LOCAL path")
+		}
+	}
 	if samePath(c.Out, c.Report) {
 		return errors.New("output paths must be distinct")
 	}
@@ -94,7 +102,12 @@ func (c *traefikCommand) Run(output *commandOutput) error {
 		return err
 	}
 	defer outputs.cleanup()
-	result, err := migrate.Audit(migrate.Inputs{Static: c.Static, Dynamic: c.Dynamic, Compose: c.Compose})
+	mappings := map[string]string{}
+	for _, mapping := range c.PathMap {
+		from, to, _ := strings.Cut(mapping, "=")
+		mappings[filepath.Clean(from)] = to
+	}
+	result, err := migrate.Audit(migrate.Inputs{Static: c.Static, Dynamic: c.Dynamic, Compose: c.Compose, PathMappings: mappings})
 	if err != nil {
 		return fmt.Errorf("migration: %w", err)
 	}

@@ -12,7 +12,7 @@ import (
 )
 
 func TestCacheFreshnessInnerBufferPartialTTL(t *testing.T) {
-	for _, buffer := range []Middleware{ETag(), Retry(2), Timeout("1m")} {
+	for _, buffer := range []Middleware{ETag(), Retry(2), Timeout("1m"), BufferBodies(BodyBufferPolicy{})} {
 		t.Run(fmt.Sprintf("%T", buffer), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				calls := 0
@@ -127,7 +127,7 @@ func freshnessMutationValue(field string) string {
 }
 
 func TestCacheFreshnessInnerBufferCommit(t *testing.T) {
-	for _, buffer := range []Middleware{ETag(), Retry(2), Timeout("1m")} {
+	for _, buffer := range []Middleware{ETag(), Retry(2), Timeout("1m"), BufferBodies(BodyBufferPolicy{})} {
 		t.Run(fmt.Sprintf("%T", buffer), func(t *testing.T) {
 			calls := 0
 			h := chain(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -167,7 +167,7 @@ func TestCacheFreshnessInnerCacheOverflowPolicy(t *testing.T) {
 }
 
 func TestCacheFreshnessInnerBufferLegacyTTL(t *testing.T) {
-	for _, buffer := range []Middleware{ETag(), Retry(2), Timeout("1m")} {
+	for _, buffer := range []Middleware{ETag(), Retry(2), Timeout("1m"), BufferBodies(BodyBufferPolicy{})} {
 		t.Run(fmt.Sprintf("%T", buffer), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				calls := 0

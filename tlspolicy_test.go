@@ -178,7 +178,7 @@ func TestResolveTLSPolicyErrors(t *testing.T) {
 					CipherSuites: []CipherSuite{TLSECDHERSAWithAES128GCM},
 				},
 			)),
-			"never falls back past the source",
+			"cannot authenticate EC256 certificate keys",
 		},
 		{
 			"policy on a redirect-only listener",

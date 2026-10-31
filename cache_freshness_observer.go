@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,6 +46,38 @@ func (o *cacheObservation) record(now time.Time) {
 
 func (o *cacheObservation) usable() bool { return o == nil || !o.unsafe.Load() }
 
+func observeCacheHeaderEdits(o *cacheObservation, h http.Header, apply func()) {
+	if o == nil || !o.usable() {
+		apply()
+		return
+	}
+	now := time.Now()
+	o.record(now)
+	policy := cacheObservedPolicy(h, now)
+	vary, valid := cacheVary(h)
+	_, partial := cacheHeaderValues(h, "Content-Range")
+	if !policy.valid || !valid || partial {
+		o.unsafe.Store(true)
+	}
+	apply()
+	if policy != cacheObservedPolicy(h, now) || !cacheOriginVarianceSurvives(vary, h) {
+		o.unsafe.Store(true)
+	}
+}
+
+func cacheOriginVarianceSurvives(origin []string, h http.Header) bool {
+	current, valid := cacheVary(h)
+	if !valid {
+		return false
+	}
+	for _, name := range origin {
+		if _, found := slices.BinarySearch(current, name); !found {
+			return false
+		}
+	}
+	return true
+}
+
 type cacheCommitObserver struct {
 	http.ResponseWriter
 	observation *cacheObservation
@@ -58,11 +91,16 @@ func (w *cacheCommitObserver) capture() {
 		return
 	}
 	w.committed = time.Now()
-	w.observation.record(w.committed)
-	w.snapshot = w.policy()
-	if !w.snapshot.valid {
-		w.observation.unsafe.Store(true)
+	w.snapshot = w.observation.observe(w.Header(), w.committed)
+}
+
+func (o *cacheObservation) observe(h http.Header, committed time.Time) cacheFreshness {
+	o.record(committed)
+	policy := cacheObservedPolicy(h, committed)
+	if !policy.valid {
+		o.unsafe.Store(true)
 	}
+	return policy
 }
 
 func (w *cacheCommitObserver) policy() cacheFreshness {

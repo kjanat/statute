@@ -14,6 +14,10 @@ const (
 	ClientIP RateLimitKey = iota
 	// HostHeader keys the rate limiter on the Host header.
 	HostHeader
+	// PeerIP uses the direct connection address.
+	PeerIP
+	// RequestHeader uses the header selected by FromHeader.
+	RequestHeader
 )
 
 // String returns the canonical name of the key.
@@ -23,15 +27,24 @@ func (k RateLimitKey) String() string {
 		return "client_ip"
 	case HostHeader:
 		return "host"
+	case PeerIP:
+		return "peer_ip"
+	case RequestHeader:
+		return "header"
 	default:
 		return enumUnknown
 	}
 }
 
 type rateLimitMW struct {
-	rate       string
-	key        RateLimitKey
-	maxBuckets int
+	rate               string
+	key                RateLimitKey
+	maxBuckets         int
+	burst              int
+	maxDelay, idleTTL  string
+	reserve, evictIdle bool
+	header             string
+	selection          *IPSelection
 }
 
 func (*rateLimitMW) statuteMiddleware() {}
@@ -50,11 +63,36 @@ func (r *rateLimitMW) Per(k RateLimitKey) *rateLimitMW {
 }
 
 // MaxBuckets limits the number of retained keys per compiled middleware instance.
-// Zero selects the default of 65,536; negative values fail resolution. Only fully
-// replenished buckets can retire. At capacity, an unknown key receives 503 with
+// Zero selects the default of 65,536; negative values fail resolution. By default,
+// only fully replenished buckets can retire. ExpireIdle and EvictOldest permit
+// earlier replacement. At capacity, an unknown key receives 503 with
 // Cache-Control: no-store; existing keys retain their normal token policy.
 func (r *rateLimitMW) MaxBuckets(n int) *rateLimitMW {
 	r.maxBuckets = n
+	return r
+}
+
+// Burst sets a token bucket's maximum capacity. Zero keeps the native default.
+func (r *rateLimitMW) Burst(n int) *rateLimitMW { r.burst = n; return r }
+
+// Reserve permits waiting for a token for at most maximumDelay.
+func (r *rateLimitMW) Reserve(maximumDelay string) *rateLimitMW {
+	r.maxDelay = maximumDelay
+	r.reserve = true
+	return r
+}
+
+// ExpireIdle resets buckets after this idle duration. With EvictOldest, expired
+// and oldest buckets may be replaced at capacity, including buckets in debt.
+func (r *rateLimitMW) ExpireIdle(duration string) *rateLimitMW { r.idleTTL = duration; return r }
+
+// EvictOldest admits a new key by replacing the bucket closest to expiry.
+func (r *rateLimitMW) EvictOldest() *rateLimitMW { r.evictIdle = true; return r }
+
+// FromHeader uses the exact named request header as the bucket key.
+func (r *rateLimitMW) FromHeader(name string) *rateLimitMW {
+	r.key = RequestHeader
+	r.header = name
 	return r
 }
 
@@ -219,7 +257,7 @@ const (
 func (a CompressAlgo) String() string {
 	switch a {
 	case Gzip:
-		return "gzip"
+		return codingGzip
 	case Brotli:
 		return "br"
 	default:

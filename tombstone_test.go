@@ -119,11 +119,11 @@ func TestDockerTombstoneEnvelopes(t *testing.T) {
 				name: "admin-1", ip: "10.0.0.9", port: 3000,
 				labels: map[string]string{
 					"traefik.enable":                  "true",
-					"traefik.http.routers.admin.rule": "Host(`admin.example.com`) && ClientIP(`10.0.0.0/8`)",
+					"traefik.http.routers.admin.rule": "Host(`admin.example.com`) && Query(`private`, `yes`)",
 				},
 			},
 			want: []string{"admin.example.com /*"},
-			why:  "dropping the CIDR only adds requests, and it is never rebuilt onto the tombstone",
+			why:  "dropping the query condition widens the refusal",
 		}, {
 			name: "disjunction widens to global",
 			cfg:  resolved.Docker{TraefikLabels: true},
@@ -131,11 +131,11 @@ func TestDockerTombstoneEnvelopes(t *testing.T) {
 				name: "or-1", ip: "10.0.0.9", port: 3000,
 				labels: map[string]string{
 					"traefik.enable":               "true",
-					"traefik.http.routers.or.rule": "Host(`a.example.com`) || ClientIP(`10.0.0.0/8`)",
+					"traefik.http.routers.or.rule": "Host(`a.example.com`) || Query(`private`, `yes`)",
 				},
 			},
 			want: []string{" /*"},
-			why:  "keeping only the understood branch would hand every other host inside 10/8 to the fallback",
+			why:  "keeping only the understood branch would hand every other matching host to the fallback",
 		}, {
 			name: "negation keeps its sibling",
 			cfg:  resolved.Docker{TraefikLabels: true},
@@ -407,7 +407,7 @@ func TestDockerTombstoneKeepsSiblingsServing(t *testing.T) {
 		labels: map[string]string{
 			"traefik.enable":                 "true",
 			"traefik.http.routers.good.rule": "Host(`good.example.com`)",
-			"traefik.http.routers.bad.rule":  "ClientIP(`10.0.0.0/8`)",
+			"traefik.http.routers.bad.rule":  "Query(`private`, `yes`)",
 		},
 	}})
 	calls := fallbackServer(t, srv, Routes{Match("/healthz").Handle(noContentHandler)})
@@ -445,7 +445,7 @@ func TestDockerTombstoneGenerationReplacement(t *testing.T) {
 		name: "app-1", ip: host, port: port,
 		labels: map[string]string{
 			"traefik.enable":                "true",
-			"traefik.http.routers.app.rule": "Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)",
+			"traefik.http.routers.app.rule": "Host(`app.example.com`) && Query(`private`, `yes`)",
 		},
 	}
 	fixed := fakeDaemonContainer{
@@ -501,7 +501,7 @@ func TestDockerTombstoneReannouncesAfterRepair(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(oldOutput) })
 
-	broken := appRouter("Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)")
+	broken := appRouter("Host(`app.example.com`) && Query(`private`, `yes`)")
 	fixed := appRouter("Host(`app.example.com`)")
 	const announcement = "generation: routes dropped, refusing app.example.com/*"
 	announcements := func() int { return strings.Count(logs.String(), announcement) }
@@ -531,7 +531,7 @@ func TestDockerTombstoneAnnouncesRepair(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(oldOutput) })
 
-	broken := appRouter("Host(`app.example.com`) && ClientIP(`10.0.0.0/8`)")
+	broken := appRouter("Host(`app.example.com`) && Query(`private`, `yes`)")
 	fixed := appRouter("Host(`app.example.com`)")
 	const cleared = "refusals cleared"
 	repairs := func() int { return strings.Count(logs.String(), cleared) }
@@ -577,7 +577,7 @@ func TestDockerTombstoneDedupesAcrossContainers(t *testing.T) {
 			name: "a-1", ip: "10.0.0.9", port: 3000,
 			labels: map[string]string{
 				"traefik.enable":                "true",
-				"traefik.http.routers.one.rule": "Host(`dup.example.com`) && ClientIP(`10.0.0.0/8`)",
+				"traefik.http.routers.one.rule": "Host(`dup.example.com`) && Query(`private`, `yes`)",
 			},
 		},
 		{
@@ -598,8 +598,8 @@ func TestDockerTombstoneDedupesAcrossContainers(t *testing.T) {
 			name: "b-1", ip: "10.0.0.9", port: 3000,
 			labels: map[string]string{
 				"traefik.enable":                 "true",
-				"traefik.http.routers.host.rule": "Host(`dup.example.com`) && ClientIP(`10.0.0.0/8`)",
-				"traefik.http.routers.wide.rule": "ClientIP(`10.0.0.0/8`)",
+				"traefik.http.routers.host.rule": "Host(`dup.example.com`) && Query(`private`, `yes`)",
+				"traefik.http.routers.wide.rule": "Query(`private`, `yes`)",
 			},
 		},
 	})

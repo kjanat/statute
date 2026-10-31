@@ -18,11 +18,12 @@ import (
 
 // Config is the resolved top-level configuration.
 type Config struct {
-	RequestBuffers RequestBufferResources
-	Listeners      []*Listener
-	Upstreams      map[string]*Pool
-	Routes         []*Route
-	Docker         *Docker // nil unless Docker label discovery is enabled
+	PrioritizeRoutes bool `json:",omitempty"`
+	RequestBuffers   RequestBufferResources
+	Listeners        []*Listener
+	Upstreams        map[string]*Pool
+	Routes           []*Route
+	Docker           *Docker // nil unless Docker label discovery is enabled
 
 	// FallbackRoutes match in order after static and Docker routing miss.
 	// Upstream pointers share pools with Routes; Docker refusals take precedence.
@@ -47,6 +48,8 @@ type RequestBufferResources struct {
 	MemoryBudgetBytes int64
 	Storage           string
 	DiskBudgetBytes   int64
+	// BufferBodiesBudgetBytes limits the reserved BufferBodies bodies, memory and spill files.
+	BufferBodiesBudgetBytes int64
 }
 
 // Docker is the resolved Docker label-discovery provider configuration.
@@ -57,10 +60,13 @@ type RequestBufferResources struct {
 // Tombstones belong to one generation, are replaced with it, and describe
 // containers.
 type Docker struct {
-	Endpoint         string
-	Network          string
-	ExposedByDefault bool
-	TraefikLabels    bool
+	DefaultListeners  []string                  `json:",omitempty"`
+	ServiceBindings   map[string]ServiceBinding `json:",omitempty"`
+	RouterConstraints bool                      `json:",omitempty"`
+	Endpoint          string
+	Network           string
+	ExposedByDefault  bool
+	TraefikLabels     bool
 	// Refresh is the periodic full-resync interval; zero means events only.
 	Refresh time.Duration
 	// Storage is the persistent root for outstanding workload mutations.
@@ -79,6 +85,13 @@ type Docker struct {
 	// Workloads is code-owned on-demand activation policy keyed by exact
 	// service identity; only a key here grants start/stop authority.
 	Workloads map[string]Workload
+}
+
+// ServiceBinding selects a static pool or handler without acquiring its resources.
+type ServiceBinding struct {
+	Upstream       string
+	Handler        http.Handler `json:"-"`
+	HandlerBinding bool
 }
 
 // Workload is a resolved on-demand activation policy for one
@@ -124,9 +137,13 @@ const (
 
 // Listener is a resolved listener.
 type Listener struct {
-	Addr     string
-	Scheme   string // "http" or "https"
-	Redirect string // non-empty: this listener is a redirect-only listener
+	TLSPolicies          []HostTLSPolicy `json:",omitempty"`
+	Name                 string          `json:",omitempty"`
+	Addr                 string
+	Scheme               string // "http" or "https"
+	Redirect             string // non-empty: this listener is a redirect-only listener
+	RedirectNonGETStatus int    `json:",omitempty"`
+	RedirectStatus       int    `json:",omitempty"`
 
 	AutoTLS     *AutoTLS   // nil unless this is an HTTPS listener with ACME
 	StaticTLS   *StaticTLS // nil unless this is an HTTPS listener with static certs
@@ -176,6 +193,28 @@ type Listener struct {
 	// CloudflareFallback is the normalized consumer-provided startup snapshot.
 	// Nil selects Statute's bundled fallback; live snapshots remain runtime-only.
 	CloudflareFallback *CloudflareSnapshot
+	Ingress            *IngressPolicy `json:",omitempty"`
+}
+
+// HeaderAliasPolicy handles names containing characters other than ASCII
+// letters, digits and dashes. Underscore policies handle only underscores.
+type HeaderAliasPolicy string
+
+// Header alias handling modes.
+const (
+	HeaderAliasesKeep       HeaderAliasPolicy = "keep"
+	HeaderAliasesDelete     HeaderAliasPolicy = "delete"
+	HeaderAliasesReject     HeaderAliasPolicy = "reject"
+	HeaderUnderscoresDelete HeaderAliasPolicy = "delete-underscore"
+	HeaderUnderscoresReject HeaderAliasPolicy = "reject-underscore"
+)
+
+// IngressPolicy runs once before request routing and route middleware.
+type IngressPolicy struct {
+	ForwardedHeaders bool
+	NormalizePath    bool
+	SanitizePath     bool
+	HeaderAliases    HeaderAliasPolicy
 }
 
 // CloudflareSnapshot records a validated fallback pair and its source timestamp.
@@ -188,6 +227,8 @@ type CloudflareSnapshot struct {
 // TLSPolicy is a resolved downstream TLS protocol policy: the version
 // window a listener negotiates and the TLS 1.2 cipher suites it permits.
 type TLSPolicy struct {
+	Identity  string `json:",omitempty"`
+	StrictSNI bool   `json:",omitempty"`
 	// MinVersion is the lowest protocol version the listener negotiates,
 	// as "1.2" or "1.3". Empty means unset: the runtime's floor applies.
 	MinVersion string
@@ -201,10 +242,18 @@ type TLSPolicy struct {
 	CipherSuites []string
 }
 
+// HostTLSPolicy binds downstream protocol policy to SNI names.
+type HostTLSPolicy struct {
+	Hosts  []string
+	Policy TLSPolicy
+}
+
 // ClientAuthMode is the normalized client-certificate handshake policy.
 type ClientAuthMode string
 
 const (
+	// ClientAuthNone does not request a client certificate.
+	ClientAuthNone ClientAuthMode = "none"
 	// ClientAuthRequest asks for a certificate without requiring it.
 	ClientAuthRequest ClientAuthMode = "request"
 	// ClientAuthRequireAny requires a certificate without chain verification.
@@ -231,6 +280,7 @@ type ClientAuthPolicy struct {
 
 // AutoTLS is the resolved ACME configuration.
 type AutoTLS struct {
+	KeyType string `json:",omitempty"`
 	Domains []string
 	Email   string
 	Storage string
@@ -283,6 +333,10 @@ type CloudflareDNS01 struct {
 // loop that queries every listed resolver for the challenge TXT record
 // until they all serve the expected value.
 type DNSPropagation struct {
+	RequireAllRecursive bool     `json:",omitempty"`
+	Authoritative       bool     `json:",omitempty"`
+	DiscoveryResolvers  []string `json:",omitempty"`
+	DisableChecks       bool     `json:",omitempty"`
 	// Delay is the fixed wait after publishing the record, before any
 	// polling or validation. Zero means none: with Resolvers set, polling
 	// begins immediately.
@@ -315,6 +369,8 @@ type StaticTLS struct {
 
 // Pool is a resolved upstream pool.
 type Pool struct {
+	RejectUnhealthy    bool `json:",omitempty"`
+	AllowEmpty         bool `json:",omitempty"`
 	Name               string
 	Backends           []Backend
 	Strategy           Strategy
@@ -330,6 +386,7 @@ type Pool struct {
 // PoolPolicy is normalized code-owned policy for a Docker-discovered pool.
 // Its service backends, strategy, and routes remain dynamic runtime state.
 type PoolPolicy struct {
+	RejectUnhealthy    bool `json:",omitempty"`
 	HealthCheck        HealthCheck
 	PassiveHealthCheck PassiveHealthCheck
 	Transport          Transport
@@ -381,16 +438,23 @@ type HealthCheck struct {
 	// the pool's UpstreamHost policy.
 	Host string
 	// Statuses are the accepted probe statuses; empty means 200-399.
-	Statuses []int
+	Statuses    []int
+	Redirects   string            `json:",omitempty"`
+	ResolvePath bool              `json:",omitempty"`
+	Method      string            `json:",omitempty"`
+	Headers     map[string]string `json:",omitempty"`
 }
 
 // PassiveHealthCheck is a resolved passive health policy: a backend is
 // excluded from selection while MaxFailures failed proxy attempts fall
 // inside the sliding FailureWindow.
 type PassiveHealthCheck struct {
-	Enabled       bool
-	FailureWindow time.Duration
-	MaxFailures   int
+	Enabled        bool
+	FailureWindow  time.Duration
+	MaxFailures    int
+	ResetOnSuccess bool          `json:",omitempty"`
+	HoldDown       time.Duration `json:",omitempty"`
+	RecoverByProbe bool          `json:",omitempty"`
 }
 
 // Transport is a resolved transport configuration. The TLS fields form the
@@ -425,10 +489,14 @@ type ClientCertificate struct {
 // Upstream (proxy), StaticDir (static files), Redirect, or Handler
 // (in-process handler, flagged by HandlerRoute).
 type Route struct {
-	Pattern   string
-	Host      string
-	Upstream  *Pool  // nil unless this route proxies
-	StaticDir string // empty unless this route serves static files
+	DiscoveredUpstream string   `json:",omitempty"`
+	Priority           int      `json:",omitempty"`
+	Listeners          []string `json:",omitempty"`
+	PathMatch          string   `json:",omitempty"`
+	Pattern            string
+	Host               string
+	Upstream           *Pool  // nil unless this route proxies
+	StaticDir          string // empty unless this route serves static files
 	// Handler is the in-process handler a handler route serves. It is an
 	// opaque immutable reference carried through from the surface config,
 	// not mutable runtime state, and it cannot serialize — the
@@ -442,29 +510,43 @@ type Route struct {
 	// for the route to match; empty means any client. A non-matching client
 	// falls through to the next route.
 	ClientIPCIDRs []string
+	PeerIPCIDRs   []string `json:",omitempty"`
 }
 
 // Redirect is a resolved route redirect action: the route answers with
 // Status and a Location built from Target, whose placeholders are
 // substituted from the live request.
 type Redirect struct {
-	Target string
-	Status int
+	Target       string
+	Status       int
+	NonGETStatus int `json:",omitempty"`
 }
 
 // Middleware identifies a single resolved middleware. The Type discriminator
 // drives runtime behaviour; only fields relevant to that type are populated.
 type Middleware struct {
-	Type MiddlewareType
+	MiddlewareListeners []string     `json:",omitempty"`
+	IPSelection         *IPSelection `json:",omitempty"`
+	Type                MiddlewareType
+	// Group executes its children at this position in the outer chain.
+	Group       []Middleware      `json:",omitempty"`
+	Encoding    *EncodingPolicy   `json:",omitempty"`
+	BodyBuffers *BodyBufferPolicy `json:",omitempty"`
 
 	// Timeout
 	Timeout            time.Duration
 	TimeoutMaxInFlight int
 
 	// RateLimit
-	RateLimitPerSecond  float64
-	RateLimitKey        RateLimitKey
-	RateLimitMaxBuckets int
+	RateLimitPerSecond     float64
+	RateLimitKey           RateLimitKey
+	RateLimitBurst         int           `json:",omitempty"`
+	RateLimitReservations  bool          `json:",omitempty"`
+	RateLimitMaxDelay      time.Duration `json:",omitempty"`
+	RateLimitIdleTTL       time.Duration `json:",omitempty"`
+	RateLimitEvictIdle     bool          `json:",omitempty"`
+	RateLimitRequestHeader string        `json:",omitempty"`
+	RateLimitMaxBuckets    int
 
 	// Retry
 	RetryMax        int
@@ -522,15 +604,27 @@ type Middleware struct {
 	// Header mutation — the Type discriminator selects request or response
 	// and set, add, or remove. HeaderName is canonical ("X-Robots-Tag");
 	// HeaderValue is empty for the remove operations.
-	HeaderName  string
-	HeaderValue string
+	HeaderName      string
+	HeaderValue     string
+	HeaderHTTPSOnly bool `json:",omitempty"`
 
 	// Path rewrite — the Type discriminator selects the operation.
-	PathPrefix      string // strip/add: normalized prefix, leading "/", no trailing "/"
-	PathPattern     string // rewrite: RE2 source, compile-validated at resolve
-	PathReplacement string // replace: target path (escaped form as given); rewrite: replacement with $1 references
-	PathQuery       string // replace: explicit query without "?", only meaningful when PathQuerySet
-	PathQuerySet    bool   // replace: true when the target carried a "?" (distinguishes clearing from preserving)
+	PathPrefix         string   // strip/add: normalized prefix, leading "/", no trailing "/"
+	PathPattern        string   // rewrite: RE2 source, compile-validated at resolve
+	PathReplacement    string   // replace: target path (escaped form as given); rewrite: replacement with $1 references
+	PathQuery          string   // replace: explicit query without "?", only meaningful when PathQuerySet
+	PathPrefixes       []string `json:",omitempty"`
+	PathRecordOriginal bool     `json:",omitempty"`
+	PathForceSlash     bool     `json:",omitempty"`
+	PathQuerySet       bool     // replace: true when the target carried a "?" (distinguishes clearing from preserving)
+
+	// Conditional redirect middleware. Non-matches continue through the chain.
+	RedirectPattern      string `json:",omitempty"`
+	RedirectReplacement  string `json:",omitempty"`
+	RedirectScheme       string `json:",omitempty"`
+	RedirectPort         string `json:",omitempty"`
+	RedirectStatus       int    `json:",omitempty"`
+	RedirectNonGETStatus int    `json:",omitempty"`
 }
 
 // MiddlewareType discriminates resolved middleware values.
@@ -564,7 +658,42 @@ const (
 	MWReplacePath
 	MWRewritePath
 	MWRequestBuffer
+	MWRedirectRegex
+	MWRedirectScheme
+	MWInOrder
+	MWReplaceEscapedPath
+	MWRewriteEscapedPath
+	MWStripBytePrefixes
+	MWPrefixPath
+	MWEncodeResponse
+	MWBufferBodies
+	MWOnListeners
 )
+
+// IPSelection describes an explicit request address source.
+type IPSelection struct {
+	Mode        string
+	Depth       int
+	ExcludedIPs []string
+	IPv6Subnet  *int `json:",omitempty"`
+}
+
+// BodyBufferPolicy configures per-request memory and disk buffering.
+type BodyBufferPolicy struct {
+	MaxRequestBytes, MemoryRequestBytes   int64
+	MaxResponseBytes, MemoryResponseBytes int64
+	DisableRequest, DisableResponse       bool
+	RetryExpression                       string
+	MaxInFlight                           int
+}
+
+// EncodingPolicy describes ordered response encoding and media-type filters.
+type EncodingPolicy struct {
+	Encodings                    []string
+	DefaultEncoding              string
+	MinimumBytes                 int
+	IncludedTypes, ExcludedTypes []string
+}
 
 // RateLimitKey mirrors the surface key.
 type RateLimitKey int
@@ -573,6 +702,8 @@ type RateLimitKey int
 const (
 	KeyClientIP RateLimitKey = iota
 	KeyHostHeader
+	KeyPeerIP
+	KeyRequestHeader
 )
 
 // CompressAlgo mirrors the surface algorithm enum.
@@ -613,10 +744,12 @@ type Tracing struct {
 
 // AccessLog is the resolved access log configuration.
 type AccessLog struct {
-	Enabled bool
-	Format  string // "json"
-	Writer  io.Writer
-	Name    string // human label for the writer
+	FilePath   string `json:",omitempty"`
+	BufferSize int    `json:",omitempty"`
+	Enabled    bool
+	Format     string // "json"
+	Writer     io.Writer
+	Name       string // human label for the writer
 
 	// SampleRate is the fraction of successful requests to record, in (0,1].
 	// Errors (status >= 500) and client errors (4xx) are logged regardless;

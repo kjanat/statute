@@ -215,8 +215,8 @@ freshness fields declared as trailers prevent storage without rejecting the
 producer's response. A valid `s-maxage` overrides lower-priority `max-age` and
 `Expires`; invalid selected values do not fall through to a weaker policy.
 
-ETag, Retry and Timeout buffering preserve the producer's original commitment
-time. Changes to committed freshness policy disable storage for the enclosing
+ETag, Retry, Timeout, BufferBodies and EncodeResponse buffering preserve the
+producer's original commitment time. Changes to committed freshness policy disable storage for the enclosing
 cache request, including discarded Retry attempts; response delivery is unchanged.
 
 Origin and projected route policy both constrain expiry. Setting a longer
@@ -508,6 +508,54 @@ representation stages. A render error/panic publishes no generated validator or
 partial buffered content. Choose streaming delivery without ETag when buffering
 or HEAD rendering cost is undesirable.
 
+## Traefik-compatible response encoding
+
+`EncodeResponse(EncodingPolicy{...})` encodes responses with gzip, Brotli or
+zstd. `Encodings` lists the enabled codings in preference order for equal
+quality values; it defaults to gzip, Brotli, zstd. `DefaultEncoding` must be
+enabled and applies to requests without `Accept-Encoding`. `MinimumBytes`
+defaults to 1024. `IncludedTypes` and `ExcludedTypes` are mutually exclusive
+media-type lists, and `application/grpc` is always excluded.
+
+HEAD requests, request `no-transform`, malformed `Accept-Encoding` and requests
+with an excluded `Content-Type` pass through unencoded. Partial responses,
+response `no-transform` and responses with an existing `Content-Encoding` keep
+their representation. Every response carries one `Accept-Encoding` token in
+`Vary`.
+
+All three codings share one writer. Encoding removes identity length, digests,
+range support and representation trailers, and weakens a strong ETag. An inner
+`ETag()` learns the selected coding before evaluating preconditions, so a strong
+identity tag fails `If-Match` against encoded delivery. A 101 written on HTTP/2
+or HTTP/3 is ignored and the later final status is delivered.
+
+The producer's headers take effect at its first final status, write, flush or
+return, as on an unbuffered response writer. Later header changes reach only
+trailers. An outer Cache observes that commitment time.
+
+## Per-request body buffering
+
+`BufferBodies(BodyBufferPolicy{...})` buffers request and response bodies.
+Bodies above the memory thresholds spill to temporary files in `TMPDIR`, removed
+when the request finishes. A zero threshold selects 1 MiB, and a zero maximum
+selects 8 MiB. A request above `MaxRequestBytes` receives 413, and a response
+above `MaxResponseBytes` becomes 500. `DisableRequest` and `DisableResponse` turn
+off either direction.
+
+Each route's middleware admits `MaxInFlight` buffered requests at once, 128 by
+default. Each admitted request also reserves its request and response maximums
+from the server's `RequestBuffers.BufferBodiesBudget`, 1 GiB by default, shared
+by every route. A request beyond either limit receives an empty 503 with
+`Cache-Control: no-store`; there is no queue. Slots and reservations stay held
+until the handler returns, including retry attempts and panics. When both
+directions are disabled, requests pass through without admission. See
+[request buffering](request-buffer.md#bufferbodies-budget).
+
+`RetryExpression` replays a buffered nonempty request body when the expression
+holds, for at most 10 attempts. It uses `Attempts()`, `ResponseCode()` and
+`IsNetworkError()`. Invalid expressions and negative sizes fail resolution.
+Response buffering preserves the producer's commitment time for an outer Cache.
+
 ## Running on low ports as a non-root user
 
 Binding to ports below 1024 (`:80`, `:443`) traditionally requires root on Linux. Three options, in order of preference:
@@ -775,3 +823,44 @@ For real numbers, run a load test against your specific config. The Go runtime h
 **Running multiple statute instances on one host without coordination**: each instance owns its own ACME account and storage. Two instances trying to issue for overlapping domains will race on the storage and confuse Let's Encrypt. Run one statute per host, or shard storage and domains carefully.
 
 **Burying secrets in the binary**: the Go compiler does not encrypt strings. `strings yourbinary | grep -i token` finds anything you embed. Read secrets from env or a secrets manager at startup.
+
+## Listener ingress policy
+
+Use listener options to sanitize requests before routing and middleware:
+
+```go
+statute.HTTP(":8080").With(
+    statute.IngressPolicy{
+        ForwardedHeaders: true,
+        NormalizePath: true,
+        SanitizePath: true,
+        HeaderAliases: statute.HeaderAliasesReject,
+    },
+    statute.TrustedProxy("192.0.2.0/24"),
+)
+```
+
+HTTPS accepts the same options through `HTTPS(...)` or `.With(...)`.
+`ForwardedHeaders` removes managed forwarded headers and underscore aliases from
+untrusted peers, then derives peer, scheme, host and port values. Trusted proxies
+may supply forwarded values through the existing client-identity policy. Proxying
+appends the direct peer to the sanitized ingress chain, then applies route
+forwarded-header operations once. Route additions do not become an extra proxy hop
+before the peer.
+
+`NormalizePath` decodes unreserved escapes and uppercases other percent escapes.
+`SanitizePath` cleans dot segments and repeated slashes. Both run before static,
+Docker and fallback route matching; query text is unchanged. Route rewrites and
+Retry receive that normalized path. Access logs preserve the original path and
+observe sanitized headers. Rejections count toward listener metrics. Request
+trailers remain live through path normalization and replay through Retry and
+RequestBuffer after body EOF.
+
+`HeaderAliasesKeep`, `HeaderAliasesDelete` and `HeaderAliasesReject` control names
+containing characters outside ASCII letters, digits and hyphens. Rejection returns
+400 before routing. `HeaderUnderscoresDelete` and `HeaderUnderscoresReject` restrict
+that check to underscores. Omitted alias policy means keep. Declare at most one
+`IngressPolicy` per listener; invalid policies fail resolution.
+
+Ingress policy is opt-in for native applications. Generated Traefik migrations
+select it explicitly. It adds no worker or persistent state.

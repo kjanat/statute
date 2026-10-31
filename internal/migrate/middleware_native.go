@@ -2,6 +2,8 @@ package migrate
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -18,7 +20,7 @@ func (g *generator) basicAuth(o *Object, chain *middleware) {
 	}
 	realm := o.text("basicAuth.realm")
 	if realm == "" {
-		realm = "traefik"
+		realm = sourceTraefik
 	}
 	if !literal(realm) {
 		return
@@ -93,6 +95,8 @@ func (g *generator) header(o *Object, chain *middleware, direction, name, value,
 	o.mark(path, Translated, "route-owned header operation; relative order checked when chains are assembled")
 	if value == "" {
 		operation = removeOperation
+	} else if publicHeaderValue(name, value) {
+		codeValue = "," + strconv.Quote(value)
 	} else {
 		var code string
 		value, code = g.sensitiveValue(o, path, value)
@@ -115,21 +119,35 @@ func (g *generator) header(o *Object, chain *middleware, direction, name, value,
 }
 
 func (g *generator) nativeRewrite(o *Object, chain *middleware) {
-	prefix := o.text("addPrefix.prefix")
-	if strings.HasPrefix(prefix, "/") && !strings.HasSuffix(prefix, "/") && !strings.ContainsAny(prefix, "%?#") && literal(prefix) {
-		chain.values = append(chain.values, statute.AddPrefix(prefix))
-		chain.code = append(chain.code, fmt.Sprintf("statute.AddPrefix(%q)", prefix))
-		o.mark("addPrefix.prefix", Translated, "literal prefix applied once at native route entry; chain order and retry interactions checked separately")
+	if prefix := o.text("addPrefix.prefix"); prefix != "" && literal(prefix) {
+		chain.values = append(chain.values, statute.PrefixPath(prefix))
+		chain.code = append(chain.code, fmt.Sprintf("statute.PrefixPath(%q)", prefix))
+		o.mark("addPrefix.prefix", Translated, "prefix applied at its declared middleware position")
 	}
 	if path := o.text("replacePath.path"); path != "" && literal(path) {
-		chain.values = append(chain.values, statute.ReplacePath(path))
-		chain.code = append(chain.code, fmt.Sprintf("statute.ReplacePath(%q)", path))
-		o.mark("replacePath.path", Manual, "native ReplacePath candidate lacks Traefik's dynamic X-Replaced-Path header and hoists mutation before middleware")
+		if _, err := url.PathUnescape(path); err == nil {
+			chain.values = append(chain.values, statute.ReplaceEscapedPath(path).RecordOriginal())
+			chain.code = append(chain.code, fmt.Sprintf("statute.ReplaceEscapedPath(%q).RecordOriginal()", path))
+			o.mark("replacePath.path", Translated, "escaped replacement with X-Replaced-Path at its declared middleware position")
+		}
 	}
-	if prefixes, ok := stringList(o.value("stripPrefix.prefixes"), o.Provider == providerDocker); ok && len(prefixes) == 1 {
-		chain.values = append(chain.values, statute.StripPrefix(prefixes[0]))
-		chain.code = append(chain.code, fmt.Sprintf("statute.StripPrefix(%q)", prefixes[0]))
-		o.mark("stripPrefix.prefixes", Manual, "native StripPrefix candidate matches segments and omits Traefik's dynamic X-Forwarded-Prefix header; Traefik strips byte prefixes")
+	g.regexRewrite(o, chain)
+	if prefixes, ok := stringList(o.value("stripPrefix.prefixes"), o.Provider == providerDocker); ok {
+		force, valid := sourceBoolValue(o.value("stripPrefix.forceSlash"), false)
+		if !valid {
+			o.mark("stripPrefix.forceSlash", Manual, "invalid forceSlash boolean")
+			return
+		}
+		value := statute.StripBytePrefixes(prefixes...).RecordOriginal()
+		code := "statute.StripBytePrefixes(" + quoted(prefixes) + ").RecordOriginal()"
+		if force {
+			value.ForceSlash()
+			code += ".ForceSlash()"
+		}
+		chain.values = append(chain.values, value)
+		chain.code = append(chain.code, code)
+		o.mark("stripPrefix.prefixes", Translated, "ordered byte-prefix stripping with X-Forwarded-Prefix")
+		o.mark("stripPrefix.forceSlash", Translated, "explicit empty-path slash behavior")
 	}
 }
 
@@ -137,30 +155,117 @@ func (g *generator) compression(o *Object, chain *middleware) {
 	if o.value("compress") == nil && !hasFieldPrefix(o, "compress.") {
 		return
 	}
-	chain.values = append(chain.values, statute.Compress(statute.Gzip, statute.Brotli))
-	chain.code = append(chain.code, "statute.Compress(statute.Gzip,statute.Brotli)")
-	o.mark("compress", Manual, "native gzip/Brotli candidate has no zstd, content-type allow/deny lists or minimum response size; negotiation and streaming differ")
+	p := statute.EncodingPolicy{Encodings: []string{"gzip", "br", "zstd"}, MinimumBytes: 1024}
+	if o.value("compress.encodings") != nil {
+		values, ok := stringList(o.value("compress.encodings"), o.Provider == providerDocker)
+		if !ok || len(values) == 0 {
+			o.mark("compress.encodings", Manual, "encodings must be a nonempty list")
+			return
+		}
+		p.Encodings = values
+	}
+	if !sourceCompressionMinimum(o, &p) {
+		return
+	}
+	fallback, ok := sourceLiteralText(o, "compress.defaultEncoding")
+	if !ok {
+		o.mark("compress.defaultEncoding", Manual, "default encoding requires a literal string")
+		return
+	}
+	p.DefaultEncoding = fallback
+	if !sourceCompressionTypes(o, &p) {
+		return
+	}
+	chain.values = append(chain.values, statute.EncodeResponse(p))
+	chain.code = append(chain.code, fmt.Sprintf("statute.EncodeResponse(statute.EncodingPolicy{Encodings:[]string{%s},MinimumBytes:%d,DefaultEncoding:%q,IncludedTypes:[]string{%s},ExcludedTypes:[]string{%s}})", quoted(p.Encodings), p.MinimumBytes, p.DefaultEncoding, quoted(p.IncludedTypes), quoted(p.ExcludedTypes)))
+	o.markConsumed("compress", []string{"encodings", "defaultEncoding", "minResponseBodyBytes", "includedContentTypes", "excludedContentTypes"}, "response encoding, media filters and minimum body size")
+}
+
+func sourceCompressionTypes(o *Object, p *statute.EncodingPolicy) bool {
+	for _, field := range []struct {
+		key string
+		dst *[]string
+	}{{"includedContentTypes", &p.IncludedTypes}, {"excludedContentTypes", &p.ExcludedTypes}} {
+		if o.value("compress."+field.key) != nil {
+			values, ok := stringList(o.value("compress."+field.key), o.Provider == providerDocker)
+			if !ok {
+				return false
+			}
+			*field.dst = values
+		}
+	}
+	return true
 }
 
 func (g *generator) buffering(o *Object, chain *middleware) {
-	maximum, err := integer(o.value("buffering.maxRequestBodyBytes"))
-	if err != nil || maximum <= 0 {
+	if o.value("buffering") == nil && !hasFieldPrefix(o, "buffering.") {
 		return
 	}
-	size := strconv.Itoa(maximum)
-	m := statute.RequestBuffer(size)
-	code := fmt.Sprintf("statute.RequestBuffer(%q)", size)
-	if threshold, err := integer(o.value("buffering.memRequestBodyBytes")); err == nil && threshold > 0 && threshold <= maximum {
-		m.MemoryThreshold(strconv.Itoa(threshold))
-		code += fmt.Sprintf(".MemoryThreshold(%q)", strconv.Itoa(threshold))
-		o.mark("buffering.memRequestBodyBytes", Manual, "candidate memory threshold needs explicit server-owned spill directory and aggregate disk budget")
+	p := statute.BodyBufferPolicy{}
+	if !sourceBufferSizes(o, &p) {
+		return
 	}
-	chain.values = append(chain.values, m)
-	chain.code = append(chain.code, code)
-	o.mark("buffering.maxRequestBodyBytes", Manual, "candidate preserves request size ceiling; native shared 64 MiB/128-slot admission may return 503, unlike unbounded Traefik spill; choose server resources explicitly")
-	o.mark("buffering.maxResponseBodyBytes", Unsupported, "native RequestBuffer does not buffer or limit responses; Retry response buffering is not a standalone substitute")
-	o.mark("buffering.memResponseBodyBytes", Unsupported, "native response streaming has no equivalent disk spill threshold")
-	o.mark("buffering.retryExpression", Unsupported, "Traefik buffering retry expressions have no native expression evaluator")
+	for _, field := range []struct {
+		key string
+		dst *bool
+	}{{"disableRequestBuffer", &p.DisableRequest}, {"disableResponseBuffer", &p.DisableResponse}} {
+		value, ok := sourceBoolValue(o.value("buffering."+field.key), false)
+		if !ok {
+			o.mark("buffering."+field.key, Manual, "invalid buffer switch")
+			return
+		}
+		*field.dst = value
+	}
+	retry, ok := sourceLiteralText(o, "buffering.retryExpression")
+	if !ok {
+		o.mark("buffering.retryExpression", Manual, "retry expression requires a literal string")
+		return
+	}
+	p.RetryExpression = retry
+	noteBufferBounds(o, p)
+	chain.values = append(chain.values, statute.BufferBodies(p))
+	chain.code = append(chain.code, fmt.Sprintf("statute.BufferBodies(statute.BodyBufferPolicy{MaxRequestBytes:%d,MemoryRequestBytes:%d,MaxResponseBytes:%d,MemoryResponseBytes:%d,DisableRequest:%t,DisableResponse:%t,RetryExpression:%q})", p.MaxRequestBytes, p.MemoryRequestBytes, p.MaxResponseBytes, p.MemoryResponseBytes, p.DisableRequest, p.DisableResponse, p.RetryExpression))
+	o.markConsumed("buffering", []string{"maxRequestBodyBytes", "memRequestBodyBytes", "maxResponseBodyBytes", "memResponseBodyBytes", "disableRequestBuffer", "disableResponseBuffer", "retryExpression"}, "request and response buffering with disk spill and retry predicate")
+}
+
+func sourceBufferSizes(o *Object, p *statute.BodyBufferPolicy) bool {
+	for _, field := range []struct {
+		key string
+		dst *int64
+	}{
+		{"maxRequestBodyBytes", &p.MaxRequestBytes},
+		{"memRequestBodyBytes", &p.MemoryRequestBytes},
+		{"maxResponseBodyBytes", &p.MaxResponseBytes},
+		{"memResponseBodyBytes", &p.MemoryResponseBytes},
+	} {
+		if value := o.value("buffering." + field.key); value != nil {
+			n, err := integer(value)
+			if err != nil || n < 0 {
+				o.mark("buffering."+field.key, Manual, "buffer size must be a nonnegative integer")
+				return false
+			}
+			*field.dst = int64(n)
+		}
+	}
+	return true
+}
+
+func noteBufferBounds(o *Object, p statute.BodyBufferPolicy) {
+	if (!p.DisableRequest && p.MaxRequestBytes == 0) || (!p.DisableResponse && p.MaxResponseBytes == 0) {
+		o.note("$body-limits", Translated, "unlimited source body size becomes the native 8 MiB maximum")
+	}
+	if !p.DisableRequest || !p.DisableResponse {
+		o.note("$in-flight", Translated, "native buffering admits 128 concurrent requests per route middleware")
+	}
+}
+
+func sourceLiteralText(o *Object, path string) (string, bool) {
+	value := o.value(path)
+	if value == nil {
+		return "", true
+	}
+	text, ok := value.(string)
+	return text, ok && literal(text)
 }
 
 func (g *generator) retry(o *Object, chain *middleware) {
@@ -183,80 +288,14 @@ func (g *generator) retainMiddlewareCandidate(o *Object, chain middleware) {
 	g.helpers[name] = fmt.Sprintf("// %s is incomplete; see the audit for %s.\nfunc %s() []statute.Middleware {return []statute.Middleware{%s}}", name, strconv.Quote(o.identity()), name, strings.Join(chain.code, ","))
 }
 
-func (g *generator) checkMiddlewareOrder(o *Object, refs []string) {
-	if o.Provider == providerDocker {
-		defaults, _ := g.defaultMiddlewareRefs()
-		refs = append(defaults, refs...)
-	}
-	var expanded []*Object
-	for _, ref := range refs {
-		g.flattenMiddleware(qualified(ref, o.Provider), &expanded, map[string]bool{})
-	}
-	checkResponseHeaderOrder(o, expanded)
-	seenPolicy := false
-	for _, m := range expanded {
-		hoisted := m.value("headers") != nil || m.value("addPrefix") != nil
-		if m.Provider == providerDocker {
-			hoisted = hasFieldPrefix(m, "headers.") || hasFieldPrefix(m, "addprefix.")
-		}
-		if hoisted && seenPolicy {
-			o.note("$middleware-order", Manual, "header/path operations after another middleware would be hoisted before it; denial responses, authentication inputs and Retry re-entry can change")
-		}
-		if !hoisted {
-			seenPolicy = true
-		}
-	}
-}
-
-func checkResponseHeaderOrder(router *Object, expanded []*Object) {
-	const prefix = "headers.customresponseheaders."
-	values := map[string]string{}
-	for _, m := range expanded {
-		for _, f := range m.Fields {
-			path := strings.ToLower(f.Path)
-			if !strings.HasPrefix(path, prefix) {
-				continue
-			}
-			value, ok := m.value(f.Path).(string)
-			if !ok {
-				continue
-			}
-			name := strings.TrimPrefix(path, prefix)
-			if previous, exists := values[name]; exists && previous != value {
-				router.note("$response-header-order", Manual, "conflicting response-header operations run inner-to-outer in Traefik and in declaration order in Statute; review response-header precedence")
-				return
-			}
-			values[name] = value
-		}
-	}
-}
-
 func hasFieldPrefix(o *Object, prefix string) bool {
+	prefix = strings.ToLower(prefix)
 	for _, f := range o.Fields {
 		if strings.HasPrefix(strings.ToLower(f.Path), prefix) {
 			return true
 		}
 	}
 	return false
-}
-
-func (g *generator) flattenMiddleware(id string, out *[]*Object, seen map[string]bool) {
-	if seen[id] || len(*out) >= 256 {
-		return
-	}
-	seen[id] = true
-	o := g.objects["middlewares:"+id]
-	if o == nil {
-		return
-	}
-	if refs, ok := stringList(o.value("chain.middlewares"), o.Provider == providerDocker); ok {
-		for _, ref := range refs {
-			g.flattenMiddleware(qualified(ref, o.Provider), out, seen)
-		}
-	} else {
-		*out = append(*out, o)
-	}
-	delete(seen, id)
 }
 
 func inlineUsers(o *Object) ([]any, bool) {
@@ -275,7 +314,7 @@ func inlineUsers(o *Object) ([]any, bool) {
 func authenticationRealm(o *Object) (string, bool) {
 	realm := o.text("basicAuth.realm")
 	if realm == "" {
-		realm = "traefik"
+		realm = sourceTraefik
 	}
 	return realm, literal(realm)
 }
@@ -291,4 +330,30 @@ func classifyInlineUsers(o *Object, values []any) {
 		}
 	}
 	o.mark("basicAuth.users", Translated, "explicit bcrypt hash environment bindings; generated startup validates hashes")
+}
+
+func (g *generator) regexRewrite(o *Object, chain *middleware) {
+	if o.value("replacePathRegex") != nil || hasFieldPrefix(o, "replacePathRegex.") {
+		pattern, replacement := o.text("replacePathRegex.regex"), o.text("replacePathRegex.replacement")
+		if _, err := regexp.Compile(strings.TrimSpace(pattern)); err == nil && !strings.Contains(pattern, "${") && !strings.Contains(pattern+replacement, "{{") {
+			chain.values = append(chain.values, statute.RewriteEscapedPath(pattern, replacement).RecordOriginal())
+			chain.code = append(chain.code, fmt.Sprintf("statute.RewriteEscapedPath(%q,%q).RecordOriginal()", pattern, replacement))
+			o.mark("replacePathRegex.regex", Translated, "escaped path regexp")
+			o.mark("replacePathRegex.replacement", Translated, "capture replacement with X-Replaced-Path")
+		}
+	}
+}
+
+func sourceCompressionMinimum(o *Object, p *statute.EncodingPolicy) bool {
+	if value := o.value("compress.minResponseBodyBytes"); value != nil {
+		n, err := integer(value)
+		if err != nil {
+			o.mark("compress.minResponseBodyBytes", Manual, "minimum body size must be an integer")
+			return false
+		}
+		if n > 0 {
+			p.MinimumBytes = n
+		}
+	}
+	return true
 }

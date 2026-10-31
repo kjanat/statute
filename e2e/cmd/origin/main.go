@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -138,7 +139,7 @@ func (o *origin) record(r *http.Request) journalEntry {
 		Host:      r.Host,
 		Proto:     r.Proto,
 		RequestID: r.Header.Get("X-Request-Id"),
-		Forwarded: r.Header.Get("X-Forwarded-For"),
+		Forwarded: strings.Join(r.Header.Values("X-Forwarded-For"), ", "),
 		Time:      time.Now(),
 	}
 	if r.TLS != nil {
@@ -176,7 +177,7 @@ func (o *origin) handleEcho(w http.ResponseWriter, r *http.Request) {
 		Host:      r.Host,
 		Proto:     r.Proto,
 		RequestID: r.Header.Get("X-Request-Id"),
-		Forwarded: r.Header.Get("X-Forwarded-For"),
+		Forwarded: strings.Join(r.Header.Values("X-Forwarded-For"), ", "),
 	}
 	if r.TLS != nil {
 		body.SNI = r.TLS.ServerName
@@ -277,6 +278,12 @@ func echoLines(conn net.Conn, rw *bufio.ReadWriter, id string) {
 // origin query parameter scopes the failures to one instance, giving
 // scenarios a deterministic backend asymmetry behind a shared pool.
 func (o *origin) handleFail(w http.ResponseWriter, r *http.Request) {
+	if name := r.URL.Query().Get("trailer"); name != "" {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil || r.Trailer.Get(name) != r.URL.Query().Get("trailerValue") {
+			http.Error(w, "request trailer mismatch", http.StatusBadRequest)
+			return
+		}
+	}
 	if only := r.URL.Query().Get("origin"); only != "" && only != o.id {
 		o.handleEcho(w, r)
 		return

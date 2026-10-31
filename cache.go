@@ -75,8 +75,8 @@ func cacheStorageVary(ctx context.Context, buf *responseBuffer, requestAllowsSto
 // Keep original and effective targets separate: Handle may inspect RequestURI
 // after hoisted rewrites change URL. A typed key also avoids delimiter aliases.
 type cacheKey struct {
-	method, host, target, originalURI, scheme, propagationFields string
-	tls                                                          bool
+	method, host, target, originalURI, scheme, propagationFields, listener string
+	tls                                                                    bool
 }
 
 func cacheKeyForRequest(r *http.Request, policy *cacheProxyPolicy) cacheKey {
@@ -84,6 +84,7 @@ func cacheKeyForRequest(r *http.Request, policy *cacheProxyPolicy) cacheKey {
 		method: r.Method, host: r.Host, target: r.URL.RequestURI(),
 		originalURI: r.RequestURI, scheme: r.URL.Scheme, tls: r.TLS != nil,
 	}
+	key.listener, _ = r.Context().Value(listenerNameKey{}).(string)
 	if policy != nil {
 		key.propagationFields = policy.signature
 	}

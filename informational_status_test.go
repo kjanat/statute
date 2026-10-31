@@ -21,16 +21,19 @@ func TestMultiplexedInformational101FinalStatus(t *testing.T) {
 	t.Parallel()
 	for _, proto := range []string{"h2", "h3"} {
 		for _, tc := range []struct {
-			name string
-			mws  []Middleware
+			name, accept string
+			mws          []Middleware
 		}{
-			{"plain", nil},
-			{"timeout", []Middleware{Timeout("5s")}},
-			{"retry", []Middleware{Retry(2)}},
-			{"etag", []Middleware{ETag()}},
-			{"cache", []Middleware{Cache("1m")}},
-			{"compress", []Middleware{Compress(Gzip)}},
-			{"nested", []Middleware{Timeout("5s"), Retry(2), Cache("1m"), ETag(), Compress(Gzip)}},
+			{"plain", "", nil},
+			{"timeout", "", []Middleware{Timeout("5s")}},
+			{"retry", "", []Middleware{Retry(2)}},
+			{"etag", "", []Middleware{ETag()}},
+			{"cache", "", []Middleware{Cache("1m")}},
+			{"compress", "", []Middleware{Compress(Gzip)}},
+			{"encode gzip", "gzip", []Middleware{EncodeResponse(EncodingPolicy{Encodings: []string{"gzip"}})}},
+			{"encode br", "br", []Middleware{EncodeResponse(EncodingPolicy{Encodings: []string{"br"}})}},
+			{"encode zstd", "zstd", []Middleware{EncodeResponse(EncodingPolicy{Encodings: []string{"zstd"}})}},
+			{"nested", "", []Middleware{Timeout("5s"), Retry(2), Cache("1m"), ETag(), Compress(Gzip)}},
 		} {
 			t.Run(proto+"/"+tc.name, func(t *testing.T) {
 				st := newStats()
@@ -65,7 +68,14 @@ func TestMultiplexedInformational101FinalStatus(t *testing.T) {
 					t.Cleanup(func() { _ = tr.Close() })
 					client, target = &http.Client{Transport: tr, Timeout: 5 * time.Second}, "https://"+udpAddr
 				}
-				resp, err := client.Get(target)
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.accept != "" {
+					req.Header.Set("Accept-Encoding", tc.accept)
+				}
+				resp, err := client.Do(req)
 				if err != nil {
 					t.Fatal(err)
 				}

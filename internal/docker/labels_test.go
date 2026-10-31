@@ -17,6 +17,27 @@ func webContainer(labels map[string]string) Container {
 	}
 }
 
+func TestExtractTraefikServiceWithoutRouter(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		c := webContainer(map[string]string{"traefik.enable": "true", "traefik.http.services.api.loadbalancer.server.port": "8080"})
+		c.Running = running
+		services, tombs, warnings := Extract(c, ExtractOptions{TraefikLabels: true, ReferencedServices: map[string]bool{"api@traefik": true}})
+		if len(services) != 1 || len(tombs) != 0 || len(warnings) != 0 {
+			t.Fatalf("service-only extraction: %v %v %v", services, tombs, warnings)
+		}
+		if services[0].Name != "api@traefik" || len(services[0].Routes) != 0 {
+			t.Fatalf("service identity or route leaked: %+v", services[0])
+		}
+		want := ""
+		if running {
+			want = "172.17.0.2:8080"
+		}
+		if services[0].Backend.Address != want {
+			t.Fatalf("backend=%q, want %q", services[0].Backend.Address, want)
+		}
+	}
+}
+
 func TestExtractNativeMinimal(t *testing.T) {
 	c := webContainer(map[string]string{"statute.enable": "true"})
 	svcs, _, warns := Extract(c, ExtractOptions{})
@@ -418,6 +439,7 @@ func TestExtractTraefik(t *testing.T) {
 		t.Errorf("Address = %q", svc.Backend.Address)
 	}
 	want := []Matcher{px("app.example.com", "/api")}
+	want[0].Priority = len(c.Labels["traefik.http.routers.web.rule"])
 	if !reflect.DeepEqual(svc.Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svc.Routes, want)
 	}
@@ -512,6 +534,7 @@ func TestExtractTraefikMiddlewares(t *testing.T) {
 		t.Fatalf("router with middlewares label was dropped: %+v", svcs)
 	}
 	want := []Matcher{withMW(m("a.example.com", "/*"), "auth@docker")}
+	want[0].Priority = len(c.Labels["traefik.http.routers.web.rule"])
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
 	}
@@ -560,6 +583,9 @@ func TestExtractTraefikRouterScopedMiddlewares(t *testing.T) {
 	want := []Matcher{
 		withMW(m("a.example.com", "/*"), "auth@file"),
 		m("b.example.com", "/*"),
+	}
+	for i := range want {
+		want[i].Priority = len("Host(`a.example.com`)")
 	}
 	if !reflect.DeepEqual(svcs[0].Routes, want) {
 		t.Errorf("Routes = %+v, want %+v", svcs[0].Routes, want)
