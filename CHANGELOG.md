@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-31
+
+### Changed
+
+- `statute migrate traefik` writes listeners, upstreams, routes, fallback routes and Docker policy as separate functions, with a comment naming each element's source object. Long chains, argument lists and structs span one line per element, zero-valued fields are omitted, and public constants replace literal TLS versions, cipher suites, statuses and priorities. See the [migration guide](docs/traefik-migration.md).
+
+- Generated migrations emit each source middleware and transport once, as a function named after its source, such as `securityHeaders()` or `backendTransport()`. Rate limits used by two or more helpers call a shared `makeRateLimit`, `makeHostRateLimit` or `makeHeaderRateLimit` constructor with a named `rateLimitSettings` value. Routes from one router that differ only by host list them in `Hosts(...)`, `noop@internal` handlers call `migrationNoop()`, and simple file pools call `makePool(address, transport)`.
+
+### Fixed
+
+- With `PrioritizeRoutes`, `FB001` reports only Docker routes and refusals at or below the catch-all's priority. It also treats `MatchPrefix("/")` as a catch-all and ignores `MatchExact("/*")` and routes constrained by `PeerIPs`. See [terminal native routes](docs/routing.md#terminal-native-routes).
+
+- `Lint` reports `HC001`, `LB001` and `TLS002` in pool-name order on every run.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added
@@ -563,7 +577,8 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/kjanat/statute/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kjanat/statute/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kjanat/statute/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kjanat/statute/compare/v0.9.0...v0.10.0
