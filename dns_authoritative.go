@@ -177,15 +177,37 @@ func nameservers(response *dns.Msg) []string {
 }
 
 func (s *dns01Solver) authoritativeTXT(ctx context.Context, server, name, value string) bool {
-	for _, address := range s.nameserverAddresses(ctx, server) {
-		response, err := s.exchangeDNS(ctx, net.JoinHostPort(address, "53"), name, dns.TypeTXT, false)
-		if err != nil || !response.Authoritative {
-			continue
-		}
-		for _, rr := range response.Answer {
-			if record, ok := rr.(*dns.TXT); ok && strings.Join(record.Txt, "") == value {
+	addresses := s.nameserverAddresses(ctx, server)
+	ctx, cancel := context.WithCancel(ctx)
+	matches := make(chan bool, len(addresses))
+	var queries sync.WaitGroup
+	defer func() { cancel(); queries.Wait() }()
+	for _, address := range addresses {
+		queries.Go(func() {
+			response, err := s.exchangeDNS(ctx, net.JoinHostPort(address, "53"), name, dns.TypeTXT, false)
+			matches <- err == nil && authoritativeTXTMatch(response, value)
+		})
+	}
+	for range addresses {
+		select {
+		case match := <-matches:
+			if match {
 				return true
 			}
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return false
+}
+
+func authoritativeTXTMatch(response *dns.Msg, value string) bool {
+	if !response.Authoritative {
+		return false
+	}
+	for _, rr := range response.Answer {
+		if record, ok := rr.(*dns.TXT); ok && strings.Join(record.Txt, "") == value {
+			return true
 		}
 	}
 	return false

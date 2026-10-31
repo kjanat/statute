@@ -166,7 +166,9 @@ program while still reporting `blocking: true` until its inputs are supplied.
 - ACME supports HTTP-01 and Cloudflare DNS-01. Source key types include EC256,
   EC384 and RSA2048/3072/4096/8192; omission selects Traefik's RSA4096 default.
   DNS propagation can verify authoritative servers and recursive resolvers,
-  apply a delay, or explicitly disable checks. Discovery queries run concurrently.
+  apply a delay, or explicitly disable checks. Discovery queries and the
+  addresses of each authoritative nameserver are queried concurrently; one
+  matching authoritative answer verifies that nameserver.
   Cloudflare requires `CF_DNS_API_TOKEN`.
 - ACME storage uses a new sibling `.statute` directory and starts fresh account
   and certificate state. Traefik account keys and certificates are not imported.

@@ -27,6 +27,10 @@ func (f *authoritativeZoneFixture) query(ctx context.Context, server, name strin
 		return nil, errors.New("resolver offline")
 	}
 	if !recursive {
+		if strings.HasPrefix(server, "192.0.2.10:") {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
 		return f.txt(server), nil
 	}
 	switch kind {
@@ -82,6 +86,9 @@ func (f *authoritativeZoneFixture) address(name string, kind uint16) (*dns.Msg, 
 		address = "192.0.2.2"
 	}
 	reply.Answer = []dns.RR{&dns.A{A: net.ParseIP(address)}}
+	if f.broken == "black hole" && name == "ns1.test." {
+		reply.Answer = append([]dns.RR{&dns.A{A: net.ParseIP("192.0.2.10")}}, reply.Answer...)
+	}
 	return reply, nil
 }
 
@@ -123,6 +130,17 @@ func TestAuthoritativeDNSPollingDeadline(t *testing.T) {
 		if broken != "" && !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("deadline=%v", err)
 		}
+	}
+}
+
+func TestAuthoritativeDNSUnresponsiveAddressKeepsAlternatives(t *testing.T) {
+	fixture := &authoritativeZoneFixture{broken: "black hole"}
+	solver := &dns01Solver{queryDNS: fixture.query, prop: &resolved.DNSPropagation{Authoritative: true, Timeout: time.Second, Interval: 50 * time.Millisecond, DiscoveryResolvers: []string{"recursive:53"}}}
+	if err := solver.pollAuthoritative(t.Context(), "_acme-challenge.example.", "propagated"); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.checks.Load() != 2 {
+		t.Fatalf("authoritative checks=%d", fixture.checks.Load())
 	}
 }
 
