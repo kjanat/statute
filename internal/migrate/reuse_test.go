@@ -309,3 +309,67 @@ func TestHelperKeysSeparatePolicyKinds(t *testing.T) {
 	}
 	assertGeneratedParity(t, result)
 }
+
+const compactDynamic = `http:
+  routers:
+    multi:
+      rule: Host(` + "`a.example`" + `) || Host(` + "`b.example`" + `)
+      service: api
+    folded:
+      rule: Host(` + "`c.example`" + `) || Host(` + "`C.example`" + `)
+      service: web
+    redirect:
+      rule: Host(` + "`r.example`" + `) || Host(` + "`s.example`" + `)
+      service: noop@internal
+      middlewares: [moved]
+  middlewares:
+    moved:
+      redirectRegex: {regex: '^https?://([^/]+)/(.*)', replacement: 'https://new.example/${2}'}
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:9000
+    web:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:9001
+    checked:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:9002
+        healthCheck: {path: /health}
+`
+
+func TestCompactRoutesAndPools(t *testing.T) {
+	result := audit(t, basicInputs(t, compactDynamic))
+	source := string(result.Go)
+	for _, want := range []struct {
+		text  string
+		count int
+	}{
+		{`Hosts("a.example", "a.example.", "b.example", "b.example.")`, 1},
+		{`Hosts("c.example", "c.example.")`, 2},
+		{`Hosts("r.example", "r.example.", "s.example", "s.example.")`, 1},
+		{"func migrationNoop() http.Handler {", 1},
+		{"Handle(migrationNoop())", 1},
+		{"StatusTeapot", 1},
+		{"func makePool(address string, transport statute.Transport) statute.Pool {", 1},
+		{`"api@file": makePool("http://127.0.0.1:9000", defaultTransport()),`, 1},
+		{`"web@file": makePool("http://127.0.0.1:9001", defaultTransport()),`, 1},
+		{`"checked@file": statute.Pool{`, 1},
+	} {
+		if got := strings.Count(source, want.text); got != want.count {
+			t.Errorf("%q occurs %d times, want %d\n%s", want.text, got, want.count, source)
+		}
+	}
+	assertGeneratedParity(t, result)
+}
+
+func TestSinglePoolKeepsLiteral(t *testing.T) {
+	result := audit(t, basicInputs(t, simpleDynamic))
+	source := string(result.Go)
+	if strings.Contains(source, "makePool") || !strings.Contains(source, `"api@file": statute.Pool{`) {
+		t.Fatalf("single simple pool uses a shared constructor:\n%s", source)
+	}
+}

@@ -21,6 +21,42 @@ type fragment struct {
 	origin string
 	code   string
 	key    string
+	hosts  []string
+	tail   string
+}
+
+func (f fragment) render() string {
+	if f.hosts == nil {
+		return f.code
+	}
+	return f.code + ".Hosts(" + quoted(f.hosts) + ")" + f.tail
+}
+
+func mergeHosts(items []fragment) []fragment {
+	var out []fragment
+	for _, item := range items {
+		if n := len(out); n > 0 && item.hosts != nil && sameRoute(out[n-1], item) && !sharedHost(out[n-1].hosts, item.hosts) {
+			out[n-1].hosts = append(slices.Clone(out[n-1].hosts), item.hosts...)
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func sameRoute(a, b fragment) bool {
+	return a.hosts != nil && a.origin == b.origin && a.code == b.code && a.tail == b.tail
+}
+
+func sharedHost(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if strings.EqualFold(x, y) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type layout struct {

@@ -77,6 +77,13 @@ with their own values. A name that collides with another function, an import
 or a Go identifier receives a numeric suffix. Each call returns new values, so
 routes using the same function keep separate rate limits, caches and buffers.
 
+A router whose rule names several hosts becomes one route listing all of them in
+`Hosts(...)` when the routes for those hosts differ only by host. Statute expands
+that list into one route per host, each with its own middleware state. When at
+least two file pools have one backend and only a transport, they call
+`makePool(address, transport)`. Routes and Docker bindings for `noop@internal`
+share one `migrationNoop()` handler.
+
 Output files must be new, distinct paths. They are created with mode `0600` and
 never overwrite existing files. Parsing/writing failures remove newly reserved
 outputs. Inputs are bounded to 256 files of at most 8 MiB each. Directory symlinks
