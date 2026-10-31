@@ -18,7 +18,7 @@ const (
 )
 
 var generatedIdentifiers = map[string]bool{
-	"main": true, "init": true, "configuration": true, "migrationEnv": true, "migrationUsersFile": true, "migrationNoop": true, "makePool": true, "statute": true,
+	"main": true, "init": true, "configuration": true, "migrationEnv": true, "migrationUsersFile": true, "migrationNoop": true, "makePool": true, rateLimitSettingsType: true, "statute": true,
 	"generatedListeners": true, "generatedUpstreams": true, "generatedRoutes": true, "generatedDocker": true,
 }
 
@@ -191,9 +191,11 @@ func (g *generator) reusableSource(body string) (string, error) {
 		}
 		b.WriteString("func " + h.name + "() " + h.typ + " {\nreturn " + code + "\n}\n")
 	}
+	if len(shared) > 0 {
+		b.WriteString(rateLimitSettingsDecl)
+	}
 	for _, name := range keys(shared) {
-		c := rateLimitConstructors[name]
-		b.WriteString("\nfunc " + name + c.signature + " " + singleMiddlewareType + " {\nreturn " + c.body + "\n}\n")
+		b.WriteString("\nfunc " + name + "(s " + rateLimitSettingsType + ") " + singleMiddlewareType + " {\nreturn " + rateLimitConstructors[name] + "\n}\n")
 	}
 	return b.String(), nil
 }

@@ -215,12 +215,16 @@ type rateLimitSpec struct {
 	header    string
 }
 
-const rateLimitBase = "statute.RateLimit(rate).\nBurst(burst).\nReserve(reserve).\nExpireIdle(idle).\nEvictOldest()."
+const (
+	rateLimitSettingsType = "rateLimitSettings"
+	rateLimitSettingsDecl = "\ntype rateLimitSettings struct {\nRate string\nBurst int\nReserve, ExpireIdle string\nSelection statute.IPSelection\nHeader string\n}\n"
+	rateLimitBase         = "statute.RateLimit(s.Rate).\nBurst(s.Burst).\nReserve(s.Reserve).\nExpireIdle(s.ExpireIdle).\nEvictOldest()."
+)
 
-var rateLimitConstructors = map[string]struct{ signature, body string }{
-	"makeRateLimit":       {"(\nrate string,\nburst int,\nreserve, idle string,\nselection statute.IPSelection,\n)", rateLimitBase + "\nSelectIP(selection)"},
-	"makeHostRateLimit":   {"(rate string, burst int, reserve, idle string)", rateLimitBase + "\nPer(statute.HostHeader)"},
-	"makeHeaderRateLimit": {"(\nrate string,\nburst int,\nreserve, idle, header string,\n)", rateLimitBase + "\nFromHeader(header)"},
+var rateLimitConstructors = map[string]string{
+	"makeRateLimit":       rateLimitBase + "\nSelectIP(s.Selection)",
+	"makeHostRateLimit":   rateLimitBase + "\nPer(statute.HostHeader)",
+	"makeHeaderRateLimit": rateLimitBase + "\nFromHeader(s.Header)",
 }
 
 func (s *rateLimitSpec) constructor() string {
@@ -250,15 +254,15 @@ func (s *rateLimitSpec) inline() string {
 }
 
 func (s *rateLimitSpec) call() string {
-	args := fmt.Sprintf("%q,%d,%q,%q", s.rate, s.burst, s.reserve, s.idle)
+	fields := fmt.Sprintf("Rate:%q,Burst:%d,Reserve:%q,ExpireIdle:%q", s.rate, s.burst, s.reserve, s.idle)
 	switch s.key {
-	case hostRateKey:
+	case ipRateKey:
+		fields += ",Selection:" + s.selection
 	case headerRateKey:
-		args += fmt.Sprintf(",%q", s.header)
+		fields += fmt.Sprintf(",Header:%q", s.header)
 	default:
-		args += "," + s.selection
 	}
-	return s.constructor() + "(" + args + ")"
+	return s.constructor() + "(" + rateLimitSettingsType + "{" + fields + "})"
 }
 
 func sourceRateLimit(o *Object) (float64, bool) {

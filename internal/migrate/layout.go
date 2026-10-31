@@ -181,6 +181,9 @@ func (l layout) arguments(fun string, e *ast.CallExpr) string {
 	if len(args) == 0 || fits(fun+inline) {
 		return inline
 	}
+	if _, composite := e.Args[0].(*ast.CompositeLit); composite && len(args) == 1 {
+		return inline
+	}
 	return "(\n" + strings.Join(args, ",\n") + ",\n)"
 }
 

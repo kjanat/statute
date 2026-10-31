@@ -40,13 +40,11 @@ func generatedListeners() statute.Listeners {
 		// entrypoints:web@static
 		statute.HTTP(":8080").
 			Name("web").
-			With(
-				statute.IngressPolicy{
-					ForwardedHeaders: true,
-					NormalizePath:    true,
-					HeaderAliases:    statute.HeaderAliasesKeep,
-				},
-			),
+			With(statute.IngressPolicy{
+				ForwardedHeaders: true,
+				NormalizePath:    true,
+				HeaderAliases:    statute.HeaderAliasesKeep,
+			}),
 	}
 }
 
@@ -123,7 +121,13 @@ func defaultTransport() statute.Transport {
 // middlewares:edge@file
 func edge() statute.Middleware {
 	return statute.InOrder(
-		makeRateLimit("50/s", 100, "10ms", "2s", statute.IPSelection{Mode: "peer"}),
+		makeRateLimit(rateLimitSettings{
+			Rate:       "50/s",
+			Burst:      100,
+			Reserve:    "10ms",
+			ExpireIdle: "2s",
+			Selection:  statute.IPSelection{Mode: "peer"},
+		}),
 	)
 }
 
@@ -135,7 +139,13 @@ func entrypointMiddleware() statute.Middleware {
 // middlewares:limit@file
 func limit() statute.Middleware {
 	return statute.InOrder(
-		makeRateLimit("20/s", 40, "25ms", "2s", statute.IPSelection{Mode: "peer"}),
+		makeRateLimit(rateLimitSettings{
+			Rate:       "20/s",
+			Burst:      40,
+			Reserve:    "25ms",
+			ExpireIdle: "2s",
+			Selection:  statute.IPSelection{Mode: "peer"},
+		}),
 	)
 }
 
@@ -168,22 +178,31 @@ func tag() statute.Middleware {
 // middlewares:twin@file
 func twin() statute.Middleware {
 	return statute.InOrder(
-		makeRateLimit("20/s", 40, "25ms", "2s", statute.IPSelection{Mode: "peer"}),
+		makeRateLimit(rateLimitSettings{
+			Rate:       "20/s",
+			Burst:      40,
+			Reserve:    "25ms",
+			ExpireIdle: "2s",
+			Selection:  statute.IPSelection{Mode: "peer"},
+		}),
 	)
 }
 
-func makeRateLimit(
-	rate string,
-	burst int,
-	reserve, idle string,
-	selection statute.IPSelection,
-) statute.Middleware {
-	return statute.RateLimit(rate).
-		Burst(burst).
-		Reserve(reserve).
-		ExpireIdle(idle).
+type rateLimitSettings struct {
+	Rate                string
+	Burst               int
+	Reserve, ExpireIdle string
+	Selection           statute.IPSelection
+	Header              string
+}
+
+func makeRateLimit(s rateLimitSettings) statute.Middleware {
+	return statute.RateLimit(s.Rate).
+		Burst(s.Burst).
+		Reserve(s.Reserve).
+		ExpireIdle(s.ExpireIdle).
 		EvictOldest().
-		SelectIP(selection)
+		SelectIP(s.Selection)
 }
 
 func makePool(address string, transport statute.Transport) statute.Pool {

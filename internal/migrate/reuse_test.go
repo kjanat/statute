@@ -18,6 +18,8 @@ const sharedPolicyDynamic = `http:
         customResponseHeaders: {X-Policy: '${STATUTE_TEST_SHARED_POLICY}'}
     limit:
       rateLimit: {average: 1, burst: 1}
+    twin:
+      rateLimit: {average: 1, burst: 1}
   routers:
     one:
       rule: Host(` + "`one.example`" + `)
@@ -27,6 +29,10 @@ const sharedPolicyDynamic = `http:
       rule: Host(` + "`two.example`" + `)
       service: api
       middlewares: [tag, limit]
+    three:
+      rule: Host(` + "`three.example`" + `)
+      service: api
+      middlewares: [tag, twin]
   services:
     api:
       loadBalancer:
@@ -79,6 +85,9 @@ func TestSharedHelpersKeepRouteState(t *testing.T) {
 		{"one.example", http.StatusOK},
 		{"one.example", http.StatusTooManyRequests},
 		{"two.example", http.StatusOK},
+		{"three.example", http.StatusOK},
+		{"three.example", http.StatusTooManyRequests},
+		{"two.example", http.StatusTooManyRequests},
 	} {
 		status, policy := hostStatus(t, client, address, step.host)
 		if status != step.status || policy != "shared" {
@@ -89,13 +98,13 @@ func TestSharedHelpersKeepRouteState(t *testing.T) {
 
 func assertSharedPolicySource(t *testing.T, source string) {
 	t.Helper()
-	for _, want := range []string{"func limit() statute.Middleware {", "func tag() statute.Middleware {"} {
+	for _, want := range []string{"func limit() statute.Middleware {", "func twin() statute.Middleware {", "func tag() statute.Middleware {", "func makeRateLimit(s rateLimitSettings) statute.Middleware {", "With(tag(), twin()),"} {
 		if got := strings.Count(source, want); got != 1 {
 			t.Fatalf("%q occurs %d times, want 1\n%s", want, got, source)
 		}
 	}
-	if got := strings.Count(source, "With(tag(), limit()),"); got != 2 || strings.Contains(source, "makeRateLimit") {
-		t.Fatalf("shared calls occur %d times, want 2 without a constructor\n%s", got, source)
+	if got := strings.Count(source, "With(tag(), limit()),"); got != 2 || strings.Count(source, "makeRateLimit(rateLimitSettings{") != 2 {
+		t.Fatalf("shared calls occur %d times, want 2 with two constructor calls\n%s", got, source)
 	}
 }
 
@@ -181,6 +190,14 @@ func TestMalformedReusableSourceFails(t *testing.T) {
 	if _, err := g.reusableSource("func f() { partial() }"); err == nil {
 		t.Fatal("unterminated helper body accepted")
 	}
+	spec := &rateLimitSpec{rate: "1/s", burst: 1, reserve: "500ms", idle: "2s", selection: "x),y("}
+	g.reusables = map[reusableKey]*reusable{
+		{singleMiddlewareType, "a"}: {name: "a", typ: singleMiddlewareType, body: wrapExpr("statute.InOrder(", []expr{{rate: spec}}, ")")},
+		{singleMiddlewareType, "b"}: {name: "b", typ: singleMiddlewareType, body: wrapExpr("statute.InOrder(", []expr{{rate: spec}}, ")")},
+	}
+	if _, err := g.reusableSource("func f() { a(); b() }"); err == nil {
+		t.Fatal("malformed constructor call accepted")
+	}
 }
 
 func TestMiddlewarePartRendering(t *testing.T) {
@@ -225,7 +242,7 @@ func TestRateLimitSpecSurvivesWrappers(t *testing.T) {
 		want string
 	}{
 		{inline, `statute.OnListeners([]string{"web"},slices.Concat(stack(),[]statute.Middleware{statute.InOrder(statute.RateLimit("20/s").Burst(40).Reserve("25ms").ExpireIdle("2s").EvictOldest().SelectIP(statute.IPSelection{Mode:"peer"})),statute.InOrder(statute.RateLimit("5/s").Burst(10).Reserve("100ms").ExpireIdle("2s").EvictOldest().Per(statute.HostHeader)),statute.InOrder(statute.RateLimit("5/s").Burst(10).Reserve("100ms").ExpireIdle("2s").EvictOldest().FromHeader("X-Client"))})...)`},
-		{shared, `statute.OnListeners([]string{"web"},slices.Concat(stack(),[]statute.Middleware{statute.InOrder(makeRateLimit("20/s",40,"25ms","2s",statute.IPSelection{Mode:"peer"})),statute.InOrder(makeHostRateLimit("5/s",10,"100ms","2s")),statute.InOrder(makeHeaderRateLimit("5/s",10,"100ms","2s","X-Client"))})...)`},
+		{shared, `statute.OnListeners([]string{"web"},slices.Concat(stack(),[]statute.Middleware{statute.InOrder(makeRateLimit(rateLimitSettings{Rate:"20/s",Burst:40,Reserve:"25ms",ExpireIdle:"2s",Selection:statute.IPSelection{Mode:"peer"}})),statute.InOrder(makeHostRateLimit(rateLimitSettings{Rate:"5/s",Burst:10,Reserve:"100ms",ExpireIdle:"2s"})),statute.InOrder(makeHeaderRateLimit(rateLimitSettings{Rate:"5/s",Burst:10,Reserve:"100ms",ExpireIdle:"2s",Header:"X-Client"}))})...)`},
 	} {
 		if got := check.r.render(nested); got != check.want {
 			t.Errorf("render:\n got %s\nwant %s", got, check.want)
@@ -283,13 +300,14 @@ func TestRateLimitConstructionIsShared(t *testing.T) {
 		{"With(a(), b(), c(), d(), e(), f())", 1},
 		{"// middlewares:a@file\nfunc a() statute.Middleware {", 1},
 		{"// middlewares:b@file\nfunc b() statute.Middleware {", 1},
-		{"func makeRateLimit(\n\trate string,\n\tburst int,\n\treserve, idle string,\n\tselection statute.IPSelection,\n) statute.Middleware {", 1},
-		{"func makeHostRateLimit(rate string, burst int, reserve, idle string) statute.Middleware {", 1},
-		{"func makeHeaderRateLimit(\n\trate string,\n\tburst int,\n\treserve, idle, header string,\n) statute.Middleware {", 1},
-		{`makeRateLimit("10/s", 20, `, 2},
-		{`makeHostRateLimit("5/s", `, 2},
-		{`, "X-Key")`, 1},
-		{`, "Y-Key")`, 1},
+		{"type rateLimitSettings struct {", 1},
+		{"func makeRateLimit(s rateLimitSettings) statute.Middleware {", 1},
+		{"func makeHostRateLimit(s rateLimitSettings) statute.Middleware {", 1},
+		{"func makeHeaderRateLimit(s rateLimitSettings) statute.Middleware {", 1},
+		{"makeRateLimit(rateLimitSettings{\n\t\t\tRate:       \"10/s\",\n\t\t\tBurst:      20,", 2},
+		{"makeHostRateLimit(rateLimitSettings{\n\t\t\tRate:       \"5/s\",", 2},
+		{`Header:     "X-Key",`, 1},
+		{`Header:     "Y-Key",`, 1},
 		{"statute.RateLimit(", 3},
 	} {
 		if got := strings.Count(source, want.text); got != want.count {

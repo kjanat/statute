@@ -71,8 +71,8 @@ function such as `backendTransport()`, shared by the upstream pools and Docker
 pool policies that use it. Every source keeps its own function, even when two
 sources have the same settings, so each one remains separately editable. When
 at least two emitted functions build the same kind of rate limit, they call one
-shared constructor, such as `makeRateLimit("20/s", 40, "25ms", "2s", ...)`,
-with their own values. A name that collides with another function, an import
+shared constructor, such as `makeRateLimit(rateLimitSettings{Rate: "20/s", ...})`,
+with their own values in named fields. A name that collides with another function, an import
 or a Go identifier receives a numeric suffix. Each call returns new values, so
 routes using the same function keep separate rate limits, caches and buffers.
 
