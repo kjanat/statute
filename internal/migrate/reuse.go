@@ -35,6 +35,11 @@ type reusable struct {
 	origins []string
 }
 
+type reusableKey struct {
+	typ string
+	key string
+}
+
 type constructor struct {
 	signature  string
 	body       string
@@ -125,7 +130,7 @@ func (g *generator) middlewareHelper(key string, parts []middlewarePart, origins
 }
 
 func (g *generator) reuse(typ, key, base, body string, origins ...string) string {
-	if h := g.reusables[key]; h != nil {
+	if h := g.reusables[reusableKey{typ, key}]; h != nil {
 		return h.name + "()"
 	}
 	if strings.HasPrefix(base, candidatePrefix) {
@@ -136,7 +141,7 @@ func (g *generator) reuse(typ, key, base, body string, origins ...string) string
 		name = base + strconv.Itoa(n)
 	}
 	g.reusableNames[name] = true
-	g.reusables[key] = &reusable{name: name, typ: typ, body: body, origins: origins}
+	g.reusables[reusableKey{typ, key}] = &reusable{name: name, typ: typ, body: body, origins: origins}
 	return name + "()"
 }
 

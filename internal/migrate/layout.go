@@ -142,7 +142,7 @@ func (l layout) arguments(fun string, e *ast.CallExpr) string {
 		args[len(args)-1] += "..."
 	}
 	inline := "(" + strings.Join(args, ", ") + ")"
-	if fits(fun + inline) {
+	if len(args) == 0 || fits(fun+inline) {
 		return inline
 	}
 	return "(\n" + strings.Join(args, ",\n") + ",\n)"
@@ -161,7 +161,7 @@ func (l layout) composite(e *ast.CompositeLit) string {
 		elts = append(elts, l.expr(elt))
 	}
 	inline := typ + "{" + strings.Join(elts, ", ") + "}"
-	if len(elts) <= 1 && fits(inline) {
+	if len(elts) == 0 || len(elts) == 1 && fits(inline) {
 		return inline
 	}
 	return typ + "{\n" + strings.Join(elts, ",\n") + ",\n}"

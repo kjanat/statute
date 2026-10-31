@@ -53,7 +53,7 @@ type generator struct {
 	defaults        string
 	defaultEntries  []string
 	entryDefaults   middleware
-	reusables       map[string]*reusable
+	reusables       map[reusableKey]*reusable
 	reusableNames   map[string]bool
 	constructors    map[string]*constructor
 }
@@ -67,7 +67,7 @@ func generate(r *Result) error {
 	g.entryTLS = map[string]bool{}
 	g.routerEntries = map[*Object][]string{}
 	g.disabledRouters = map[*Object]bool{}
-	g.reusables = map[string]*reusable{}
+	g.reusables = map[reusableKey]*reusable{}
 	g.reusableNames = map[string]bool{}
 	g.constructors = map[string]*constructor{}
 	r.Config.Upstreams = statute.Upstreams{}

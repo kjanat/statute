@@ -146,7 +146,7 @@ func TestReusableHelperNames(t *testing.T) {
 			t.Errorf("helperIdentifier(%q) = %q, want %q", source, got, want)
 		}
 	}
-	g := &generator{reusables: map[string]*reusable{}, reusableNames: map[string]bool{}}
+	g := &generator{reusables: map[reusableKey]*reusable{}, reusableNames: map[string]bool{}}
 	for _, step := range []struct{ key, base, want string }{
 		{"a-b@file", "aB", "aB()"},
 		{"a.b@file", "aB", "aB2()"},
@@ -166,7 +166,7 @@ func TestReusableHelperNames(t *testing.T) {
 
 func TestMalformedReusableSourceFails(t *testing.T) {
 	g := &generator{r: &Result{}, defaults: "statute.Defaults{}", reusableNames: map[string]bool{}, constructors: map[string]*constructor{}}
-	g.reusables = map[string]*reusable{"broken": {name: "broken", typ: singleMiddlewareType, body: "statute.("}}
+	g.reusables = map[reusableKey]*reusable{{singleMiddlewareType, "broken"}: {name: "broken", typ: singleMiddlewareType, body: "statute.("}}
 	if _, err := g.reusableSource("func f() {"); err == nil {
 		t.Fatal("malformed generated body accepted")
 	}
@@ -177,9 +177,9 @@ func TestMalformedReusableSourceFails(t *testing.T) {
 	if _, err := g.source(); err == nil {
 		t.Fatal("source accepted a malformed helper")
 	}
-	g.reusables = map[string]*reusable{
-		"a": {name: "a", typ: singleMiddlewareType, body: "statute.Retry(1)"},
-		"b": {name: "b", typ: singleMiddlewareType, body: "statute.Retry(1)"},
+	g.reusables = map[reusableKey]*reusable{
+		{singleMiddlewareType, "a"}: {name: "a", typ: singleMiddlewareType, body: "statute.Retry(1)"},
+		{singleMiddlewareType, "b"}: {name: "b", typ: singleMiddlewareType, body: "statute.Retry(1)"},
 	}
 	g.constructors = map[string]*constructor{"makeRetry": {body: "statute.(", expansions: map[string]string{"statute.Retry(1)": "makeRetry(1)"}}}
 	if _, err := g.reusableSource("func f() { a(); b() }"); err == nil {
@@ -270,6 +270,40 @@ func TestRateLimitConstructionIsShared(t *testing.T) {
 	} {
 		if got := strings.Count(source, want.text); got != want.count {
 			t.Errorf("%q occurs %d times, want %d\n%s", want.text, got, want.count, source)
+		}
+	}
+	assertGeneratedParity(t, result)
+}
+
+func TestLongHelperNamesKeepEmptyCalls(t *testing.T) {
+	name := strings.Repeat("a", 81)
+	for src, want := range map[string]string{name + "()": name + "()", name + "{Zero: 0}": name + "{}"} {
+		if got, err := layoutExpr(src); err != nil || got != want {
+			t.Errorf("layoutExpr(%q) = %q, %v; want %q", src, got, err, want)
+		}
+	}
+	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: ["+name+"]", 1) + "  middlewares:\n    " + name + ":\n      rateLimit: {average: 20, burst: 40}\n"
+	result := audit(t, basicInputs(t, body))
+	if !strings.Contains(string(result.Go), "With(\n\t\t\t\t"+name+"(),\n\t\t\t),") {
+		t.Fatalf("long helper call missing:\n%s", result.Go)
+	}
+	assertGeneratedParity(t, result)
+}
+
+func TestHelperKeysSeparatePolicyKinds(t *testing.T) {
+	body := strings.Replace(simpleDynamic, "service: api", "service: api\n      middlewares: ['serversTransports:backend']", 1)
+	body = strings.Replace(body, "      loadBalancer:\n", "      loadBalancer:\n        serversTransport: backend\n", 1) + `  middlewares:
+    serversTransports:backend:
+      rateLimit: {average: 20, burst: 40}
+  serversTransports:
+    backend:
+      forwardingTimeouts: {dialTimeout: 5s}
+`
+	result := audit(t, basicInputs(t, body))
+	source := string(result.Go)
+	for _, want := range []string{"func serversTransportsBackend() statute.Middleware {", "func backendTransport() statute.Transport {", "Transport: backendTransport(),"} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("missing %q:\n%s", want, source)
 		}
 	}
 	assertGeneratedParity(t, result)
