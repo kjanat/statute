@@ -40,7 +40,7 @@ depends = ["go"]
 version = "0.28.0"
 
 [tools."github:tombi-toml/tombi"]
-version = "1.9.7"
+version = "1.9.8"
 
 [tools."github:kjanat/shellcheck-rs"]
 matching_regex = '^rshellcheck-.*-(aarch64|armv7|i686|x86_64)-.*\.(tar\.gz|zip)$'
