@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-07
+
+### Security
+
+- Update `github.com/klauspost/compress` to v1.20.2. It fixes a panic in zstd `DecodeAll` on crafted input ([GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865)). statute uses only the zstd encoder, for `EncodeResponse`.
+
 ## [0.13.0] - 2026-10-31
 
 ### Changed
@@ -577,7 +583,8 @@ HTML rewriting remains a separate, opt-in research module. This release does not
 - Two-layer architecture: surface API (`statute.kjanat.dev`) and resolved schema (`statute.kjanat.dev/resolved`).
 - `statute.Resolve(cfg)` and `statute.Export(cfg, w)` for tooling. `statute.Main(cfg)` CLI wrapper with `-validate` and `-export` flags.
 
-[Unreleased]: https://github.com/kjanat/statute/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/kjanat/statute/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/kjanat/statute/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/kjanat/statute/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kjanat/statute/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kjanat/statute/compare/v0.10.0...v0.11.0
