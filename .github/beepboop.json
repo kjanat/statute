@@ -1,0 +1,29 @@
+{
+  "$schema": "https://beepboop.kjanat.dev/schema/v1.json",
+  "streams": {
+    "main": {
+      "packages": ["pkg:generic/go/statute.kjanat.dev"],
+      "versioning": "workspace",
+      "required": ["pkg:generic/go/statute.kjanat.dev"],
+      "versionSource": {
+        "kind": "tags",
+        "prefix": "v"
+      },
+      "workflows": {
+        "release": {
+          "file": "release.yml",
+          "mode": "observe",
+          "ref": "refs/tags/v*",
+          "publications": ["pkg:generic/go/statute.kjanat.dev"]
+        },
+        "pages": {
+          "file": "pages.yml",
+          "mode": "observe",
+          "ref": "refs/tags/v*",
+          "publications": []
+        }
+      }
+    }
+  },
+  "managers": ["go", "workflow"]
+}
