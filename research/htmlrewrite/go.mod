@@ -2,7 +2,7 @@ module statute.kjanat.dev/research/htmlrewrite
 
 go 1.27
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/andybalholm/brotli v1.2.7
