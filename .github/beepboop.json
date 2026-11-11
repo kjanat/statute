@@ -3,8 +3,8 @@
   "streams": {
     "main": {
       "packages": ["pkg:generic/go/statute.kjanat.dev"],
-      "versioning": "workspace",
-      "required": ["pkg:generic/go/statute.kjanat.dev"],
+      "versionScope": "one-for-stream",
+      "mustPublish": ["pkg:generic/go/statute.kjanat.dev"],
       "versionSource": {
         "kind": "tags",
         "prefix": "v"
@@ -21,6 +21,22 @@
           "mode": "observe",
           "ref": "refs/tags/v*",
           "publications": []
+        }
+      },
+      "promote": {
+        "workflow": {
+          "setup": {
+            "job": "publish",
+            "commands": "go vet ./...",
+            "tagPrefix": "v"
+          },
+          "file": "tag-release.yml",
+          "ref": "master",
+          "publications": [],
+          "refs": {
+            "phase": "version",
+            "prefix": "v"
+          }
         }
       }
     }

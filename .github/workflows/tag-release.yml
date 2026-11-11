@@ -1,0 +1,55 @@
+name: Publish packages
+on:
+  workflow_dispatch:
+    inputs:
+      beepboop_execution_id:
+        description: Beepboop execution
+        required: true
+        type: string
+      beepboop_title:
+        description: Beepboop run title
+        required: false
+        type: string
+jobs:
+  publish:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: kjanat/beepboop/actions/begin@v1
+        id: beepboop
+        with:
+          execution-id: ${{ inputs.beepboop_execution_id }}
+          stream: main
+          operation: promote
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(steps.beepboop.outputs.context).sourceSha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      - id: beepboop_publish
+        name: Publish selected packages
+        run: go vet ./...
+      - id: beepboop_token
+        uses: kjanat/beepboop/actions/token@v1
+        with:
+          execution-id: ${{ steps.beepboop.outputs.execution-id }}
+          permission-contents: write
+      - id: beepboop_refs
+        uses: kjanat/beepboop/actions/publish-refs@v1
+        env:
+          ${{ insert }}: ${{ fromJSON(steps.beepboop_token.outputs.gitId || '{}') }}
+        with:
+          token: ${{ steps.beepboop_token.outputs.token }}
+      - uses: kjanat/beepboop/actions/report@v1
+        if: ${{ !cancelled() && steps.beepboop.outcome == 'success' }}
+        with:
+          execution-id: ${{ steps.beepboop.outputs.execution-id }}
+          publications: |
+            []
+    timeout-minutes: 30
+run-name: ${{ inputs.beepboop_title || github.workflow }}
