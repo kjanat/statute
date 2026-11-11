@@ -45,8 +45,8 @@ github.com/grpc-ecosystem/grpc-gateway/v2 v2.33.0 h1:5T5Ns3kMpWr+z3s5ZA0e7ljVyWN
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.33.0/go.mod h1:oWNYw09cH8wl8fFgC5hKlBLxR4XfKy2KQpP8MJjeCcc=
 github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUqJM=
 github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
-github.com/klauspost/compress v1.20.2 h1:v5tiZvm1KGLyg5d5oXdXe3lsSPrbEUiKoXGia//I7Qo=
-github.com/klauspost/compress v1.20.2/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
+github.com/klauspost/compress v1.20.4 h1:dD0v/bvxtjCBqQu6sx1TNWkalEY5lNTIe+HY9w8TeNI=
+github.com/klauspost/compress v1.20.4/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/mailgun/multibuf v0.2.0 h1:pGhv93r0GXBVTDu6RMlA9GUQjwwoy4yspIujtaT0AOA=
 github.com/mailgun/multibuf v0.2.0/go.mod h1:E+sUhIy69qgT6EM57kCPdUTlHnjTuxQBO/yf6af9Hes=
 github.com/miekg/dns v1.1.73 h1:uhT8nJxmTrPJYClxVxTCX+CVn6qnzSiybRk72Z6DgrE=
