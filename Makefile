@@ -152,8 +152,11 @@ test-comment-cop: ## Test review batching and comment scanning offline
 comment-cop: ## Flag added comment and Markdown prose in the working tree
 	node scripts/comment-cop.mjs $(COMMENT_COP_BASE)
 
-tidy: ## Run go mod tidy
+tidy: ## Run go mod tidy in every module
 	$(GO) mod tidy
+	$(GO) -C traefikoracle/traefikdynamicext mod tidy
+	$(GO) -C traefikoracle mod tidy
+	$(GO) -C research/htmlrewrite mod tidy
 
 clean: ## Remove build artefacts
 	rm -f $(COVER_PROFILE) $(CUSTOM_GCL)

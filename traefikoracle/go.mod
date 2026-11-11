@@ -114,7 +114,7 @@ require (
 	software.sslmate.com/src/go-pkcs12 v0.7.4 // indirect
 )
 
-replace statute.kjanat.dev => ..
+replace statute.kjanat.dev => ../
 
 // Traefik's release uses repository-local replacements that do not propagate
 // to consumer modules. Mirror them here; neither replaces matcher logic.
