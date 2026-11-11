@@ -5,7 +5,7 @@ go 1.27
 toolchain go1.27.4
 
 require (
-	github.com/andybalholm/brotli v1.2.7
+	github.com/andybalholm/brotli v1.3.0
 	github.com/quic-go/quic-go v0.64.1
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/net v0.62.0
