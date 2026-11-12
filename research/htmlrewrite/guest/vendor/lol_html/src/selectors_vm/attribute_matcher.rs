@@ -78,8 +78,12 @@ impl<'i> AttributeMatcher<'i> {
 
     #[inline]
     fn get_value(&self, lowercased_name: &[u8]) -> Option<&'i [u8]> {
-        self.find(lowercased_name)
-            .map(|a| self.input.slice(a.value).as_slice())
+        // NOTE: an attribute written without a value has an empty value
+        // as far as selector matching is concerned.
+        self.find(lowercased_name).map(|a| {
+            a.value
+                .map_or(&[][..], |value| self.input.slice(value).as_slice())
+        })
     }
 
     #[inline]
@@ -121,6 +125,7 @@ impl<'i> AttributeMatcher<'i> {
         })
     }
 
+    // empty operand.value is already filtered out by the compiler
     #[inline]
     pub fn matches_splitted_by_whitespace(&self, operand: &AttrExprOperands) -> bool {
         self.value_matches(&operand.name, |actual_value| {
@@ -132,6 +137,7 @@ impl<'i> AttributeMatcher<'i> {
         })
     }
 
+    // empty operand.value is already filtered out by the compiler
     #[inline]
     pub fn has_attr_with_prefix(&self, operand: &AttrExprOperands) -> bool {
         self.value_matches(&operand.name, |actual_value| {
@@ -139,8 +145,7 @@ impl<'i> AttributeMatcher<'i> {
 
             let prefix_len = operand.value.len();
 
-            !actual_value.is_empty()
-                && actual_value.len() >= prefix_len
+            actual_value.len() >= prefix_len
                 && actual_value
                     .get(..prefix_len)
                     .is_some_and(|prefix| case_sensitivity.eq(prefix, &operand.value))
@@ -173,11 +178,10 @@ impl<'i> AttributeMatcher<'i> {
             let suffix_len = operand.value.len();
             let value_len = actual_value.len();
 
-            !actual_value.is_empty()
-                && value_len >= suffix_len
+            value_len >= suffix_len
                 && actual_value
                     .get(value_len - suffix_len..)
-                    .is_some_and(|prefix| case_sensitivity.eq(prefix, &operand.value))
+                    .is_some_and(|suffix| case_sensitivity.eq(suffix, &operand.value))
         })
     }
 

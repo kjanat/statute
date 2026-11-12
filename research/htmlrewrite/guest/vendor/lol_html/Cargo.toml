@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.85"
 name = "lol_html"
-version = "3.0.2"
+version = "3.0.3"
 authors = ["Ivan Nikulin <inikulin@cloudflare.com, ifaaan@gmail.com>"]
 build = false
 include = [
