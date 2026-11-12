@@ -70,7 +70,7 @@
       "automerge": false,
       "groupName": "LOL HTML source refresh",
       "prBodyNotes": [
-        "The LOL HTML refresh workflow updates the patched source, both pins, lockfile and provenance on this branch, then starts CI. Patch conflicts require a manual port; see research/htmlrewrite/guest/vendor/README.md."
+        "The LOL HTML workflows generate and publish the patched source, both pins, lockfile and provenance on this branch. After publication, approve GitHub's queued PR workflows to run CI. Patch conflicts require a manual port; see research/htmlrewrite/guest/vendor/README.md."
       ]
     },
     {

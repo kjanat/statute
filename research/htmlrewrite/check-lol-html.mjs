@@ -11,17 +11,24 @@ function match(text, pattern, label) {
 }
 
 export function targetVersion(directory = guest) {
+	return manifestVersion(readFileSync(join(directory, 'Cargo.toml'), 'utf8'));
+}
+
+function manifestVersion(manifest) {
 	return match(
-		readFileSync(join(directory, 'Cargo.toml'), 'utf8'),
+		manifest,
 		/^upstream_lol_html\s*=\s*\{[^\n]*version\s*=\s*"=(\d+\.\d+\.\d+)"[^\n]*\}$/m,
 		'exact upstream_lol_html pin',
 	);
 }
 
 export function checkConsistency(directory = guest) {
-	const read = path => readFileSync(join(directory, path), 'utf8');
-	const version = targetVersion(directory);
+	return checkFiles(path => readFileSync(join(directory, path), 'utf8'));
+}
+
+export function checkFiles(read) {
 	const manifest = read('Cargo.toml');
+	const version = manifestVersion(manifest);
 	const notes = read('vendor/README.md');
 	const versions = {
 		upstream_lol_html: version,

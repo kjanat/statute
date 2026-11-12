@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import publish, { collectChanges, eligible } from './renovate-lol-html.mjs';
+import { collectChanges, createRequest, eligible } from './renovate-lol-html.mjs';
 
 const repository = 'kjanat/statute';
 const original = join(dirname(fileURLToPath(import.meta.url)), 'guest');
@@ -18,7 +18,7 @@ const pr = {
 };
 
 function fixture(t) {
-	const root = mkdtempSync(join(tmpdir(), 'statute-lol-html-publish-'));
+	const root = mkdtempSync(join(tmpdir(), 'statute-lol-html-generate-'));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const guest = join(root, 'research/htmlrewrite/guest');
 	for (const path of ['Cargo.toml', 'Cargo.lock', 'vendor/README.md', 'vendor/lol_html/Cargo.toml']) {
@@ -30,23 +30,7 @@ function fixture(t) {
 	git(['init', '--quiet']);
 	git(['add', '.']);
 	git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'baseline']);
-	const context = { repo: { owner: 'kjanat', repo: 'statute' }, payload: { pull_request: structuredClone(pr) } };
-	const calls = [];
-	const github = {
-		rest: {
-			pulls: { get: async () => ({ data: context.payload.pull_request }) },
-			actions: {
-				createWorkflowDispatch: async params => {
-					calls.push(params);
-				},
-			},
-		},
-		graphql: async (query, params) => {
-			calls.push(params);
-			return { createCommitOnBranch: { commit: { oid: 'b'.repeat(40) } } };
-		},
-	};
-	return { root, guest, context, github, calls, core: { info() {} } };
+	return { root, guest };
 }
 
 test('only the same-repository Renovate source-refresh PR is eligible', () => {
@@ -66,39 +50,23 @@ test('only the same-repository Renovate source-refresh PR is eligible', () => {
 	}
 });
 
-test('publication includes new and deleted source files, leases the head, and dispatches fresh CI', async t => {
+test('generation serializes additions and deletions with the inspected PR identity', t => {
 	const f = fixture(t);
-	const manifest = join(f.guest, 'vendor/lol_html/Cargo.toml');
-	writeFileSync(manifest, `${readFileSync(manifest, 'utf8')}\n`);
 	writeFileSync(join(f.guest, 'vendor/lol_html/new.rs'), 'new source\n');
 	rmSync(join(f.guest, 'vendor/lol_html/old.rs'));
-	await publish(f);
-	const input = f.calls[0].input;
-	assert.equal(input.expectedHeadOid, pr.head.sha);
-	assert.equal(input.branch.branchName, pr.head.ref);
-	assert.equal(input.fileChanges.additions.length, 2);
-	assert.deepEqual(input.fileChanges.deletions, [{ path: 'research/htmlrewrite/guest/vendor/lol_html/old.rs' }]);
-	assert.ok(
-		input.fileChanges.additions.some(file => Buffer.from(file.contents, 'base64').toString() === 'new source\n'),
-	);
-	assert.deepEqual(f.calls.slice(1).map(call => call.workflow_id).sort(), [
-		'ci.yml',
-		'codeql.yml',
-		'comment-cop.yml',
-		'research-htmlrewrite-binaryen.yml',
-		'research-htmlrewrite.yml',
-	]);
-	assert.ok(f.calls.slice(1).every(call => call.ref === pr.head.ref));
-	assert.deepEqual(f.calls.find(call => call.workflow_id === 'comment-cop.yml').inputs, { pull_request: '293' });
+	const request = createRequest(f.root, pr, repository);
+	assert.equal(request.head_sha, pr.head.sha);
+	assert.equal(request.pull_request, 293);
+	assert.equal(request.repository, repository);
+	assert.deepEqual(request.changes.deletions, [{ path: 'research/htmlrewrite/guest/vendor/lol_html/old.rs' }]);
+	assert.equal(Buffer.from(request.changes.additions[0].contents, 'base64').toString(), 'new source\n');
 });
 
-test('no-op refresh makes no commit or dispatch', async t => {
-	const f = fixture(t);
-	await publish(f);
-	assert.deepEqual(f.calls, []);
+test('no-op refresh serializes an empty change set', t => {
+	assert.deepEqual(createRequest(fixture(t).root, pr, repository).changes, { additions: [], deletions: [] });
 });
 
-test('unrelated changes and symlinks cannot enter the generated commit', t => {
+test('unrelated changes and symlinks cannot enter the generation request', t => {
 	const f = fixture(t);
 	const unexpected = join(f.root, 'workflow.yml');
 	writeFileSync(unexpected, 'unexpected');
@@ -108,27 +76,20 @@ test('unrelated changes and symlinks cannot enter the generated commit', t => {
 	assert.throws(() => collectChanges(f.root), /not a regular file/);
 });
 
-test('a stale head or failed commit never dispatches CI', async t => {
+test('CLI writes the artifact outside the checkout without a GitHub credential', t => {
 	const f = fixture(t);
-	writeFileSync(join(f.guest, 'vendor/lol_html/new.rs'), 'source');
-	f.github.rest.pulls.get = async () => ({ data: { ...pr, head: { ...pr.head, sha: 'c'.repeat(40) } } });
-	await assert.rejects(publish(f), /PR changed/);
-	assert.deepEqual(f.calls, []);
-	f.github.rest.pulls.get = async () => ({ data: pr });
-	f.github.graphql = async () => {
-		throw new Error('expectedHeadOid mismatch');
-	};
-	await assert.rejects(publish(f), /expectedHeadOid mismatch/);
-	assert.deepEqual(f.calls, []);
-});
-
-test('all CI dispatches are attempted and partial failure is reported after publication', async t => {
-	const f = fixture(t);
-	writeFileSync(join(f.guest, 'vendor/lol_html/new.rs'), 'source');
-	f.github.rest.actions.createWorkflowDispatch = async params => {
-		f.calls.push(params);
-		if (params.workflow_id === 'ci.yml') throw new Error('unavailable');
-	};
-	await assert.rejects(publish(f), /Refresh committed, but CI dispatch failed for: ci\.yml/);
-	assert.equal(f.calls.length, 6);
+	const event = join(f.root, '.git/event.json');
+	const output = join(f.root, '.git/artifact/request.json');
+	writeFileSync(event, JSON.stringify({ pull_request: pr }));
+	execFileSync(process.execPath, [fileURLToPath(new URL('./renovate-lol-html.mjs', import.meta.url)), output], {
+		env: {
+			...process.env,
+			GITHUB_EVENT_PATH: event,
+			GITHUB_WORKSPACE: f.root,
+			GITHUB_REPOSITORY: repository,
+			GITHUB_TOKEN: '',
+			GH_TOKEN: '',
+		},
+	});
+	assert.equal(JSON.parse(readFileSync(output)).head_sha, pr.head.sha);
 });

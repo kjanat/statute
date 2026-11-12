@@ -27,7 +27,7 @@ check-lol-html:
 	node check-lol-html.mjs
 
 test-lol-html-tooling:
-	node --test check-lol-html.test.mjs renovate-lol-html.test.mjs
+	node --test check-lol-html.test.mjs renovate-lol-html.test.mjs publish-lol-html.test.mjs
 
 test-update-lol-html: check-lol-html test-lol-html-tooling
 	cargo fetch --manifest-path guest/Cargo.toml --locked

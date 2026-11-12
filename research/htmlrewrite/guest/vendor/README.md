@@ -60,10 +60,13 @@ with explicit expected bytes rather than parity alone.
 
 Renovate lists new LOL HTML releases in the Dependency Dashboard for approval.
 It ignores the copied source's manifests. Once approved, Renovate updates the
-registry pin and the `Refresh LOL HTML source` workflow completes that same PR
-with the patched source, both pins, lockfile and provenance. It publishes a
-signed GitHub commit and dispatches CI on the updated branch. The workflow needs
-only the repository's `GITHUB_TOKEN`; it uses GitHub-hosted runners.
+registry pin and `Generate LOL HTML source` prepares the patched source, both
+pins, lockfile and provenance without write permissions or referenced secrets.
+It uploads a short-lived JSON artifact. `Publish LOL HTML source` runs separately
+from a pinned default-branch revision, validates that artifact as data, and
+publishes one signed GitHub commit. It never checks out or runs PR code and has
+no permission to dispatch workflows. Both workflows use the repository's
+`GITHUB_TOKEN` and GitHub-hosted runners.
 
 The refresh workflow accepts only the same repository's Renovate PR on
 `renovate/lol-html-source-refresh`. It rejects unrelated generated paths and
@@ -87,7 +90,8 @@ Replace the example version with the desired release. The refresh command checks
 the crates.io archive checksum, extracts the source, reapplies `end-token.patch`,
 and resolves both pins and the lockfile in scratch space before replacing the
 checkout's files. It also updates the version/checksum above. Node, Git, tar and
-the pinned Rust toolchain are required; consumer builds never run this command.
+the pinned Rust toolchain are required; the publisher's artifact tests also use
+Python 3's ZIP reader. Consumer builds never run the refresh command.
 
 Run `make -C research/htmlrewrite test-update-lol-html` to test the refresh tool
 alone. This first fetches the complete locked dependency graph, including
@@ -101,9 +105,10 @@ the patch applies cleanly. Upstream characterization may need updating if the
 release fixes the original bug; retain Statute's ownership regressions. Remove
 the local delta only when upstream satisfies those same regressions.
 
-If publication succeeds but a CI dispatch fails, the refresh job lists the
-affected workflows. Dispatch those on the Renovate branch. The consistency gate
-remains part of the required `test` job for that commit.
+GitHub queues PR workflows triggered by a `GITHUB_TOKEN` commit for approval.
+Select **Approve workflows to run** in the PR after publication. The publisher
+does not bypass that boundary by dispatching PR-controlled workflows with access
+to repository secrets. The consistency gate remains in the required `test` job.
 
 The reproduction and patch have been [submitted to upstream's existing issue](https://github.com/cloudflare/lol-html/issues/110#issuecomment-6027575856).
 The matcher-context hook is an additional downstream extension; the linked

@@ -1,0 +1,31 @@
+name: Publish LOL HTML source
+on:
+  workflow_run:
+    workflows: [Generate LOL HTML source]
+    types: [completed]
+    branches: [renovate/lol-html-source-refresh]
+permissions: { contents: read }
+concurrency: { group: lol-html-publish, cancel-in-progress: false }
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login != 'github-actions[bot]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: { contents: write, actions: read, pull-requests: read }
+    steps:
+      - name: Check out trusted publisher revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate artifact and publish with a head lease
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const { default: publish } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/research/htmlrewrite/publish-lol-html.mjs`).href);
+            await publish({ github, context, core });

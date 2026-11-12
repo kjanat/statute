@@ -1,5 +1,5 @@
 name: ci
-on: { push: { branches: [master] }, pull_request: null, workflow_dispatch: null }
+on: { push: { branches: [master] }, pull_request: null }
 permissions: { contents: read }
 concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
 jobs:
@@ -41,14 +41,14 @@ jobs:
       - run: make lint-code
   lifecycle_lint:
     name: lifecycle lint
-    if: github.event_name != 'push'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { fetch-depth: 0 }
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
       - run: make lint-lifecycle LIFECYCLE_BASE="origin/${BASE_REF}"
-        env: { BASE_REF: "${{ github.base_ref || github.event.repository.default_branch }}" }
+        env: { BASE_REF: "${{ github.base_ref }}" }
   discover_fuzz:
     name: discover fuzz targets
     runs-on: ubuntu-latest
@@ -126,7 +126,7 @@ jobs:
       - { name: RFC snapshot tooling, run: make test-rfcs check-rfcs }
   e2e:
     name: e2e regression
-    if: github.event_name != 'push'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     # Must exceed E2E_REGRESSION_TIMEOUT so `go test` reports its own
     # timeout instead of the runner killing the job mid-teardown.
