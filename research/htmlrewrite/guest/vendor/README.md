@@ -1,8 +1,8 @@
 # LOL HTML matcher patch
 
 `lol_html/` contains the source, manifests, license, README and VCS provenance
-from the crates.io `lol_html` 3.0.2 archive. Its SHA-256 is
-`2a9cd0b35a2301bae18eb784130b0c10ddc4ef3cb699a6ef8e0d5fa88a7fae0e`.
+from the crates.io `lol_html` 3.0.3 archive. Its SHA-256 is
+`691b898297b684292c8808d0285769fc05fb721a36ee5b62c75c8da83e60d350`.
 The unmodified archive remains pinned as the `upstream_lol_html` development
 dependency in `../Cargo.lock`; it is not linked into the guest or native oracle.
 The BSD-3-Clause license is retained in `lol_html/LICENSE`.
