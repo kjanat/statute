@@ -13,7 +13,7 @@ export function collectChanges(root) {
 	const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
 	const paths = [
 		...new Set([
-			...git(['diff', '--name-only', '-z', 'HEAD', '--']),
+			...git(['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--']),
 			...git(['ls-files', '--others', '--exclude-standard', '-z']),
 		]),
 	];

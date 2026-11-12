@@ -25,6 +25,7 @@ function fixture(t) {
 		mkdirSync(dirname(join(guest, path)), { recursive: true });
 		cpSync(join(original, path), join(guest, path));
 	}
+	writeFileSync(join(guest, 'vendor/lol_html/old.rs'), 'old source\n');
 	const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' });
 	git(['init', '--quiet']);
 	git(['add', '.']);
@@ -70,11 +71,13 @@ test('publication includes new and deleted source files, leases the head, and di
 	const manifest = join(f.guest, 'vendor/lol_html/Cargo.toml');
 	writeFileSync(manifest, `${readFileSync(manifest, 'utf8')}\n`);
 	writeFileSync(join(f.guest, 'vendor/lol_html/new.rs'), 'new source\n');
+	rmSync(join(f.guest, 'vendor/lol_html/old.rs'));
 	await publish(f);
 	const input = f.calls[0].input;
 	assert.equal(input.expectedHeadOid, pr.head.sha);
 	assert.equal(input.branch.branchName, pr.head.ref);
 	assert.equal(input.fileChanges.additions.length, 2);
+	assert.deepEqual(input.fileChanges.deletions, [{ path: 'research/htmlrewrite/guest/vendor/lol_html/old.rs' }]);
 	assert.ok(
 		input.fileChanges.additions.some(file => Buffer.from(file.contents, 'base64').toString() === 'new source\n'),
 	);
@@ -87,10 +90,6 @@ test('publication includes new and deleted source files, leases the head, and di
 	]);
 	assert.ok(f.calls.slice(1).every(call => call.ref === pr.head.ref));
 	assert.deepEqual(f.calls.find(call => call.workflow_id === 'comment-cop.yml').inputs, { pull_request: '293' });
-	rmSync(manifest);
-	assert.deepEqual(collectChanges(f.root).deletions, [{
-		path: 'research/htmlrewrite/guest/vendor/lol_html/Cargo.toml',
-	}]);
 });
 
 test('no-op refresh makes no commit or dispatch', async t => {
