@@ -15,6 +15,7 @@
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
   "rebaseWhen": "conflicted",
+  "gitIgnoredAuthors": ["/^41898282\\+github-actions\\[bot\\]@users\\.noreply\\.github\\.com$/"],
   "postUpdateOptions": ["gomodTidyAll"],
   "labels": ["dependencies"],
   "ignorePaths": [
@@ -69,7 +70,7 @@
       "automerge": false,
       "groupName": "LOL HTML source refresh",
       "prBodyNotes": [
-        "Refresh the vendored source and both pins with `make -C research/htmlrewrite update-lol-html VERSION=<release>`, then run the research suite. See research/htmlrewrite/guest/vendor/README.md."
+        "The LOL HTML refresh workflow updates the patched source, both pins, lockfile and provenance on this branch, then starts CI. Patch conflicts require a manual port; see research/htmlrewrite/guest/vendor/README.md."
       ]
     },
     {

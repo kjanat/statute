@@ -59,11 +59,27 @@ with explicit expected bytes rather than parity alone.
 ## Updating
 
 Renovate lists new LOL HTML releases in the Dependency Dashboard for approval.
-It ignores the copied source's manifests. With clean pins, copied source and
-provenance notes:
+It ignores the copied source's manifests. Once approved, Renovate updates the
+registry pin and the `Refresh LOL HTML source` workflow completes that same PR
+with the patched source, both pins, lockfile and provenance. It publishes a
+signed GitHub commit and dispatches CI on the updated branch. The workflow needs
+only the repository's `GITHUB_TOKEN`; it uses GitHub-hosted runners.
+
+The refresh workflow accepts only the same repository's Renovate PR on
+`renovate/lol-html-source-refresh`. It rejects unrelated generated paths and
+publishes only if the inspected branch head is still current. Renovate ignores
+the refresh bot's author when deciding whether it can maintain the branch.
+
+`make check-lol-html` checks the two pins, the vendored package version, both
+locked packages, and the provenance version/checksum without Cargo or network
+access. The required `test` CI job runs this gate before installing tools, and
+the research suite runs it before building. A partial update fails with the
+versions involved before reaching an offline registry download.
+
+For a manual refresh, start with clean pins, copied source and provenance notes:
 
 ```sh
-make -C research/htmlrewrite update-lol-html VERSION=3.0.1
+make -C research/htmlrewrite update-lol-html VERSION=3.0.3
 make -C research/htmlrewrite test
 ```
 
@@ -84,6 +100,10 @@ rerun the command. Review the source diff and parser-semantic changes even when
 the patch applies cleanly. Upstream characterization may need updating if the
 release fixes the original bug; retain Statute's ownership regressions. Remove
 the local delta only when upstream satisfies those same regressions.
+
+If publication succeeds but a CI dispatch fails, the refresh job lists the
+affected workflows. Dispatch those on the Renovate branch. The consistency gate
+remains part of the required `test` job for that commit.
 
 The reproduction and patch have been [submitted to upstream's existing issue](https://github.com/cloudflare/lol-html/issues/110#issuecomment-6027575856).
 The matcher-context hook is an additional downstream extension; the linked

@@ -1,0 +1,40 @@
+name: Refresh LOL HTML source
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+    paths:
+      - research/htmlrewrite/guest/Cargo.toml
+      - research/htmlrewrite/guest/Cargo.lock
+permissions: { contents: read }
+concurrency: { group: "lol-html-refresh-${{ github.event.pull_request.number }}", cancel-in-progress: false }
+jobs:
+  refresh:
+    if: >-
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'renovate/lol-html-source-refresh' &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions: { contents: write, actions: write, pull-requests: read }
+    defaults: { run: { working-directory: research/htmlrewrite } }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with: { working_directory: research/htmlrewrite }
+      - name: Refresh source, patch, pins, lockfile and provenance
+        run: |
+          version="$(node check-lol-html.mjs --target-version)"
+          node update-lol-html.mjs "$version"
+          make check-lol-html test-update-lol-html
+      - name: Publish complete update and start CI
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const { default: publish } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/research/htmlrewrite/renovate-lol-html.mjs`).href);
+            await publish({ github, context, core });

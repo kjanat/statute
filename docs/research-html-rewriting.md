@@ -22,6 +22,18 @@ At this engine-only stage, HTTP response rewriting was untested. The subsequent
 middleware composition and Docker lifetimes. It remains private: there is no public
 rewrite route option or production Wasm dependency in the main Go module.
 
+## Dependency source refresh
+
+LOL HTML's upstream registry pin and patched local source move together. After
+approval in Renovate's Dependency Dashboard, the source-refresh workflow updates
+the source, reapplies the downstream patch, and publishes both pins, the lockfile
+and provenance in the same PR. It then starts CI for the completed commit.
+
+The required `test` job checks version and checksum consistency before Cargo can
+run. Patch conflicts fail the refresh and need a manual port. The
+[vendor update instructions](../research/htmlrewrite/guest/vendor/README.md#updating)
+cover manual updates and CI dispatch recovery.
+
 ## Initial measurements before optimization
 
 Measured on a Raspberry Pi 5, Linux arm64, Go 1.27.1, Rust 1.97.1. One short local run used:

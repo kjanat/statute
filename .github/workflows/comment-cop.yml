@@ -18,7 +18,14 @@ name: Comment Cop
 # never fetched and never runs. Credentials are not persisted into the
 # checkout, and no build, install, or Go toolchain step touches the tree.
 
-on: { pull_request_target: { types: [opened, synchronize, reopened, ready_for_review] } }
+on:
+  pull_request_target: { types: [opened, synchronize, reopened, ready_for_review] }
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request number to review after an automated source refresh
+        type: string
+        required: true
 
 # contents: write looks excessive but is required: the GraphQL
 # resolveReviewThread mutation maps to the contents permission for
@@ -39,7 +46,7 @@ jobs:
     timeout-minutes: 5
 
     concurrency:
-      group: comment-cop-${{ github.event.pull_request.number }}
+      group: comment-cop-${{ github.event.pull_request.number || inputs.pull_request }}
       cancel-in-progress: false
 
     steps:
@@ -49,12 +56,18 @@ jobs:
       - name: Check out base-branch tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Review added comments and Markdown
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            if (context.eventName === 'workflow_dispatch') {
+              const number = Number(context.payload.inputs.pull_request);
+              if (!Number.isSafeInteger(number) || number < 1) throw new Error('Invalid pull request number');
+              context.payload.pull_request = (await github.rest.pulls.get({ ...context.repo, pull_number: number })).data;
+            }
             const { pathToFileURL } = require("node:url");
 
             const module = `${process.env.GITHUB_WORKSPACE}/scripts/comment-cop.mjs`;
