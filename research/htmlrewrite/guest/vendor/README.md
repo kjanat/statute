@@ -59,11 +59,30 @@ with explicit expected bytes rather than parity alone.
 ## Updating
 
 Renovate lists new LOL HTML releases in the Dependency Dashboard for approval.
-It ignores the copied source's manifests. With clean pins, copied source and
-provenance notes:
+It ignores the copied source's manifests. Once approved, Renovate updates the
+registry pin and `Generate LOL HTML source` prepares the patched source, both
+pins, lockfile and provenance without write permissions or referenced secrets.
+It uploads a short-lived JSON artifact. `Publish LOL HTML source` runs separately
+from a pinned default-branch revision, validates that artifact as data, and
+publishes one signed GitHub commit. It never checks out or runs PR code and has
+no permission to dispatch workflows. Both workflows use the repository's
+`GITHUB_TOKEN` and GitHub-hosted runners.
+
+The refresh workflow accepts only the same repository's Renovate PR on
+`renovate/lol-html-source-refresh`. It rejects unrelated generated paths and
+publishes only if the inspected branch head is still current. Renovate ignores
+the refresh bot's author when deciding whether it can maintain the branch.
+
+`make check-lol-html` checks the two pins, the vendored package version, both
+locked packages, and the provenance version/checksum without Cargo or network
+access. The required `test` CI job runs this gate before installing tools, and
+the research suite runs it before building. A partial update fails with the
+versions involved before reaching an offline registry download.
+
+For a manual refresh, start with clean pins, copied source and provenance notes:
 
 ```sh
-make -C research/htmlrewrite update-lol-html VERSION=3.0.1
+make -C research/htmlrewrite update-lol-html VERSION=3.0.3
 make -C research/htmlrewrite test
 ```
 
@@ -71,7 +90,8 @@ Replace the example version with the desired release. The refresh command checks
 the crates.io archive checksum, extracts the source, reapplies `end-token.patch`,
 and resolves both pins and the lockfile in scratch space before replacing the
 checkout's files. It also updates the version/checksum above. Node, Git, tar and
-the pinned Rust toolchain are required; consumer builds never run this command.
+the pinned Rust toolchain are required; the publisher's artifact tests also use
+Python 3's ZIP reader. Consumer builds never run the refresh command.
 
 Run `make -C research/htmlrewrite test-update-lol-html` to test the refresh tool
 alone. This first fetches the complete locked dependency graph, including
@@ -84,6 +104,11 @@ rerun the command. Review the source diff and parser-semantic changes even when
 the patch applies cleanly. Upstream characterization may need updating if the
 release fixes the original bug; retain Statute's ownership regressions. Remove
 the local delta only when upstream satisfies those same regressions.
+
+GitHub queues PR workflows triggered by a `GITHUB_TOKEN` commit for approval.
+Select **Approve workflows to run** in the PR after publication. The publisher
+does not bypass that boundary by dispatching PR-controlled workflows with access
+to repository secrets. The consistency gate remains in the required `test` job.
 
 The reproduction and patch have been [submitted to upstream's existing issue](https://github.com/cloudflare/lol-html/issues/110#issuecomment-6027575856).
 The matcher-context hook is an additional downstream extension; the linked

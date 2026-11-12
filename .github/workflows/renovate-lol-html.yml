@@ -1,0 +1,40 @@
+name: Generate LOL HTML source
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+    paths:
+      - research/htmlrewrite/guest/Cargo.toml
+      - research/htmlrewrite/guest/Cargo.lock
+permissions: { contents: read }
+concurrency: { group: "lol-html-refresh-${{ github.event.pull_request.number }}", cancel-in-progress: false }
+jobs:
+  refresh:
+    if: >-
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'renovate/lol-html-source-refresh' &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    defaults: { run: { working-directory: research/htmlrewrite } }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with: { working_directory: research/htmlrewrite, cache: false }
+      - name: Refresh source, patch, pins, lockfile and provenance
+        run: |
+          version="$(node check-lol-html.mjs --target-version)"
+          node update-lol-html.mjs "$version"
+          make check-lol-html test-update-lol-html
+      - name: Serialize generated changes as data
+        run: node renovate-lol-html.mjs "$RUNNER_TEMP/lol-html-refresh/request.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lol-html-refresh-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lol-html-refresh/request.json
+          if-no-files-found: error
+          retention-days: 1

@@ -13,7 +13,7 @@ HTTP_LOAD_MODE ?= stream
 HTTP_LOAD_PACE ?= 0s
 
 .PHONY: build test-disabled test fuzz bench bench-native bench-smoke memory http-load
-.PHONY: update-lol-html test-update-lol-html
+.PHONY: update-lol-html check-lol-html test-lol-html-tooling test-update-lol-html
 
 build:
 	CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='$(WASM_RUSTFLAGS)' cargo build --manifest-path guest/Cargo.toml --locked --release --lib --target wasm32-unknown-unknown -j 1
@@ -23,7 +23,13 @@ build:
 update-lol-html:
 	node update-lol-html.mjs '$(VERSION)'
 
-test-update-lol-html:
+check-lol-html:
+	node check-lol-html.mjs
+
+test-lol-html-tooling:
+	node --test check-lol-html.test.mjs renovate-lol-html.test.mjs publish-lol-html.test.mjs
+
+test-update-lol-html: check-lol-html test-lol-html-tooling
 	cargo fetch --manifest-path guest/Cargo.toml --locked
 	node --test update-lol-html.test.mjs
 
@@ -31,7 +37,7 @@ test-disabled:
 	CGO_ENABLED=0 go test -tags '' .
 	CGO_ENABLED=0 go test -tags htmlrewrite_research .
 
-test: test-disabled build
+test: check-lol-html test-disabled build
 	node --test feature.test.mjs
 	CGO_ENABLED=0 go test -tags statute_htmlrewrite ./...
 	CGO_ENABLED=0 go vet -tags statute_htmlrewrite ./...

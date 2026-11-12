@@ -8,6 +8,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: LOL HTML consistency and updater automation
+        run: make -C research/htmlrewrite check-lol-html test-lol-html-tooling
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
       - run: go vet ./...
       - run: go build ./...

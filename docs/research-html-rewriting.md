@@ -11,7 +11,7 @@ cover enabled/disabled builds and the independent private Docker test tag.
 
 The [HTTP experiment](research-html-http.md) now exercises consumer-selected failure policy, streaming, and existing Statute middleware. The measurements and coverage below describe the earlier engine-only phase.
 
-[The runnable harness](../research/htmlrewrite/README.md) now compiles LOL HTML 3.0.2 to `wasm32-unknown-unknown` and executes it with wazero 1.12.0 from cgo-free Go. The historical measurements below predate this dependency refresh. There is no WASI, JavaScript glue, or subprocess on the rewrite path. The native Rust executable is an output oracle used by tests only.
+[The runnable harness](../research/htmlrewrite/README.md) compiles the [pinned LOL HTML source](../research/htmlrewrite/guest/Cargo.toml) to `wasm32-unknown-unknown` and executes it with wazero from cgo-free Go. The historical measurements below predate later dependency refreshes. There is no WASI, JavaScript glue, or subprocess on the rewrite path. The native Rust executable is an output oracle used by tests only.
 
 The harness rewrites an attribute, inserts markup, and removes selected elements. Transformed bytes reach the writer before input EOF. Each stream gets its own parser and guest memory while sharing the compiled module. Sixteen concurrent test streams preserve their independent contents.
 
@@ -21,6 +21,20 @@ At this engine-only stage, HTTP response rewriting was untested. The subsequent
 [HTTP experiment](research-html-http.md) now tests real Statute responses, including
 middleware composition and Docker lifetimes. It remains private: there is no public
 rewrite route option or production Wasm dependency in the main Go module.
+
+## Dependency source refresh
+
+LOL HTML's upstream registry pin and patched local source move together. After
+approval in Renovate's Dependency Dashboard, the source-refresh workflow updates
+the source, reapplies the downstream patch, and publishes both pins, the lockfile
+and provenance in the same PR. Generation runs read-only; a separate publisher
+loads its code from the default branch and validates a JSON artifact as data.
+GitHub requires approval of PR workflows triggered by its built-in token's commit.
+
+The required `test` job checks version and checksum consistency before Cargo can
+run. Patch conflicts fail the refresh and need a manual port. The
+[vendor update instructions](../research/htmlrewrite/guest/vendor/README.md#updating)
+cover manual updates and the CI approval step.
 
 ## Initial measurements before optimization
 

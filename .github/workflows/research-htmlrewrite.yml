@@ -29,6 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
+      - name: LOL HTML source and pin consistency
+        run: make check-lol-html
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with: { working_directory: research/htmlrewrite }
       - name: Parser-independent cancellation reproducer
