@@ -60,7 +60,7 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/quic-go/quic-go v0.64.1 // indirect
+	github.com/quic-go/quic-go v0.65.0 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/traefik/paerser v0.2.2 // indirect
 	github.com/traefik/traefik/dynamic/ext v0.0.0-00010101000000-000000000000 // indirect
