@@ -51,7 +51,6 @@ require (
 	github.com/http-wasm/http-wasm-host-go v0.7.0 // indirect
 	github.com/json-iterator/go v1.1.13-0.20220915233716-71ac16282d12 // indirect
 	github.com/klauspost/compress v1.20.4 // indirect
-	github.com/mailgun/multibuf v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/miekg/dns v1.1.73 // indirect
@@ -67,7 +66,7 @@ require (
 	github.com/traefik/traefik/dynamic/ext v0.0.0-00010101000000-000000000000 // indirect
 	github.com/unrolled/render v1.0.2 // indirect
 	github.com/unrolled/secure v1.0.9 // indirect
-	github.com/vulcand/oxy/v2 v2.3.0 // indirect
+	github.com/vulcand/oxy/v2 v2.3.2 // indirect
 	github.com/vulcand/predicate v1.3.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
