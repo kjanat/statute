@@ -6,7 +6,7 @@ toolchain go1.27.4
 
 require (
 	github.com/andybalholm/brotli v1.3.0
-	github.com/quic-go/quic-go v0.64.1
+	github.com/quic-go/quic-go v0.65.0
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/net v0.62.0
 	statute.kjanat.dev v0.0.0
