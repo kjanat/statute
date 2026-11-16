@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // Inputs are explicit files or dynamic directories. No provider paths are followed.
