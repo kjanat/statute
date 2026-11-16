@@ -21,7 +21,7 @@ jobs:
           - name: configure git
             run: git config --global user.name 'github-actions[bot]';
               git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          - uses: kjanat/runner@26ceb1f678c11e79d1846b7aa5f8d61af7ecdf65 # master
+          - uses: kjanat/runner@97ed0af3ba6d6ac79cd2cb0782b6d762f15b8361 # v0
           - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
             with: { install_args: node npm }
 
