@@ -6,7 +6,9 @@
   ],
   "timezone": "Europe/Amsterdam",
   "schedule": ["before 6am on monday"],
-  "dependencyDashboard": true,
+  "dependencyDashboard": {
+    "enabled": true
+  },
   "configMigration": true,
   "semanticCommits": "enabled",
   "semanticCommitScope": "deps",
