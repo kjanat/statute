@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: kjanat/beepboop/actions/begin@765ddc5c7e6a61ac9ff9be83c192e10046799fc8 # v1
+      - uses: kjanat/beepboop/actions/begin@6b0b66969afc840d52f4082eec0e49155f555746 # v1
         id: beepboop
         with:
           execution-id: ${{ inputs.beepboop_execution_id }}
@@ -30,22 +30,22 @@ jobs:
         with:
           ref: ${{ fromJSON(steps.beepboop.outputs.context).sourceSha }}
           persist-credentials: false
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
       - id: beepboop_publish
         name: Publish selected packages
         run: go vet ./...
       - id: beepboop_token
-        uses: kjanat/beepboop/actions/token@765ddc5c7e6a61ac9ff9be83c192e10046799fc8 # v1
+        uses: kjanat/beepboop/actions/token@6b0b66969afc840d52f4082eec0e49155f555746 # v1
         with:
           execution-id: ${{ steps.beepboop.outputs.execution-id }}
           permission-contents: write
       - id: beepboop_refs
-        uses: kjanat/beepboop/actions/publish-refs@765ddc5c7e6a61ac9ff9be83c192e10046799fc8 # v1
+        uses: kjanat/beepboop/actions/publish-refs@6b0b66969afc840d52f4082eec0e49155f555746 # v1
         env:
           ${{ insert }}: ${{ fromJSON(steps.beepboop_token.outputs.gitId || '{}') }}
         with:
           token: ${{ steps.beepboop_token.outputs.token }}
-      - uses: kjanat/beepboop/actions/report@765ddc5c7e6a61ac9ff9be83c192e10046799fc8 # v1
+      - uses: kjanat/beepboop/actions/report@6b0b66969afc840d52f4082eec0e49155f555746 # v1
         if: ${{ !cancelled() && steps.beepboop.outcome == 'success' }}
         with:
           execution-id: ${{ steps.beepboop.outputs.execution-id }}
