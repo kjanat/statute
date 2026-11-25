@@ -21,7 +21,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gravitational/trace v1.5.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.33.0 // indirect
-	github.com/klauspost/compress v1.20.4 // indirect
+	github.com/klauspost/compress v1.20.5 // indirect
 	github.com/miekg/dns v1.1.73 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/vulcand/oxy/v2 v2.3.2 // indirect

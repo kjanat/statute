@@ -11,7 +11,7 @@ require (
 	github.com/andybalholm/brotli v1.3.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/golangci/plugin-module-register v0.1.2
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/miekg/dns v1.1.73
 	github.com/moby/moby/api v1.57.0
 	github.com/moby/moby/client v0.6.3
